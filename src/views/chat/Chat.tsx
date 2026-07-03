@@ -115,7 +115,12 @@ export default function Chat({ conversationId }: ChatProps) {
   }, [conversationId]);
 
   const send = async () => {
-    if (!input.trim()) return;
+    // Guards against a second send landing while the first reply is still
+    // in flight — without this, the assistant reply's sequence number
+    // (assigned server-side only once generation finishes) can land after
+    // a second user message's, permanently reordering the conversation,
+    // and the second request's `pending` state clobbers the first's.
+    if (!input.trim() || pending) return;
     const content = input;
     setInput("");
     setError(null);
@@ -157,12 +162,19 @@ export default function Chat({ conversationId }: ChatProps) {
         <div className="mx-auto max-w-3xl">
           {messages.map((m) =>
             m.role === "user" ? (
-              <div key={m.id} className="mb-6 rounded-lg bg-muted p-3" data-testid="chat-message">
+              <div
+                key={m.id}
+                className="mb-6 rounded-lg bg-muted p-3"
+                data-testid="chat-message"
+                aria-label="You said"
+              >
                 <ReactMarkdown>{m.content}</ReactMarkdown>
               </div>
             ) : (
-              <div key={m.id} className="mb-6" data-testid="chat-message">
-                <ReactMarkdown>{m.content}</ReactMarkdown>
+              <div key={m.id} className="mb-6" data-testid="chat-message" aria-label="Doce replied">
+                <div className="prose prose-sm dark:prose-invert max-w-none">
+                  <ReactMarkdown>{m.content}</ReactMarkdown>
+                </div>
                 <p className="mt-1 text-xs text-muted-foreground">
                   <Timer createdAt={m.createdAt} durationMs={m.durationMs} />
                 </p>
@@ -170,19 +182,18 @@ export default function Chat({ conversationId }: ChatProps) {
             ),
           )}
           {pending && (
-            <div className="mb-6">
-              {streamText ? (
-                <div data-testid="assistant-stream">
+            <div className="mb-6" aria-label="Doce replied">
+              <p className="text-sm text-muted-foreground" data-testid="generation-status">
+                {pending.status === "queued"
+                  ? pending.queuePosition != null && pending.queuePosition > 0
+                    ? `Queued (${pending.queuePosition} ahead)…`
+                    : "Queued…"
+                  : "Generating…"}
+              </p>
+              {streamText && (
+                <div className="prose prose-sm dark:prose-invert max-w-none" data-testid="assistant-stream">
                   <ReactMarkdown>{streamText}</ReactMarkdown>
                 </div>
-              ) : (
-                <p className="text-sm text-muted-foreground" data-testid="generation-status">
-                  {pending.status === "queued"
-                    ? pending.queuePosition != null && pending.queuePosition > 0
-                      ? `Queued (${pending.queuePosition} ahead)…`
-                      : "Queued…"
-                    : "Generating…"}
-                </p>
               )}
               <div className="mt-1 flex items-center justify-between">
                 <p className="text-xs text-muted-foreground">
@@ -217,7 +228,7 @@ export default function Chat({ conversationId }: ChatProps) {
         <button
           className="rounded-md bg-primary px-4 py-2 text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
           onClick={send}
-          disabled={!input.trim()}
+          disabled={!input.trim() || !!pending}
           data-testid="chat-send"
         >
           Send
