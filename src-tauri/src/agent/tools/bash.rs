@@ -108,20 +108,32 @@ fn targets_path(collapsed: &str, target: &str) -> bool {
 /// `Bash` (FR-009): runs a shell command with no sandboxing beyond the
 /// denylist (FR-013 — agent actions are unconfirmed and unrestricted by
 /// design). `timeout_ms` defaults to 120s, capped at 600s per
-/// research.md's tool contract table.
-pub fn run(command: &str, timeout_ms: Option<u64>) -> Result<BashResult, BashError> {
+/// research.md's tool contract table. `cwd` (007-workspace-cwd-resolution)
+/// sets the spawned process's starting directory when the conversation
+/// has a workspace — just the standard working-directory option already
+/// available when spawning a process, not sandboxing: the command itself
+/// can still `cd` elsewhere or reference absolute paths, exactly like a
+/// real shell opened in that directory would.
+pub fn run(
+    command: &str,
+    timeout_ms: Option<u64>,
+    cwd: Option<&std::path::Path>,
+) -> Result<BashResult, BashError> {
     if is_denylisted(command) {
         return Err(BashError::Denylisted);
     }
 
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(120_000).min(600_000));
 
-    let mut child = Command::new("/bin/sh")
-        .arg("-c")
+    let mut cmd = Command::new("/bin/sh");
+    cmd.arg("-c")
         .arg(command)
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()?;
+        .stderr(std::process::Stdio::piped());
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+    let mut child = cmd.spawn()?;
 
     // A simple poll loop rather than a dedicated timeout crate: this tool
     // is invoked from within the agent loop, which itself runs on a
@@ -217,20 +229,46 @@ mod tests {
 
     #[test]
     fn run_executes_and_captures_output() {
-        let result = run("echo hello", None).unwrap();
+        let result = run("echo hello", None, None).unwrap();
         assert_eq!(result.stdout.trim(), "hello");
         assert_eq!(result.exit_code, 0);
     }
 
     #[test]
     fn run_captures_nonzero_exit_code() {
-        let result = run("exit 7", None).unwrap();
+        let result = run("exit 7", None, None).unwrap();
         assert_eq!(result.exit_code, 7);
     }
 
     #[test]
     fn run_refuses_denylisted_command_before_execution() {
-        let err = run("rm -rf ~", None).unwrap_err();
+        let err = run("rm -rf ~", None, None).unwrap_err();
         assert!(matches!(err, BashError::Denylisted));
+    }
+
+    // 007-workspace-cwd-resolution: the user's own suggested test case —
+    // `pwd` (and by extension any relative reference) should reflect the
+    // folder passed as `cwd`, not wherever the test process itself happens
+    // to be running from.
+    #[test]
+    fn run_spawns_with_the_given_cwd() {
+        use std::fs;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        // Resolve symlinks (e.g. macOS's /tmp -> /private/tmp) so the
+        // comparison below matches what `pwd` itself reports, which also
+        // resolves through any symlinks in the path.
+        let canonical = fs::canonicalize(dir.path()).unwrap();
+
+        let result = run("pwd", None, Some(&canonical)).unwrap();
+        assert_eq!(result.stdout.trim(), canonical.to_str().unwrap());
+    }
+
+    #[test]
+    fn run_with_no_cwd_behaves_exactly_as_before() {
+        // FR-005 regression guard: omitting cwd must not change behavior.
+        let result = run("echo hello", None, None).unwrap();
+        assert_eq!(result.stdout.trim(), "hello");
     }
 }

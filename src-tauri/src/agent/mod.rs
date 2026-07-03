@@ -137,10 +137,18 @@ fn first_balanced_json_object(text: &str) -> Option<String> {
 /// one-level nesting rule (FR-016): a subagent's own loop runs with this
 /// set, so any `Task` tool call it attempts is rejected rather than
 /// recursing into a further subagent.
+///
+/// `cwd` (007-workspace-cwd-resolution): the conversation's workspace
+/// path, when it has one — resolved once per `send_agent_message` call
+/// and read identically by the top-level loop and by the `Task` tool's
+/// nested subagent loop, so a subagent inherits the same working
+/// directory as its parent by construction rather than by a second call
+/// site separately remembering to pass it along (FR-006).
 #[derive(Debug, Clone)]
 pub struct AgentContext {
     pub is_subagent: bool,
     pub max_turns: u32,
+    pub cwd: Option<std::path::PathBuf>,
 }
 
 impl AgentContext {
@@ -152,6 +160,7 @@ impl AgentContext {
         Self {
             is_subagent: false,
             max_turns: 200,
+            cwd: None,
         }
     }
 
@@ -161,7 +170,16 @@ impl AgentContext {
         Self {
             is_subagent: true,
             max_turns: 30,
+            cwd: None,
         }
+    }
+
+    /// Builder-style setter so call sites can write
+    /// `AgentContext::top_level().with_cwd(path)` rather than
+    /// constructing the struct by hand.
+    pub fn with_cwd(mut self, cwd: Option<std::path::PathBuf>) -> Self {
+        self.cwd = cwd;
+        self
     }
 }
 
@@ -306,7 +324,7 @@ mod tests {
     async fn loop_runs_tools_until_a_final_answer() {
         let context = AgentContext::top_level();
         let mut call_count = 0;
-        let responses = vec![
+        let responses = [
             r#"{"tool_call": {"name": "Read", "arguments": {"file_path": "/f.txt"}}}"#.to_string(),
             "The file says hello.".to_string(),
         ];
@@ -335,6 +353,7 @@ mod tests {
         let context = AgentContext {
             is_subagent: false,
             max_turns: 3,
+            cwd: None,
         };
 
         let result = run_loop(
