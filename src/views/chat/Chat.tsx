@@ -1,7 +1,9 @@
+import { PaperPlaneRightIcon } from "@phosphor-icons/react";
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { Button } from "@/components/ui/button";
 import Timer from "@/components/Timer";
+import MessageContent from "@/components/MessageContent";
 import { commands, events, type Message } from "@/lib/ipc";
 import { useConversationStreamStore } from "@/state/conversationStreamStore";
 
@@ -38,6 +40,7 @@ export default function Chat({ conversationId }: ChatProps) {
   const [pending, setPending] = useState<PendingAssistant | null>(null);
   const [input, setInput] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   // The completion listener below is registered once per conversationId,
   // not once per `pending` update — it needs the *current* pending value
   // without re-subscribing on every status change, so a ref instead of the
@@ -46,6 +49,18 @@ export default function Chat({ conversationId }: ChatProps) {
   pendingRef.current = pending;
 
   const streamText = useConversationStreamStore((s) => s.streams[conversationId] ?? "");
+
+  const adjustInputHeight = () => {
+    const minHeight = 96;
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.min(Math.max(textarea.scrollHeight, minHeight), 180)}px`;
+  };
+
+  useEffect(() => {
+    adjustInputHeight();
+  }, [input]);
 
   useEffect(() => {
     setMessages([]);
@@ -65,7 +80,9 @@ export default function Chat({ conversationId }: ChatProps) {
       unlistenToken = await events.onAssistantToken((p) => {
         if (p.conversationId !== conversationId) return;
         setPending((prev) =>
-          prev && prev.status === "queued" ? { ...prev, status: "generating", queuePosition: null } : prev,
+          prev && prev.status === "queued"
+            ? { ...prev, status: "generating", queuePosition: null }
+            : prev,
         );
       });
 
@@ -161,34 +178,9 @@ export default function Chat({ conversationId }: ChatProps) {
     <div className="flex h-dvh flex-col bg-background text-foreground">
       <div className="flex-1 overflow-y-auto p-4">
         <div className="mx-auto max-w-3xl">
-          {messages.map((m) =>
-            m.role === "user" ? (
-              <div
-                key={m.id}
-                className="mb-6 rounded-lg bg-muted p-3"
-                data-testid="chat-message"
-                role="group"
-                aria-label="You said"
-              >
-                <ReactMarkdown>{m.content}</ReactMarkdown>
-              </div>
-            ) : (
-              <div
-                key={m.id}
-                className="mb-6"
-                data-testid="chat-message"
-                role="group"
-                aria-label="Doce replied"
-              >
-                <div className="prose prose-sm dark:prose-invert max-w-none">
-                  <ReactMarkdown>{m.content}</ReactMarkdown>
-                </div>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  <Timer createdAt={m.createdAt} durationMs={m.durationMs} />
-                </p>
-              </div>
-            ),
-          )}
+          {messages.map((m) => (
+            <MessageContent key={m.id} message={m} showTimer />
+          ))}
           {pending && (
             <div className="mb-6" role="group" aria-label="Doce replied">
               <p className="text-sm text-muted-foreground" data-testid="generation-status">
@@ -199,7 +191,10 @@ export default function Chat({ conversationId }: ChatProps) {
                   : "Generating…"}
               </p>
               {streamText && (
-                <div className="prose prose-sm dark:prose-invert max-w-none" data-testid="assistant-stream">
+                <div
+                  className="prose prose-sm dark:prose-invert max-w-none"
+                  data-testid="assistant-stream"
+                >
                   <ReactMarkdown>{streamText}</ReactMarkdown>
                 </div>
               )}
@@ -220,24 +215,44 @@ export default function Chat({ conversationId }: ChatProps) {
             </div>
           )}
           {error && (
-            <div className="mb-6 rounded-lg bg-destructive/10 p-3 text-sm text-destructive" data-testid="chat-error">
+            <div
+              className="mb-6 rounded-lg bg-destructive/10 p-3 text-sm text-destructive"
+              data-testid="chat-error"
+            >
               {error}
             </div>
           )}
         </div>
       </div>
-      <div className="flex gap-2 border-t border-border p-4">
-        <input
-          className="flex-1 rounded-md border border-border bg-card px-3 py-2"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && send()}
-          placeholder="Message Doce…"
-          data-testid="chat-input"
-        />
-        <Button variant="primary" onClick={send} disabled={!input.trim() || !!pending} data-testid="chat-send">
-          Send
-        </Button>
+      <div className="border-t border-border p-4">
+        <div className="flex items-end gap-2 rounded-2xl border border-border bg-card px-3 py-2 shadow-sm">
+          <textarea
+            ref={textareaRef}
+            rows={4}
+            className="min-h-[96px] flex-1 resize-none bg-transparent border-none px-0 py-1.5 text-sm leading-6 outline-none"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                send();
+              }
+            }}
+            placeholder="Message Doce…"
+            data-testid="chat-input"
+          />
+          <Button
+            type="button"
+            variant="primary"
+            className="h-8 w-8 shrink-0 rounded-full p-0"
+            onClick={send}
+            disabled={!input.trim() || !!pending}
+            aria-label="Send message"
+            data-testid="chat-send"
+          >
+            <PaperPlaneRightIcon size={16} />
+          </Button>
+        </div>
       </div>
     </div>
   );

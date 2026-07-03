@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { homeDir } from "@tauri-apps/api/path";
+import { CaretDownIcon, PaperPlaneRightIcon } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { commands, type Conversation } from "@/lib/ipc";
 import FolderPicker from "@/views/shared/FolderPicker";
@@ -33,6 +34,19 @@ export default function EmptyState({ onConversationCreated }: EmptyStateProps) {
   const [input, setInput] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const adjustInputHeight = () => {
+    const minHeight = 96;
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.min(Math.max(textarea.scrollHeight, minHeight), 180)}px`;
+  };
+
+  useEffect(() => {
+    adjustInputHeight();
+  }, [input]);
 
   useEffect(() => {
     homeDir().then((path) => setTarget({ kind: "home", path, displayLabel: "Home" }));
@@ -64,11 +78,12 @@ export default function EmptyState({ onConversationCreated }: EmptyStateProps) {
       <div className="relative w-full max-w-xl space-y-3">
         <button
           type="button"
-          className="rounded-md border border-border bg-card px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted"
+          className="inline-flex items-center gap-1 border-l border-border bg-transparent p-0 pl-2 text-sm text-muted-foreground"
           onClick={() => setPickerOpen(true)}
           data-testid="folder-target-selector"
         >
           {target?.displayLabel ?? "Home"}
+          <CaretDownIcon size={12} />
         </button>
         {pickerOpen && (
           <FolderPicker
@@ -80,22 +95,32 @@ export default function EmptyState({ onConversationCreated }: EmptyStateProps) {
             onDismiss={() => setPickerOpen(false)}
           />
         )}
-        <div className="flex gap-2">
-          <input
-            className="flex-1 rounded-md border border-border bg-card px-3 py-2"
+        <div className="flex items-end gap-2 rounded-2xl border border-border bg-card px-3 py-2 shadow-sm">
+          <textarea
+            ref={textareaRef}
+            rows={4}
+            className="min-h-[96px] flex-1 resize-none bg-transparent border-none px-0 py-1.5 text-sm leading-6 outline-none"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && submit()}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                submit();
+              }
+            }}
             placeholder="What do you want to work on?"
             data-testid="empty-state-input"
           />
           <Button
+            type="button"
             variant="primary"
+            className="h-8 w-8 shrink-0 rounded-full p-0"
             onClick={submit}
             disabled={!input.trim() || submitting}
+            aria-label="Send message"
             data-testid="empty-state-submit"
           >
-            Send
+            <PaperPlaneRightIcon size={16} />
           </Button>
         </div>
         {error && (

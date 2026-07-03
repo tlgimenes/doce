@@ -79,3 +79,21 @@ pub fn test_connection() -> Connection {
     migrations::apply_pending(&mut conn).expect("apply migrations");
     conn
 }
+
+/// 004-tool-call-widgets: the async (`tokio_rusqlite`) counterpart of
+/// `test_connection()` — for tests exercising code that talks to the DB
+/// through the same async `Connection` real command handlers use (e.g.
+/// `commands::agent`'s tool-call persistence), not just synchronous
+/// storage-layer logic.
+pub async fn test_async_connection() -> AsyncConnection {
+    let conn = AsyncConnection::open_in_memory()
+        .await
+        .expect("open in-memory sqlite");
+    conn.call(|conn: &mut Connection| -> rusqlite::Result<()> {
+        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+        migrations::apply_pending(conn)
+    })
+    .await
+    .expect("apply migrations");
+    conn
+}

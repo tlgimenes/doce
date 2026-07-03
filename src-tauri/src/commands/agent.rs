@@ -1,12 +1,225 @@
+use crate::agent::tools::ask_user::{PendingQuestions, QuestionOption};
 use crate::agent::{dispatch, run_loop, subagent, AgentContext, ToolCall, SYSTEM_PROMPT};
-use crate::commands::conversations::InferenceState;
+use crate::commands::conversations::{ActiveGenerations, InferenceState};
 use crate::commands::models::now_ms;
 use crate::inference::{ChatMessage, InferenceEngine};
 use crate::storage::conversations::load_history;
 use crate::storage::DbCell;
 use rusqlite::Connection;
-use tauri::{AppHandle, State};
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
+
+/// 004-tool-call-widgets (`001`'s originally-specified `ask-user-question`
+/// event, implemented here — contracts/tool-widgets.md): fired the moment
+/// the loop hits an `AskUserQuestion` call, so the frontend can show the
+/// prompt while `send_agent_message`'s own promise is still pending — the
+/// one live event this feature adds (research.md § 3).
+#[derive(Debug, Clone, Serialize, specta::Type, tauri_specta::Event)]
+#[serde(rename_all = "camelCase")]
+pub struct AskUserQuestionEvent {
+    pub conversation_id: String,
+    pub question_id: String,
+    pub header: String,
+    pub question: String,
+    pub options: Vec<QuestionOption>,
+    pub multi_select: bool,
+}
+
+/// Removes `conversation_id` from `ActiveGenerations` when dropped —
+/// guarantees cleanup on every exit path (`?` early-returns included, not
+/// just the happy path) without a manual `remove` call before each one.
+struct ActiveGenerationGuard<'a> {
+    active_generations: &'a ActiveGenerations,
+    conversation_id: String,
+}
+
+impl Drop for ActiveGenerationGuard<'_> {
+    fn drop(&mut self) {
+        self.active_generations
+            .0
+            .lock()
+            .unwrap()
+            .remove(&self.conversation_id);
+    }
+}
+
+/// 004-tool-call-widgets: persists a tool invocation's `tool_call` row
+/// (role `assistant`, matching this project's existing convention for the
+/// model's own action — see `commands/conversations.rs`'s `compute_status`
+/// test fixtures) — the arguments alone, at the next available sequence
+/// number. Split from `persist_tool_result` (rather than always inserting
+/// both together) specifically so `AskUserQuestion` can leave this row as
+/// the *latest* message for as long as it's genuinely pending — that's
+/// what `compute_status`'s existing "latest message is a pending
+/// AskUserQuestion tool_call" check relies on to report `requires_action`.
+async fn persist_tool_call(
+    conn: &tokio_rusqlite::Connection,
+    conversation_id: &str,
+    tool_name: &str,
+    arguments: serde_json::Value,
+) {
+    let conversation_id = conversation_id.to_string();
+    let tool_name = tool_name.to_string();
+    let now = now_ms();
+    let call_content = serde_json::json!({ "arguments": arguments }).to_string();
+    let _ = conn
+        .call(move |conn: &mut Connection| -> rusqlite::Result<()> {
+            let seq: i64 = conn.query_row(
+                "SELECT COALESCE(MAX(sequence), -1) + 1 FROM messages WHERE conversation_id = ?1",
+                [&conversation_id],
+                |row| row.get(0),
+            )?;
+            conn.execute(
+                "INSERT INTO messages (id, conversation_id, role, content_type, content, tool_name, created_at, sequence) VALUES (?1, ?2, 'assistant', 'tool_call', ?3, ?4, ?5, ?6)",
+                rusqlite::params![Uuid::now_v7().to_string(), conversation_id, call_content, tool_name, now, seq],
+            )?;
+            Ok(())
+        })
+        .await;
+}
+
+/// The `tool_result` counterpart to `persist_tool_call` (role `tool`, the
+/// schema's dedicated role for exactly this, previously unused) — `detail`
+/// is a tool-shaped, self-sufficient payload a widget renders from without
+/// needing its paired `tool_call` row (data-model.md's row-shape table).
+async fn persist_tool_result(
+    conn: &tokio_rusqlite::Connection,
+    conversation_id: &str,
+    tool_name: &str,
+    detail: serde_json::Value,
+) {
+    let conversation_id = conversation_id.to_string();
+    let tool_name = tool_name.to_string();
+    let now = now_ms();
+    let content = detail.to_string();
+    let _ = conn
+        .call(move |conn: &mut Connection| -> rusqlite::Result<()> {
+            let seq: i64 = conn.query_row(
+                "SELECT COALESCE(MAX(sequence), -1) + 1 FROM messages WHERE conversation_id = ?1",
+                [&conversation_id],
+                |row| row.get(0),
+            )?;
+            conn.execute(
+                "INSERT INTO messages (id, conversation_id, role, content_type, content, tool_name, created_at, sequence) VALUES (?1, ?2, 'tool', 'tool_result', ?3, ?4, ?5, ?6)",
+                rusqlite::params![Uuid::now_v7().to_string(), conversation_id, content, tool_name, now, seq],
+            )?;
+            Ok(())
+        })
+        .await;
+}
+
+/// Convenience wrapper for the six tools whose call and result are always
+/// known together (everything but `AskUserQuestion`) — both land at
+/// adjacent sequence numbers, one right after the other.
+async fn persist_tool_call_and_result(
+    conn: &tokio_rusqlite::Connection,
+    conversation_id: &str,
+    tool_name: &str,
+    arguments: serde_json::Value,
+    detail: serde_json::Value,
+) {
+    persist_tool_call(conn, conversation_id, tool_name, arguments).await;
+    persist_tool_result(conn, conversation_id, tool_name, detail).await;
+}
+
+fn parse_question_options(call: &ToolCall) -> Vec<QuestionOption> {
+    call.arguments
+        .get("options")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|o| {
+                    Some(QuestionOption {
+                        label: o.get("label")?.as_str()?.to_string(),
+                        description: o
+                            .get("description")
+                            .and_then(|d| d.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// US3/FR-008 (`001`'s FR-010): the one tool that pauses the loop for a
+/// real answer. Persists the `tool_call` row immediately — so it's the
+/// *latest* message for as long as the pause lasts, which is what
+/// `compute_status`'s existing "latest message is a pending
+/// AskUserQuestion tool_call" check relies on for `requires_action` — then
+/// registers with `pending`, hands the event to `emit_question` (an
+/// injected closure rather than a direct `app.emit()` call, so this whole
+/// function is testable without a live Tauri app — matching
+/// `PendingQuestions`' own deliberately Tauri-agnostic design), and awaits
+/// the answer before persisting the `tool_result`.
+async fn handle_ask_user_question(
+    conn: &tokio_rusqlite::Connection,
+    pending: &PendingQuestions,
+    conversation_id: &str,
+    call: &ToolCall,
+    emit_question: impl FnOnce(AskUserQuestionEvent),
+) -> String {
+    let header = call
+        .arguments
+        .get("header")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let question = call
+        .arguments
+        .get("question")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let multi_select = call
+        .arguments
+        .get("multiSelect")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let options = parse_question_options(call);
+
+    persist_tool_call(
+        conn,
+        conversation_id,
+        "AskUserQuestion",
+        call.arguments.clone(),
+    )
+    .await;
+
+    let question_id = Uuid::now_v7().to_string();
+    let rx = pending.register(question_id.clone());
+
+    emit_question(AskUserQuestionEvent {
+        conversation_id: conversation_id.to_string(),
+        question_id: question_id.clone(),
+        header: header.clone(),
+        question: question.clone(),
+        options: options.clone(),
+        multi_select,
+    });
+
+    let answer = rx.await.unwrap_or_default();
+
+    persist_tool_result(
+        conn,
+        conversation_id,
+        "AskUserQuestion",
+        serde_json::json!({
+            "toolName": "AskUserQuestion",
+            "questionId": question_id,
+            "header": header,
+            "question": question,
+            "options": options,
+            "multiSelect": multi_select,
+            "answer": answer,
+        }),
+    )
+    .await;
+
+    format!("User answered: {}", answer.join(", "))
+}
 
 /// Handles a single tool call for the top-level agent loop: `Task` spawns
 /// a real, isolated subagent (FR-015) and runs its own nested loop to
@@ -26,9 +239,27 @@ async fn execute_top_level_tool(
     engine: &InferenceEngine,
     parent_conversation_id: &str,
     cwd: Option<&std::path::Path>,
+    app: &AppHandle,
+    pending: &PendingQuestions,
 ) -> String {
+    if call.name == "AskUserQuestion" {
+        return handle_ask_user_question(conn, pending, parent_conversation_id, &call, |event| {
+            let _ = app.emit("ask-user-question", event);
+        })
+        .await;
+    }
+
     if call.name != "Task" {
-        return dispatch::execute(&call, cwd);
+        let outcome = dispatch::execute(&call, cwd);
+        persist_tool_call_and_result(
+            conn,
+            parent_conversation_id,
+            &call.name,
+            call.arguments.clone(),
+            outcome.detail.clone(),
+        )
+        .await;
+        return outcome.model_text;
     }
 
     let Some(prompt) = call.arguments.get("prompt").and_then(|v| v.as_str()) else {
@@ -55,7 +286,7 @@ async fn execute_top_level_tool(
     // delegated task, no parent conversation history.
     let sub_messages = vec![
         ChatMessage::system(SYSTEM_PROMPT),
-        ChatMessage::user(prompt),
+        ChatMessage::user(prompt.clone()),
     ];
     let sub_cwd = sub_context.cwd.clone();
     let sub_result = run_loop(
@@ -70,8 +301,25 @@ async fn execute_top_level_tool(
             }
         },
         |c| {
+            // 004-tool-call-widgets: the subagent's own tool activity
+            // persists under its own conversation row — never the
+            // parent's — preserving 001's existing FR-015/SC-008
+            // isolation guarantee (only its final answer, inserted below,
+            // ever reaches the parent's transcript).
             let sub_cwd = sub_cwd.clone();
-            async move { dispatch::execute(&c, sub_cwd.as_deref()) }
+            let subagent_id = subagent_id.clone();
+            async move {
+                let outcome = dispatch::execute(&c, sub_cwd.as_deref());
+                persist_tool_call_and_result(
+                    conn,
+                    &subagent_id,
+                    &c.name,
+                    c.arguments.clone(),
+                    outcome.detail.clone(),
+                )
+                .await;
+                outcome.model_text
+            }
         },
     )
     .await;
@@ -83,20 +331,41 @@ async fn execute_top_level_tool(
 
     let now = now_ms();
     let sub_final_for_db = sub_final.clone();
+    let subagent_id_for_db = subagent_id.clone();
     let _ = conn
         .call(move |conn: &mut Connection| -> rusqlite::Result<()> {
             let seq: i64 = conn.query_row(
                 "SELECT COALESCE(MAX(sequence), -1) + 1 FROM messages WHERE conversation_id = ?1",
-                [&subagent_id],
+                [&subagent_id_for_db],
                 |row| row.get(0),
             )?;
             conn.execute(
                 "INSERT INTO messages (id, conversation_id, role, content_type, content, created_at, sequence) VALUES (?1, ?2, 'assistant', 'text', ?3, ?4, ?5)",
-                rusqlite::params![Uuid::now_v7().to_string(), subagent_id, sub_final_for_db, now, seq],
+                rusqlite::params![Uuid::now_v7().to_string(), subagent_id_for_db, sub_final_for_db, now, seq],
             )?;
             Ok(())
         })
         .await;
+
+    // 004-tool-call-widgets/FR-010: the parent conversation only ever sees
+    // a running/complete status for the delegation itself — never the
+    // subagent's own tool calls above, which stayed on `subagent_id`.
+    // Always "complete" here since this function only returns once the
+    // whole nested loop has finished (research.md § 2 — no live
+    // mid-delegation status this pass).
+    persist_tool_call_and_result(
+        conn,
+        parent_conversation_id,
+        "Task",
+        serde_json::json!({ "prompt": prompt }),
+        serde_json::json!({
+            "toolName": "Task",
+            "prompt": prompt,
+            "subagentConversationId": subagent_id,
+            "state": "complete",
+        }),
+    )
+    .await;
 
     sub_final
 }
@@ -135,6 +404,8 @@ pub async fn send_agent_message(
     app: AppHandle,
     db_cell: State<'_, DbCell>,
     inference: State<'_, InferenceState>,
+    active_generations: State<'_, ActiveGenerations>,
+    pending_questions: State<'_, PendingQuestions>,
     conversation_id: String,
     content: String,
 ) -> Result<String, String> {
@@ -168,6 +439,26 @@ pub async fn send_agent_message(
     })
     .await
     .map_err(|e| e.to_string())?;
+
+    // 004-tool-call-widgets: registers this conversation as in-progress for
+    // the whole turn (matching the chat path's existing ActiveGenerations
+    // use) — without this, `compute_status` would see whatever
+    // intermediate tool_call/tool_result row this turn's dispatch calls
+    // just persisted as the "latest message" while polled mid-turn, and
+    // its `role != "assistant"` fallback would misreport a still-running
+    // turn as "failed" the moment a `tool_result` (role `tool`) row lands.
+    // An RAII guard (not a manual remove-before-every-`?`) covers every
+    // early-return between here and the end, including ones this function
+    // already had before this feature touched it.
+    active_generations
+        .0
+        .lock()
+        .unwrap()
+        .insert(conversation_id.clone());
+    let _active_guard = ActiveGenerationGuard {
+        active_generations: &active_generations,
+        conversation_id: conversation_id.clone(),
+    };
 
     let model_path: Option<String> = conn
         .call(|conn: &mut Connection| -> rusqlite::Result<String> {
@@ -241,7 +532,17 @@ pub async fn send_agent_message(
                 Err(e) => format!("Error: failed to render chat prompt: {e}"),
             }
         },
-        |call| execute_top_level_tool(call, &conn, engine, &conversation_id, cwd.as_deref()),
+        |call| {
+            execute_top_level_tool(
+                call,
+                &conn,
+                engine,
+                &conversation_id,
+                cwd.as_deref(),
+                &app,
+                &pending_questions,
+            )
+        },
     )
     .await;
     drop(guard);
@@ -275,6 +576,27 @@ pub async fn send_agent_message(
     Ok(final_text)
 }
 
+/// US3/`001` FR-010: resolves a pending `AskUserQuestion` tool call
+/// (`contracts/tool-widgets.md`). Errors, rather than silently no-op-ing,
+/// if `question_id` is unknown — already answered, or never registered
+/// (FR-009's "no second answer" guarantee, enforced by
+/// `PendingQuestions::answer`'s existing one-shot-consume semantics).
+#[tauri::command]
+#[specta::specta]
+pub async fn answer_user_question(
+    pending_questions: State<'_, PendingQuestions>,
+    question_id: String,
+    answer: Vec<String>,
+) -> Result<(), String> {
+    if pending_questions.answer(&question_id, answer) {
+        Ok(())
+    } else {
+        Err(format!(
+            "no pending question with id {question_id} (already answered, or never registered)"
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,5 +611,194 @@ mod tests {
     #[test]
     fn system_message_is_unchanged_when_no_cwd_is_known() {
         assert_eq!(system_message(None), SYSTEM_PROMPT);
+    }
+
+    // --- 004-tool-call-widgets: US3 (AskUserQuestion pause/resume) ---
+
+    async fn seed_conversation(conn: &tokio_rusqlite::Connection, id: &str) {
+        let id = id.to_string();
+        conn.call(move |conn: &mut Connection| {
+            conn.execute(
+                "INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?1, 't', 0, 0)",
+                [&id],
+            )
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn latest_message(
+        conn: &tokio_rusqlite::Connection,
+        conversation_id: &str,
+    ) -> (String, String, Option<String>, String) {
+        let conversation_id = conversation_id.to_string();
+        conn.call(move |conn: &mut Connection| {
+            conn.query_row(
+                "SELECT role, content_type, tool_name, content FROM messages WHERE conversation_id = ?1 ORDER BY sequence DESC LIMIT 1",
+                [&conversation_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+        })
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn ask_user_question_blocks_until_answered_then_persists_and_returns_the_answer() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_conversation(&conn, "c1").await;
+        let pending = std::sync::Arc::new(PendingQuestions::default());
+        let call = ToolCall {
+            name: "AskUserQuestion".to_string(),
+            arguments: serde_json::json!({
+                "header": "Pick one",
+                "question": "Which approach?",
+                "options": [{"label": "A", "description": "first"}, {"label": "B", "description": "second"}],
+                "multiSelect": false,
+            }),
+        };
+        let emitted: std::sync::Arc<std::sync::Mutex<Option<AskUserQuestionEvent>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(None));
+
+        let pending_bg = pending.clone();
+        let conn_bg = conn.clone();
+        let emitted_bg = emitted.clone();
+        let handle = tokio::spawn(async move {
+            handle_ask_user_question(&conn_bg, &pending_bg, "c1", &call, |event| {
+                *emitted_bg.lock().unwrap() = Some(event);
+            })
+            .await
+        });
+
+        // Let the spawned task run up to (and block on) the `.await` inside
+        // `rx.await` — it must not resolve on its own without an answer.
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!handle.is_finished(), "must block until answered");
+
+        // The pending tool_call is the latest message while genuinely
+        // paused — this is what compute_status's requires_action check
+        // relies on.
+        let (role, content_type, tool_name, _) = latest_message(&conn, "c1").await;
+        assert_eq!(role, "assistant");
+        assert_eq!(content_type, "tool_call");
+        assert_eq!(tool_name.as_deref(), Some("AskUserQuestion"));
+
+        let event = emitted.lock().unwrap().clone().expect("event was emitted");
+        assert_eq!(event.conversation_id, "c1");
+        assert_eq!(event.header, "Pick one");
+        assert_eq!(event.options.len(), 2);
+        let question_id = event.question_id.clone();
+
+        assert!(pending.answer(&question_id, vec!["A".to_string()]));
+        let result = handle.await.unwrap();
+        assert_eq!(result, "User answered: A");
+
+        let (role, content_type, tool_name, content) = latest_message(&conn, "c1").await;
+        assert_eq!(role, "tool");
+        assert_eq!(content_type, "tool_result");
+        assert_eq!(tool_name.as_deref(), Some("AskUserQuestion"));
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed["answer"], serde_json::json!(["A"]));
+    }
+
+    #[tokio::test]
+    async fn answer_user_question_on_unknown_or_already_answered_id_errors_not_silently() {
+        let pending = PendingQuestions::default();
+        let _rx = pending.register("q1".to_string());
+        assert!(pending.answer("q1", vec!["A".to_string()]));
+
+        // Already answered — the second attempt must not succeed silently.
+        assert!(!pending.answer("q1", vec!["B".to_string()]));
+        // Never registered at all.
+        assert!(!pending.answer("never-registered", vec![]));
+    }
+
+    // --- 004-tool-call-widgets: US4 (Task delegation persistence/isolation) ---
+
+    async fn all_messages(
+        conn: &tokio_rusqlite::Connection,
+        conversation_id: &str,
+    ) -> Vec<(String, Option<String>)> {
+        let conversation_id = conversation_id.to_string();
+        conn.call(move |conn: &mut Connection| -> rusqlite::Result<Vec<(String, Option<String>)>> {
+            let mut stmt = conn.prepare(
+                "SELECT content_type, tool_name FROM messages WHERE conversation_id = ?1 ORDER BY sequence",
+            )?;
+            let rows = stmt
+                .query_map([&conversation_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn task_delegation_persists_a_complete_status_on_the_parent_and_keeps_subagent_activity_isolated(
+    ) {
+        // `execute_top_level_tool`'s Task branch needs a real loaded model
+        // for the nested run_loop itself (not mockable in a unit test), so
+        // this exercises exactly what that branch does at the persistence
+        // layer — the actual claim T023 cares about — rather than the full
+        // spawn+generate flow, which is covered separately by
+        // `agent::subagent`'s own tests and the real e2e subagent spec.
+        let conn = crate::storage::test_async_connection().await;
+        seed_conversation(&conn, "parent").await;
+        seed_conversation(&conn, "sub").await;
+
+        // What the subagent's own nested dispatch does for its own tool
+        // calls (mirrors execute_top_level_tool's `|c| { ... }` closure).
+        persist_tool_call_and_result(
+            &conn,
+            "sub",
+            "Read",
+            serde_json::json!({"file_path": "/tmp/notes.txt"}),
+            serde_json::json!({"toolName": "Read", "filePath": "/tmp/notes.txt", "outcome": {"ok": true, "content": "hi", "truncated": false}}),
+        )
+        .await;
+
+        // What execute_top_level_tool persists on the PARENT once the
+        // delegation itself completes (FR-010).
+        persist_tool_call_and_result(
+            &conn,
+            "parent",
+            "Task",
+            serde_json::json!({"prompt": "go read the file"}),
+            serde_json::json!({
+                "toolName": "Task", "prompt": "go read the file",
+                "subagentConversationId": "sub", "state": "complete",
+            }),
+        )
+        .await;
+
+        let parent_messages = all_messages(&conn, "parent").await;
+        assert_eq!(
+            parent_messages,
+            vec![
+                ("tool_call".to_string(), Some("Task".to_string())),
+                ("tool_result".to_string(), Some("Task".to_string())),
+            ]
+        );
+        let (_, _, tool_name, content) = latest_message(&conn, "parent").await;
+        assert_eq!(tool_name.as_deref(), Some("Task"));
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed["state"], "complete");
+        assert_eq!(parsed["subagentConversationId"], "sub");
+
+        // FR-015/SC-008: the subagent's own Read call is on ITS row only —
+        // never on the parent's.
+        assert!(parent_messages
+            .iter()
+            .all(|(_, tool_name)| tool_name.as_deref() != Some("Read")));
+        let sub_messages = all_messages(&conn, "sub").await;
+        assert_eq!(
+            sub_messages,
+            vec![
+                ("tool_call".to_string(), Some("Read".to_string())),
+                ("tool_result".to_string(), Some("Read".to_string())),
+            ]
+        );
     }
 }

@@ -47,6 +47,149 @@ export interface Message {
   durationMs: number | null;
 }
 
+// 004-tool-call-widgets: a `tool_result` message's `content` (JSON string)
+// parses into one of these, discriminated on `toolName` — see
+// specs/004-tool-call-widgets/data-model.md for the authoritative shapes.
+// Each variant is self-sufficient (arguments + outcome together) so a
+// widget renders from this one row alone, no lookup of its paired
+// `tool_call` row needed.
+
+export type ReadOutcome =
+  | { ok: true; content: string; truncated: boolean }
+  | { ok: false; error: string };
+
+export interface ReadDetail {
+  toolName: "Read";
+  filePath: string | null;
+  offset: number | null;
+  limit: number | null;
+  outcome: ReadOutcome;
+}
+
+export type WriteOutcome = { ok: true } | { ok: false; error: string };
+
+export interface WriteDetail {
+  toolName: "Write";
+  filePath: string | null;
+  contentPreview: string;
+  byteCount: number;
+  outcome: WriteOutcome;
+}
+
+export type EditOutcome = { ok: true } | { ok: false; error: string };
+
+export interface EditDetail {
+  toolName: "Edit";
+  filePath: string | null;
+  oldString: string;
+  newString: string;
+  replaceAll: boolean;
+  outcome: EditOutcome;
+}
+
+export type BashOutcome =
+  | { ok: true; exitCode: number; stdout: string; stderr: string }
+  | { ok: false; error: string };
+
+export interface BashDetail {
+  toolName: "Bash";
+  command: string | null;
+  timeoutMs: number | null;
+  outcome: BashOutcome;
+}
+
+export interface GlobDetail {
+  toolName: "Glob";
+  pattern: string | null;
+  path: string | null;
+  matches: string[];
+}
+
+export interface GrepMatch {
+  path: string;
+  lineNumber: number;
+  line: string;
+}
+
+export interface GrepDetail {
+  toolName: "Grep";
+  pattern: string | null;
+  path: string | null;
+  glob: string | null;
+  matches: GrepMatch[];
+}
+
+export interface TaskDetail {
+  toolName: "Task";
+  prompt: string;
+  subagentConversationId: string;
+  state: "running" | "complete";
+}
+
+export interface QuestionOption {
+  label: string;
+  description: string;
+}
+
+export interface AskUserQuestionDetail {
+  toolName: "AskUserQuestion";
+  questionId: string;
+  header: string;
+  question: string;
+  options: QuestionOption[];
+  multiSelect: boolean;
+  answer: string[] | null;
+}
+
+export interface UnknownToolDetail {
+  toolName: string;
+  arguments: unknown;
+  outcome: { ok: boolean; text: string };
+}
+
+// Deliberately NOT including UnknownToolDetail in this union: its
+// `toolName: string` is non-literal, so merging it in would defeat switch
+// narrowing on `toolName` for every other variant (TS can't exclude a
+// non-literal-discriminant member from a specific literal case). Callers
+// that render "the known shapes, or the fallback" use
+// `ToolResultDetail | UnknownToolDetail` instead.
+export type ToolResultDetail =
+  | ReadDetail
+  | WriteDetail
+  | EditDetail
+  | BashDetail
+  | GlobDetail
+  | GrepDetail
+  | TaskDetail
+  | AskUserQuestionDetail;
+
+const KNOWN_TOOL_NAMES = new Set([
+  "Read",
+  "Write",
+  "Edit",
+  "Bash",
+  "Glob",
+  "Grep",
+  "Task",
+  "AskUserQuestion",
+]);
+
+/** Parses a `tool_result` message's `content`, degrading to the fallback shape on any parse failure or unrecognized `toolName` (data-model.md's Validation rules) rather than throwing into the message list. */
+export function parseToolResultDetail(
+  content: string,
+  toolName: string | null,
+): ToolResultDetail | UnknownToolDetail {
+  try {
+    const parsed = JSON.parse(content) as { toolName?: unknown };
+    if (parsed && typeof parsed.toolName === "string" && KNOWN_TOOL_NAMES.has(parsed.toolName)) {
+      return parsed as ToolResultDetail;
+    }
+    return { toolName: toolName ?? "Unknown", arguments: parsed, outcome: { ok: false, text: content } };
+  } catch {
+    return { toolName: toolName ?? "Unknown", arguments: null, outcome: { ok: false, text: content } };
+  }
+}
+
 export interface SendMessageResult {
   messageId: string;
   requestId: string;
@@ -121,6 +264,8 @@ export const commands = {
   listWorkspaces: () => invoke<Workspace[]>("list_workspaces"),
   sendAgentMessage: (conversationId: string, content: string) =>
     invoke<string>("send_agent_message", { conversationId, content }),
+  answerUserQuestion: (questionId: string, answer: string[]) =>
+    invoke<void>("answer_user_question", { questionId, answer }),
   addMcpServer: (name: string, command: string, args: string[]) =>
     invoke<McpServerConnection>("add_mcp_server", { name, command, args }),
   listMcpServers: () => invoke<McpServerConnection[]>("list_mcp_servers"),
@@ -163,9 +308,22 @@ export interface GenerationQueueUpdatePayload {
   position: number | null;
 }
 
+// 004-tool-call-widgets/US3 — the one live event this feature adds
+// (contracts/tool-widgets.md; research.md § 3).
+export interface AskUserQuestionEventPayload {
+  conversationId: string;
+  questionId: string;
+  header: string;
+  question: string;
+  options: QuestionOption[];
+  multiSelect: boolean;
+}
+
 export const events = {
   onModelInstallProgress: (cb: (p: ModelInstallProgressPayload) => void): Promise<UnlistenFn> =>
     listen<ModelInstallProgressPayload>("model-install-progress", (e) => cb(e.payload)),
+  onAskUserQuestion: (cb: (p: AskUserQuestionEventPayload) => void): Promise<UnlistenFn> =>
+    listen<AskUserQuestionEventPayload>("ask-user-question", (e) => cb(e.payload)),
   onAssistantToken: (cb: (p: AssistantTokenPayload) => void): Promise<UnlistenFn> =>
     listen<AssistantTokenPayload>("assistant-token", (e) => cb(e.payload)),
   onAssistantMessageComplete: (

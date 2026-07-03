@@ -30,6 +30,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             workspaces::open_workspace,
             workspaces::list_workspaces,
             agent::send_agent_message,
+            agent::answer_user_question,
             mcp::add_mcp_server,
             mcp::list_mcp_servers,
             mcp::list_mcp_server_tools,
@@ -41,6 +42,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             conversations::AssistantMessageComplete,
             conversations::AssistantMessageError,
             crate::scheduler::GenerationQueueUpdate,
+            agent::AskUserQuestionEvent,
         ])
         // Every timestamp field in this codebase is `i64` (Unix-epoch-ms,
         // per data-model.md's schema conventions) — specta-typescript

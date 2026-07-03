@@ -38,6 +38,7 @@ Available tools:
 - Bash: {"command": string, "timeout"?: number} — run a shell command
 - Glob: {"pattern": string, "path"?: string} — find files by name pattern
 - Grep: {"pattern": string, "path"?: string, "glob"?: string} — search file contents
+- AskUserQuestion: {"header": string, "question": string, "options": [{"label": string, "description"?: string}], "multiSelect"?: boolean} — pause and ask the user a clarifying question instead of guessing; only use this when genuinely ambiguous, not for routine confirmations
 
 Example tool call:
 {"tool_call": {"name": "Read", "arguments": {"file_path": "/tmp/example.txt"}}}

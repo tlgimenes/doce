@@ -22,6 +22,13 @@ export async function startWorkspaceConversationViaComposer(
       .__TAURI_INTERNALS__.invoke("open_workspace", { path });
   }, dir);
 
+  // Return to the empty-state composer regardless of what the app is
+  // currently showing — required when a spec calls this more than once in
+  // the same session (a prior call leaves a real conversation active, not
+  // the composer). A harmless no-op the first time, since "+ New
+  // conversation" is always present in the sidebar.
+  await (await browser.$("[data-testid='new-conversation']")).click();
+
   const selector = await browser.$("[data-testid='folder-target-selector']");
   await selector.waitForExist({ timeout: 15000 });
   await selector.click();

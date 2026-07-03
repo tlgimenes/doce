@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
-import ReactMarkdown from "react-markdown";
+import { PaperPlaneRightIcon } from "@phosphor-icons/react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import MessageContent from "@/components/MessageContent";
 import { commands, type Message } from "@/lib/ipc";
 
 interface WorkspaceProps {
@@ -21,6 +22,7 @@ export default function Workspace({ conversationId }: WorkspaceProps) {
   const [input, setInput] = useState("");
   const [thinking, setThinking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     setMessages([]);
@@ -70,35 +72,25 @@ export default function Workspace({ conversationId }: WorkspaceProps) {
     }
   };
 
+  const adjustInputHeight = () => {
+    const minHeight = 96;
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.min(Math.max(textarea.scrollHeight, minHeight), 180)}px`;
+  };
+
+  useEffect(() => {
+    adjustInputHeight();
+  }, [input]);
+
   return (
     <div className="flex h-dvh flex-col bg-background text-foreground">
       <div className="flex-1 overflow-y-auto p-4">
         <div className="mx-auto max-w-3xl">
-          {messages.map((m) =>
-            m.role === "user" ? (
-              <div
-                key={m.id}
-                className="mb-6 rounded-lg bg-muted p-3"
-                data-testid="chat-message"
-                role="group"
-                aria-label="You said"
-              >
-                <ReactMarkdown>{m.content}</ReactMarkdown>
-              </div>
-            ) : (
-              <div
-                key={m.id}
-                className="mb-6"
-                data-testid="chat-message"
-                role="group"
-                aria-label="Doce replied"
-              >
-                <div className="prose prose-sm dark:prose-invert max-w-none">
-                  <ReactMarkdown>{m.content}</ReactMarkdown>
-                </div>
-              </div>
-            ),
-          )}
+          {messages.map((m) => (
+            <MessageContent key={m.id} message={m} />
+          ))}
           {thinking && (
             <p className="text-sm text-muted-foreground" data-testid="agent-thinking">
               Working…
@@ -114,23 +106,35 @@ export default function Workspace({ conversationId }: WorkspaceProps) {
           )}
         </div>
       </div>
-      <div className="flex gap-2 border-t border-border p-4">
-        <input
-          className="flex-1 rounded-md border border-border bg-card px-3 py-2"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && send()}
-          placeholder="Describe a task…"
-          data-testid="agent-input"
-        />
-        <Button
-          variant="primary"
-          onClick={send}
-          disabled={!input.trim() || thinking}
-          data-testid="agent-send"
-        >
-          Send
-        </Button>
+      <div className="border-t border-border p-4">
+        <div className="flex items-end gap-2 rounded-2xl border border-border bg-card px-3 py-2 shadow-sm">
+          <textarea
+            ref={textareaRef}
+            rows={4}
+            className="min-h-[96px] flex-1 resize-none bg-transparent border-none px-0 py-1.5 text-sm leading-6 outline-none"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                send();
+              }
+            }}
+            placeholder="Describe a task…"
+            data-testid="agent-input"
+          />
+          <Button
+            type="button"
+            variant="primary"
+            className="h-8 w-8 shrink-0 rounded-full p-0"
+            onClick={send}
+            disabled={!input.trim() || thinking}
+            aria-label="Send message"
+            data-testid="agent-send"
+          >
+            <PaperPlaneRightIcon size={16} />
+          </Button>
+        </div>
       </div>
     </div>
   );

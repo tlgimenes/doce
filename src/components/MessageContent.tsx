@@ -1,0 +1,140 @@
+import ReactMarkdown from "react-markdown";
+import Timer from "@/components/Timer";
+import {
+  parseToolResultDetail,
+  type AskUserQuestionDetail,
+  type BashDetail,
+  type EditDetail,
+  type GlobDetail,
+  type GrepDetail,
+  type Message,
+  type ReadDetail,
+  type TaskDetail,
+  type ToolResultDetail,
+  type UnknownToolDetail,
+  type WriteDetail,
+} from "@/lib/ipc";
+import UnknownToolWidget from "@/views/chat/tool-widgets/UnknownToolWidget";
+import EditDiffWidget from "@/views/chat/tool-widgets/EditDiffWidget";
+import BashWidget from "@/views/chat/tool-widgets/BashWidget";
+import AskUserQuestionWidget from "@/views/chat/tool-widgets/AskUserQuestionWidget";
+import ReadWidget from "@/views/chat/tool-widgets/ReadWidget";
+import WriteWidget from "@/views/chat/tool-widgets/WriteWidget";
+import SearchResultsWidget from "@/views/chat/tool-widgets/SearchResultsWidget";
+import TaskWidget from "@/views/chat/tool-widgets/TaskWidget";
+
+interface MessageContentProps {
+  message: Message;
+  // Chat.tsx's `send_message` is streamed (real queued/generating latency
+  // worth showing); Workspace.tsx's `send_agent_message` runs synchronously
+  // to completion server-side with no per-message duration captured, so it
+  // opts out rather than showing a meaningless "0s" (matches its pre-004
+  // behavior exactly).
+  showTimer?: boolean;
+}
+
+/**
+ * 004-tool-call-widgets (FR-013): the one place both `Chat.tsx` and
+ * `Workspace.tsx` render a message's content from — a `tool_result` row
+ * dispatches to its matching widget by `toolName`, everything else renders
+ * exactly as it always has. Having one function, not two independently
+ * maintained copies, is what actually satisfies FR-013 (SC-006) — it isn't
+ * possible for the two views to drift since there's only one rendering
+ * path to edit.
+ */
+export default function MessageContent({ message: m, showTimer = false }: MessageContentProps) {
+  if (m.role === "user") {
+    return (
+      <div
+        className="mb-6 rounded-lg bg-muted p-3"
+        data-testid="chat-message"
+        role="group"
+        aria-label="You said"
+      >
+        <ReactMarkdown>{m.content}</ReactMarkdown>
+      </div>
+    );
+  }
+
+  // research.md § 5: a tool_call row's data is folded into its paired
+  // tool_result row (data-model.md) — nothing to render standalone here in
+  // this synchronous-execution pass. The degenerate case (a tool_call with
+  // no following tool_result — e.g. the app quit mid-call) is intentionally
+  // not distinguished from the ordinary "wait for the pair" case; it's rare
+  // enough that silently rendering nothing for it is an acceptable trade
+  // against the complexity of detecting an orphaned call.
+  if (m.contentType === "tool_call") {
+    return null;
+  }
+
+  if (m.contentType === "tool_result") {
+    const detail = parseToolResultDetail(m.content, m.toolName);
+    return (
+      <div className="mb-6" data-testid="chat-message" role="group" aria-label="Doce replied">
+        <ToolWidget detail={detail} />
+      </div>
+    );
+  }
+
+  if (m.contentType === "error") {
+    return (
+      <div
+        className="mb-6 rounded-lg bg-destructive/10 p-3 text-sm text-destructive"
+        data-testid="chat-message"
+        role="group"
+        aria-label="Doce replied"
+      >
+        {m.content}
+      </div>
+    );
+  }
+
+  return (
+    <div className="mb-6" data-testid="chat-message" role="group" aria-label="Doce replied">
+      <div className="prose prose-sm dark:prose-invert max-w-none">
+        <ReactMarkdown>{m.content}</ReactMarkdown>
+      </div>
+      {showTimer && (
+        <p className="mt-1 text-xs text-muted-foreground">
+          <Timer createdAt={m.createdAt} durationMs={m.durationMs} />
+        </p>
+      )}
+    </div>
+  );
+}
+
+// FR-011: every branch below is added by its own story; until then, every
+// toolName (including ones that will eventually have a dedicated widget)
+// falls through to the fallback — never blank, broken, or dropped.
+//
+// Explicit `as` casts per case, not a discriminated-union switch: the
+// fallback's `toolName: string` is deliberately non-literal (data-model.md
+// § Validation rules — "unrecognized toolName" has to be representable),
+// which makes `ToolResultDetail | UnknownToolDetail` un-narrowable by TS
+// (a plain `string` can't be excluded from a specific literal case). The
+// cast is sound because `parseToolResultDetail` only ever tags an object
+// with a known `toolName` after already validating it matches that shape.
+function ToolWidget({ detail }: { detail: ToolResultDetail | UnknownToolDetail }) {
+  if (detail.toolName === "Edit") {
+    return <EditDiffWidget detail={detail as EditDetail} />;
+  }
+  if (detail.toolName === "Bash") {
+    return <BashWidget detail={detail as BashDetail} />;
+  }
+  if (detail.toolName === "AskUserQuestion") {
+    return <AskUserQuestionWidget detail={detail as AskUserQuestionDetail} />;
+  }
+  if (detail.toolName === "Read") {
+    return <ReadWidget detail={detail as ReadDetail} />;
+  }
+  if (detail.toolName === "Write") {
+    return <WriteWidget detail={detail as WriteDetail} />;
+  }
+  if (detail.toolName === "Glob" || detail.toolName === "Grep") {
+    return <SearchResultsWidget detail={detail as GlobDetail | GrepDetail} />;
+  }
+  if (detail.toolName === "Task") {
+    return <TaskWidget detail={detail as TaskDetail} />;
+  }
+  return <UnknownToolWidget detail={detail} />;
+}
