@@ -94,6 +94,7 @@ export default function Workspace() {
                 key={m.id}
                 className="mb-6 rounded-lg bg-muted p-3"
                 data-testid="chat-message"
+                role="group"
                 aria-label="You said"
               >
                 <ReactMarkdown>{m.content}</ReactMarkdown>
@@ -102,7 +103,13 @@ export default function Workspace() {
               // No Timer here (unlike Chat.tsx's assistant branch): send_agent_message
               // runs synchronously to completion, and AgentMessage carries no
               // createdAt/durationMs to feed one — not a copy-paste omission.
-              <div key={m.id} className="mb-6" data-testid="chat-message" aria-label="Doce replied">
+              <div
+                key={m.id}
+                className="mb-6"
+                data-testid="chat-message"
+                role="group"
+                aria-label="Doce replied"
+              >
                 <div className="prose prose-sm dark:prose-invert max-w-none">
                   <ReactMarkdown>{m.content}</ReactMarkdown>
                 </div>

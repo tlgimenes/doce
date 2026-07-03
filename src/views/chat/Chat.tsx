@@ -166,12 +166,19 @@ export default function Chat({ conversationId }: ChatProps) {
                 key={m.id}
                 className="mb-6 rounded-lg bg-muted p-3"
                 data-testid="chat-message"
+                role="group"
                 aria-label="You said"
               >
                 <ReactMarkdown>{m.content}</ReactMarkdown>
               </div>
             ) : (
-              <div key={m.id} className="mb-6" data-testid="chat-message" aria-label="Doce replied">
+              <div
+                key={m.id}
+                className="mb-6"
+                data-testid="chat-message"
+                role="group"
+                aria-label="Doce replied"
+              >
                 <div className="prose prose-sm dark:prose-invert max-w-none">
                   <ReactMarkdown>{m.content}</ReactMarkdown>
                 </div>
@@ -182,7 +189,7 @@ export default function Chat({ conversationId }: ChatProps) {
             ),
           )}
           {pending && (
-            <div className="mb-6" aria-label="Doce replied">
+            <div className="mb-6" role="group" aria-label="Doce replied">
               <p className="text-sm text-muted-foreground" data-testid="generation-status">
                 {pending.status === "queued"
                   ? pending.queuePosition != null && pending.queuePosition > 0
