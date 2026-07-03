@@ -15,14 +15,20 @@ use uuid::Uuid;
 /// directly. The nested loop uses `AgentContext::subagent()`, so a `Task`
 /// call *from* the subagent is rejected by `run_loop` itself before ever
 /// reaching this function (FR-016's one-level nesting cap).
+///
+/// `cwd` (007-workspace-cwd-resolution) is passed straight through to
+/// `dispatch::execute` for the top-level call, and onto the subagent's own
+/// `AgentContext` below — a subagent resolves relative paths against the
+/// same working directory as its parent, not a fresh, unscoped one (FR-006).
 async fn execute_top_level_tool(
     call: ToolCall,
     conn: &tokio_rusqlite::Connection,
     engine: &InferenceEngine,
     parent_conversation_id: &str,
+    cwd: Option<&std::path::Path>,
 ) -> String {
     if call.name != "Task" {
-        return dispatch::execute(&call);
+        return dispatch::execute(&call, cwd);
     }
 
     let Some(prompt) = call.arguments.get("prompt").and_then(|v| v.as_str()) else {
@@ -42,13 +48,16 @@ async fn execute_top_level_tool(
         Err(e) => return format!("Error: failed to spawn subagent: {e}"),
     };
 
-    let sub_context = AgentContext::subagent();
+    // 007-workspace-cwd-resolution/FR-006: inherit the parent's cwd rather
+    // than starting the subagent unscoped.
+    let sub_context = AgentContext::subagent().with_cwd(cwd.map(|p| p.to_path_buf()));
     // FR-015: a fresh, isolated context — just the system prompt plus the
     // delegated task, no parent conversation history.
     let sub_messages = vec![
         ChatMessage::system(SYSTEM_PROMPT),
         ChatMessage::user(prompt),
     ];
+    let sub_cwd = sub_context.cwd.clone();
     let sub_result = run_loop(
         &sub_context,
         sub_messages,
@@ -60,7 +69,10 @@ async fn execute_top_level_tool(
                 Err(e) => format!("Error: failed to render chat prompt: {e}"),
             }
         },
-        |c| async move { dispatch::execute(&c) },
+        |c| {
+            let sub_cwd = sub_cwd.clone();
+            async move { dispatch::execute(&c, sub_cwd.as_deref()) }
+        },
     )
     .await;
 
@@ -165,7 +177,27 @@ pub async fn send_agent_message(
         }
     }
 
-    let context = AgentContext::top_level();
+    // 007-workspace-cwd-resolution: resolved once per turn, not per tool
+    // call — a conversation's workspace can't change mid-turn. `None` for
+    // a conversation with no workspace_id (the LEFT JOIN's `w.path` column
+    // is simply NULL in that row), which every downstream cwd-aware
+    // function treats as "behave exactly as before this feature existed."
+    let workspace_path: Option<String> = conn
+        .call({
+            let conversation_id = conversation_id.clone();
+            move |conn: &mut Connection| -> rusqlite::Result<Option<String>> {
+                conn.query_row(
+                    "SELECT w.path FROM conversations c LEFT JOIN workspaces w ON w.id = c.workspace_id WHERE c.id = ?1",
+                    [&conversation_id],
+                    |row| row.get(0),
+                )
+            }
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    let cwd = workspace_path.map(std::path::PathBuf::from);
+
+    let context = AgentContext::top_level().with_cwd(cwd.clone());
     let guard = inference.0.lock().await;
     let engine = guard.as_ref().expect("engine loaded above");
 
@@ -193,7 +225,7 @@ pub async fn send_agent_message(
                 Err(e) => format!("Error: failed to render chat prompt: {e}"),
             }
         },
-        |call| execute_top_level_tool(call, &conn, engine, &conversation_id),
+        |call| execute_top_level_tool(call, &conn, engine, &conversation_id, cwd.as_deref()),
     )
     .await;
     drop(guard);
