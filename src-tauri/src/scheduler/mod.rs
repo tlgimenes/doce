@@ -1,5 +1,6 @@
 pub mod worker;
 
+use crate::inference::ChatMessage;
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -10,11 +11,14 @@ use tokio_util::sync::CancellationToken;
 /// `priority_conversation_id` is the conversation whose focus state
 /// determines this request's priority — for a subagent's requests this is
 /// the *spawning* conversation, not the subagent's own id (research.md §25).
+/// `messages` is the full role-tagged conversation so far (system prompt +
+/// history), rendered through the model's own chat template by the worker
+/// right before generating — see `worker::run_generation`.
 pub struct GenerationRequest {
     pub request_id: String,
     pub conversation_id: String,
     pub priority_conversation_id: String,
-    pub prompt: String,
+    pub messages: Vec<ChatMessage>,
     pub assistant_message_id: String,
     pub assistant_created_at: i64,
     pub cancel: CancellationToken,
@@ -163,7 +167,7 @@ mod tests {
                 request_id: id.to_string(),
                 conversation_id: priority_conv.to_string(),
                 priority_conversation_id: priority_conv.to_string(),
-                prompt: "hi".to_string(),
+                messages: vec![ChatMessage::user("hi")],
                 assistant_message_id: format!("{id}-assistant"),
                 assistant_created_at: 0,
                 cancel: CancellationToken::new(),

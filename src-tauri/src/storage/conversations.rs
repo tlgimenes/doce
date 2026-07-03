@@ -1,4 +1,41 @@
+use crate::inference::ChatMessage;
+use rusqlite::Connection;
+
 const MAX_TITLE_LEN: usize = 60;
+
+/// Builds the chat-template message history for a conversation: every
+/// non-error message so far, oldest first, role-mapped from the
+/// `messages` table's `role` column. Shared by the plain chat path
+/// (`commands::conversations::send_message`) and agent mode
+/// (`commands::agent::send_agent_message`) — without this, every reply
+/// was generated with no memory of earlier turns in the same
+/// conversation, on top of the separate missing-chat-template bug.
+/// `content_type = 'error'` rows are UI-only failure notices, not real
+/// assistant output, so they're excluded rather than fed back to the
+/// model as if it had said them.
+pub fn load_history(
+    conn: &Connection,
+    conversation_id: &str,
+) -> rusqlite::Result<Vec<ChatMessage>> {
+    let mut stmt = conn.prepare(
+        "SELECT role, content FROM messages WHERE conversation_id = ?1 AND content_type != 'error' ORDER BY sequence ASC",
+    )?;
+    let rows = stmt
+        .query_map([conversation_id], |row| {
+            let role: String = row.get(0)?;
+            let content: String = row.get(1)?;
+            Ok((role, content))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(role, content)| match role.as_str() {
+            "assistant" => ChatMessage::assistant(content),
+            _ => ChatMessage::user(content),
+        })
+        .collect())
+}
 
 /// Auto-generated conversation title (FR-012): truncates the first user
 /// message at a word boundary around 60 chars, no model call involved.
@@ -98,5 +135,68 @@ mod tests {
         let title = generate_title(&msg);
         assert!(title.ends_with('…'));
         assert!(title.chars().count() <= MAX_TITLE_LEN + 1);
+    }
+
+    fn setup_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE messages (
+                id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, role TEXT NOT NULL,
+                content_type TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL,
+                sequence INTEGER NOT NULL
+            );",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn insert_message(
+        conn: &Connection,
+        conv_id: &str,
+        role: &str,
+        content_type: &str,
+        content: &str,
+        seq: i64,
+    ) {
+        conn.execute(
+            "INSERT INTO messages (id, conversation_id, role, content_type, content, created_at, sequence) VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6)",
+            rusqlite::params![format!("{conv_id}-{seq}"), conv_id, role, content_type, content, seq],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn loads_history_in_sequence_order_with_roles_mapped() {
+        let conn = setup_conn();
+        insert_message(&conn, "c1", "user", "text", "hi", 0);
+        insert_message(&conn, "c1", "assistant", "text", "hello", 1);
+        insert_message(&conn, "c1", "user", "text", "how are you", 2);
+
+        let history = load_history(&conn, "c1").unwrap();
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[0].role, "user");
+        assert_eq!(history[0].content, "hi");
+        assert_eq!(history[1].role, "assistant");
+        assert_eq!(history[1].content, "hello");
+        assert_eq!(history[2].role, "user");
+        assert_eq!(history[2].content, "how are you");
+    }
+
+    #[test]
+    fn excludes_error_messages_and_other_conversations() {
+        let conn = setup_conn();
+        insert_message(&conn, "c1", "user", "text", "hi", 0);
+        insert_message(&conn, "c1", "assistant", "error", "inference failed", 1);
+        insert_message(&conn, "c2", "user", "text", "unrelated conversation", 0);
+
+        let history = load_history(&conn, "c1").unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].content, "hi");
+    }
+
+    #[test]
+    fn empty_conversation_returns_empty_history() {
+        let conn = setup_conn();
+        assert!(load_history(&conn, "nonexistent").unwrap().is_empty());
     }
 }

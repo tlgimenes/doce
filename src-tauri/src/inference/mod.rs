@@ -2,10 +2,11 @@ use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
-use llama_cpp_2::model::{AddBos, LlamaModel};
+use llama_cpp_2::model::{AddBos, LlamaChatMessage, LlamaChatTemplate, LlamaModel};
 use llama_cpp_2::sampling::LlamaSampler;
 use std::num::NonZeroU32;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, thiserror::Error)]
 pub enum InferenceError {
@@ -13,6 +14,40 @@ pub enum InferenceError {
     Backend(String),
     #[error("model load failed: {0}")]
     ModelLoad(String),
+}
+
+/// A single role-tagged conversation turn. Chat-tuned models like Qwen are
+/// trained on turns wrapped in special tokens (e.g. ChatML's
+/// `<|im_start|>role\n...<|im_end|>`), not on raw concatenated text — see
+/// `InferenceEngine::render_chat_prompt`, which is what actually produces
+/// those tokens from a list of these.
+#[derive(Debug, Clone)]
+pub struct ChatMessage {
+    pub role: String,
+    pub content: String,
+}
+
+impl ChatMessage {
+    pub fn system(content: impl Into<String>) -> Self {
+        Self {
+            role: "system".to_string(),
+            content: content.into(),
+        }
+    }
+
+    pub fn user(content: impl Into<String>) -> Self {
+        Self {
+            role: "user".to_string(),
+            content: content.into(),
+        }
+    }
+
+    pub fn assistant(content: impl Into<String>) -> Self {
+        Self {
+            role: "assistant".to_string(),
+            content: content.into(),
+        }
+    }
 }
 
 /// Owns the single loaded model + backend for the whole app (research.md
@@ -32,12 +67,41 @@ impl InferenceEngine {
         Ok(Self { backend, model })
     }
 
-    /// Greedy-sampled generation used for the walking-skeleton chat path
-    /// (User Story 2) and integration tests, invoking `on_token` as each
-    /// token is produced so the caller can emit `assistant-token` events in
-    /// real time rather than waiting for the full response. The full
-    /// scheduler-backed tool-use loop (User Story 3) builds on this same
-    /// model handle via `agent::run_turn`.
+    /// Renders role-tagged `messages` through the model's own chat template
+    /// — baked into the GGUF's metadata by whoever converted it — into the
+    /// exact prompt string the model was instruction-tuned on (special
+    /// tokens included, e.g. ChatML's `<|im_start|>`/`<|im_end|>`). Without
+    /// this, a chat-tuned model like Qwen only ever sees raw concatenated
+    /// text it was never trained to continue as a conversation, which is
+    /// what produces the "ignores the question" / "rambles" / "answers as
+    /// if completing a document" behavior — not necessarily the model being
+    /// too small. Falls back to the generic "chatml" template name (the
+    /// most common convention) if the model has no template of its own.
+    pub fn render_chat_prompt(&self, messages: &[ChatMessage]) -> Result<String, InferenceError> {
+        let tmpl = match self.model.chat_template(None) {
+            Ok(t) => t,
+            Err(_) => LlamaChatTemplate::new("chatml")
+                .map_err(|e| InferenceError::Backend(format!("no usable chat template: {e}")))?,
+        };
+
+        let llama_messages: Vec<LlamaChatMessage> = messages
+            .iter()
+            .map(|m| LlamaChatMessage::new(m.role.clone(), m.content.clone()))
+            .collect::<Result<_, _>>()
+            .map_err(|e| InferenceError::Backend(e.to_string()))?;
+
+        self.model
+            .apply_chat_template(&tmpl, &llama_messages, true)
+            .map_err(|e| InferenceError::Backend(e.to_string()))
+    }
+
+    /// Generation used for the chat path (User Story 2), the agent tool-use
+    /// loop (User Story 3), and integration tests, invoking `on_token` as
+    /// each token is produced so the caller can emit `assistant-token`
+    /// events in real time rather than waiting for the full response.
+    /// `prompt` is expected to already be chat-template-rendered (see
+    /// `render_chat_prompt`) — this function just tokenizes and decodes
+    /// whatever string it's given.
     pub fn generate(
         &self,
         prompt: &str,
@@ -66,7 +130,23 @@ impl InferenceEngine {
         ctx.decode(&mut batch)
             .map_err(|e| InferenceError::Backend(e.to_string()))?;
 
-        let mut sampler = LlamaSampler::greedy();
+        // A plain greedy (always-argmax) sampler tends to degenerate into
+        // repeated loops on chat-tuned models, which reads as "confused" or
+        // "too raw" even once the chat template is correct — this chain
+        // matches the defaults most chat-completion APIs use: a repeat
+        // penalty over recent tokens, then temperature + top-k/top-p to
+        // pick among the remaining reasonable candidates.
+        let seed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        let mut sampler = LlamaSampler::chain_simple([
+            LlamaSampler::penalties(64, 1.1, 0.0, 0.0),
+            LlamaSampler::top_k(40),
+            LlamaSampler::top_p(0.9, 1),
+            LlamaSampler::temp(0.7),
+            LlamaSampler::dist(seed),
+        ]);
         let mut output = String::new();
         let mut decoder = encoding_rs::UTF_8.new_decoder();
 

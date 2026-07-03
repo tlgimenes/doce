@@ -1,7 +1,8 @@
 use crate::agent::{dispatch, run_loop, subagent, AgentContext, ToolCall, SYSTEM_PROMPT};
 use crate::commands::conversations::InferenceState;
 use crate::commands::models::now_ms;
-use crate::inference::InferenceEngine;
+use crate::inference::{ChatMessage, InferenceEngine};
+use crate::storage::conversations::load_history;
 use crate::storage::DbCell;
 use rusqlite::Connection;
 use tauri::{AppHandle, State};
@@ -42,14 +43,22 @@ async fn execute_top_level_tool(
     };
 
     let sub_context = AgentContext::subagent();
-    let sub_prompt = format!("{SYSTEM_PROMPT}{prompt}");
+    // FR-015: a fresh, isolated context — just the system prompt plus the
+    // delegated task, no parent conversation history.
+    let sub_messages = vec![
+        ChatMessage::system(SYSTEM_PROMPT),
+        ChatMessage::user(prompt),
+    ];
     let sub_result = run_loop(
         &sub_context,
-        sub_prompt,
-        |p| async move {
-            engine
-                .generate(&p, 256, |_piece| {}, || false)
-                .unwrap_or_else(|e| format!("Error: inference failed: {e}"))
+        sub_messages,
+        |messages| async move {
+            match engine.render_chat_prompt(&messages) {
+                Ok(rendered) => engine
+                    .generate(&rendered, 256, |_piece| {}, || false)
+                    .unwrap_or_else(|e| format!("Error: inference failed: {e}")),
+                Err(e) => format!("Error: failed to render chat prompt: {e}"),
+            }
         },
         |c| async move { dispatch::execute(&c) },
     )
@@ -160,14 +169,29 @@ pub async fn send_agent_message(
     let guard = inference.0.lock().await;
     let engine = guard.as_ref().expect("engine loaded above");
 
-    let initial_prompt = format!("{SYSTEM_PROMPT}{content}");
+    // Full history (including the user message just inserted above) so the
+    // model sees prior turns in this workspace conversation rather than
+    // generating each reply from a blank slate.
+    let history = conn
+        .call({
+            let conversation_id = conversation_id.clone();
+            move |conn: &mut Connection| load_history(conn, &conversation_id)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut initial_messages = vec![ChatMessage::system(SYSTEM_PROMPT)];
+    initial_messages.extend(history);
+
     let result = run_loop(
         &context,
-        initial_prompt,
-        |prompt| async move {
-            engine
-                .generate(&prompt, 256, |_piece| {}, || false)
-                .unwrap_or_else(|e| format!("Error: inference failed: {e}"))
+        initial_messages,
+        |messages| async move {
+            match engine.render_chat_prompt(&messages) {
+                Ok(rendered) => engine
+                    .generate(&rendered, 256, |_piece| {}, || false)
+                    .unwrap_or_else(|e| format!("Error: inference failed: {e}")),
+                Err(e) => format!("Error: failed to render chat prompt: {e}"),
+            }
         },
         |call| execute_top_level_tool(call, &conn, engine, &conversation_id),
     )

@@ -95,21 +95,24 @@ async fn run_generation(app: &AppHandle, request: &GenerationRequest) -> Result<
 
     let guard = inference_arc.lock().await;
     let engine = guard.as_ref().expect("engine loaded above");
-    let result = engine.generate(
-        &request.prompt,
-        64,
-        |piece| {
-            let _ = app_emit.emit(
-                "assistant-token",
-                AssistantToken {
-                    conversation_id: conv_id_emit.clone(),
-                    message_id: msg_id_emit.clone(),
-                    token: piece.to_string(),
-                },
-            );
-        },
-        || cancel.is_cancelled(),
-    );
+    let result = match engine.render_chat_prompt(&request.messages) {
+        Ok(rendered) => engine.generate(
+            &rendered,
+            64,
+            |piece| {
+                let _ = app_emit.emit(
+                    "assistant-token",
+                    AssistantToken {
+                        conversation_id: conv_id_emit.clone(),
+                        message_id: msg_id_emit.clone(),
+                        token: piece.to_string(),
+                    },
+                );
+            },
+            || cancel.is_cancelled(),
+        ),
+        Err(e) => Err(e),
+    };
     drop(guard);
 
     let full_text = result.map_err(|e| e.to_string())?;

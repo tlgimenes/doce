@@ -22,10 +22,12 @@ pub mod subagent;
 pub mod tools;
 
 /// Describes the built-in tool set and the JSON calling convention
-/// `parse_response` expects, prepended to the first turn of every agent
-/// loop run. Small models tend to need the exact shape spelled out (with
-/// an example) to reliably produce parseable output — general "you have
-/// tools available" phrasing is not enough in practice.
+/// `parse_response` expects — this is the `system`-role message of every
+/// agent loop run (see `run_loop`'s `initial_messages`), not raw text
+/// concatenated onto the user's task. Small models tend to need the exact
+/// shape spelled out (with an example) to reliably produce parseable
+/// output — general "you have tools available" phrasing is not enough in
+/// practice.
 pub const SYSTEM_PROMPT: &str = r#"You are a coding and system agent with access to tools. To use a tool, respond with ONLY a JSON object in this exact shape, nothing else:
 {"tool_call": {"name": "ToolName", "arguments": {...}}}
 
@@ -40,10 +42,9 @@ Available tools:
 Example tool call:
 {"tool_call": {"name": "Read", "arguments": {"file_path": "/tmp/example.txt"}}}
 
-Once you have enough information to answer, respond in plain text with your final answer — do not wrap the final answer in JSON.
+Once you have enough information to answer, respond in plain text with your final answer — do not wrap the final answer in JSON."#;
 
-Task: "#;
-
+use crate::inference::ChatMessage;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 
@@ -168,30 +169,39 @@ impl AgentContext {
 /// executes any tool call it contains, and feeds the result back in, until
 /// the model produces a plain-text final answer or the turn cap is hit.
 ///
+/// `initial_messages` is a real role-tagged conversation (typically a
+/// `system` message from `SYSTEM_PROMPT` plus a `user` message with the
+/// task) rather than one flat string — `generate` is expected to render
+/// this through the model's own chat template (see
+/// `inference::InferenceEngine::render_chat_prompt`) before tokenizing,
+/// since chat-tuned models are trained on role-tagged turns, not raw
+/// concatenated text.
+///
 /// `generate` and `execute_tool` are injected rather than hardcoded to the
 /// real inference engine / tool dispatch specifically so this control flow
 /// — the part with real correctness requirements (turn counting, nesting
 /// rejection) — is unit-testable without a loaded model or a filesystem.
 pub async fn run_loop<F, Fut, G, GFut>(
     context: &AgentContext,
-    initial_prompt: String,
+    initial_messages: Vec<ChatMessage>,
     mut generate: F,
     mut execute_tool: G,
 ) -> Result<String, AgentError>
 where
-    F: FnMut(String) -> Fut,
+    F: FnMut(Vec<ChatMessage>) -> Fut,
     Fut: Future<Output = String>,
     G: FnMut(ToolCall) -> GFut,
     GFut: Future<Output = String>,
 {
-    let mut transcript = initial_prompt;
+    let mut messages = initial_messages;
 
     for _turn in 0..context.max_turns {
-        let response = generate(transcript.clone()).await;
+        let response = generate(messages.clone()).await;
         match parse_response(&response) {
             LoopStep::Done(text) => return Ok(text),
             LoopStep::ToolCall(call) => {
                 let tool_name = call.name.clone();
+                messages.push(ChatMessage::assistant(response));
                 let result = if call.name == "Task" && context.is_subagent {
                     // FR-016: one-level nesting — a subagent cannot itself
                     // spawn a further subagent. Fed back as an ordinary
@@ -202,7 +212,9 @@ where
                 } else {
                     execute_tool(call).await
                 };
-                transcript.push_str(&format!("\nTool result for {tool_name}: {result}\n"));
+                messages.push(ChatMessage::user(format!(
+                    "Tool result for {tool_name}: {result}"
+                )));
             }
         }
     }
@@ -301,8 +313,8 @@ mod tests {
 
         let result = run_loop(
             &context,
-            "start".to_string(),
-            |_prompt| {
+            vec![ChatMessage::user("start")],
+            |_messages| {
                 let r = responses[call_count].clone();
                 call_count += 1;
                 async move { r }
@@ -327,8 +339,8 @@ mod tests {
 
         let result = run_loop(
             &context,
-            "start".to_string(),
-            |_prompt| async { r#"{"tool_call": {"name": "Read", "arguments": {}}}"#.to_string() },
+            vec![ChatMessage::user("start")],
+            |_messages| async { r#"{"tool_call": {"name": "Read", "arguments": {}}}"#.to_string() },
             |_call| async { "ok".to_string() },
         )
         .await;
@@ -348,8 +360,8 @@ mod tests {
 
         let result = run_loop(
             &context,
-            "start".to_string(),
-            move |_prompt| {
+            vec![ChatMessage::user("start")],
+            move |_messages| {
                 let response = if !asked_task {
                     asked_task = true;
                     r#"{"tool_call": {"name": "Task", "arguments": {"prompt": "delegate further"}}}"#.to_string()
@@ -381,8 +393,8 @@ mod tests {
         let mut asked = false;
         let result = run_loop(
             &context,
-            "start".to_string(),
-            move |_prompt| {
+            vec![ChatMessage::user("start")],
+            move |_messages| {
                 let response = if !asked {
                     asked = true;
                     r#"{"tool_call": {"name": "Task", "arguments": {"prompt": "go do research"}}}"#

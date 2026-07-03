@@ -1,6 +1,6 @@
 use crate::commands::models::now_ms;
-use crate::inference::InferenceEngine;
-use crate::storage::conversations::generate_title;
+use crate::inference::{ChatMessage, InferenceEngine};
+use crate::storage::conversations::{generate_title, load_history};
 use crate::storage::DbCell;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -9,6 +9,13 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::Mutex as AsyncMutex;
 use uuid::Uuid;
+
+/// System-role message for plain chat mode (User Story 2) — sets basic
+/// identity/behavior so the model isn't generating with an empty system
+/// turn. Agent mode uses its own, tool-focused system prompt instead
+/// (`agent::SYSTEM_PROMPT`).
+const CHAT_SYSTEM_PROMPT: &str =
+    "You are Doce, a helpful AI assistant running entirely locally on the user's device.";
 
 pub struct InferenceState(pub Arc<AsyncMutex<Option<InferenceEngine>>>);
 
@@ -312,6 +319,18 @@ pub async fn send_message(
     let assistant_message_id = Uuid::now_v7().to_string();
     let assistant_created_at = now_ms();
 
+    // Full history (including the user message just inserted above) so the
+    // model sees prior turns instead of generating this reply in isolation.
+    let history = conn
+        .call({
+            let conversation_id = conversation_id.clone();
+            move |conn: &mut Connection| load_history(conn, &conversation_id)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut messages = vec![ChatMessage::system(CHAT_SYSTEM_PROMPT)];
+    messages.extend(history);
+
     active_generations
         .0
         .lock()
@@ -323,7 +342,7 @@ pub async fn send_message(
         request_id: request_id.clone(),
         conversation_id: conversation_id.clone(),
         priority_conversation_id: conversation_id.clone(),
-        prompt: content,
+        messages,
         assistant_message_id: assistant_message_id.clone(),
         assistant_created_at,
         cancel: tokio_util::sync::CancellationToken::new(),
