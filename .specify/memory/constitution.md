@@ -1,15 +1,15 @@
 <!--
 Sync Impact Report
-- Version change: 1.0.0 → 2.0.0
+- Version change: 2.0.0 → 2.1.0
 - Modified principles:
-  - REMOVED: IV. Explicit, Persistent Permissions (Doce v1.0 ships with no
-    permission/approval system gating agent actions — see rationale below)
-  - RENUMBERED: V. Extensibility via MCP and Skills → IV (content unchanged)
-  - RENUMBERED: VI. v1 Scope Discipline → V (content unchanged, plus one new
-    sentence documenting the no-permission-system decision and its required
-    v1.1 revisit)
+  - V. v1 Scope Discipline: added one paragraph documenting that
+    006-chat-empty-state makes agent-mode-by-default (every new conversation
+    is tool-enabled and folder-scoped, not opt-in via a separate "open a
+    folder" action) the accepted v1.0 posture — a documentation-only
+    amendment per this feature's plan.md Constitution Check recommendation,
+    not a new capability or a reopened product decision.
 - Added sections: none
-- Removed sections: none (a principle was removed, not a whole section)
+- Removed sections: none
 - Templates requiring updates:
   - ✅ .specify/templates/plan-template.md (generic Constitution Check gate, no changes needed)
   - ✅ .specify/templates/spec-template.md (generic, no changes needed)
@@ -22,8 +22,9 @@ Sync Impact Report
   - TODO(V1_1_SECURITY_REVIEW) — before v1.1 WhatsApp bridging design begins,
     revisit whether shipping with no permission/approval system (Principle V)
     remains appropriate once inbound, potentially untrusted bridged messages
-    can reach and trigger the agent. This amendment does not resolve that
-    question — it explicitly defers it.
+    can reach and trigger the agent — now a materially more frequent exposure
+    given agent-mode-by-default (006-chat-empty-state). This amendment does
+    not resolve that question — it explicitly defers it, same as before.
 -->
 
 # Doce Constitution
@@ -96,7 +97,15 @@ introduces inbound, potentially untrusted triggers that materially change the
 risk calculus an unrestricted, unconfirmed agent operates under. Expanding
 scope beyond these boundaries (including reintroducing or further loosening
 any of them) requires an explicit constitution amendment, not an ad hoc
-feature decision.
+feature decision. As of 006-chat-empty-state, agent-mode-by-default (not
+merely agent-mode-available) is the accepted v1.0 posture: every conversation
+created from the composer is always tool-enabled and folder-scoped — there is
+no longer a separate, deliberate "open a folder" action gating it. This does
+not introduce a new code-level capability (unrestricted tool access already
+existed), but it materially increases how often and how easily it is reached,
+which is why it is recorded here rather than treated as a UI-only change. The
+same v1.1 WhatsApp-bridging revisit obligation above applies to this
+default-on posture as well.
 
 **Rationale**: The product's differentiation depends on shipping the
 zero-config core well rather than matching OpenClaw's channel breadth or
@@ -160,4 +169,4 @@ Check against the principles above before design proceeds to task generation.
 Deviations require explicit justification recorded in the plan's Complexity
 Tracking section; unjustified deviations block progression to `/speckit-tasks`.
 
-**Version**: 2.0.0 | **Ratified**: 2026-07-02 | **Last Amended**: 2026-07-02
+**Version**: 2.1.0 | **Ratified**: 2026-07-02 | **Last Amended**: 2026-07-03

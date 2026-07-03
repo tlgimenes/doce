@@ -38,12 +38,22 @@ async function bubbleTexts(): Promise<string[]> {
 
 describe("Chat (User Story 2: send a message, get a real response)", () => {
   it("sends a message and renders a real, non-empty assistant reply immediately after it", async () => {
-    // Since User Story 7, the app opens on the conversation-list sidebar
-    // with no thread selected — a real thread has to be created first
-    // (there's no more auto-created single conversation on launch).
-    const newConversation = await browser.$("[data-testid='new-conversation']");
-    await newConversation.waitForExist({ timeout: 15000 });
-    await newConversation.click();
+    // 006-chat-empty-state: every conversation created through the UI is
+    // now always workspace-scoped (agent mode) — this plain, non-agent
+    // Chat.tsx/send_message path is only reachable for a conversation that
+    // already existed before that feature shipped (FR-012's regression
+    // guarantee), so one is seeded directly via the app's own real
+    // create_conversation command (no workspaceId) rather than through a
+    // UI path that no longer exists.
+    await browser.execute(() => {
+      return (
+        window as unknown as { __TAURI_INTERNALS__: { invoke: (cmd: string, args: unknown) => Promise<unknown> } }
+      ).__TAURI_INTERNALS__.invoke("create_conversation", {});
+    });
+
+    const item = await browser.$("[data-testid='conversation-item']");
+    await item.waitForExist({ timeout: 15000 });
+    await item.click();
 
     const input = await browser.$("[data-testid='chat-input']");
     await input.waitForExist({ timeout: 15000 });

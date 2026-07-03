@@ -26,7 +26,7 @@ pub fn run() {
         .expect("failed to export typescript bindings");
 
     #[cfg_attr(not(feature = "wdio"), allow(unused_mut))]
-    let mut app_builder = tauri::Builder::default();
+    let mut app_builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
 
     #[cfg(feature = "wdio")]
     {

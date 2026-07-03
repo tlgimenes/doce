@@ -8,7 +8,6 @@ import { commands } from "@/lib/ipc";
 vi.mock("@/lib/ipc", () => ({
   commands: {
     listConversations: vi.fn(),
-    createConversation: vi.fn(),
   },
 }));
 
@@ -24,7 +23,14 @@ describe("ConversationList", () => {
       { id: "c", workspaceId: null, title: "Broke", createdAt: 3, updatedAt: 1, status: "failed" },
     ]);
 
-    render(<ConversationList activeId={null} onSelect={vi.fn()} onCreated={vi.fn()} onOpenSettings={vi.fn()} />);
+    render(
+      <ConversationList
+        activeId={null}
+        onSelect={vi.fn()}
+        onNewConversation={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />,
+    );
 
     await waitFor(() => {
       expect(screen.getByText("First one")).toBeInTheDocument();
@@ -36,44 +42,67 @@ describe("ConversationList", () => {
     expect(dots.map((d) => d.dataset.status)).toEqual(["done", "requires_action", "failed"]);
   });
 
-  it("creating a new conversation calls onCreated with the new id (the reported bug: no way to start a new thread)", async () => {
-    vi.mocked(commands.listConversations).mockResolvedValue([]);
-    vi.mocked(commands.createConversation).mockResolvedValue({
-      id: "new-conv",
-      workspaceId: null,
-      title: "New conversation",
+  it("clicking a conversation calls onSelect with the full conversation, not just its id", async () => {
+    const conversation = {
+      id: "a",
+      workspaceId: "ws-1",
+      title: "First one",
       createdAt: 1,
-      updatedAt: 1,
-      status: "done",
-    });
+      updatedAt: 3,
+      status: "done" as const,
+    };
+    vi.mocked(commands.listConversations).mockResolvedValue([conversation]);
+    const onSelect = vi.fn();
 
-    const onCreated = vi.fn();
-    render(<ConversationList activeId={null} onSelect={vi.fn()} onCreated={onCreated} onOpenSettings={vi.fn()} />);
+    render(
+      <ConversationList
+        activeId={null}
+        onSelect={onSelect}
+        onNewConversation={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />,
+    );
+
+    await userEvent.click(await screen.findByText("First one"));
+    expect(onSelect).toHaveBeenCalledWith(conversation);
+  });
+
+  it("006-chat-empty-state: '+ New conversation' calls onNewConversation instead of creating a conversation immediately (FR-002)", async () => {
+    vi.mocked(commands.listConversations).mockResolvedValue([]);
+    const onNewConversation = vi.fn();
+
+    render(
+      <ConversationList
+        activeId={null}
+        onSelect={vi.fn()}
+        onNewConversation={onNewConversation}
+        onOpenSettings={vi.fn()}
+      />,
+    );
 
     await userEvent.click(await screen.findByTestId("new-conversation"));
 
-    await waitFor(() => expect(onCreated).toHaveBeenCalledWith("new-conv"));
+    expect(onNewConversation).toHaveBeenCalledTimes(1);
   });
 
   it("exposes createNew via a ref, calling the same path as clicking the button (005-keyboard-shortcuts, Cmd+N)", async () => {
     vi.mocked(commands.listConversations).mockResolvedValue([]);
-    vi.mocked(commands.createConversation).mockResolvedValue({
-      id: "new-conv",
-      workspaceId: null,
-      title: "New conversation",
-      createdAt: 1,
-      updatedAt: 1,
-      status: "done",
-    });
-
-    const onCreated = vi.fn();
+    const onNewConversation = vi.fn();
     const ref = createRef<ConversationListHandle>();
-    render(<ConversationList ref={ref} activeId={null} onSelect={vi.fn()} onCreated={onCreated} onOpenSettings={vi.fn()} />);
+
+    render(
+      <ConversationList
+        ref={ref}
+        activeId={null}
+        onSelect={vi.fn()}
+        onNewConversation={onNewConversation}
+        onOpenSettings={vi.fn()}
+      />,
+    );
 
     await waitFor(() => expect(ref.current).not.toBeNull());
     ref.current!.createNew();
 
-    await waitFor(() => expect(onCreated).toHaveBeenCalledWith("new-conv"));
-    expect(commands.createConversation).toHaveBeenCalledTimes(1);
+    expect(onNewConversation).toHaveBeenCalledTimes(1);
   });
 });

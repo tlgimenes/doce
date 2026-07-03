@@ -101,6 +101,22 @@ async fn execute_top_level_tool(
     sub_final
 }
 
+/// 006-chat-empty-state (research.md § 1): tells the model what directory
+/// it's working in when one is known, so it can construct sensible paths
+/// itself. Deliberately just this — it does not make `Bash` run with `cwd`
+/// as its process working directory, or make `Read`/`Write`/`Edit`/`Glob`/
+/// `Grep` resolve relative paths against it; that fuller fix is its own,
+/// separate, larger change (see `plan.md`'s Complexity Tracking).
+fn system_message(cwd: Option<&std::path::Path>) -> String {
+    match cwd {
+        Some(path) => format!(
+            "{SYSTEM_PROMPT}\n\nYou are currently working in the directory: {}",
+            path.display()
+        ),
+        None => SYSTEM_PROMPT.to_string(),
+    }
+}
+
 /// FR-008/FR-009: runs the agent tool-use loop to completion for one user
 /// message in a workspace-scoped conversation, using the real built-in
 /// tools (`agent::dispatch`) and the same loaded model `send_message`
@@ -211,7 +227,7 @@ pub async fn send_agent_message(
         })
         .await
         .map_err(|e| e.to_string())?;
-    let mut initial_messages = vec![ChatMessage::system(SYSTEM_PROMPT)];
+    let mut initial_messages = vec![ChatMessage::system(system_message(cwd.as_deref()))];
     initial_messages.extend(history);
 
     let result = run_loop(
@@ -257,4 +273,21 @@ pub async fn send_agent_message(
     .map_err(|e| e.to_string())?;
 
     Ok(final_text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn system_message_appends_the_cwd_line_when_known() {
+        let msg = system_message(Some(std::path::Path::new("/Users/tester/code/doce")));
+        assert!(msg.starts_with(SYSTEM_PROMPT));
+        assert!(msg.contains("You are currently working in the directory: /Users/tester/code/doce"));
+    }
+
+    #[test]
+    fn system_message_is_unchanged_when_no_cwd_is_known() {
+        assert_eq!(system_message(None), SYSTEM_PROMPT);
+    }
 }

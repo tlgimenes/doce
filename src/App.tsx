@@ -1,19 +1,24 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Button } from "@/components/ui/button";
 import Onboarding from "@/views/onboarding/Onboarding";
 import Chat from "@/views/chat/Chat";
 import ConversationList, { type ConversationListHandle } from "@/views/chat/ConversationList";
+import EmptyState from "@/views/chat/EmptyState";
 import Workspace from "@/views/workspace/Workspace";
 import Settings from "@/views/settings/Settings";
 import ShortcutsDialog from "@/views/shortcuts/ShortcutsDialog";
-import { commands } from "@/lib/ipc";
+import { commands, type Conversation } from "@/lib/ipc";
 import { buildShortcuts } from "@/lib/shortcuts";
 import { wireConversationStreamEvents } from "@/state/conversationStreamStore";
 
 export default function App() {
   const [ready, setReady] = useState<boolean | null>(null);
-  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
-  const [agentMode, setAgentMode] = useState(false);
+  // 006-chat-empty-state: the active conversation's own `workspaceId` (not a
+  // separate `agentMode` flag) decides which view renders — a flag
+  // disconnected from the actually-selected conversation was already a
+  // latent bug source (research.md § 4), and every new conversation is now
+  // always workspace-scoped, which would have made that disconnect far more
+  // visible.
+  const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [showShortcutsDialog, setShowShortcutsDialog] = useState(false);
   const conversationListRef = useRef<ConversationListHandle>(null);
@@ -34,7 +39,15 @@ export default function App() {
     () =>
       buildShortcuts({
         focusInput: () => {
-          const selector = agentMode ? '[data-testid="agent-input"]' : '[data-testid="chat-input"]';
+          // 006-chat-empty-state: no conversation selected now always means
+          // the composer is showing (there's no bare, input-less placeholder
+          // anymore) — Cmd+L focuses that too, consistent with its whole
+          // point ("jump straight into typing" from anywhere).
+          const selector = !activeConversation
+            ? '[data-testid="empty-state-input"]'
+            : activeConversation.workspaceId != null
+              ? '[data-testid="agent-input"]'
+              : '[data-testid="chat-input"]';
           document.querySelector<HTMLElement>(selector)?.focus();
         },
         newConversation: () => {
@@ -44,7 +57,7 @@ export default function App() {
           setShowShortcutsDialog((prev) => !prev);
         },
       }),
-    [agentMode],
+    [activeConversation],
   );
 
   useEffect(() => {
@@ -66,8 +79,8 @@ export default function App() {
   // time against whichever conversation is currently focused — every view
   // change needs to tell it, not just the initial selection.
   useEffect(() => {
-    commands.setFocusedConversation(activeConversationId);
-  }, [activeConversationId]);
+    commands.setFocusedConversation(activeConversation?.id ?? null);
+  }, [activeConversation]);
 
   if (ready === null) return null;
   if (!ready) return <Onboarding onReady={() => setReady(true)} />;
@@ -76,38 +89,28 @@ export default function App() {
     <div className="flex h-dvh">
       <ConversationList
         ref={conversationListRef}
-        activeId={activeConversationId}
-        onSelect={(id) => {
-          setAgentMode(false);
+        activeId={activeConversation?.id ?? null}
+        onSelect={(conversation) => {
           setShowSettings(false);
-          setActiveConversationId(id);
+          setActiveConversation(conversation);
         }}
-        onCreated={(id) => {
-          setAgentMode(false);
+        onNewConversation={() => {
           setShowSettings(false);
-          setActiveConversationId(id);
+          setActiveConversation(null);
         }}
         onOpenSettings={() => setShowSettings(true)}
       />
       <div className="flex-1">
         {showSettings ? (
           <Settings onClose={() => setShowSettings(false)} />
-        ) : agentMode ? (
-          <Workspace />
-        ) : activeConversationId ? (
-          <Chat key={activeConversationId} conversationId={activeConversationId} />
+        ) : activeConversation ? (
+          activeConversation.workspaceId != null ? (
+            <Workspace key={activeConversation.id} conversationId={activeConversation.id} />
+          ) : (
+            <Chat key={activeConversation.id} conversationId={activeConversation.id} />
+          )
         ) : (
-          <div className="flex h-dvh flex-col items-center justify-center gap-3 text-muted-foreground">
-            <p>Start a new conversation, or</p>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => setAgentMode(true)}
-              data-testid="enter-agent-mode"
-            >
-              Open a folder (agent mode)
-            </Button>
-          </div>
+          <EmptyState onConversationCreated={(conversation) => setActiveConversation(conversation)} />
         )}
       </div>
       <ShortcutsDialog

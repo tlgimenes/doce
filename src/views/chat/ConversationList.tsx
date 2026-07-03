@@ -6,8 +6,8 @@ import SearchPanel from "./SearchPanel";
 
 interface ConversationListProps {
   activeId: string | null;
-  onSelect: (id: string) => void;
-  onCreated: (id: string) => void;
+  onSelect: (conversation: Conversation) => void;
+  onNewConversation: () => void;
   onOpenSettings: () => void;
 }
 
@@ -40,7 +40,7 @@ const STATUS_LABEL: Record<ConversationStatus, string> = {
  * a refresh off of.
  */
 const ConversationList = forwardRef<ConversationListHandle, ConversationListProps>(
-  function ConversationList({ activeId, onSelect, onCreated, onOpenSettings }, ref) {
+  function ConversationList({ activeId, onSelect, onNewConversation, onOpenSettings }, ref) {
     const [conversations, setConversations] = useState<Conversation[]>([]);
     const [searching, setSearching] = useState(false);
 
@@ -54,10 +54,14 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
       return () => clearInterval(id);
     }, []);
 
-    const createNew = async () => {
-      const conv = await commands.createConversation();
-      setConversations((prev) => [conv, ...prev]);
-      onCreated(conv.id);
+    // 006-chat-empty-state: no longer creates a conversation itself (FR-002)
+    // — it tells the parent to show the empty-state composer instead, which
+    // only actually creates one once a first message is submitted (FR-003).
+    // Cmd+N (005-keyboard-shortcuts) calls this exact same ref method, so it
+    // automatically gets the same behavior rather than a second, divergent
+    // path.
+    const createNew = () => {
+      onNewConversation();
     };
 
     useImperativeHandle(ref, () => ({ createNew }));
@@ -71,7 +75,12 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
           <SearchPanel
             onClose={() => setSearching(false)}
             onSelect={(id) => {
-              onSelect(id);
+              // Search results only carry the id (commands.searchConversations
+              // returns a slimmer SearchResult, not a full Conversation) —
+              // look it up in the already-loaded list rather than changing
+              // onSelect's shape just for this one caller.
+              const conversation = conversations.find((c) => c.id === id);
+              if (conversation) onSelect(conversation);
               setSearching(false);
             }}
           />
@@ -113,7 +122,7 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
               key={c.id}
               variant="ghost"
               size="sm"
-              onClick={() => onSelect(c.id)}
+              onClick={() => onSelect(c)}
               data-testid="conversation-item"
               data-conversation-id={c.id}
               className={`w-full justify-start gap-2 py-2 text-left ${

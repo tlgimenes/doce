@@ -6,61 +6,50 @@ import { commands } from "@/lib/ipc";
 
 vi.mock("@/lib/ipc", () => ({
   commands: {
-    openWorkspace: vi.fn(),
-    createConversation: vi.fn(),
+    listMessages: vi.fn(),
     sendAgentMessage: vi.fn(),
   },
 }));
 
-describe("Workspace (User Story 3: open a folder to enter agent mode)", () => {
+describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(commands.listMessages).mockResolvedValue([]);
   });
 
-  it("opening a folder creates a workspace-scoped conversation and shows the agent chat", async () => {
-    vi.mocked(commands.openWorkspace).mockResolvedValue({
-      id: "ws-1",
-      path: "/tmp/project",
-      displayName: "project",
-      createdAt: 1,
-      lastOpenedAt: 1,
-    });
-    vi.mocked(commands.createConversation).mockResolvedValue({
-      id: "conv-1",
-      workspaceId: "ws-1",
-      title: "New conversation",
-      createdAt: 1,
-      updatedAt: 1,
-      status: "done",
-    });
+  it("loads and renders a workspace-scoped conversation's existing messages", async () => {
+    vi.mocked(commands.listMessages).mockResolvedValue([
+      {
+        id: "m1",
+        conversationId: "conv-1",
+        role: "user",
+        contentType: "text",
+        content: "hi",
+        toolName: null,
+        createdAt: 1,
+        durationMs: null,
+      },
+      {
+        id: "m2",
+        conversationId: "conv-1",
+        role: "assistant",
+        contentType: "text",
+        content: "hello",
+        toolName: null,
+        createdAt: 2,
+        durationMs: 5,
+      },
+    ]);
 
-    render(<Workspace />);
-    await userEvent.type(screen.getByTestId("workspace-path-input"), "/tmp/project");
-    await userEvent.click(screen.getByTestId("open-workspace"));
+    render(<Workspace conversationId="conv-1" />);
 
     await waitFor(() => {
-      expect(commands.createConversation).toHaveBeenCalledWith("ws-1");
-      expect(screen.getByTestId("agent-input")).toBeInTheDocument();
+      expect(commands.listMessages).toHaveBeenCalledWith("conv-1");
+      expect(screen.getAllByTestId("chat-message")).toHaveLength(2);
     });
   });
 
   it("sends a task and shows a thinking state until the real (non-streamed) reply returns", async () => {
-    vi.mocked(commands.openWorkspace).mockResolvedValue({
-      id: "ws-1",
-      path: "/tmp/project",
-      displayName: "project",
-      createdAt: 1,
-      lastOpenedAt: 1,
-    });
-    vi.mocked(commands.createConversation).mockResolvedValue({
-      id: "conv-1",
-      workspaceId: "ws-1",
-      title: "New conversation",
-      createdAt: 1,
-      updatedAt: 1,
-      status: "done",
-    });
-
     let resolveAgent!: (value: string) => void;
     vi.mocked(commands.sendAgentMessage).mockReturnValue(
       new Promise((resolve) => {
@@ -68,9 +57,7 @@ describe("Workspace (User Story 3: open a folder to enter agent mode)", () => {
       }),
     );
 
-    render(<Workspace />);
-    await userEvent.type(screen.getByTestId("workspace-path-input"), "/tmp/project");
-    await userEvent.click(screen.getByTestId("open-workspace"));
+    render(<Workspace conversationId="conv-1" />);
     await screen.findByTestId("agent-input");
 
     await userEvent.type(screen.getByTestId("agent-input"), "list the files here");
@@ -84,24 +71,49 @@ describe("Workspace (User Story 3: open a folder to enter agent mode)", () => {
       expect(screen.getByText(/Found 3 files/)).toBeInTheDocument();
     });
 
-    // Guards against the user's turn being dropped or reordered (e.g. an
-    // accidental setMessages([reply]) instead of appending) — mirrors the
-    // equivalent regression guard in Chat.test.tsx.
+    // Guards against the user's turn being dropped or reordered.
     const renderedMessages = screen.getAllByTestId("chat-message");
     expect(renderedMessages).toHaveLength(2);
     expect(renderedMessages[0].textContent).toContain("list the files here");
     expect(renderedMessages[1].textContent).toContain("Found 3 files");
   });
 
-  it("shows an error instead of hanging if opening the workspace fails", async () => {
-    vi.mocked(commands.openWorkspace).mockRejectedValue(new Error("not a directory"));
+  it("switching to a different conversationId reloads its own messages", async () => {
+    vi.mocked(commands.listMessages)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          id: "m3",
+          conversationId: "conv-2",
+          role: "user",
+          contentType: "text",
+          content: "second workspace",
+          toolName: null,
+          createdAt: 1,
+          durationMs: null,
+        },
+      ]);
 
-    render(<Workspace />);
-    await userEvent.type(screen.getByTestId("workspace-path-input"), "/not/a/real/path");
-    await userEvent.click(screen.getByTestId("open-workspace"));
+    const { rerender } = render(<Workspace conversationId="conv-1" />);
+    await waitFor(() => expect(commands.listMessages).toHaveBeenCalledWith("conv-1"));
+
+    rerender(<Workspace conversationId="conv-2" />);
+    await waitFor(() => {
+      expect(commands.listMessages).toHaveBeenCalledWith("conv-2");
+      expect(screen.getByText("second workspace")).toBeInTheDocument();
+    });
+  });
+
+  it("shows an error instead of hanging if sending fails", async () => {
+    vi.mocked(commands.sendAgentMessage).mockRejectedValue(new Error("inference crashed"));
+
+    render(<Workspace conversationId="conv-1" />);
+    await screen.findByTestId("agent-input");
+    await userEvent.type(screen.getByTestId("agent-input"), "do something");
+    await userEvent.click(screen.getByTestId("agent-send"));
 
     await waitFor(() => {
-      expect(screen.getByText(/not a directory/)).toBeInTheDocument();
+      expect(screen.getByTestId("workspace-error")).toHaveTextContent("inference crashed");
     });
   });
 });

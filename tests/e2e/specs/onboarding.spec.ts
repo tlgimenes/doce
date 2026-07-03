@@ -35,8 +35,10 @@ describe("Onboarding (User Story 1: zero-config first run)", () => {
     await progressLabel.waitForExist({ timeout: 20000 });
   });
 
-  it("finishes the download, verifies it, and transitions to chat", async () => {
-    const chatInput = await browser.$("[data-testid='chat-input']");
-    await chatInput.waitForExist({ timeout: 11 * 60 * 1000, interval: 2000 });
+  it("finishes the download, verifies it, and transitions to the empty-state composer", async () => {
+    // 006-chat-empty-state: a fresh install has no conversations yet, so
+    // the landing view is the composer, not a chat thread.
+    const composerInput = await browser.$("[data-testid='empty-state-input']");
+    await composerInput.waitForExist({ timeout: 11 * 60 * 1000, interval: 2000 });
   });
 });

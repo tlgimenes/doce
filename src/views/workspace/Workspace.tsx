@@ -1,58 +1,67 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { Button } from "@/components/ui/button";
-import { commands } from "@/lib/ipc";
+import { commands, type Message } from "@/lib/ipc";
 
-interface AgentMessage {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
+interface WorkspaceProps {
+  conversationId: string;
 }
 
 /**
- * User Story 3: opening a folder turns the app into a coding/system agent
- * (FR-008). Minimal by design for this pass — `send_agent_message` runs
- * the full tool-use loop to completion before returning (see
- * commands/agent.rs for why: no live per-turn streaming yet), so this
- * view shows a single "thinking…" state rather than a trace of each tool
- * call the way `quickstart.md` §3's full vision describes. The workspace
- * file tree / diff viewer / terminal panel (tasks.md T060) aren't built
- * yet either — this is a working vertical slice (open folder -> agent
- * uses real tools -> real answer), not the full workspace UI.
+ * 006-chat-empty-state: restructured from a self-contained "pick a folder,
+ * then chat" component into a `conversationId`-driven message view, the
+ * same shape as `Chat.tsx` — folder selection now happens once, up front,
+ * in `EmptyState.tsx`/`FolderPicker.tsx`. Still uses `sendAgentMessage`
+ * (runs the full tool-use loop to completion before returning) rather than
+ * `Chat.tsx`'s streamed `sendMessage`, so there's no Timer/stream state
+ * here — just a single "thinking…" placeholder.
  */
-export default function Workspace() {
-  const [pathInput, setPathInput] = useState("");
-  const [conversationId, setConversationId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<AgentMessage[]>([]);
+export default function Workspace({ conversationId }: WorkspaceProps) {
+  const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [thinking, setThinking] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const openFolder = async () => {
-    if (!pathInput.trim()) return;
+  useEffect(() => {
+    setMessages([]);
+    setInput("");
     setError(null);
-    try {
-      const workspace = await commands.openWorkspace(pathInput.trim());
-      const conv = await commands.createConversation(workspace.id);
-      setConversationId(conv.id);
-      setMessages([]);
-    } catch (e) {
-      setError(String(e));
-    }
-  };
+    commands.listMessages(conversationId).then(setMessages);
+  }, [conversationId]);
 
   const send = async () => {
-    if (!conversationId || !input.trim() || thinking) return;
+    if (!input.trim() || thinking) return;
     const content = input;
     setInput("");
     setError(null);
-    setMessages((prev) => [...prev, { id: `u-${Date.now()}`, role: "user", content }]);
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: `u-${Date.now()}`,
+        conversationId,
+        role: "user",
+        contentType: "text",
+        content,
+        toolName: null,
+        createdAt: Date.now(),
+        durationMs: null,
+      },
+    ]);
     setThinking(true);
     try {
       const reply = await commands.sendAgentMessage(conversationId, content);
       setMessages((prev) => [
         ...prev,
-        { id: `a-${Date.now()}`, role: "assistant", content: reply },
+        {
+          id: `a-${Date.now()}`,
+          conversationId,
+          role: "assistant",
+          contentType: "text",
+          content: reply,
+          toolName: null,
+          createdAt: Date.now(),
+          durationMs: null,
+        },
       ]);
     } catch (e) {
       setError(String(e));
@@ -60,35 +69,6 @@ export default function Workspace() {
       setThinking(false);
     }
   };
-
-  if (!conversationId) {
-    return (
-      <div className="flex h-dvh flex-col items-center justify-center gap-4 bg-background text-foreground">
-        <h2 className="text-balance text-lg font-medium">
-          Open a folder to start an agent session
-        </h2>
-        <div className="flex gap-2">
-          <input
-            className="w-96 rounded-md border border-border bg-card px-3 py-2"
-            placeholder="/path/to/project"
-            value={pathInput}
-            onChange={(e) => setPathInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && openFolder()}
-            data-testid="workspace-path-input"
-          />
-          <Button
-            variant="primary"
-            onClick={openFolder}
-            disabled={!pathInput.trim()}
-            data-testid="open-workspace"
-          >
-            Open
-          </Button>
-        </div>
-        {error && <p className="text-sm text-destructive">{error}</p>}
-      </div>
-    );
-  }
 
   return (
     <div className="flex h-dvh flex-col bg-background text-foreground">
@@ -106,9 +86,6 @@ export default function Workspace() {
                 <ReactMarkdown>{m.content}</ReactMarkdown>
               </div>
             ) : (
-              // No Timer here (unlike Chat.tsx's assistant branch): send_agent_message
-              // runs synchronously to completion, and AgentMessage carries no
-              // createdAt/durationMs to feed one — not a copy-paste omission.
               <div
                 key={m.id}
                 className="mb-6"

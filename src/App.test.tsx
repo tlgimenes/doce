@@ -8,17 +8,24 @@ import { commands, events } from "@/lib/ipc";
 // keyboard shortcuts, exercised against the real App component with every
 // child view's IPC surface mocked (matching Chat.test.tsx/ConversationList.
 // test.tsx/Workspace.test.tsx/Settings.test.tsx's existing mock shapes).
+//
+// 006-chat-empty-state changed what landing on "no conversation selected"
+// means: it's always the EmptyState composer now (never a bare,
+// input-less placeholder), and "+ New conversation"/Cmd+N no longer
+// instant-creates — so several of these cases now go through the composer's
+// real open_workspace -> create_conversation -> send_agent_message sequence
+// instead of a single mocked createConversation() call.
 vi.mock("@/lib/ipc", () => ({
   commands: {
     listModels: vi.fn(),
     setFocusedConversation: vi.fn(),
     listConversations: vi.fn(),
     createConversation: vi.fn(),
+    openWorkspace: vi.fn(),
+    sendAgentMessage: vi.fn(),
     listMessages: vi.fn(),
     sendMessage: vi.fn(),
     cancelGeneration: vi.fn(),
-    openWorkspace: vi.fn(),
-    sendAgentMessage: vi.fn(),
     listMcpServers: vi.fn(),
     listSkills: vi.fn(),
   },
@@ -30,15 +37,28 @@ vi.mock("@/lib/ipc", () => ({
   },
 }));
 
+vi.mock("@tauri-apps/api/path", () => ({
+  homeDir: vi.fn(() => Promise.resolve("/Users/tester")),
+}));
+
 function pressCmd(key: string) {
   fireEvent.keyDown(window, { key, metaKey: true });
 }
 
 async function waitForReady() {
   await waitFor(() => expect(screen.getByTestId("conversation-list")).toBeInTheDocument());
+  // EmptyState resolves Home asynchronously — wait for it so a stray
+  // post-test homeDir() resolution doesn't bleed into the next test.
+  await screen.findByTestId("folder-target-selector");
 }
 
-describe("App keyboard shortcuts (005-keyboard-shortcuts)", () => {
+async function createWorkspaceConversationViaComposer(text: string) {
+  await userEvent.type(await screen.findByTestId("empty-state-input"), text);
+  await userEvent.click(screen.getByTestId("empty-state-submit"));
+  return screen.findByTestId("agent-input");
+}
+
+describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-empty-state)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
@@ -46,14 +66,22 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts)", () => {
       { id: "m", hardwareTier: "tier1", isActive: true, installed: true },
     ]);
     vi.mocked(commands.listConversations).mockResolvedValue([]);
+    vi.mocked(commands.openWorkspace).mockResolvedValue({
+      id: "ws-home",
+      path: "/Users/tester",
+      displayName: "tester",
+      createdAt: 1,
+      lastOpenedAt: 1,
+    });
     vi.mocked(commands.createConversation).mockResolvedValue({
       id: "new-conv",
-      workspaceId: null,
+      workspaceId: "ws-home",
       title: "New conversation",
       createdAt: 1,
       updatedAt: 1,
       status: "done",
     });
+    vi.mocked(commands.sendAgentMessage).mockResolvedValue("On it.");
     vi.mocked(commands.listMessages).mockResolvedValue([]);
     vi.mocked(commands.listMcpServers).mockResolvedValue([]);
     vi.mocked(commands.listSkills).mockResolvedValue([]);
@@ -63,39 +91,43 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts)", () => {
     vi.mocked(events.onGenerationQueueUpdate).mockResolvedValue(() => {});
   });
 
-  it("Cmd+L focuses the chat input from anywhere, and leaves focus alone if already there (US1)", async () => {
+  it("Cmd+L focuses the composer input when no conversation is selected (US1, updated for 006)", async () => {
+    render(<App />);
+    await waitForReady();
+    const emptyStateInput = screen.getByTestId("empty-state-input");
+
+    document.body.focus();
+    expect(document.activeElement).not.toBe(emptyStateInput);
+    pressCmd("l");
+    expect(document.activeElement).toBe(emptyStateInput);
+
+    // Already focused: pressing again must not disturb it.
+    pressCmd("l");
+    expect(document.activeElement).toBe(emptyStateInput);
+  });
+
+  it("Cmd+L focuses the plain chat input for a pre-existing, non-workspace conversation (US1, FR-012 regression guard)", async () => {
+    vi.mocked(commands.listConversations).mockResolvedValue([
+      { id: "legacy-1", workspaceId: null, title: "Before 006", createdAt: 1, updatedAt: 1, status: "done" },
+    ]);
+
     render(<App />);
     await waitForReady();
 
-    await userEvent.click(await screen.findByTestId("new-conversation"));
+    await userEvent.click(await screen.findByText("Before 006"));
     const chatInput = await screen.findByTestId("chat-input");
 
     document.body.focus();
     expect(document.activeElement).not.toBe(chatInput);
     pressCmd("l");
     expect(document.activeElement).toBe(chatInput);
-
-    // Already focused: pressing again must not disturb it.
-    pressCmd("l");
-    expect(document.activeElement).toBe(chatInput);
   });
 
-  it("Cmd+L focuses the agent task input when in agent mode, not the chat input (US1)", async () => {
-    vi.mocked(commands.openWorkspace).mockResolvedValue({
-      id: "ws-1",
-      path: "/tmp/project",
-      displayName: "project",
-      createdAt: 1,
-      lastOpenedAt: 1,
-    });
-
+  it("Cmd+L focuses the agent task input for a workspace-scoped conversation, not the chat input (US1)", async () => {
     render(<App />);
     await waitForReady();
 
-    await userEvent.click(await screen.findByTestId("enter-agent-mode"));
-    await userEvent.type(await screen.findByTestId("workspace-path-input"), "/tmp/project");
-    await userEvent.click(await screen.findByTestId("open-workspace"));
-    const agentInput = await screen.findByTestId("agent-input");
+    const agentInput = await createWorkspaceConversationViaComposer("fix the bug");
 
     document.body.focus();
     pressCmd("l");
@@ -112,31 +144,32 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts)", () => {
     expect(() => pressCmd("l")).not.toThrow();
     expect(screen.queryByTestId("chat-input")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agent-input")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("empty-state-input")).not.toBeInTheDocument();
   });
 
   it("typing a plain 'l' (no Cmd) does not trigger the shortcut", async () => {
     render(<App />);
     await waitForReady();
-
-    await userEvent.click(await screen.findByTestId("new-conversation"));
-    const chatInput = await screen.findByTestId("chat-input");
+    const emptyStateInput = screen.getByTestId("empty-state-input");
     document.body.focus();
 
     fireEvent.keyDown(window, { key: "l", metaKey: false });
-    expect(document.activeElement).not.toBe(chatInput);
+    expect(document.activeElement).not.toBe(emptyStateInput);
   });
 
-  it("Cmd+N creates a new conversation and switches to it from the chat view (US2)", async () => {
+  it("Cmd+N shows the empty-state composer instead of instantly creating a conversation (US2, 006 FR-002)", async () => {
     render(<App />);
     await waitForReady();
+    await createWorkspaceConversationViaComposer("first task");
+    vi.mocked(commands.createConversation).mockClear();
 
     pressCmd("n");
 
-    await waitFor(() => expect(commands.createConversation).toHaveBeenCalledTimes(1));
-    await screen.findByTestId("chat-input");
+    await screen.findByTestId("empty-state-input");
+    expect(commands.createConversation).not.toHaveBeenCalled();
   });
 
-  it("Cmd+N switches back to the new conversation from Settings and from agent mode (US2)", async () => {
+  it("Cmd+N returns to the composer from Settings and from a workspace conversation (US2)", async () => {
     render(<App />);
     await waitForReady();
 
@@ -145,8 +178,7 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts)", () => {
 
     pressCmd("n");
 
-    await waitFor(() => expect(commands.createConversation).toHaveBeenCalledTimes(1));
-    await screen.findByTestId("chat-input");
+    await screen.findByTestId("empty-state-input");
     expect(screen.queryByTestId("settings-view")).not.toBeInTheDocument();
   });
 
@@ -181,24 +213,22 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts)", () => {
     render(<App />);
     await waitForReady();
 
-    await userEvent.click(await screen.findByTestId("new-conversation"));
-    await screen.findByTestId("chat-input");
-    vi.mocked(commands.createConversation).mockClear();
+    const agentInput = await createWorkspaceConversationViaComposer("first task");
 
     pressCmd("k");
     await screen.findByTestId("shortcuts-dialog");
 
     document.body.focus();
     pressCmd("l");
-    expect(document.activeElement).not.toBe(screen.getByTestId("chat-input"));
+    expect(document.activeElement).not.toBe(agentInput);
 
     pressCmd("n");
-    expect(commands.createConversation).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("empty-state-input")).not.toBeInTheDocument();
 
     // Once dismissed, the shortcuts work again.
     pressCmd("k");
     await waitFor(() => expect(screen.queryByTestId("shortcuts-dialog")).not.toBeInTheDocument());
     pressCmd("n");
-    await waitFor(() => expect(commands.createConversation).toHaveBeenCalledTimes(1));
+    await screen.findByTestId("empty-state-input");
   });
 });
