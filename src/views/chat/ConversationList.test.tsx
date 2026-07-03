@@ -1,7 +1,8 @@
+import { createRef } from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import ConversationList from "./ConversationList";
+import ConversationList, { type ConversationListHandle } from "./ConversationList";
 import { commands } from "@/lib/ipc";
 
 vi.mock("@/lib/ipc", () => ({
@@ -52,5 +53,27 @@ describe("ConversationList", () => {
     await userEvent.click(await screen.findByTestId("new-conversation"));
 
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith("new-conv"));
+  });
+
+  it("exposes createNew via a ref, calling the same path as clicking the button (005-keyboard-shortcuts, Cmd+N)", async () => {
+    vi.mocked(commands.listConversations).mockResolvedValue([]);
+    vi.mocked(commands.createConversation).mockResolvedValue({
+      id: "new-conv",
+      workspaceId: null,
+      title: "New conversation",
+      createdAt: 1,
+      updatedAt: 1,
+      status: "done",
+    });
+
+    const onCreated = vi.fn();
+    const ref = createRef<ConversationListHandle>();
+    render(<ConversationList ref={ref} activeId={null} onSelect={vi.fn()} onCreated={onCreated} onOpenSettings={vi.fn()} />);
+
+    await waitFor(() => expect(ref.current).not.toBeNull());
+    ref.current!.createNew();
+
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith("new-conv"));
+    expect(commands.createConversation).toHaveBeenCalledTimes(1);
   });
 });
