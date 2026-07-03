@@ -13,7 +13,7 @@
     "windows": [
       {
         "title": "Doce",
-        "titleBarStyle": "Transparent",
+        "titleBarStyle": "Overlay",
         "hiddenTitle": true,
         "width": 1000,
         "height": 700,

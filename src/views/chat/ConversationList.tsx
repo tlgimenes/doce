@@ -1,6 +1,7 @@
-import { forwardRef, useEffect, useImperativeHandle, useState } from "react";
+import { forwardRef, type MouseEvent, useEffect, useImperativeHandle, useState } from "react";
 import { MagnifyingGlassIcon, GearIcon } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { commands, type Conversation, type ConversationStatus } from "@/lib/ipc";
 import SearchPanel from "./SearchPanel";
 
@@ -66,11 +67,25 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
 
     useImperativeHandle(ref, () => ({ createNew }));
 
+    const startDrag = async (event: MouseEvent<HTMLDivElement>) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      await getCurrentWindow().startDragging().catch((error) => {
+        console.error("Failed to start window dragging", error);
+      });
+    };
+
     return (
       <div
-        className="relative flex h-dvh w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar p-3 text-sidebar-foreground"
+        className="relative flex h-dvh w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar p-3 pt-12 text-sidebar-foreground"
         data-testid="conversation-list"
       >
+        <div
+          className="absolute left-0 right-0 top-0 h-10 select-none"
+          data-tauri-drag-region
+          data-testid="sidebar-drag-region"
+          onMouseDown={startDrag}
+        />
         {searching && (
           <SearchPanel
             onClose={() => setSearching(false)}
