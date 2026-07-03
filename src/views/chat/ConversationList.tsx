@@ -1,6 +1,7 @@
-import { forwardRef, useEffect, useImperativeHandle, useState } from "react";
+import { forwardRef, type MouseEvent, useEffect, useImperativeHandle, useState } from "react";
 import { MagnifyingGlassIcon, GearIcon } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { commands, type Conversation, type ConversationStatus } from "@/lib/ipc";
 import SearchPanel from "./SearchPanel";
 
@@ -66,12 +67,27 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
 
     useImperativeHandle(ref, () => ({ createNew }));
 
+    const startDrag = async (event: MouseEvent<HTMLDivElement>) => {
+      if (event.button !== 0 || event.defaultPrevented) return;
+      event.preventDefault();
+      try {
+        await getCurrentWindow().startDragging();
+      } catch {
+        // no-op: startDragging is unavailable in non-Tauri runtimes and the app is still
+        // usable in browser mode; the CSS drag region remains the primary path there.
+      }
+    };
+
     return (
       <div
         className="relative flex h-dvh w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground"
         data-testid="conversation-list"
       >
-        <div className="window-drag-region flex h-10 items-center justify-center border-b border-sidebar-border/60 px-3 py-1.5">
+        <div
+          className="window-drag-region flex h-10 items-center justify-center border-b border-sidebar-border/60 px-3 py-1.5"
+          data-tauri-drag-region
+          onMouseDown={startDrag}
+        >
           <span className="inline-block h-1.5 w-10 rounded-full bg-muted" />
         </div>
         {searching && (

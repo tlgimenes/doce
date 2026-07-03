@@ -45,7 +45,7 @@ export default function SearchPanel({ onSelect, onClose }: SearchPanelProps) {
 
   return (
     <div
-      className="absolute inset-0 z-10 flex flex-col bg-background p-4"
+      className="window-no-drag absolute inset-0 z-10 flex flex-col bg-background p-4"
       data-testid="search-panel"
     >
       <div className="mb-3 flex gap-2">
