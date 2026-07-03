@@ -1,5 +1,5 @@
 import { forwardRef, type MouseEvent, useEffect, useImperativeHandle, useState } from "react";
-import { MagnifyingGlassIcon, GearIcon } from "@phosphor-icons/react";
+import { MagnifyingGlassIcon, GearIcon, PlusIcon } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { commands, type Conversation, type ConversationStatus } from "@/lib/ipc";
@@ -32,6 +32,9 @@ const STATUS_LABEL: Record<ConversationStatus, string> = {
   requires_action: "Needs your input",
   failed: "Failed",
 };
+
+const SIDEBAR_ACTION_BUTTON =
+  "w-full justify-start gap-1 h-10 rounded-lg border-0 bg-transparent px-1 py-0 text-sm text-sidebar-foreground/95 hover:bg-sidebar-foreground/8 hover:text-sidebar-foreground focus-visible:ring-0 focus-visible:outline-none";
 
 /**
  * User Story 7: at-a-glance conversation status (FR-011) and auto-generated
@@ -77,7 +80,7 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
 
     return (
       <div
-        className="relative flex h-dvh w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar p-3 pt-12 text-sidebar-foreground"
+        className="relative flex h-dvh w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar px-2 pb-3 pt-0 text-sidebar-foreground"
         data-testid="conversation-list"
       >
         <div
@@ -100,35 +103,39 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
             }}
           />
         )}
-        <div className="mb-3 flex gap-2">
+        <div className="mb-3 mt-8 flex flex-col gap-0.5">
           <Button
             variant="ghost"
             size="sm"
-            className="flex-1 justify-start bg-background/80 py-2 font-medium shadow-sm hover:bg-background"
+            className={SIDEBAR_ACTION_BUTTON}
             onClick={createNew}
             data-testid="new-conversation"
+            aria-label="New agent"
           >
-            + New conversation
+            <PlusIcon size={16} weight="bold" />
+            New Agent
           </Button>
           <Button
             variant="ghost"
             size="sm"
-            className="bg-background/80 py-2 shadow-sm hover:bg-background"
+            className={SIDEBAR_ACTION_BUTTON}
             onClick={() => setSearching(true)}
             data-testid="open-search"
             aria-label="Search conversations"
           >
             <MagnifyingGlassIcon size={16} />
+            Search
           </Button>
           <Button
             variant="ghost"
             size="sm"
-            className="bg-background/80 py-2 shadow-sm hover:bg-background"
+            className={SIDEBAR_ACTION_BUTTON}
             onClick={onOpenSettings}
             data-testid="open-settings"
             aria-label="Settings"
           >
             <GearIcon size={16} />
+            Settings
           </Button>
         </div>
         <div className="flex-1 space-y-1 overflow-y-auto">
