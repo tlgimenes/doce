@@ -83,6 +83,14 @@ describe("Workspace (User Story 3: open a folder to enter agent mode)", () => {
       expect(screen.queryByTestId("agent-thinking")).not.toBeInTheDocument();
       expect(screen.getByText(/Found 3 files/)).toBeInTheDocument();
     });
+
+    // Guards against the user's turn being dropped or reordered (e.g. an
+    // accidental setMessages([reply]) instead of appending) — mirrors the
+    // equivalent regression guard in Chat.test.tsx.
+    const renderedMessages = screen.getAllByTestId("chat-message");
+    expect(renderedMessages).toHaveLength(2);
+    expect(renderedMessages[0].textContent).toContain("list the files here");
+    expect(renderedMessages[1].textContent).toContain("Found 3 files");
   });
 
   it("shows an error instead of hanging if opening the workspace fails", async () => {
