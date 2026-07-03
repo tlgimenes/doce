@@ -62,15 +62,6 @@
   --color-sidebar-border: var(--color-border);
 }
 
-.window-drag-region {
-  -webkit-app-region: drag;
-  cursor: grab;
-}
-
-.window-no-drag {
-  -webkit-app-region: no-drag;
-}
-
 body {
   background-color: var(--color-background);
   color: var(--color-foreground);
