@@ -16,6 +16,26 @@ pub enum InferenceError {
     ModelLoad(String),
 }
 
+/// The client-side `LlamaBatch`'s fixed capacity — llama.cpp can't decode
+/// more tokens than this in a single call, so any prompt longer than this
+/// (system prompt + tool list + growing conversation history routinely
+/// exceeds it in agent mode) must be prefilled across multiple `decode()`
+/// calls via `prefill_chunks`, not one `batch.add()` loop over every token.
+const BATCH_CAPACITY: usize = 512;
+
+/// Splits `n_tokens` positions into `[start, end)` ranges of at most
+/// `batch_capacity` each, in order — the sequence of chunks `generate()`
+/// prefills the prompt in. Pure and independent of llama.cpp so the
+/// off-by-one-prone boundary math (the exact bug this fixes: a prompt of
+/// precisely `batch_capacity + 1` tokens) can be unit-tested without a real
+/// model.
+fn prefill_chunks(n_tokens: usize, batch_capacity: usize) -> Vec<std::ops::Range<usize>> {
+    (0..n_tokens)
+        .step_by(batch_capacity)
+        .map(|start| start..(start + batch_capacity).min(n_tokens))
+        .collect()
+}
+
 /// A single role-tagged conversation turn. Chat-tuned models like Qwen are
 /// trained on turns wrapped in special tokens (e.g. ChatML's
 /// `<|im_start|>role\n...<|im_end|>`), not on raw concatenated text — see
@@ -120,15 +140,28 @@ impl InferenceEngine {
             .str_to_token(prompt, AddBos::Always)
             .map_err(|e| InferenceError::Backend(e.to_string()))?;
 
-        let mut batch = LlamaBatch::new(512, 1);
-        let last_idx = tokens.len() as i32 - 1;
-        for (i, token) in tokens.iter().enumerate() {
-            batch
-                .add(*token, i as i32, &[0], i as i32 == last_idx)
+        // The batch is a fixed-size client buffer (BATCH_CAPACITY slots) —
+        // llama.cpp can't decode more tokens than that in one call, so a
+        // prompt longer than BATCH_CAPACITY (system prompt + tool list +
+        // growing conversation history routinely exceeds it in agent mode)
+        // must be prefilled in sequential chunks, not one `batch.add()` loop
+        // over every token (that overflows with `BatchAddError::
+        // InsufficientSpace`, surfaced to users as "llama.cpp backend error:
+        // Insufficient Space of 512"). Only the very last token overall gets
+        // `logits = true`, since sampling only needs the final position's
+        // distribution.
+        let mut batch = LlamaBatch::new(BATCH_CAPACITY, 1);
+        let last_idx = tokens.len() - 1;
+        for chunk in prefill_chunks(tokens.len(), BATCH_CAPACITY) {
+            batch.clear();
+            for i in chunk {
+                batch
+                    .add(tokens[i], i as i32, &[0], i == last_idx)
+                    .map_err(|e| InferenceError::Backend(e.to_string()))?;
+            }
+            ctx.decode(&mut batch)
                 .map_err(|e| InferenceError::Backend(e.to_string()))?;
         }
-        ctx.decode(&mut batch)
-            .map_err(|e| InferenceError::Backend(e.to_string()))?;
 
         // A plain greedy (always-argmax) sampler tends to degenerate into
         // repeated loops on chat-tuned models, which reads as "confused" or
@@ -150,7 +183,12 @@ impl InferenceEngine {
         let mut output = String::new();
         let mut decoder = encoding_rs::UTF_8.new_decoder();
 
-        for n_cur in (batch.n_tokens()..).take(max_tokens as usize) {
+        // Starts from `tokens.len()` (the full prompt length), not
+        // `batch.n_tokens()` — that now only reflects however many tokens
+        // the *last prefill chunk* held, not the full prompt, now that
+        // prefill runs in chunks; using it here would silently restart
+        // position numbering partway through the prompt.
+        for n_cur in (tokens.len() as i32..).take(max_tokens as usize) {
             // Checked between decode steps (research.md §24 / tasks.md
             // T018), not just before starting — a cancellation should stop
             // generation promptly rather than only at the next request.
@@ -177,5 +215,61 @@ impl InferenceEngine {
         }
 
         Ok(output)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_prompt_has_no_chunks() {
+        assert_eq!(prefill_chunks(0, 512), Vec::<std::ops::Range<usize>>::new());
+    }
+
+    #[test]
+    fn prompt_under_capacity_is_a_single_chunk() {
+        assert_eq!(prefill_chunks(100, 512), vec![0..100]);
+    }
+
+    #[test]
+    fn prompt_exactly_at_capacity_is_a_single_chunk() {
+        assert_eq!(prefill_chunks(512, 512), vec![0..512]);
+    }
+
+    #[test]
+    fn prompt_one_token_over_capacity_splits_into_two_chunks() {
+        // The exact reported bug: a 513-token prompt against a 512-capacity
+        // batch used to overflow on the 513th `batch.add()` call
+        // (BatchAddError::InsufficientSpace(512), surfaced to users as
+        // "Insufficient Space of 512") instead of starting a new chunk.
+        assert_eq!(prefill_chunks(513, 512), vec![0..512, 512..513]);
+    }
+
+    #[test]
+    fn prompt_several_times_capacity_splits_evenly() {
+        assert_eq!(prefill_chunks(1024, 512), vec![0..512, 512..1024]);
+    }
+
+    #[test]
+    fn prompt_several_times_capacity_plus_remainder() {
+        assert_eq!(
+            prefill_chunks(1025, 512),
+            vec![0..512, 512..1024, 1024..1025]
+        );
+    }
+
+    #[test]
+    fn every_token_position_is_covered_exactly_once() {
+        for n_tokens in [1, 511, 512, 513, 1000, 2048, 2049] {
+            let chunks = prefill_chunks(n_tokens, 512);
+            let covered: Vec<usize> = chunks.iter().flat_map(|r| r.clone()).collect();
+            let expected: Vec<usize> = (0..n_tokens).collect();
+            assert_eq!(covered, expected, "n_tokens={n_tokens}");
+            assert!(
+                chunks.iter().all(|r| r.len() <= 512),
+                "a chunk exceeded batch capacity for n_tokens={n_tokens}"
+            );
+        }
     }
 }
