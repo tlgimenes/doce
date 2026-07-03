@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
 import Onboarding from "@/views/onboarding/Onboarding";
 import Chat from "@/views/chat/Chat";
 import ConversationList from "@/views/chat/ConversationList";
@@ -57,13 +58,14 @@ export default function App() {
         ) : (
           <div className="flex h-dvh flex-col items-center justify-center gap-3 text-muted-foreground">
             <p>Start a new conversation, or</p>
-            <button
-              className="rounded-md border border-border px-3 py-2 text-sm text-foreground hover:bg-muted"
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={() => setAgentMode(true)}
               data-testid="enter-agent-mode"
             >
               Open a folder (agent mode)
-            </button>
+            </Button>
           </div>
         )}
       </div>

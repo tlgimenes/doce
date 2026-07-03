@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Button } from "@/components/ui/button";
 import { commands, type SearchResult } from "@/lib/ipc";
 
 interface SearchPanelProps {
@@ -43,7 +44,10 @@ export default function SearchPanel({ onSelect, onClose }: SearchPanelProps) {
   };
 
   return (
-    <div className="absolute inset-0 z-10 flex flex-col bg-background p-4" data-testid="search-panel">
+    <div
+      className="absolute inset-0 z-10 flex flex-col bg-background p-4"
+      data-testid="search-panel"
+    >
       <div className="mb-3 flex gap-2">
         <input
           autoFocus
@@ -53,21 +57,22 @@ export default function SearchPanel({ onSelect, onClose }: SearchPanelProps) {
           onChange={(e) => runSearch(e.target.value)}
           data-testid="search-input"
         />
-        <button className="rounded-md border border-border px-3 py-2 text-sm" onClick={onClose}>
+        <Button variant="secondary" size="sm" className="py-2" onClick={onClose}>
           Close
-        </button>
+        </Button>
       </div>
       <div className="flex-1 space-y-2 overflow-y-auto">
         {results.map((r) => (
-          <button
+          <Button
             key={r.conversationId}
-            className="block w-full rounded-md border border-border p-3 text-left hover:bg-muted"
+            variant="secondary"
+            className="w-full flex-col items-start justify-start gap-0 p-3 text-left"
             onClick={() => onSelect(r.conversationId)}
             data-testid="search-result"
           >
             <p className="text-sm font-medium">{r.title}</p>
             <p className="mt-1 text-xs text-muted-foreground">{highlightExcerpt(r.excerpt)}</p>
-          </button>
+          </Button>
         ))}
         {query.trim() && results.length === 0 && (
           <p className="text-sm text-muted-foreground">No results.</p>

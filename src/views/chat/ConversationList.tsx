@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { MagnifyingGlassIcon, GearIcon } from "@phosphor-icons/react";
+import { Button } from "@/components/ui/button";
 import { commands, type Conversation, type ConversationStatus } from "@/lib/ipc";
 import SearchPanel from "./SearchPanel";
 
@@ -31,7 +32,12 @@ const STATUS_LABEL: Record<ConversationStatus, string> = {
  * activity happening entirely on the backend with no user action to hang
  * a refresh off of.
  */
-export default function ConversationList({ activeId, onSelect, onCreated, onOpenSettings }: ConversationListProps) {
+export default function ConversationList({
+  activeId,
+  onSelect,
+  onCreated,
+  onOpenSettings,
+}: ConversationListProps) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [searching, setSearching] = useState(false);
 
@@ -66,38 +72,46 @@ export default function ConversationList({ activeId, onSelect, onCreated, onOpen
         />
       )}
       <div className="mb-3 flex gap-2">
-        <button
-          className="flex-1 rounded-md bg-background/80 px-3 py-2 text-left text-sm font-medium shadow-sm hover:bg-background"
+        <Button
+          variant="ghost"
+          size="sm"
+          className="flex-1 justify-start bg-background/80 py-2 font-medium shadow-sm hover:bg-background"
           onClick={createNew}
           data-testid="new-conversation"
         >
           + New conversation
-        </button>
-        <button
-          className="flex items-center rounded-md bg-background/80 px-3 py-2 text-sm shadow-sm hover:bg-background"
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="bg-background/80 py-2 shadow-sm hover:bg-background"
           onClick={() => setSearching(true)}
           data-testid="open-search"
           aria-label="Search conversations"
         >
           <MagnifyingGlassIcon size={16} />
-        </button>
-        <button
-          className="flex items-center rounded-md bg-background/80 px-3 py-2 text-sm shadow-sm hover:bg-background"
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="bg-background/80 py-2 shadow-sm hover:bg-background"
           onClick={onOpenSettings}
           data-testid="open-settings"
           aria-label="Settings"
         >
           <GearIcon size={16} />
-        </button>
+        </Button>
       </div>
       <div className="flex-1 space-y-1 overflow-y-auto">
         {conversations.map((c) => (
-          <button
+          <Button
             key={c.id}
+            variant="ghost"
+            size="sm"
             onClick={() => onSelect(c.id)}
             data-testid="conversation-item"
             data-conversation-id={c.id}
-            className={`flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm ${
+            className={`w-full justify-start gap-2 py-2 text-left ${
               c.id === activeId ? "bg-background" : "bg-background/40 hover:bg-background/70"
             }`}
           >
@@ -108,7 +122,7 @@ export default function ConversationList({ activeId, onSelect, onCreated, onOpen
               data-status={c.status}
             />
             <span className="truncate">{c.title}</span>
-          </button>
+          </Button>
         ))}
       </div>
     </div>

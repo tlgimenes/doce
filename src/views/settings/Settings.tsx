@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
 import { commands, type McpServerConnection, type SkillSummary } from "@/lib/ipc";
 
 interface SettingsProps {
@@ -49,12 +50,21 @@ export default function Settings({ onClose }: SettingsProps) {
   };
 
   return (
-    <div className="flex h-dvh flex-col overflow-y-auto bg-background p-6 text-foreground" data-testid="settings-view">
+    <div
+      className="flex h-dvh flex-col overflow-y-auto bg-background p-6 text-foreground"
+      data-testid="settings-view"
+    >
       <div className="mb-6 flex items-center justify-between">
         <h2 className="text-balance text-lg font-medium">Settings</h2>
-        <button className="text-sm text-muted-foreground underline" onClick={onClose} data-testid="close-settings">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="p-0 text-muted-foreground underline hover:bg-transparent"
+          onClick={onClose}
+          data-testid="close-settings"
+        >
           Close
-        </button>
+        </Button>
       </div>
 
       <section className="mb-8">
@@ -81,14 +91,15 @@ export default function Settings({ onClose }: SettingsProps) {
             onChange={(e) => setArgsInput(e.target.value)}
             data-testid="mcp-args-input"
           />
-          <button
-            className="rounded-md bg-primary px-3 py-1 text-sm text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
+          <Button
+            variant="primary"
+            size="sm"
             onClick={addServer}
             disabled={!name.trim() || !command.trim()}
             data-testid="add-mcp-server"
           >
             Add
-          </button>
+          </Button>
         </div>
         <ul className="space-y-2">
           {servers.map((s) => (
@@ -97,9 +108,15 @@ export default function Settings({ onClose }: SettingsProps) {
                 <span>
                   {s.name} <span className="text-muted-foreground">({s.transport})</span>
                 </span>
-                <button className="text-xs underline" onClick={() => testServer(s.id)} data-testid="test-mcp-server">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="p-0 text-xs underline hover:bg-transparent"
+                  onClick={() => testServer(s.id)}
+                  data-testid="test-mcp-server"
+                >
                   Test connection
-                </button>
+                </Button>
               </div>
               {toolsByServer[s.id] === "error" && (
                 <p className="mt-1 text-xs text-destructive">Failed to connect</p>

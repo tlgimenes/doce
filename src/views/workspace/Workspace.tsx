@@ -1,5 +1,6 @@
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
+import { Button } from "@/components/ui/button";
 import { commands } from "@/lib/ipc";
 
 interface AgentMessage {
@@ -49,7 +50,10 @@ export default function Workspace() {
     setThinking(true);
     try {
       const reply = await commands.sendAgentMessage(conversationId, content);
-      setMessages((prev) => [...prev, { id: `a-${Date.now()}`, role: "assistant", content: reply }]);
+      setMessages((prev) => [
+        ...prev,
+        { id: `a-${Date.now()}`, role: "assistant", content: reply },
+      ]);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -60,7 +64,9 @@ export default function Workspace() {
   if (!conversationId) {
     return (
       <div className="flex h-dvh flex-col items-center justify-center gap-4 bg-background text-foreground">
-        <h2 className="text-balance text-lg font-medium">Open a folder to start an agent session</h2>
+        <h2 className="text-balance text-lg font-medium">
+          Open a folder to start an agent session
+        </h2>
         <div className="flex gap-2">
           <input
             className="w-96 rounded-md border border-border bg-card px-3 py-2"
@@ -70,14 +76,14 @@ export default function Workspace() {
             onKeyDown={(e) => e.key === "Enter" && openFolder()}
             data-testid="workspace-path-input"
           />
-          <button
-            className="rounded-md bg-primary px-4 py-2 text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
+          <Button
+            variant="primary"
             onClick={openFolder}
             disabled={!pathInput.trim()}
             data-testid="open-workspace"
           >
             Open
-          </button>
+          </Button>
         </div>
         {error && <p className="text-sm text-destructive">{error}</p>}
       </div>
@@ -122,7 +128,10 @@ export default function Workspace() {
             </p>
           )}
           {error && (
-            <div className="mb-6 rounded-lg bg-destructive/10 p-3 text-sm text-destructive" data-testid="workspace-error">
+            <div
+              className="mb-6 rounded-lg bg-destructive/10 p-3 text-sm text-destructive"
+              data-testid="workspace-error"
+            >
               {error}
             </div>
           )}
@@ -137,14 +146,14 @@ export default function Workspace() {
           placeholder="Describe a task…"
           data-testid="agent-input"
         />
-        <button
-          className="rounded-md bg-primary px-4 py-2 text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
+        <Button
+          variant="primary"
           onClick={send}
           disabled={!input.trim() || thinking}
           data-testid="agent-send"
         >
           Send
-        </button>
+        </Button>
       </div>
     </div>
   );

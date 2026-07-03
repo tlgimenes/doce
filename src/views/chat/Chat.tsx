@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import { Button } from "@/components/ui/button";
 import Timer from "@/components/Timer";
 import { commands, events, type Message } from "@/lib/ipc";
 import { useConversationStreamStore } from "@/state/conversationStreamStore";
@@ -206,13 +207,15 @@ export default function Chat({ conversationId }: ChatProps) {
                 <p className="text-xs text-muted-foreground">
                   <Timer createdAt={pending.createdAt} durationMs={null} />
                 </p>
-                <button
-                  className="text-xs text-muted-foreground underline hover:text-foreground"
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="p-0 text-xs text-muted-foreground underline hover:bg-transparent hover:text-foreground"
                   onClick={cancel}
                   data-testid="cancel-generation"
                 >
                   Cancel
-                </button>
+                </Button>
               </div>
             </div>
           )}
@@ -232,14 +235,9 @@ export default function Chat({ conversationId }: ChatProps) {
           placeholder="Message Doce…"
           data-testid="chat-input"
         />
-        <button
-          className="rounded-md bg-primary px-4 py-2 text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
-          onClick={send}
-          disabled={!input.trim() || !!pending}
-          data-testid="chat-send"
-        >
+        <Button variant="primary" onClick={send} disabled={!input.trim() || !!pending} data-testid="chat-send">
           Send
-        </button>
+        </Button>
       </div>
     </div>
   );
