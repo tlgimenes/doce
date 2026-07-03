@@ -78,7 +78,7 @@ export default function EmptyState({ onConversationCreated }: EmptyStateProps) {
       <div className="relative w-full max-w-xl space-y-3">
         <button
           type="button"
-          className="inline-flex items-center gap-1 border-l border-border bg-transparent p-0 pl-2 text-sm text-muted-foreground"
+          className="inline-flex items-center gap-1 bg-transparent p-0 text-sm text-muted-foreground"
           onClick={() => setPickerOpen(true)}
           data-testid="folder-target-selector"
         >
