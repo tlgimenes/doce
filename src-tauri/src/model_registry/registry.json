@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-07-03T00:00:00Z",
+  "tiers": [
+    {
+      "tier_id": "apple-silicon-8gb",
+      "min_ram_gb": 8,
+      "chip_families": ["M1", "M2", "M3", "M4"],
+      "models": [
+        {
+          "model_id": "smollm2-135m-instruct-q4_k_m",
+          "source_url": "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q4_K_M.gguf",
+          "quantization": "Q4_K_M",
+          "sha256": "2e8040ceae7815abe0dcb3540b9995eaa1fa0d2ca9e797d0a635ae4433c68c2d",
+          "capability_tags": ["fast", "tiny"],
+          "priority": 1
+        }
+      ]
+    },
+    {
+      "tier_id": "apple-silicon-16gb",
+      "min_ram_gb": 16,
+      "chip_families": ["M1", "M2", "M3", "M4"],
+      "models": [
+        {
+          "model_id": "qwen3-4b-instruct-2507-q4_k_m",
+          "source_url": "https://huggingface.co/bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+          "quantization": "Q4_K_M",
+          "sha256": "2fde00ce69dd4899c70d020845e2638353015bba0fdf161b3eb965f2bca4464e",
+          "capability_tags": ["tool-calling", "general"],
+          "priority": 1
+        }
+      ]
+    },
+    {
+      "tier_id": "apple-silicon-32gb",
+      "min_ram_gb": 32,
+      "chip_families": ["M1", "M2", "M3", "M4"],
+      "models": [
+        {
+          "model_id": "smollm2-135m-instruct-q4_k_m",
+          "source_url": "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q4_K_M.gguf",
+          "quantization": "Q4_K_M",
+          "sha256": "2e8040ceae7815abe0dcb3540b9995eaa1fa0d2ca9e797d0a635ae4433c68c2d",
+          "capability_tags": ["fast", "tiny"],
+          "priority": 1
+        }
+      ]
+    },
+    {
+      "tier_id": "apple-silicon-64gb-plus",
+      "min_ram_gb": 64,
+      "chip_families": ["M1", "M2", "M3", "M4"],
+      "models": [
+        {
+          "model_id": "smollm2-135m-instruct-q4_k_m",
+          "source_url": "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q4_K_M.gguf",
+          "quantization": "Q4_K_M",
+          "sha256": "2e8040ceae7815abe0dcb3540b9995eaa1fa0d2ca9e797d0a635ae4433c68c2d",
+          "capability_tags": ["fast", "tiny"],
+          "priority": 1
+        }
+      ]
+    }
+  ]
+}

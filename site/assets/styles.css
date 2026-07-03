@@ -1,0 +1,187 @@
+/* Sugary Serenade theme tokens */
+:root {
+  --color-1: #f9b4a9; /* peach/coral */
+  --color-2: #f6d9b6; /* light apricot */
+  --color-3: #fce4a6; /* pale yellow */
+  --color-4: #fae3b2; /* cream */
+  --color-5: #f4c1a4; /* soft salmon */
+
+  --gradient-linear: linear-gradient(0.25turn, var(--color-1), var(--color-2), var(--color-3), var(--color-4), var(--color-5));
+  --gradient-radial: radial-gradient(circle, var(--color-1), var(--color-2), var(--color-3), var(--color-4), var(--color-5));
+
+  --color-text: #3a1f1c;
+  --color-text-muted: #5c3a30;
+}
+
+/* Base reset */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background: var(--gradient-linear);
+  color: var(--color-text);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+main {
+  width: 100%;
+}
+
+img {
+  max-width: 100%;
+  display: block;
+}
+
+a {
+  color: inherit;
+}
+
+/* Layout scaffold */
+.section {
+  width: 100%;
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 3rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 1rem;
+}
+
+@media (max-width: 600px) {
+  .section {
+    padding: 2rem 1rem;
+  }
+}
+
+/* Hero (User Story 1) */
+#hero {
+  padding-top: 4rem;
+  padding-bottom: 2.5rem;
+}
+
+#hero .logo {
+  width: 6rem;
+  height: auto;
+}
+
+#hero h1 {
+  font-size: 3.5rem;
+  margin: 0;
+  letter-spacing: -0.02em;
+  color: var(--color-text);
+}
+
+#hero .tagline {
+  max-width: 40rem;
+  font-size: 1.25rem;
+  color: var(--color-text-muted);
+  margin: 0;
+}
+
+.button {
+  display: inline-block;
+  text-decoration: none;
+  font-weight: 600;
+  border-radius: 0.5rem;
+  padding: 0.9rem 2rem;
+  font-size: 1.05rem;
+  transition: transform 0.15s ease, background-color 0.15s ease;
+}
+
+.button:hover {
+  transform: translateY(-1px);
+}
+
+.button-primary {
+  background: var(--color-1);
+  color: var(--color-text);
+}
+
+.button-primary:hover {
+  background: var(--color-5);
+}
+
+.platform-note {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--color-text-muted);
+}
+
+@media (max-width: 600px) {
+  #hero {
+    padding-top: 2.5rem;
+  }
+
+  #hero h1 {
+    font-size: 2.5rem;
+  }
+
+  #hero .tagline {
+    font-size: 1.05rem;
+  }
+}
+
+/* Star count (User Story 2) */
+#stars {
+  padding-top: 1.5rem;
+  padding-bottom: 1.5rem;
+}
+
+.star-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  text-decoration: none;
+  color: var(--color-text);
+  background: var(--color-2);
+  border: 1px solid var(--color-5);
+  border-radius: 999px;
+  padding: 0.5rem 1.1rem;
+  font-size: 0.95rem;
+  transition: background 0.15s ease;
+}
+
+.star-badge:hover {
+  background: var(--color-5);
+}
+
+.star-icon {
+  color: var(--color-text);
+}
+
+#star-count {
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+/* Support / Buy Me a Coffee (User Story 3) */
+#support {
+  padding-top: 1rem;
+  padding-bottom: 4rem;
+}
+
+.button-secondary {
+  background: var(--color-3);
+  color: var(--color-text);
+}
+
+.button-secondary:hover {
+  background: var(--color-5);
+}

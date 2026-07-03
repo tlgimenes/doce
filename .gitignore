@@ -1,0 +1,43 @@
+# Node / frontend
+node_modules/
+dist/
+dist-ssr/
+*.local
+*.tsbuildinfo
+
+# Rust / Tauri backend
+src-tauri/target/
+src-tauri/Cargo.lock.bak
+
+# Tauri build artifacts
+src-tauri/gen/
+src-tauri/WixTools/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Local app data (never commit a real model or user DB)
+*.gguf
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+coverage/
+tests/e2e/screenshots/
+tests/e2e/logs/
+/logs/
+src/lib/bindings.ts

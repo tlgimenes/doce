@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "wdio-testing",
+  "description": "Additional permissions for the @wdio/tauri-service e2e driver, opted into only by the `wdio` Cargo feature + tauri.conf.test.json override — never part of a normal dev or release build.",
+  "windows": ["main"],
+  "permissions": ["wdio:default"]
+}

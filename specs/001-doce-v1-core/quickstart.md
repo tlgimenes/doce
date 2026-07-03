@@ -31,29 +31,49 @@ persistence scenarios).
 1. Call `open_workspace` on a small sample project folder.
 2. Describe a small, concrete task (e.g. "add a comment to file X").
 3. Expected outcome: `agent-activity` events show file diffs and/or shell
-   output as the agent works; the change is applied inside the opened folder
-   only.
+   output as the agent works, with no confirmation/approval prompt at any
+   point (FR-013); the agent is not restricted to the opened folder.
 4. Repeat with a model lacking native tool-calling (or force the
    grammar-constrained code path) and confirm the same task completes via
-   GBNF-constrained tool calls (FR-010).
+   GBNF-constrained tool calls (FR-014).
 
-## 4. Permission gate (User Story 4, SC-004/SC-005)
+## 4. Subagent spawning (FR-015/FR-016, SC-008)
 
-1. While in agent mode, prompt a task that requires acting outside the
-   opened workspace folder (e.g. reading a file elsewhere) or a
-   not-yet-trusted shell command category.
-2. Expected outcome: a `permission-prompt` event fires and the action is
-   blocked until `respond_to_permission_prompt` is called; no action occurs
-   silently.
-3. Respond with `allow-always` for that action kind.
-4. Trigger the same action kind again in the same workspace.
-5. Expected outcome: no new prompt; `list_permission_grants` shows the
-   persisted grant (`permission-grant-updated` fired once, not again).
-6. Open a different workspace and trigger the same action kind.
-7. Expected outcome: a new prompt fires — grants do not cross workspaces
-   (FR-014).
+1. Describe an agent-mode task complex enough that the agent delegates a
+   sub-task (or force this via a test prompt that explicitly asks for
+   delegation).
+2. Expected outcome: an `agent-activity` event with `kind: "subagent-status"`
+   fires (`state: "running"`, then `"complete"`); no intermediate tool call
+   or reasoning from the subagent ever reaches the frontend.
+3. Inspect the spawning conversation's messages after completion.
+4. Expected outcome: only the subagent's final result appears as a tool
+   result — no intermediate subagent steps are present (SC-008).
+5. Attempt to make that same subagent spawn a further subagent (test-only
+   hook, since this isn't user-triggerable in normal use).
+6. Expected outcome: rejected — nesting is capped at one level (FR-016).
 
-## 5. MCP and skills (User Story 5)
+## 5. Conversation title and status (User Story 7, FR-010/FR-011/FR-012, SC-010)
+
+1. Create a new conversation and send a first message longer than the
+   title truncation length.
+2. Expected outcome: `list_conversations` shows a `title` truncated at a
+   word boundary from that message — no extra model call involved.
+3. Send a message and let it complete normally (no trailing question).
+4. Expected outcome: that conversation's `status` is `done`.
+5. Prompt the agent in a way that triggers `AskUserQuestion` (or ends its
+   response in a real question, not a URL query string like `?ref=1`).
+6. Expected outcome: an `ask-user-question` event fires (for the tool-call
+   case) and/or `status` becomes `requires_action`; calling
+   `answer_user_question` resolves it and the loop continues.
+7. Force a tool execution failure (e.g. an invalid `Bash` command in a
+   controlled test).
+8. Expected outcome: that conversation's `status` becomes `failed`.
+9. While a generation is actively running for a conversation, check its
+   `status`.
+10. Expected outcome: `in_progress` — it does not jump ahead to `done`/
+    `requires_action`/`failed` before the turn actually finishes.
+
+## 6. MCP and skills (User Story 4)
 
 1. Call `add_mcp_server` with a local test MCP server (stdio transport).
 2. Start a task that would use a tool exposed only by that server.
@@ -64,9 +84,24 @@ persistence scenarios).
 6. Expected outcome: `list_skills` shows it, and the agent's behavior
    reflects the skill being pulled into context without manual selection.
 
-## 6. Privacy check (Principle II, SC-007)
+## 7. Search (User Story 6, SC-009)
 
-1. During steps 1–5 above, monitor outbound network traffic from the app
+1. Have at least two conversations with distinct, identifiable topics
+   (e.g. one mentions "quarterly budget," another mentions "hiking trails").
+2. Call `search_conversations` with a keyword unique to one of them.
+3. Expected outcome: that conversation is returned with a highlighted
+   `snippet`; an unrelated conversation is not returned (or ranks lower).
+4. Repeat with a keyword that only appears in a conversation's `title`
+   (not its message content).
+5. Expected outcome: the conversation is still found.
+6. Trigger a subagent run (per step 4 above) whose internal messages
+   contain a distinctive keyword, then search for that keyword.
+7. Expected outcome: no result references that subagent conversation —
+   search never surfaces subagent-only content (FR-030).
+
+## 8. Privacy check (Principle II, SC-005)
+
+1. During steps 1–7 above, monitor outbound network traffic from the app
    (e.g. via `lsof`/`nettop`/a local proxy).
 2. Expected outcome: the only outbound traffic is the initial model
    download (and, if applicable, the model-registry refresh); no traffic

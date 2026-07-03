@@ -1,0 +1,21 @@
+diff --git a/node_modules/webdriver/build/node.js b/node_modules/webdriver/build/node.js
+index c41dbf0..612ebdd 100644
+--- a/node_modules/webdriver/build/node.js
++++ b/node_modules/webdriver/build/node.js
+@@ -2112,7 +2112,6 @@ var ERRORS_TO_EXCLUDE_FROM_RETRY = [
+ ];
+ var DEFAULT_HEADERS = {
+   "Content-Type": "application/json; charset=utf-8",
+-  "Connection": "keep-alive",
+   "Accept": "application/json",
+   "User-Agent": "webdriver/" + package_default.version
+ };
+@@ -2157,7 +2156,7 @@ var WebDriverRequest = class {
+     if (this.body && (Object.keys(this.body).length || this.method === "POST")) {
+       requestOptions.body = JSON.stringify(this.body);
+       const contentLength = new TextEncoder().encode(requestOptions.body).length;
+-      requestHeaders.set("Content-Length", `${contentLength}`);
++      // Content-Length omitted: forbidden header under Node 26 built-in fetch/undici v8 (webdriverio/webdriverio#15265)
+     }
+     let endpoint = this.endpoint;
+     if (this.requiresSessionId) {
