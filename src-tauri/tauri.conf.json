@@ -12,7 +12,9 @@
   "app": {
     "windows": [
       {
-        "title": "Doce",
+        "title": "",
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
         "width": 1000,
         "height": 700,
         "minWidth": 720,
