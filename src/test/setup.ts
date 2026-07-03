@@ -9,3 +9,20 @@ import { cleanup } from "@testing-library/react";
 afterEach(() => {
   cleanup();
 });
+
+// jsdom's <dialog> implementation is a bare stub with no showModal()/close()
+// (https://github.com/jsdom/jsdom/issues/3294) — confirmed directly:
+// `dialog.showModal()` throws "not a function" as of jsdom 29. Dialog.tsx
+// (005-keyboard-shortcuts) is this app's first use of the element, so
+// without this polyfill every test that renders it crashes the moment
+// `open` becomes true. The `open` attribute/property reflection itself
+// already works in jsdom (auto-generated from the IDL) — only the two
+// interactive methods are missing, so that's all this adds.
+if (!HTMLDialogElement.prototype.showModal) {
+  HTMLDialogElement.prototype.showModal = function (this: HTMLDialogElement) {
+    this.setAttribute("open", "");
+  };
+  HTMLDialogElement.prototype.close = function (this: HTMLDialogElement) {
+    this.removeAttribute("open");
+  };
+}
