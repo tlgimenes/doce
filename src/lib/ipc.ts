@@ -212,6 +212,16 @@ export interface Workspace {
   lastOpenedAt: number;
 }
 
+export interface FolderSearchResult {
+  path: string;
+  displayName: string;
+}
+
+export interface FolderSearchPage {
+  folders: FolderSearchResult[];
+  truncated: boolean;
+}
+
 export interface McpServerConnection {
   id: string;
   name: string;
@@ -262,6 +272,8 @@ export const commands = {
   cancelGeneration: (requestId: string) => invoke<boolean>("cancel_generation", { requestId }),
   openWorkspace: (path: string) => invoke<Workspace>("open_workspace", { path }),
   listWorkspaces: () => invoke<Workspace[]>("list_workspaces"),
+  searchFolders: (query: string, maxResults?: number) =>
+    invoke<FolderSearchPage>("search_folders", { query, maxResults }),
   sendAgentMessage: (conversationId: string, content: string) =>
     invoke<string>("send_agent_message", { conversationId, content }),
   answerUserQuestion: (questionId: string, answer: string[]) =>

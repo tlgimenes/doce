@@ -131,7 +131,7 @@ describe("EmptyState (006-chat-empty-state)", () => {
     await screen.findByTestId("folder-picker");
     await userEvent.click(await screen.findByText("doce"));
 
-    await waitFor(() => expect(screen.getByTestId("folder-target-selector")).toHaveTextContent("doce"));
+    await waitFor(() => expect(screen.getByTestId("folder-target-selector")).toHaveTextContent("~/code/doce"));
     expect(screen.queryByTestId("folder-picker")).not.toBeInTheDocument();
 
     await userEvent.type(screen.getByTestId("empty-state-input"), "work on doce");

@@ -19,6 +19,16 @@ interface EmptyStateProps {
   onConversationCreated: (conversation: Conversation) => void;
 }
 
+const toDisplayFolderLabel = (path: string, homePath: string | null) => {
+  if (!homePath) return path;
+  const normalizedHome = homePath.endsWith("/") && homePath.length > 1 ? homePath.slice(0, -1) : homePath;
+  if (path === normalizedHome || path === `${normalizedHome}/`) return "Home";
+  if (path.startsWith(`${normalizedHome}/`)) {
+    return `~${path.slice(normalizedHome.length)}`;
+  }
+  return path;
+};
+
 /**
  * 006-chat-empty-state: replaces the old static placeholder. Every
  * conversation created here is always workspace-scoped and tool-enabled
@@ -30,6 +40,7 @@ interface EmptyStateProps {
  */
 export default function EmptyState({ onConversationCreated }: EmptyStateProps) {
   const [target, setTarget] = useState<FolderTarget | null>(null);
+  const [homePath, setHomePath] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [input, setInput] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -49,7 +60,10 @@ export default function EmptyState({ onConversationCreated }: EmptyStateProps) {
   }, [input]);
 
   useEffect(() => {
-    homeDir().then((path) => setTarget({ kind: "home", path, displayLabel: "Home" }));
+    homeDir().then((path) => {
+      setHomePath(path);
+      setTarget({ kind: "home", path, displayLabel: "Home" });
+    });
   }, []);
 
   const submit = async () => {
@@ -76,13 +90,18 @@ export default function EmptyState({ onConversationCreated }: EmptyStateProps) {
       data-testid="empty-state"
     >
       <div className="relative w-full max-w-xl space-y-3">
+        {/* 008-shared-design-system exemption: a compact inline text+caret
+            trigger, not a standard button shape — the shared Button
+            component's variants don't have a natural fit for this, and the
+            hand-tuned padding/sizing here is the intentionally-kept look
+            (FR-008 exemption, documented per T018 rather than migrated). */}
         <button
           type="button"
-          className="inline-flex items-center gap-1 bg-transparent p-0 text-sm text-muted-foreground"
+          className="inline-flex cursor-pointer items-center gap-1 bg-transparent p-0 pl-2 text-sm text-muted-foreground"
           onClick={() => setPickerOpen(true)}
           data-testid="folder-target-selector"
         >
-          {target?.displayLabel ?? "Home"}
+          {target ? toDisplayFolderLabel(target.path, homePath) : "Home"}
           <CaretDownIcon size={12} />
         </button>
         {pickerOpen && (

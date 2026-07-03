@@ -29,6 +29,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             scheduler::cancel_generation,
             workspaces::open_workspace,
             workspaces::list_workspaces,
+            workspaces::search_folders,
             agent::send_agent_message,
             agent::answer_user_question,
             mcp::add_mcp_server,
