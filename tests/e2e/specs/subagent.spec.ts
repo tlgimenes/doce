@@ -38,7 +38,7 @@ describe("Agent mode subagent spawning (FR-015)", () => {
     // this run (it may just answer directly, which is also a valid
     // response to "delegate this"), the request must complete with some
     // real, non-empty answer rather than hanging or erroring out.
-    const bubbles = await browser.$$("div.mb-3");
+    const bubbles = await browser.$$("[data-testid='chat-message']");
     const texts: string[] = [];
     for (let i = 0; i < bubbles.length; i++) {
       texts.push(await bubbles[i].getText());

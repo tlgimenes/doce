@@ -35,7 +35,7 @@ describe("Agent mode (User Story 3: open a folder to enter agent mode)", () => {
       { timeout: 90000, timeoutMsg: "agent never finished responding" },
     );
 
-    const bubbles = await browser.$$("div.mb-3");
+    const bubbles = await browser.$$("[data-testid='chat-message']");
     const texts: string[] = [];
     for (let i = 0; i < bubbles.length; i++) {
       texts.push(await bubbles[i].getText());

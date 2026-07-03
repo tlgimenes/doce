@@ -28,7 +28,7 @@ const MARKER_ONE = "DOCE_E2E_MARKER_ONE say hello in exactly three words";
 const MARKER_TWO = "DOCE_E2E_MARKER_TWO what's 2+2";
 
 async function bubbleTexts(): Promise<string[]> {
-  const bubbles = await browser.$$("div.mb-3");
+  const bubbles = await browser.$$("[data-testid='chat-message']");
   const texts: string[] = [];
   for (let i = 0; i < bubbles.length; i++) {
     texts.push(await bubbles[i].getText());
