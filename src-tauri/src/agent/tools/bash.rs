@@ -25,15 +25,25 @@ pub enum BashError {
 /// This is a pattern denylist, not a full shell-semantics parser — it
 /// checks a normalized, tokenized form of the command, which catches
 /// straightforward invocations (including combined short flags like
-/// `-rf`/`-fr`/`-Rf`) but doesn't claim to catch every conceivable
-/// obfuscation (e.g. a command string built up dynamically at runtime, or
-/// hidden behind a quoted string that's never actually executed).
+/// `-rf`/`-fr`/`-Rf`, matching-quote-wrapped targets and `bash -c`/`sh
+/// -c`/`eval` wrapping, and a token glued directly to a trailing chain
+/// operator) but doesn't claim to catch every conceivable obfuscation
+/// (e.g. a command string built up dynamically at runtime, or hidden
+/// behind a quoted string that's never actually executed).
 pub fn is_denylisted(command: &str) -> bool {
     let normalized = command.to_lowercase();
     let collapsed: String = normalized.split_whitespace().collect::<Vec<_>>().join(" ");
 
     if is_rm_recursive_force(&collapsed) {
-        for target in ["~", "/", "$home"] {
+        let mut targets: Vec<String> = vec!["~".to_string(), "/".to_string(), "$home".to_string()];
+        // T092 security pass: the symbolic forms above don't catch a
+        // literal reference to the actual resolved home directory (e.g.
+        // an agent that already has it in context from an earlier `pwd`),
+        // so it's checked too when available.
+        if let Ok(home) = std::env::var("HOME") {
+            targets.push(home.to_lowercase());
+        }
+        for target in &targets {
             if targets_path(&collapsed, target) {
                 return true;
             }
@@ -45,6 +55,8 @@ pub fn is_denylisted(command: &str) -> bool {
         "diskutil erasevolume",
         "diskutil partitiondisk",
         "diskutil zerodisk",
+        "diskutil secureerase",
+        "diskutil apfs deletecontainer",
         "gpt destroy",
         "fdisk /dev/",
     ];
@@ -52,15 +64,73 @@ pub fn is_denylisted(command: &str) -> bool {
         return true;
     }
 
-    // `dd` writing to a raw/whole disk device (not a partition-only image
-    // file), e.g. `dd if=... of=/dev/disk0` or `of=/dev/rdisk0`.
-    if collapsed.contains("dd ")
-        && (collapsed.contains("of=/dev/disk") || collapsed.contains("of=/dev/rdisk"))
-    {
+    // Low-level format utilities writing directly to a raw disk device —
+    // same class/severity as the diskutil/dd checks above.
+    let newfs_patterns = ["newfs_hfs", "newfs_apfs", "newfs_msdos"];
+    if newfs_patterns.iter().any(|p| collapsed.contains(p)) && collapsed.contains("/dev/") {
         return true;
     }
 
+    // `dd` writing to a raw/whole disk device (not a partition-only image
+    // file), e.g. `dd if=... of=/dev/disk0` or `of=/dev/rdisk0` — tokenized
+    // and quote-stripped so `of="/dev/disk0"` doesn't slip past a naive
+    // substring check.
+    if collapsed.contains("dd ") {
+        let hits_raw_disk = collapsed.split_whitespace().any(|word| {
+            word.strip_prefix("of=").is_some_and(|value| {
+                let cleaned = strip_wrapping_quotes(value);
+                cleaned.starts_with("/dev/disk") || cleaned.starts_with("/dev/rdisk")
+            })
+        });
+        if hits_raw_disk {
+            return true;
+        }
+    }
+
+    // T092 security pass: `bash -c "..."`/`sh -c "..."`/`zsh -c "..."`/
+    // `eval "..."` is a very ordinary way to invoke a nested command, not
+    // obfuscation — but the wrapping quote otherwise breaks every
+    // leading-token check above (e.g. `is_rm_recursive_force`'s `w ==
+    // "rm"` never matches `"rm`). Unwrap and recursively check the inner
+    // command instead of trying to special-case every check for it.
+    if let Some(inner) = unwrap_shell_c_or_eval(command) {
+        if is_denylisted(&inner) {
+            return true;
+        }
+    }
+
     false
+}
+
+/// Unwraps a matching pair of `"..."` or `'...'` around `s`, if present.
+fn strip_wrapping_quotes(s: &str) -> &str {
+    let bytes = s.as_bytes();
+    if bytes.len() >= 2 {
+        let (first, last) = (bytes[0], bytes[bytes.len() - 1]);
+        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
+            return &s[1..s.len() - 1];
+        }
+    }
+    s
+}
+
+/// Unwraps `bash -c "..."`, `sh -c "..."`, `zsh -c "..."`, or `eval "..."`
+/// (single- or double-quoted) to the inner command string, so it can be
+/// recursively checked by `is_denylisted` (T092 security pass finding #1).
+fn unwrap_shell_c_or_eval(command: &str) -> Option<String> {
+    let trimmed = command.trim();
+    const PREFIXES: [&str; 4] = ["bash -c ", "sh -c ", "zsh -c ", "eval "];
+
+    for prefix in PREFIXES {
+        if trimmed.len() >= prefix.len() && trimmed[..prefix.len()].eq_ignore_ascii_case(prefix) {
+            let quoted = trimmed[prefix.len()..].trim();
+            let inner = strip_wrapping_quotes(quoted);
+            if inner.len() < quoted.len() {
+                return Some(inner.to_string());
+            }
+        }
+    }
+    None
 }
 
 /// True if `collapsed` contains an `rm` invocation with both a recursive
@@ -98,11 +168,17 @@ fn is_rm_recursive_force(collapsed: &str) -> bool {
 
 /// True if `collapsed` contains `target` as a standalone whitespace token
 /// (or that token with a trailing slash) — not merely as a substring of
-/// some unrelated longer path.
+/// some unrelated longer path. Each token has a single layer of wrapping
+/// quotes stripped (`"$home"` -> `$home`) and any trailing shell chain
+/// operators glued directly onto it stripped (`~;` -> `~`, from `rm -rf
+/// ~; echo done` with no space before the `;`) before comparing — T092
+/// security pass findings #2/#4.
 fn targets_path(collapsed: &str, target: &str) -> bool {
-    collapsed
-        .split_whitespace()
-        .any(|word| word == target || word == format!("{target}/"))
+    collapsed.split_whitespace().any(|word| {
+        let unquoted = strip_wrapping_quotes(word);
+        let cleaned = unquoted.trim_end_matches([';', '&', '|', ')', '"', '\'']);
+        cleaned == target || cleaned == format!("{target}/")
+    })
 }
 
 /// `Bash` (FR-009): runs a shell command with no sandboxing beyond the
@@ -210,6 +286,63 @@ mod tests {
         assert!(!is_denylisted(
             "dd if=/dev/zero of=/tmp/image.img bs=1m count=10"
         ));
+    }
+
+    // Security pass (T092, ahead of v1): all seven gaps below were
+    // empirically confirmed as real bypasses within the denylist's own
+    // stated scope ("straightforward invocations", not adversarial shell
+    // obfuscation) before this fix.
+    #[test]
+    fn blocks_rm_rf_home_wrapped_in_bash_or_sh_c_or_eval() {
+        assert!(is_denylisted("bash -c \"rm -rf ~\""));
+        assert!(is_denylisted("sh -c \"rm -rf ~\""));
+        assert!(is_denylisted("zsh -c \"rm -rf ~\""));
+        assert!(is_denylisted("eval \"rm -rf ~\""));
+        assert!(is_denylisted("bash -c 'rm -rf ~'"));
+    }
+
+    #[test]
+    fn blocks_rm_rf_quoted_home_env_var() {
+        // Unlike `'$HOME'` (single-quoted, never expanded by the shell —
+        // not a live risk), `"$HOME"` *is* expanded at execution time.
+        assert!(is_denylisted("rm -rf \"$HOME\""));
+    }
+
+    #[test]
+    fn blocks_rm_rf_home_with_no_space_before_a_chained_command() {
+        assert!(is_denylisted("rm -rf ~; echo done"));
+    }
+
+    #[test]
+    fn blocks_rm_rf_the_actual_resolved_home_directory() {
+        let home = std::env::var("HOME").expect("HOME must be set to run this test");
+        assert!(is_denylisted(&format!("rm -rf {home}")));
+        assert!(is_denylisted(&format!("rm -rf {home}/")));
+    }
+
+    #[test]
+    fn blocks_additional_disk_erase_verbs() {
+        assert!(is_denylisted("diskutil secureErase disk0"));
+        assert!(is_denylisted("diskutil apfs deleteContainer disk0"));
+    }
+
+    #[test]
+    fn blocks_newfs_to_a_raw_disk_device() {
+        assert!(is_denylisted("newfs_hfs /dev/disk2"));
+        assert!(is_denylisted("newfs_apfs /dev/disk2"));
+    }
+
+    #[test]
+    fn blocks_dd_to_a_quoted_raw_disk_device() {
+        assert!(is_denylisted("dd if=/dev/zero of=\"/dev/disk0\" bs=1m"));
+    }
+
+    #[test]
+    fn does_not_block_symlink_indirection_rm_does_not_recurse_through_a_symlink_target() {
+        // Not a real bypass: `rm -rf <symlink>` unlinks the symlink itself,
+        // it does not recurse into whatever the symlink points at — a
+        // genuine safety property of `rm`, not a denylist gap.
+        assert!(!is_denylisted("rm -rf /tmp/some-symlink-to-home"));
     }
 
     #[test]
