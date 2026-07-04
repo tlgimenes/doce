@@ -14,9 +14,17 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # TEMPORARY: routed to a self-hosted runner (label: self-hosted-mac)
+  # instead of macos-26 while GitHub Actions is blocked account-wide by a
+  # billing/payment failure ("recent account payments have failed or your
+  # spending limit needs to be increased") -- hosted-runner jobs currently
+  # fail to even start. Revert rust/frontend/e2e back to `runs-on:
+  # macos-26` once billing is resolved; self-hosted requires a runner
+  # process kept alive on someone's own machine, which isn't a sustainable
+  # long-term setup for routine CI.
   rust:
     name: Rust (test / clippy / fmt)
-    runs-on: macos-26
+    runs-on: self-hosted-mac
     steps:
       - uses: actions/checkout@v4
 
@@ -39,7 +47,7 @@ jobs:
 
   frontend:
     name: Frontend (vitest / lint / fmt)
-    runs-on: macos-26
+    runs-on: self-hosted-mac
     steps:
       - uses: actions/checkout@v4
 
@@ -61,7 +69,7 @@ jobs:
 
   e2e:
     name: E2E (WebdriverIO + @wdio/tauri-service)
-    runs-on: macos-26
+    runs-on: self-hosted-mac
     needs: [rust, frontend]
     steps:
       - uses: actions/checkout@v4
