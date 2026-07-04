@@ -79,11 +79,23 @@ jobs:
 
       - run: npm ci
 
-      - name: Build Tauri app (debug)
-        run: npm run tauri build -- --debug
-
+      # No separate build step: `npm run test:e2e`'s own `pretest:e2e` hook
+      # (tests/e2e/build-for-e2e.sh) builds both frontend and backend with
+      # the wdio bridge included — a plain `npm run tauri build -- --debug`
+      # here first was pure redundant work (~3 extra minutes) building an
+      # artifact that gets immediately superseded and never used.
       - name: Run e2e suite
         run: npm run test:e2e
+
+      - name: Upload e2e diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-diagnostics
+          path: |
+            /tmp/doce-e2e-preview.log
+            tests/e2e/logs/
+          if-no-files-found: ignore
 
   # T090 (specs/001-doce-v1-core/tasks.md): only runs on a `v*` tag, after
   # rust/frontend/e2e all pass. UNTESTED against a real Apple Developer
@@ -124,6 +136,14 @@ jobs:
           cache: npm
 
       - run: npm ci
+
+      # T091 finding: Tauri's dmg bundler shells out to `create-dmg`, which
+      # is not preinstalled by default and isn't a cargo/npm dependency —
+      # confirmed by a local release build failing with "failed to run
+      # bundle_dmg.sh" until this was installed via Homebrew. `brew install`
+      # is a safe no-op if the runner image already has it.
+      - name: Install create-dmg
+        run: brew install create-dmg
 
       - name: Build signed, notarized .dmg
         env:
