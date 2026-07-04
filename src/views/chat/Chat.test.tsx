@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import Chat from "./Chat";
 import { commands, events } from "@/lib/ipc";
@@ -107,6 +107,34 @@ describe("Chat loading states", () => {
     expect(renderedMessages).toHaveLength(2);
     expect(renderedMessages[0].textContent).toContain("Say hello in exactly three words");
     expect(renderedMessages[1].textContent).toContain("Hi");
+  });
+
+  it("009-rich-chat-input regression: a message containing a chip forwards richContent to sendMessage, not just the flat text", async () => {
+    vi.mocked(commands.sendMessage).mockResolvedValue({
+      messageId: "user-msg-1",
+      requestId: "req-1",
+      assistantMessageId: "assistant-msg-1",
+      assistantCreatedAt: Date.now(),
+    });
+
+    render(<Chat conversationId="conv-1" />);
+    const input = await screen.findByTestId("chat-input");
+
+    const pastedBlock = Array.from({ length: 15 }, (_, i) => `line-${i}`).join("\n");
+    fireEvent.paste(input, { clipboardData: { items: [], getData: () => pastedBlock } });
+    await screen.findByTestId("pasted-text-chip");
+
+    await userEvent.click(screen.getByTestId("chat-send"));
+
+    await waitFor(() => expect(commands.sendMessage).toHaveBeenCalled());
+    const [, , richContentArg] = vi.mocked(commands.sendMessage).mock.calls[0];
+    expect(richContentArg).toBeDefined();
+    const parsed = JSON.parse(richContentArg as string);
+    expect(
+      parsed.segments.some(
+        (s: { type: string; text?: string }) => s.type === "pastedText" && s.text === pastedBlock,
+      ),
+    ).toBe(true);
   });
 
   it("shows queue position while queued behind other work (US5/FR-025)", async () => {

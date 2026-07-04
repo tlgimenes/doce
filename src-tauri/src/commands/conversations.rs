@@ -1,3 +1,4 @@
+use crate::agent::rich_content::{expand_segments, RichMessageContent};
 use crate::commands::models::now_ms;
 use crate::inference::{ChatMessage, InferenceEngine};
 use crate::storage::conversations::{generate_title, load_history};
@@ -5,8 +6,9 @@ use crate::storage::DbCell;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Mutex as AsyncMutex;
 use uuid::Uuid;
 
@@ -231,6 +233,41 @@ pub struct SendMessageResult {
     pub assistant_created_at: i64,
 }
 
+/// Resolves what `send_message` persists for the user message row —
+/// `(content_type, content)` — and what text drives this turn's FR-012
+/// title generation, from the `rich_content` IPC parameter (contracts/
+/// rich-chat-input.md's `send_message` entry). Pure/sync and takes
+/// `skills_dir` directly rather than an `AppHandle` so it stays
+/// unit-testable without a running Tauri app, matching this codebase's
+/// existing convention for `AppHandle`-adjacent logic (e.g.
+/// `commands::workspaces`'s `resolve_search_scope`).
+///
+/// `None` reproduces today's exact behavior: `content_type = "text"`,
+/// `content` persisted and used for the title verbatim, no JSON parsing.
+/// `Some(json)` persists `content_type = "rich_text"` with `content=json`
+/// verbatim, and derives the title from `expand_segments(...,
+/// expand_skills: false)`'s output — the literal `/name` marker form, not
+/// the raw JSON and not a fully-expanded skill injection, either of which
+/// would make for a nonsensical auto-generated title (data-model.md's
+/// Model-Text Expansion section). Returns `Err` for invalid JSON or (via
+/// `expand_segments`) an unreadable `skill` segment (FR-014) — either way
+/// the caller must not persist a broken row.
+fn resolve_message_content(
+    content: &str,
+    rich_content: Option<&str>,
+    skills_dir: &Path,
+) -> Result<(String, String, String), String> {
+    match rich_content {
+        None => Ok(("text".to_string(), content.to_string(), content.to_string())),
+        Some(json) => {
+            let parsed: RichMessageContent =
+                serde_json::from_str(json).map_err(|e| format!("invalid rich_content: {e}"))?;
+            let title_source = expand_segments(&parsed.segments, skills_dir, false)?;
+            Ok(("rich_text".to_string(), json.to_string(), title_source))
+        }
+    }
+}
+
 /// FR-006/FR-009/US5: submits a `GenerationRequest` to the single-flight
 /// scheduler and returns immediately — the scheduler's worker
 /// (`scheduler::worker`) is what actually runs inference, respects
@@ -246,11 +283,23 @@ pub async fn send_message(
     scheduler: State<'_, crate::scheduler::Scheduler>,
     conversation_id: String,
     content: String,
+    rich_content: Option<String>,
 ) -> Result<SendMessageResult, String> {
     let conn = db_cell.get(&app).await?.clone();
     let user_message_id = Uuid::now_v7().to_string();
     let request_id = Uuid::now_v7().to_string();
     let now = now_ms();
+
+    // Resolved once and reused below for both this turn's own
+    // `rich_content` (if any) and `load_history`'s expansion of any
+    // `rich_text` rows from *earlier* turns in this conversation — the
+    // same convention `commands::skills::list_skills` already uses
+    // (`app.path().app_data_dir()?.join("skills")`).
+    let skills_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("skills");
 
     let next_seq = conn
         .call({
@@ -266,9 +315,18 @@ pub async fn send_message(
         .await
         .map_err(|e| e.to_string())?;
 
+    // `rich_content` is `None` for the common, plain-text-only case — that
+    // path persists `content_type='text'`/`content=content` and titles off
+    // `content` verbatim, exactly as it always has. `Some(json)` persists
+    // `content_type='rich_text'` with `content=json` instead, and derives
+    // the title from the segments' `expand_skills: false` text rather than
+    // the raw JSON (contracts/rich-chat-input.md's `send_message` entry).
+    let (content_type, persisted_content, title_source) =
+        resolve_message_content(&content, rich_content.as_deref(), &skills_dir)?;
+
     // FR-012: title comes from the first message only, no model call.
     let title_update = if next_seq == 0 {
-        Some(generate_title(&content))
+        Some(generate_title(&title_source))
     } else {
         None
     };
@@ -276,12 +334,11 @@ pub async fn send_message(
     conn.call({
         let conversation_id = conversation_id.clone();
         let user_message_id = user_message_id.clone();
-        let content = content.clone();
         move |conn: &mut Connection| -> rusqlite::Result<()> {
             let tx = conn.transaction()?;
             tx.execute(
-                "INSERT INTO messages (id, conversation_id, role, content_type, content, created_at, sequence) VALUES (?1, ?2, 'user', 'text', ?3, ?4, ?5)",
-                rusqlite::params![user_message_id, conversation_id, content, now, next_seq],
+                "INSERT INTO messages (id, conversation_id, role, content_type, content, created_at, sequence) VALUES (?1, ?2, 'user', ?3, ?4, ?5, ?6)",
+                rusqlite::params![user_message_id, conversation_id, content_type, persisted_content, now, next_seq],
             )?;
             if let Some(title) = &title_update {
                 tx.execute(
@@ -321,10 +378,13 @@ pub async fn send_message(
 
     // Full history (including the user message just inserted above) so the
     // model sees prior turns instead of generating this reply in isolation.
+    // `load_history` expands any `rich_text` row it finds (this turn's or
+    // an earlier one) via `skills_dir`, resolved once above.
     let history = conn
         .call({
             let conversation_id = conversation_id.clone();
-            move |conn: &mut Connection| load_history(conn, &conversation_id)
+            let skills_dir = skills_dir.clone();
+            move |conn: &mut Connection| load_history(conn, &conversation_id, &skills_dir)
         })
         .await
         .map_err(|e| e.to_string())?;
@@ -579,5 +639,89 @@ mod tests {
             compute_status(&conn, "c1", &HashSet::new()).unwrap(),
             "failed"
         );
+    }
+
+    // --- 009-rich-chat-input/US2: resolve_message_content ---
+
+    #[test]
+    fn none_rich_content_persists_as_plain_text_and_titles_off_the_raw_content() {
+        let (content_type, persisted_content, title_source) =
+            resolve_message_content("hello there", None, Path::new("/does/not/matter")).unwrap();
+
+        assert_eq!(content_type, "text");
+        assert_eq!(persisted_content, "hello there");
+        assert_eq!(title_source, "hello there");
+    }
+
+    #[test]
+    fn some_rich_content_persists_the_raw_json_verbatim_as_rich_text() {
+        let json = serde_json::json!({
+            "segments": [{"type": "text", "text": "hello there"}]
+        })
+        .to_string();
+
+        let (content_type, persisted_content, _title_source) =
+            resolve_message_content("hello there", Some(&json), Path::new("/does/not/matter"))
+                .unwrap();
+
+        assert_eq!(content_type, "rich_text");
+        // Persisted verbatim -- not re-serialized, not the flat `content`
+        // param (contracts/rich-chat-input.md).
+        assert_eq!(persisted_content, json);
+    }
+
+    #[test]
+    fn some_rich_content_titles_off_expand_segments_with_expand_skills_false() {
+        // A skill segment must render as its literal `/name` marker for the
+        // title, never the injected file content -- and must not touch the
+        // filesystem doing so (no skill file exists at this skills_dir).
+        let json = serde_json::json!({
+            "segments": [
+                {"type": "text", "text": "please use "},
+                {"type": "skill", "id": "s1", "name": "reviewer"},
+            ]
+        })
+        .to_string();
+
+        let (_content_type, _persisted_content, title_source) =
+            resolve_message_content("ignored", Some(&json), Path::new("/does/not/exist")).unwrap();
+
+        assert_eq!(title_source, "please use /reviewer");
+    }
+
+    #[test]
+    fn some_rich_content_with_invalid_json_is_an_error() {
+        let result =
+            resolve_message_content("ignored", Some("not json"), Path::new("/does/not/matter"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn some_rich_content_with_a_skill_that_does_not_exist_still_titles_fine_since_titles_never_read_the_filesystem(
+    ) {
+        // Title generation always uses `expand_skills: false`, which never
+        // touches disk (rich_content.rs) -- so an unresolvable skill name
+        // must not fail title generation, even though it would fail the
+        // model-facing `expand_skills: true` expansion `load_history`/
+        // `send_agent_message` perform separately.
+        let dir = tempfile::tempdir().unwrap();
+        let json = serde_json::json!({
+            "segments": [{"type": "skill", "id": "s1", "name": "missing-skill"}]
+        })
+        .to_string();
+
+        let (content_type, _persisted_content, title_source) =
+            resolve_message_content("ignored", Some(&json), dir.path()).unwrap();
+
+        assert_eq!(content_type, "rich_text");
+        assert_eq!(title_source, "/missing-skill");
+    }
+
+    #[test]
+    fn some_rich_content_with_empty_json_object_is_an_error() {
+        // Missing the required `segments` field entirely -- must not be
+        // silently treated as zero segments.
+        let result = resolve_message_content("ignored", Some("{}"), Path::new("/does/not/matter"));
+        assert!(result.is_err());
     }
 }

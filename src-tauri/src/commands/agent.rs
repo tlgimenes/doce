@@ -1,3 +1,4 @@
+use crate::agent::rich_content::{expand_segments, RichMessageContent};
 use crate::agent::tools::ask_user::{PendingQuestions, QuestionOption};
 use crate::agent::{dispatch, run_loop, subagent, AgentContext, ToolCall, SYSTEM_PROMPT};
 use crate::commands::conversations::{ActiveGenerations, InferenceState};
@@ -7,7 +8,8 @@ use crate::storage::conversations::load_history;
 use crate::storage::DbCell;
 use rusqlite::Connection;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use std::path::Path;
+use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
 /// 004-tool-call-widgets (`001`'s originally-specified `ask-user-question`
@@ -386,6 +388,84 @@ fn system_message(cwd: Option<&std::path::Path>) -> String {
     }
 }
 
+/// 009-rich-chat-input/US2 (contracts/rich-chat-input.md): persists this
+/// turn's user message row and derives the text the model actually sees
+/// for it.
+///
+/// `rich_content = None` takes the exact path `send_agent_message` has
+/// always taken: persists `content_type='text'`/`content=content`
+/// verbatim, no parsing, no `expand_segments` call, and the returned model
+/// text is `content` itself, unchanged (byte-for-byte identical to before
+/// this feature existed).
+///
+/// `rich_content = Some(json)` parses `json` as `RichMessageContent`
+/// first — `Err` here means nothing is persisted at all, matching how
+/// every other pre-inference failure in this function already returns
+/// `Err(String)` before doing anything. On success, persists
+/// `content_type='rich_text'` with `content=json` verbatim — never the
+/// flat `content` param, which in this case is only a UI-side
+/// fallback/plain-text mirror, not persisted twice — then resolves the
+/// model text via `expand_segments(&segments, skills_dir, expand_skills:
+/// true)`, propagating its `Err` (e.g. an unresolvable `skill` segment,
+/// FR-014) after the row has already been persisted.
+///
+/// Split out of `send_agent_message` (which needs a live `AppHandle` and a
+/// loaded inference engine end-to-end, neither mockable in a unit test)
+/// purely so this feature's actual new logic — the `None`/`Some` branch,
+/// the exact persisted shape, and the expansion — is unit-testable against
+/// a real, temporary DB connection and skills directory, the same way
+/// `persist_tool_call`/`persist_tool_result` above already are.
+async fn persist_user_turn(
+    conn: &tokio_rusqlite::Connection,
+    skills_dir: &Path,
+    conversation_id: &str,
+    next_seq: i64,
+    now: i64,
+    content: &str,
+    rich_content: Option<&str>,
+) -> Result<String, String> {
+    let rich: Option<RichMessageContent> = rich_content
+        .map(serde_json::from_str::<RichMessageContent>)
+        .transpose()
+        .map_err(|e| format!("invalid rich_content: {e}"))?;
+
+    match &rich {
+        Some(_) => {
+            let json = rich_content
+                .expect("rich_content is Some whenever `rich` parsed above is Some")
+                .to_string();
+            let conversation_id = conversation_id.to_string();
+            conn.call(move |conn: &mut Connection| -> rusqlite::Result<()> {
+                conn.execute(
+                    "INSERT INTO messages (id, conversation_id, role, content_type, content, created_at, sequence) VALUES (?1, ?2, 'user', 'rich_text', ?3, ?4, ?5)",
+                    rusqlite::params![Uuid::now_v7().to_string(), conversation_id, json, now, next_seq],
+                )?;
+                Ok(())
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        }
+        None => {
+            let conversation_id = conversation_id.to_string();
+            let content = content.to_string();
+            conn.call(move |conn: &mut Connection| -> rusqlite::Result<()> {
+                conn.execute(
+                    "INSERT INTO messages (id, conversation_id, role, content_type, content, created_at, sequence) VALUES (?1, ?2, 'user', 'text', ?3, ?4, ?5)",
+                    rusqlite::params![Uuid::now_v7().to_string(), conversation_id, content, now, next_seq],
+                )?;
+                Ok(())
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        }
+    }
+
+    match &rich {
+        Some(r) => expand_segments(&r.segments, skills_dir, true),
+        None => Ok(content.to_string()),
+    }
+}
+
 /// FR-008/FR-009: runs the agent tool-use loop to completion for one user
 /// message in a workspace-scoped conversation, using the real built-in
 /// tools (`agent::dispatch`) and the same loaded model `send_message`
@@ -400,6 +480,12 @@ fn system_message(cwd: Option<&std::path::Path>) -> String {
 /// not a live trace of each tool call.
 #[tauri::command]
 #[specta::specta]
+// 009-rich-chat-input/US2's `rich_content` param tips this over clippy's
+// default 7-argument threshold; every parameter here is either a
+// framework-injected `State`/`AppHandle` or a real, distinct piece of the
+// IPC contract (contracts/rich-chat-input.md) -- there's no natural
+// sub-struct to group them into without inventing an artificial one.
+#[allow(clippy::too_many_arguments)]
 pub async fn send_agent_message(
     app: AppHandle,
     db_cell: State<'_, DbCell>,
@@ -408,9 +494,21 @@ pub async fn send_agent_message(
     pending_questions: State<'_, PendingQuestions>,
     conversation_id: String,
     content: String,
+    rich_content: Option<String>,
 ) -> Result<String, String> {
     let conn = db_cell.get(&app).await?.clone();
     let now = now_ms();
+
+    // 009-rich-chat-input/US2: resolved once, up front, the same way
+    // `commands::skills::list_skills` resolves its skills directory
+    // (`app.path().app_data_dir()?.join("skills")`) -- reused below both by
+    // `persist_user_turn`'s `expand_segments` call for this turn and by
+    // `load_history`'s expansion of any earlier `rich_text` turns.
+    let skills_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("skills");
 
     let next_seq = conn
         .call({
@@ -426,19 +524,16 @@ pub async fn send_agent_message(
         .await
         .map_err(|e| e.to_string())?;
 
-    conn.call({
-        let conversation_id = conversation_id.clone();
-        let content = content.clone();
-        move |conn: &mut Connection| -> rusqlite::Result<()> {
-            conn.execute(
-                "INSERT INTO messages (id, conversation_id, role, content_type, content, created_at, sequence) VALUES (?1, ?2, 'user', 'text', ?3, ?4, ?5)",
-                rusqlite::params![Uuid::now_v7().to_string(), conversation_id, content, now, next_seq],
-            )?;
-            Ok(())
-        }
-    })
-    .await
-    .map_err(|e| e.to_string())?;
+    let model_text_for_turn = persist_user_turn(
+        &conn,
+        &skills_dir,
+        &conversation_id,
+        next_seq,
+        now,
+        &content,
+        rich_content.as_deref(),
+    )
+    .await?;
 
     // 004-tool-call-widgets: registers this conversation as in-progress for
     // the whole turn (matching the chat path's existing ActiveGenerations
@@ -510,16 +605,34 @@ pub async fn send_agent_message(
 
     // Full history (including the user message just inserted above) so the
     // model sees prior turns in this workspace conversation rather than
-    // generating each reply from a blank slate.
+    // generating each reply from a blank slate. 009-rich-chat-input:
+    // `load_history` needs `skills_dir` (resolved once, above) to expand
+    // any `rich_text` rows in that history.
     let history = conn
         .call({
             let conversation_id = conversation_id.clone();
-            move |conn: &mut Connection| load_history(conn, &conversation_id)
+            let skills_dir = skills_dir.clone();
+            move |conn: &mut Connection| load_history(conn, &conversation_id, &skills_dir)
         })
         .await
         .map_err(|e| e.to_string())?;
     let mut initial_messages = vec![ChatMessage::system(system_message(cwd.as_deref()))];
     initial_messages.extend(history);
+
+    // 009-rich-chat-input/US2: `history`'s final element is always the row
+    // just persisted above (its `sequence` is the highest in the
+    // conversation). When it was a rich-text turn, override it with
+    // `persist_user_turn`'s already-computed `expand_segments` output so
+    // the model sees the fully-expanded text (pasted content inline,
+    // skills resolved and injected) rather than the raw JSON `load_history`
+    // would otherwise pass through verbatim for this turn. `rich_content`
+    // being `None` leaves this whole step un-entered -- byte-for-byte
+    // today's behavior.
+    if rich_content.is_some() {
+        if let Some(last) = initial_messages.last_mut() {
+            *last = ChatMessage::user(model_text_for_turn);
+        }
+    }
 
     let result = run_loop(
         &context,
@@ -641,6 +754,127 @@ mod tests {
         })
         .await
         .unwrap()
+    }
+
+    // --- 009-rich-chat-input: US2 (send_agent_message's rich_content wiring,
+    // exercised via persist_user_turn -- send_agent_message itself needs a
+    // live AppHandle and a loaded inference engine, neither available in a
+    // unit test) ---
+
+    #[tokio::test]
+    async fn persist_user_turn_with_no_rich_content_persists_plain_text_and_returns_it_unchanged() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_conversation(&conn, "c1").await;
+        let skills_dir = tempfile::tempdir().unwrap();
+
+        let model_text =
+            persist_user_turn(&conn, skills_dir.path(), "c1", 0, 0, "plain hello", None)
+                .await
+                .unwrap();
+
+        assert_eq!(model_text, "plain hello");
+        let (role, content_type, _, content) = latest_message(&conn, "c1").await;
+        assert_eq!(role, "user");
+        assert_eq!(content_type, "text");
+        assert_eq!(content, "plain hello");
+    }
+
+    #[tokio::test]
+    async fn persist_user_turn_with_rich_content_persists_the_raw_json_and_returns_expanded_text() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_conversation(&conn, "c1").await;
+        let skills_dir = tempfile::tempdir().unwrap();
+        let rich_json = serde_json::json!({
+            "segments": [
+                {"type": "text", "text": "before "},
+                {"type": "pastedText", "id": "p1", "text": "pasted body", "lineCount": 1},
+                {"type": "text", "text": " after"},
+            ]
+        })
+        .to_string();
+
+        let model_text = persist_user_turn(
+            &conn,
+            skills_dir.path(),
+            "c1",
+            0,
+            0,
+            "plain hello", // deliberately ignored -- never persisted or returned
+            Some(&rich_json),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(model_text, "before pasted body after");
+        let (role, content_type, _, content) = latest_message(&conn, "c1").await;
+        assert_eq!(role, "user");
+        assert_eq!(content_type, "rich_text");
+        // The raw JSON payload, verbatim -- never the flat `content` param.
+        assert_eq!(content, rich_json);
+    }
+
+    #[tokio::test]
+    async fn persist_user_turn_with_malformed_rich_content_json_errors_and_persists_nothing() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_conversation(&conn, "c1").await;
+        let skills_dir = tempfile::tempdir().unwrap();
+
+        let result = persist_user_turn(
+            &conn,
+            skills_dir.path(),
+            "c1",
+            0,
+            0,
+            "plain hello",
+            Some("not valid json"),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let count: i64 = conn
+            .call(|conn: &mut Connection| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM messages WHERE conversation_id = 'c1'",
+                    [],
+                    |row| row.get(0),
+                )
+            })
+            .await
+            .unwrap();
+        assert_eq!(count, 0, "a malformed payload must not persist anything");
+    }
+
+    #[tokio::test]
+    async fn persist_user_turn_with_an_unresolvable_skill_errors_after_persisting_the_row() {
+        // Matches the contract's ordering: parse -> persist -> resolve
+        // skills_dir -> expand_segments -> propagate Err. The row is
+        // already durably saved by the time expansion fails.
+        let conn = crate::storage::test_async_connection().await;
+        seed_conversation(&conn, "c1").await;
+        let skills_dir = tempfile::tempdir().unwrap(); // no skill written into it
+        let rich_json = serde_json::json!({
+            "segments": [
+                {"type": "skill", "id": "s1", "name": "missing-skill"},
+            ]
+        })
+        .to_string();
+
+        let result = persist_user_turn(
+            &conn,
+            skills_dir.path(),
+            "c1",
+            0,
+            0,
+            "plain hello",
+            Some(&rich_json),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let (role, content_type, _, content) = latest_message(&conn, "c1").await;
+        assert_eq!(role, "user");
+        assert_eq!(content_type, "rich_text");
+        assert_eq!(content, rich_json);
     }
 
     #[tokio::test]

@@ -40,7 +40,7 @@ export interface Message {
   id: string;
   conversationId: string;
   role: "user" | "assistant" | "tool";
-  contentType: "text" | "tool_call" | "tool_result" | "error";
+  contentType: "text" | "tool_call" | "tool_result" | "error" | "rich_text";
   content: string;
   toolName: string | null;
   createdAt: number;
@@ -190,6 +190,48 @@ export function parseToolResultDetail(
   }
 }
 
+// 009-rich-chat-input/US2 — a `rich_text` message's `content` (JSON string)
+// parses into this shape (see specs/009-rich-chat-input/data-model.md's
+// "Frontend Types" section for the authoritative shapes). Mirrors the Rust
+// `RichMessageContent`/`RichTextSegment` types exactly.
+
+export interface RichTextSegmentText {
+  type: "text";
+  text: string;
+}
+
+export interface RichTextSegmentPastedText {
+  type: "pastedText";
+  id: string;
+  text: string;
+  lineCount: number;
+}
+
+export interface RichTextSegmentAttachment {
+  type: "attachment";
+  id: string;
+  name: string;
+  mimeType: string;
+  data: string;
+  isImage: boolean;
+}
+
+export interface RichTextSegmentSkill {
+  type: "skill";
+  id: string;
+  name: string;
+}
+
+export type RichTextSegment =
+  | RichTextSegmentText
+  | RichTextSegmentPastedText
+  | RichTextSegmentAttachment
+  | RichTextSegmentSkill;
+
+export interface RichMessageContent {
+  segments: RichTextSegment[];
+}
+
 export interface SendMessageResult {
   messageId: string;
   requestId: string;
@@ -241,6 +283,16 @@ export interface SkillSummary {
   description: string;
 }
 
+// 009-rich-chat-input/US4 — result of reading a user-selected file's bytes
+// for attachment (contracts/rich-chat-input.md's `read_attached_file`).
+// `data` is base64, no `data:` prefix — matches the `attachment` segment's
+// `data` field shape in data-model.md.
+export interface AttachedFile {
+  data: string;
+  mimeType: string;
+  name: string;
+}
+
 export const commands = {
   getHardwareProfile: () => invoke<HardwareProfile>("get_hardware_profile"),
   startModelInstall: (modelId?: string) =>
@@ -254,8 +306,8 @@ export const commands = {
   setActiveModel: (modelId: string) => invoke<void>("set_active_model", { modelId }),
   createConversation: (workspaceId?: string) =>
     invoke<Conversation>("create_conversation", { workspaceId }),
-  sendMessage: (conversationId: string, content: string) =>
-    invoke<SendMessageResult>("send_message", { conversationId, content }),
+  sendMessage: (conversationId: string, content: string, richContent?: string) =>
+    invoke<SendMessageResult>("send_message", { conversationId, content, richContent }),
   listConversations: (workspaceId?: string) =>
     invoke<Conversation[]>("list_conversations", { workspaceId }),
   listMessages: (conversationId: string) =>
@@ -274,8 +326,8 @@ export const commands = {
   listWorkspaces: () => invoke<Workspace[]>("list_workspaces"),
   searchFolders: (query: string, maxResults?: number) =>
     invoke<FolderSearchPage>("search_folders", { query, maxResults }),
-  sendAgentMessage: (conversationId: string, content: string) =>
-    invoke<string>("send_agent_message", { conversationId, content }),
+  sendAgentMessage: (conversationId: string, content: string, richContent?: string) =>
+    invoke<string>("send_agent_message", { conversationId, content, richContent }),
   answerUserQuestion: (questionId: string, answer: string[]) =>
     invoke<void>("answer_user_question", { questionId, answer }),
   addMcpServer: (name: string, command: string, args: string[]) =>
@@ -284,6 +336,7 @@ export const commands = {
   listMcpServerTools: (serverId: string) =>
     invoke<McpToolInfo[]>("list_mcp_server_tools", { serverId }),
   listSkills: () => invoke<SkillSummary[]>("list_skills"),
+  readAttachedFile: (path: string) => invoke<AttachedFile>("read_attached_file", { path }),
 };
 
 export interface ModelInstallProgressPayload {

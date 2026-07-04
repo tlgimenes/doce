@@ -1,8 +1,7 @@
-import { PaperPlaneRightIcon } from "@phosphor-icons/react";
-import { useEffect, useRef, useState } from "react";
-import { Button } from "@/components/ui/button";
+import { useEffect, useState } from "react";
 import MessageContent from "@/components/MessageContent";
-import { commands, type Message } from "@/lib/ipc";
+import RichInput from "@/views/chat/rich-input/RichInput";
+import { commands, type Message, type RichMessageContent } from "@/lib/ipc";
 
 interface WorkspaceProps {
   conversationId: string;
@@ -19,22 +18,21 @@ interface WorkspaceProps {
  */
 export default function Workspace({ conversationId }: WorkspaceProps) {
   const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState("");
   const [thinking, setThinking] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     setMessages([]);
-    setInput("");
     setError(null);
     commands.listMessages(conversationId).then(setMessages);
   }, [conversationId]);
 
-  const send = async () => {
-    if (!input.trim() || thinking) return;
-    const content = input;
-    setInput("");
+  const send = async (content: string, richContent?: RichMessageContent) => {
+    // richContent's own presence counts as "something to send" even when
+    // content (the flat-text extraction) is empty — a message that's
+    // entirely a chip (e.g. just a pasted-text or attachment node, no
+    // additional typed text) must not be silently dropped here.
+    if ((!content.trim() && !richContent) || thinking) return;
     setError(null);
     setMessages((prev) => [
       ...prev,
@@ -42,8 +40,8 @@ export default function Workspace({ conversationId }: WorkspaceProps) {
         id: `u-${Date.now()}`,
         conversationId,
         role: "user",
-        contentType: "text",
-        content,
+        contentType: richContent ? "rich_text" : "text",
+        content: richContent ? JSON.stringify(richContent) : content,
         toolName: null,
         createdAt: Date.now(),
         durationMs: null,
@@ -51,7 +49,11 @@ export default function Workspace({ conversationId }: WorkspaceProps) {
     ]);
     setThinking(true);
     try {
-      const reply = await commands.sendAgentMessage(conversationId, content);
+      const reply = await commands.sendAgentMessage(
+        conversationId,
+        content,
+        richContent ? JSON.stringify(richContent) : undefined,
+      );
       setMessages((prev) => [
         ...prev,
         {
@@ -71,18 +73,6 @@ export default function Workspace({ conversationId }: WorkspaceProps) {
       setThinking(false);
     }
   };
-
-  const adjustInputHeight = () => {
-    const minHeight = 96;
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-    textarea.style.height = "auto";
-    textarea.style.height = `${Math.min(Math.max(textarea.scrollHeight, minHeight), 180)}px`;
-  };
-
-  useEffect(() => {
-    adjustInputHeight();
-  }, [input]);
 
   return (
     <div className="flex h-dvh flex-col bg-background text-foreground">
@@ -107,34 +97,16 @@ export default function Workspace({ conversationId }: WorkspaceProps) {
         </div>
       </div>
       <div className="border-t border-border p-4">
-        <div className="flex items-end gap-2 rounded-2xl border border-border bg-card px-3 py-2 shadow-sm">
-          <textarea
-            ref={textareaRef}
-            rows={4}
-            className="min-h-[96px] flex-1 resize-none bg-transparent border-none px-0 py-1.5 text-sm leading-6 outline-none"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                send();
-              }
-            }}
-            placeholder="Describe a task…"
-            data-testid="agent-input"
-          />
-          <Button
-            type="button"
-            variant="primary"
-            className="h-8 w-8 shrink-0 rounded-full p-0"
-            onClick={send}
-            disabled={!input.trim() || thinking}
-            aria-label="Send message"
-            data-testid="agent-send"
-          >
-            <PaperPlaneRightIcon size={16} />
-          </Button>
-        </div>
+        <RichInput
+          onSubmit={(content, richContent) => {
+            send(content, richContent);
+          }}
+          skillsEnabled={true}
+          disabled={thinking}
+          placeholder="Describe a task…"
+          inputTestId="agent-input"
+          submitTestId="agent-send"
+        />
       </div>
     </div>
   );

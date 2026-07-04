@@ -149,10 +149,11 @@ pub async fn search_folders(
         .or_else(|_| std::env::var("HOME"))
         .unwrap_or_else(|_| "/".to_string());
 
-    let (base, filter) = resolve_search_scope(&needle, &home_dir);
+    let (base, filter) = resolve_search_scope(needle, &home_dir);
     let wants_path_mode = needle.starts_with('/') || needle.starts_with('~');
-    let exact_match = if wants_path_mode && !needle.ends_with('/') && needle != "~" && needle != "/" {
-        Some(resolve_path_query(&needle, &home_dir)).filter(|path| path.is_dir())
+    let exact_match = if wants_path_mode && !needle.ends_with('/') && needle != "~" && needle != "/"
+    {
+        Some(resolve_path_query(needle, &home_dir)).filter(|path| path.is_dir())
     } else {
         None
     };
@@ -172,10 +173,13 @@ pub async fn search_folders(
             .and_then(|value| value.to_str())
             .unwrap_or("Home")
             .to_string();
-        folders.insert(0, FolderSearchResult {
-            path: exact,
-            display_name,
-        });
+        folders.insert(
+            0,
+            FolderSearchResult {
+                path: exact,
+                display_name,
+            },
+        );
     }
 
     let max_results = max_results.unwrap_or(FOLDER_SEARCH_RESULT_LIMIT).max(1);
@@ -334,8 +338,17 @@ mod tests {
         let expected = query.clone();
         let result = search_folders(query, Some(10)).await.unwrap();
 
-        assert_eq!(result.folders.first().map(|item| item.path.as_str()), Some(expected.as_str()));
-        assert_eq!(result.folders.first().map(|item| item.display_name.as_str()), Some("mesh"));
+        assert_eq!(
+            result.folders.first().map(|item| item.path.as_str()),
+            Some(expected.as_str())
+        );
+        assert_eq!(
+            result
+                .folders
+                .first()
+                .map(|item| item.display_name.as_str()),
+            Some("mesh")
+        );
         assert_eq!(result.folders.len(), 2);
     }
 
@@ -349,6 +362,9 @@ mod tests {
         let expected = format!("{}/mesh/", path_str);
         let result = search_folders(query, Some(10)).await.unwrap();
 
-        assert_ne!(result.folders.first().map(|item| item.path.as_str()), Some(expected.as_str()));
+        assert_ne!(
+            result.folders.first().map(|item| item.path.as_str()),
+            Some(expected.as_str())
+        );
     }
 }

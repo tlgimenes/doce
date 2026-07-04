@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import Workspace from "./Workspace";
 import { commands } from "@/lib/ipc";
@@ -76,6 +76,27 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     expect(renderedMessages).toHaveLength(2);
     expect(renderedMessages[0].textContent).toContain("list the files here");
     expect(renderedMessages[1].textContent).toContain("Found 3 files");
+  });
+
+  it("009-rich-chat-input regression: a message containing a chip forwards richContent to sendAgentMessage, not just the flat text", async () => {
+    vi.mocked(commands.sendAgentMessage).mockResolvedValue("ok");
+
+    render(<Workspace conversationId="conv-1" />);
+    const input = await screen.findByTestId("agent-input");
+
+    // Crosses the paste-collapse threshold — produces a real pastedText
+    // chip, matching RichInput's own US2 test's paste-simulation pattern.
+    const pastedBlock = Array.from({ length: 15 }, (_, i) => `line-${i}`).join("\n");
+    fireEvent.paste(input, { clipboardData: { items: [], getData: () => pastedBlock } });
+    await screen.findByTestId("pasted-text-chip");
+
+    await userEvent.click(screen.getByTestId("agent-send"));
+
+    await waitFor(() => expect(commands.sendAgentMessage).toHaveBeenCalled());
+    const [, , richContentArg] = vi.mocked(commands.sendAgentMessage).mock.calls[0];
+    expect(richContentArg).toBeDefined();
+    const parsed = JSON.parse(richContentArg as string);
+    expect(parsed.segments.some((s: { type: string; text?: string }) => s.type === "pastedText" && s.text === pastedBlock)).toBe(true);
   });
 
   it("switching to a different conversationId reloads its own messages", async () => {

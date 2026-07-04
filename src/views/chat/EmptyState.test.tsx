@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import EmptyState from "./EmptyState";
 import { commands } from "@/lib/ipc";
@@ -64,7 +64,7 @@ describe("EmptyState (006-chat-empty-state)", () => {
 
     expect(commands.openWorkspace).toHaveBeenCalledWith("/Users/tester");
     expect(commands.createConversation).toHaveBeenCalledWith("ws-home");
-    expect(commands.sendAgentMessage).toHaveBeenCalledWith("conv-1", "fix the login bug");
+    expect(commands.sendAgentMessage).toHaveBeenCalledWith("conv-1", "fix the login bug", undefined);
 
     // Order matters: workspace, then conversation, then the first message —
     // never out of order (contracts/conversation-creation.md's Sequence).
@@ -73,6 +73,45 @@ describe("EmptyState (006-chat-empty-state)", () => {
     const sendOrder = vi.mocked(commands.sendAgentMessage).mock.invocationCallOrder[0];
     expect(openOrder).toBeLessThan(createOrder);
     expect(createOrder).toBeLessThan(sendOrder);
+  });
+
+  it("009-rich-chat-input regression: a message containing a chip forwards richContent to sendAgentMessage, not just the flat text", async () => {
+    vi.mocked(commands.openWorkspace).mockResolvedValue({
+      id: "ws-home",
+      path: "/Users/tester",
+      displayName: "tester",
+      createdAt: 1,
+      lastOpenedAt: 1,
+    });
+    vi.mocked(commands.createConversation).mockResolvedValue({
+      id: "conv-1",
+      workspaceId: "ws-home",
+      title: "New conversation",
+      createdAt: 1,
+      updatedAt: 1,
+      status: "done",
+    });
+    vi.mocked(commands.sendAgentMessage).mockResolvedValue("ok");
+
+    render(<EmptyState onConversationCreated={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId("folder-target-selector")).toHaveTextContent("Home"));
+
+    const input = screen.getByTestId("empty-state-input");
+    const pastedBlock = Array.from({ length: 15 }, (_, i) => `line-${i}`).join("\n");
+    fireEvent.paste(input, { clipboardData: { items: [], getData: () => pastedBlock } });
+    await screen.findByTestId("pasted-text-chip");
+
+    await userEvent.click(screen.getByTestId("empty-state-submit"));
+
+    await waitFor(() => expect(commands.sendAgentMessage).toHaveBeenCalled());
+    const [, , richContentArg] = vi.mocked(commands.sendAgentMessage).mock.calls[0];
+    expect(richContentArg).toBeDefined();
+    const parsed = JSON.parse(richContentArg as string);
+    expect(
+      parsed.segments.some(
+        (s: { type: string; text?: string }) => s.type === "pastedText" && s.text === pastedBlock,
+      ),
+    ).toBe(true);
   });
 
   it("submitting empty or whitespace-only text does nothing", async () => {

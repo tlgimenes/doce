@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { homeDir } from "@tauri-apps/api/path";
-import { CaretDownIcon, PaperPlaneRightIcon } from "@phosphor-icons/react";
-import { Button } from "@/components/ui/button";
-import { commands, type Conversation } from "@/lib/ipc";
+import { CaretDownIcon } from "@phosphor-icons/react";
+import { commands, type Conversation, type RichMessageContent } from "@/lib/ipc";
 import FolderPicker from "@/views/shared/FolderPicker";
+import RichInput from "@/views/chat/rich-input/RichInput";
 
 export interface FolderTarget {
   kind: "home" | "recent" | "browsed";
@@ -42,22 +42,8 @@ export default function EmptyState({ onConversationCreated }: EmptyStateProps) {
   const [target, setTarget] = useState<FolderTarget | null>(null);
   const [homePath, setHomePath] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [input, setInput] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-
-  const adjustInputHeight = () => {
-    const minHeight = 96;
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-    textarea.style.height = "auto";
-    textarea.style.height = `${Math.min(Math.max(textarea.scrollHeight, minHeight), 180)}px`;
-  };
-
-  useEffect(() => {
-    adjustInputHeight();
-  }, [input]);
 
   useEffect(() => {
     homeDir().then((path) => {
@@ -66,16 +52,22 @@ export default function EmptyState({ onConversationCreated }: EmptyStateProps) {
     });
   }, []);
 
-  const submit = async () => {
-    if (!input.trim() || submitting || !target) return;
-    const content = input;
+  const submit = async (content: string, richContent?: RichMessageContent) => {
+    // richContent's own presence counts as "something to send" even when
+    // content (the flat-text extraction) is empty — a message that's
+    // entirely a chip (e.g. just a pasted-text node, no additional typed
+    // text) must not be silently dropped here.
+    if ((!content.trim() && !richContent) || submitting || !target) return;
     setSubmitting(true);
     setError(null);
     try {
       const workspace = await commands.openWorkspace(target.path);
       const conversation = await commands.createConversation(workspace.id);
-      await commands.sendAgentMessage(conversation.id, content);
-      setInput("");
+      await commands.sendAgentMessage(
+        conversation.id,
+        content,
+        richContent ? JSON.stringify(richContent) : undefined,
+      );
       onConversationCreated(conversation);
     } catch (e) {
       setError(String(e));
@@ -114,34 +106,14 @@ export default function EmptyState({ onConversationCreated }: EmptyStateProps) {
             onDismiss={() => setPickerOpen(false)}
           />
         )}
-        <div className="flex items-end gap-2 rounded-2xl border border-border bg-card px-3 py-2 shadow-sm">
-          <textarea
-            ref={textareaRef}
-            rows={4}
-            className="min-h-[96px] flex-1 resize-none bg-transparent border-none px-0 py-1.5 text-sm leading-6 outline-none"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                submit();
-              }
-            }}
-            placeholder="What do you want to work on?"
-            data-testid="empty-state-input"
-          />
-          <Button
-            type="button"
-            variant="primary"
-            className="h-8 w-8 shrink-0 rounded-full p-0"
-            onClick={submit}
-            disabled={!input.trim() || submitting}
-            aria-label="Send message"
-            data-testid="empty-state-submit"
-          >
-            <PaperPlaneRightIcon size={16} />
-          </Button>
-        </div>
+        <RichInput
+          onSubmit={submit}
+          skillsEnabled={true}
+          disabled={submitting}
+          placeholder="What do you want to work on?"
+          inputTestId="empty-state-input"
+          submitTestId="empty-state-submit"
+        />
         {error && (
           <p className="text-sm text-destructive" data-testid="empty-state-error">
             {error}

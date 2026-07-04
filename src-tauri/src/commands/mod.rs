@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod attachments;
 pub mod conversations;
 pub mod mcp;
 pub mod models;
@@ -32,6 +33,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             workspaces::search_folders,
             agent::send_agent_message,
             agent::answer_user_question,
+            attachments::read_attached_file,
             mcp::add_mcp_server,
             mcp::list_mcp_servers,
             mcp::list_mcp_server_tools,

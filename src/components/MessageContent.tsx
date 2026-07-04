@@ -14,6 +14,7 @@ import {
   type UnknownToolDetail,
   type WriteDetail,
 } from "@/lib/ipc";
+import UserMessageContent from "@/views/chat/rich-input/UserMessageContent";
 import UnknownToolWidget from "@/views/chat/tool-widgets/UnknownToolWidget";
 import EditDiffWidget from "@/views/chat/tool-widgets/EditDiffWidget";
 import BashWidget from "@/views/chat/tool-widgets/BashWidget";
@@ -51,7 +52,17 @@ export default function MessageContent({ message: m, showTimer = false }: Messag
         role="group"
         aria-label="You said"
       >
-        <ReactMarkdown>{m.content}</ReactMarkdown>
+        {/* 009-rich-chat-input, US2 (T026): a rich_text user message (a
+            paste-collapse chip, and eventually attachment/skill chips)
+            dispatches to UserMessageContent, mirroring this file's existing
+            tool_result -> ToolWidget dispatch — every other user message
+            (contentType 'text', today's only other case) renders exactly as
+            it always has. */}
+        {m.contentType === "rich_text" ? (
+          <UserMessageContent content={m.content} />
+        ) : (
+          <ReactMarkdown>{m.content}</ReactMarkdown>
+        )}
       </div>
     );
   }

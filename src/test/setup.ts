@@ -26,3 +26,40 @@ if (!HTMLDialogElement.prototype.showModal) {
     this.removeAttribute("open");
   };
 }
+
+// jsdom has no layout engine, and (confirmed directly against jsdom 29.1.1)
+// doesn't even implement Range.prototype.getBoundingClientRect/getClientRects
+// or document.elementFromPoint at all (both `undefined`, not just
+// zero-returning). ProseMirror's EditorView calls these on essentially every
+// transaction (coordsAtPos -> scrollToSelection) and on mousedown
+// (posAtCoords) — 009-rich-chat-input's Tiptap-based input is this app's
+// first use of a contenteditable-backed editor, and without these, ordinary
+// typing throws an uncaught TypeError that doesn't fail an individual
+// expect() but does flip `vitest run`'s exit code to 1, silently poisoning
+// an otherwise-green suite.
+if (!Range.prototype.getBoundingClientRect) {
+  Range.prototype.getBoundingClientRect = function (this: Range) {
+    return { top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0, x: 0, y: 0, toJSON() {} } as DOMRect;
+  };
+}
+if (!Range.prototype.getClientRects) {
+  Range.prototype.getClientRects = function (this: Range) {
+    return { length: 0, item: () => null, [Symbol.iterator]: [][Symbol.iterator] } as unknown as DOMRectList;
+  };
+}
+if (!document.elementFromPoint) {
+  document.elementFromPoint = () => null;
+}
+
+// jsdom 29 has no native ResizeObserver at all. Not exercised as a hard
+// crash by Tiptap/StarterKit or @floating-ui/react's `autoUpdate` (both
+// feature-detect its absence and no-op), but cheap to stub proactively
+// since a future custom node view or floating-ui option may assume it
+// exists.
+if (typeof globalThis.ResizeObserver === "undefined") {
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver;
+}

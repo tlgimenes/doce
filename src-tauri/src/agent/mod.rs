@@ -18,6 +18,7 @@
 //! rather than crashing the loop.
 
 pub mod dispatch;
+pub mod rich_content;
 pub mod subagent;
 pub mod tools;
 

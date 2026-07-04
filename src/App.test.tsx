@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "./App";
 import { commands, events } from "@/lib/ipc";
@@ -182,16 +182,31 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     expect(screen.queryByTestId("settings-view")).not.toBeInTheDocument();
   });
 
-  it("Cmd+K opens the shortcuts dialog listing all three shortcuts, and pressing it again closes it (US3, FR-006)", async () => {
+  it("Cmd+K opens the shortcuts dialog listing all shortcuts, and pressing it again closes it (US3, FR-006)", async () => {
     render(<App />);
     await waitForReady();
 
     pressCmd("k");
-    await screen.findByTestId("shortcuts-dialog");
-    expect(screen.getAllByTestId("shortcut-item")).toHaveLength(3);
+    const dialog = await screen.findByTestId("shortcuts-dialog");
+    expect(screen.getAllByTestId("shortcut-item")).toHaveLength(4);
+
+    // Scoped to the dialog: the sidebar's own search button independently
+    // shows a "⌘F" hover hint, so a page-wide query would match both.
+    expect(within(dialog).getByText("Open conversation search")).toBeInTheDocument();
+    expect(within(dialog).getByText("⌘F")).toBeInTheDocument();
 
     pressCmd("k");
     await waitFor(() => expect(screen.queryByTestId("shortcuts-dialog")).not.toBeInTheDocument());
+  });
+
+  it("Cmd+F opens the sidebar conversation search", async () => {
+    render(<App />);
+    await waitForReady();
+
+    pressCmd("f");
+
+    await screen.findByTestId("search-panel");
+    expect(screen.getByTestId("search-input")).toBeInTheDocument();
   });
 
   it("Escape and the close button both dismiss the shortcuts dialog (FR-005)", async () => {
