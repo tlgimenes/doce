@@ -1,7 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import App from "./App";
+import App, { checkReadyWithRetries } from "./App";
 import { commands, events } from "@/lib/ipc";
 
 // Covers 005-keyboard-shortcuts: the app's first global (not input-scoped)
@@ -252,5 +252,50 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     await waitFor(() => expect(screen.queryByTestId("shortcuts-dialog")).not.toBeInTheDocument());
     pressCmd("n");
     await screen.findByTestId("empty-state-input");
+  });
+});
+
+// Regression coverage for the App.tsx robustness fix: `ready` used to stay
+// `null` forever (rendering nothing) if listModels() never settled — the
+// exact shape of a still-unresolved CI-only failure (see tasks.md's T095
+// note). checkReadyWithRetries() now bounds that wait and always resolves
+// to a real boolean.
+describe("App's initial readiness check survives a stuck listModels() call", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("resolves true immediately when listModels() succeeds with an installed model", async () => {
+    vi.mocked(commands.listModels).mockResolvedValue([
+      { id: "m", hardwareTier: "tier1", isActive: true, installed: true },
+    ]);
+    const resultPromise = checkReadyWithRetries();
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(resultPromise).resolves.toBe(true);
+    expect(commands.listModels).toHaveBeenCalledTimes(1);
+  });
+
+  it("resolves false, without hanging forever, when listModels() never settles across every retry", async () => {
+    vi.mocked(commands.listModels).mockReturnValue(new Promise(() => {}));
+    const resultPromise = checkReadyWithRetries();
+    // 3 attempts * 8s timeout each = 24s worst case.
+    await vi.advanceTimersByTimeAsync(24_000);
+    await expect(resultPromise).resolves.toBe(false);
+    expect(commands.listModels).toHaveBeenCalledTimes(3);
+  });
+
+  it("resolves true if a later retry succeeds after earlier ones hang", async () => {
+    vi.mocked(commands.listModels)
+      .mockReturnValueOnce(new Promise(() => {}))
+      .mockResolvedValueOnce([{ id: "m", hardwareTier: "tier1", isActive: true, installed: true }]);
+    const resultPromise = checkReadyWithRetries();
+    await vi.advanceTimersByTimeAsync(8_000);
+    await expect(resultPromise).resolves.toBe(true);
+    expect(commands.listModels).toHaveBeenCalledTimes(2);
   });
 });

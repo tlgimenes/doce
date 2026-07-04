@@ -9,18 +9,44 @@ import ShortcutsDialog from "@/views/shortcuts/ShortcutsDialog";
 import { commands, type Conversation } from "@/lib/ipc";
 import { buildShortcuts } from "@/lib/shortcuts";
 import { wireConversationStreamEvents } from "@/state/conversationStreamStore";
+import { withTimeout } from "@/lib/withTimeout";
+
+// A real Tauri invoke() call has no built-in timeout: if the IPC bridge
+// isn't ready yet, drops the message, or the backend is stuck, the
+// promise just never settles. Without a bound, `ready` stays `null`
+// forever and the whole app renders nothing, with no way to recover or
+// even diagnose it from the outside — found via a still-unresolved CI
+// investigation (see specs/001-doce-v1-core/tasks.md's T095 note) where
+// this exact call appeared to hang indefinitely in one environment while
+// always resolving quickly in every other one tested. `attempts` retries
+// give a transient bridge-not-ready race a real chance to clear before
+// falling back.
+const READY_CHECK_TIMEOUT_MS = 8000;
+const READY_CHECK_ATTEMPTS = 3;
+
+export async function checkReadyWithRetries(): Promise<boolean> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < READY_CHECK_ATTEMPTS; attempt++) {
+    try {
+      const models = await withTimeout(
+        commands.listModels(),
+        READY_CHECK_TIMEOUT_MS,
+        "listModels() did not respond in time",
+      );
+      return models.some((m) => m.installed);
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  console.error("checkReadyWithRetries: giving up after repeated failures", lastError);
+  // Falls back to the onboarding view rather than hanging on a blank
+  // screen forever — Onboarding.tsx's own hardware/install-status checks
+  // are independent calls that get their own fresh chance to succeed.
+  return false;
+}
 
 export default function App() {
   const [ready, setReady] = useState<boolean | null>(null);
-  // Temporary diagnostic (not permanent app logic): investigating why the
-  // app's very first invoke() call — listModels(), below — appears to
-  // never settle in GitHub Actions CI specifically (confirmed the webview
-  // navigates and runs JS, but with ready stuck at null the app renders
-  // literally nothing, which was otherwise invisible to any e2e query).
-  // Surfaces the raw promise outcome as a real, queryable DOM element
-  // instead of relying on console capture, which has proven unreliable in
-  // this same CI environment.
-  const [ipcDiag, setIpcDiag] = useState("pending");
   // 006-chat-empty-state: the active conversation's own `workspaceId` (not a
   // separate `agentMode` flag) decides which view renders — a flag
   // disconnected from the actually-selected conversation was already a
@@ -34,17 +60,13 @@ export default function App() {
 
   useEffect(() => {
     wireConversationStreamEvents();
-    setIpcDiag(`calling at ${Date.now()}`);
-    commands
-      .listModels()
-      .then((models) => {
-        setIpcDiag(`resolved: ${JSON.stringify(models)}`);
-        setReady(models.some((m) => m.installed));
-      })
-      .catch((err) => {
-        setIpcDiag(`rejected: ${String(err)}`);
-        setReady(false);
-      });
+    let cancelled = false;
+    checkReadyWithRetries().then((isReady) => {
+      if (!cancelled) setReady(isReady);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // 005-keyboard-shortcuts: the app's first global (not input-scoped)
@@ -101,7 +123,7 @@ export default function App() {
     commands.setFocusedConversation(activeConversation?.id ?? null);
   }, [activeConversation]);
 
-  if (ready === null) return <div data-testid="ipc-diagnostic">{ipcDiag}</div>;
+  if (ready === null) return null;
   if (!ready) return <Onboarding onReady={() => setReady(true)} />;
 
   return (
