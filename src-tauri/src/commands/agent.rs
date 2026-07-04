@@ -906,9 +906,19 @@ mod tests {
 
         // Let the spawned task run up to (and block on) the `.await` inside
         // `rx.await` — it must not resolve on its own without an answer.
-        for _ in 0..20 {
+        // Poll the actual condition (the event callback having fired)
+        // rather than a fixed yield count: a fixed count was observed
+        // flaky in CI (a single failure out of many runs) — on a slower or
+        // more loaded scheduler, a fixed number of yields isn't guaranteed
+        // to be enough for the background task to reach its blocking
+        // point, even though it always does eventually.
+        for _ in 0..1000 {
+            if emitted.lock().unwrap().is_some() {
+                break;
+            }
             tokio::task::yield_now().await;
         }
+        assert!(emitted.lock().unwrap().is_some(), "event was never emitted");
         assert!(!handle.is_finished(), "must block until answered");
 
         // The pending tool_call is the latest message while genuinely
