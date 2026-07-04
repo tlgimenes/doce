@@ -1,4 +1,4 @@
-# Specification Quality Checklist: Doce Landing Page
+# Specification Quality Checklist: doce Landing Page
 
 **Purpose**: Validate specification completeness and quality before proceeding to planning
 **Created**: 2026-07-03

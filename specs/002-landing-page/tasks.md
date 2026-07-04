@@ -3,7 +3,7 @@
 description: "Task list template for feature implementation"
 ---
 
-# Tasks: Doce Landing Page
+# Tasks: doce Landing Page
 
 **Input**: Design documents from `/specs/002-landing-page/`
 
@@ -60,9 +60,9 @@ Note: `site/index.html` and `site/assets/styles.css` are each touched by tasks a
 
 ---
 
-## Phase 3: User Story 1 - Learn about Doce and download it (Priority: P1) 🎯 MVP
+## Phase 3: User Story 1 - Learn about doce and download it (Priority: P1) 🎯 MVP
 
-**Goal**: A first-time visitor understands, within the first screen, that Doce is a fully local, zero-config personal AI agent for macOS, and can click a prominent button to download it.
+**Goal**: A first-time visitor understands, within the first screen, that doce is a fully local, zero-config personal AI agent for macOS, and can click a prominent button to download it.
 
 **Independent Test**: Load the page in a fresh browser session; without scrolling, confirm the value proposition, download button, and platform requirement are all visible; click the button and confirm it opens the GitHub Releases page.
 
@@ -79,7 +79,7 @@ Note: `site/index.html` and `site/assets/styles.css` are each touched by tasks a
 
 ## Phase 4: User Story 2 - Gauge project credibility via GitHub stars (Priority: P2)
 
-**Goal**: The page displays the Doce repository's current GitHub star count, degrading gracefully if it can't be fetched.
+**Goal**: The page displays the doce repository's current GitHub star count, degrading gracefully if it can't be fetched.
 
 **Independent Test**: Load the page and confirm a star count renders. Then, via devtools, block the star-count request and reload — confirm the page still renders a complete, unbroken layout showing the static fallback count.
 

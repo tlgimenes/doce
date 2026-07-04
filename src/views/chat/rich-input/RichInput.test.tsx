@@ -18,7 +18,7 @@ describe("RichInput (009-rich-chat-input, US1)", () => {
         onSubmit={vi.fn()}
         skillsEnabled={false}
         disabled={false}
-        placeholder="Message Doce…"
+        placeholder="Message doce…"
         inputTestId="test-input"
         submitTestId="test-submit"
       />,
@@ -29,7 +29,7 @@ describe("RichInput (009-rich-chat-input, US1)", () => {
     // plugin) rather than inserting literal text — jsdom has no layout
     // engine to render the CSS `::before` content itself, so asserting on
     // the attribute is the correct structural check for this tier.
-    expect(container.querySelector('[data-placeholder="Message Doce…"]')).toBeInTheDocument();
+    expect(container.querySelector('[data-placeholder="Message doce…"]')).toBeInTheDocument();
     expect(screen.getByTestId("test-input")).toBeInTheDocument();
     expect(screen.getByTestId("test-submit")).toBeInTheDocument();
   });

@@ -1,7 +1,7 @@
-# Quickstart: Validating Doce v1.0
+# Quickstart: Validating doce v1.0
 
 Prerequisites: an Apple Silicon Mac (macOS 13+), the app built per
-`src-tauri` (see Project Structure in `plan.md`), no prior Doce data
+`src-tauri` (see Project Structure in `plan.md`), no prior doce data
 directory (for the zero-config scenarios) or an existing one (for the
 persistence scenarios).
 

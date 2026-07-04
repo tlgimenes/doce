@@ -1,6 +1,6 @@
-# Doce
+# doce
 
-Doce is a local-first AI coding/system agent for macOS. It runs entirely
+doce is a local-first AI coding/system agent for macOS. It runs entirely
 on-device — an embedded [llama.cpp](https://github.com/ggml-org/llama.cpp)
 model does the inference, chat history and workspace state live in a local
 SQLite database, and there is no account, no API key, and no cloud service
@@ -120,7 +120,7 @@ for it) and hands off to `wdio`.
 
 **Warning — this wipes real local app data by default.** Before each run,
 `tests/e2e/wdio.conf.ts` deletes
-`~/Library/Application Support/app.doce.desktop` (Doce's real macOS
+`~/Library/Application Support/app.doce.desktop` (doce's real macOS
 app-data directory) so `onboarding.spec.ts` can exercise a genuine
 zero-config first run — this deletes any real model install and chat
 history you have locally. If you're iterating locally against a machine

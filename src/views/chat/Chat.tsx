@@ -173,7 +173,7 @@ export default function Chat({ conversationId }: ChatProps) {
             <MessageContent key={m.id} message={m} showTimer />
           ))}
           {pending && (
-            <div className="mb-6" role="group" aria-label="Doce replied">
+            <div className="mb-6" role="group" aria-label="doce replied">
               <p className="text-sm text-muted-foreground" data-testid="generation-status">
                 {pending.status === "queued"
                   ? pending.queuePosition != null && pending.queuePosition > 0
@@ -220,7 +220,7 @@ export default function Chat({ conversationId }: ChatProps) {
           onSubmit={send}
           skillsEnabled={false}
           disabled={!!pending}
-          placeholder="Message Doce…"
+          placeholder="Message doce…"
           inputTestId="chat-input"
           submitTestId="chat-send"
         />

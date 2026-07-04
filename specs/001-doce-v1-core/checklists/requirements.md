@@ -1,4 +1,4 @@
-# Specification Quality Checklist: Doce v1.0 — Zero-Config Local Personal Agent
+# Specification Quality Checklist: doce v1.0 — Zero-Config Local Personal Agent
 
 **Purpose**: Validate specification completeness and quality before proceeding to planning
 **Created**: 2026-07-02
@@ -71,7 +71,7 @@
   tools research and a standing prior-session decision), a live-computed `Conversation.status`
   (`done`/`requires_action`/`failed`/`in_progress`, new FR-011, SC-010) with a precise
   `requires_action` rule (ends in `AskUserQuestion` or a trailing `?` outside a URL), and
-  title-by-truncation (FR-012, no LLM call). Also took the opportunity to enumerate Doce's full
+  title-by-truncation (FR-012, no LLM call). Also took the opportunity to enumerate doce's full
   v1.0 built-in tool set by exact name/signature (`Read`/`Write`/`Edit`/`Bash`/`Glob`/`Grep`/
   `AskUserQuestion`, `research.md` §27) instead of leaving FR-009 vague, per the standing
   tool-parity decision. New User Story 7. `research.md` §28 covers the status/title design;

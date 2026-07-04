@@ -1,4 +1,4 @@
-# External Interface Contracts: Doce Landing Page
+# External Interface Contracts: doce Landing Page
 
 This site exposes no API of its own — it's a static page. It does depend on
 three external, read-only interfaces. This document is the contract each
@@ -7,7 +7,7 @@ must satisfy for the page to behave per the spec.
 ## 1. GitHub star count source
 
 - **Direction**: Outbound, client-side, read-only.
-- **Expectation**: Given the Doce repository's owner/name, the source
+- **Expectation**: Given the doce repository's owner/name, the source
   returns a current star count for that repository without requiring the
   visitor to authenticate.
 - **Shape required by the page**: A numeric star count value, resolvable in

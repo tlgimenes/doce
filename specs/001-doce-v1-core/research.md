@@ -1,4 +1,4 @@
-# Phase 0 Research: Doce v1.0 — Zero-Config Local Personal Agent
+# Phase 0 Research: doce v1.0 — Zero-Config Local Personal Agent
 
 ## 1. llama.cpp Rust bindings
 
@@ -218,7 +218,7 @@ unit-tested in isolation; e2e coverage is the only way to prove
 frontend+backend contracts (e.g. the queued/running indicator described in
 `contracts/tauri-ipc.md`'s `generation-queue-update` event) actually hold
 end-to-end, not just on one side of the IPC boundary. `@wdio/tauri-service`
-specifically matters because Doce is macOS-only (constitution Principle V):
+specifically matters because doce is macOS-only (constitution Principle V):
 Apple provides no WebDriver for embedded `WKWebView` (unlike Windows'
 WebView2 or Linux's WebKitGTK, which `tauri-driver` itself can drive
 directly), so plain `tauri-driver` cannot run e2e tests on our target
@@ -229,7 +229,7 @@ including macOS.
 **Alternatives considered**: Plain `tauri-driver` — rejected outright, no
 macOS support. Playwright — rejected; Playwright automates its own bundled
 WebKit build, which is a different engine build than the system `WKWebView`
-Doce actually ships in, so it would validate the wrong rendering/JS engine
+doce actually ships in, so it would validate the wrong rendering/JS engine
 rather than the one users run. Skipping e2e in favor of Rust-only
 integration tests — rejected because streaming/queueing UX is a
 frontend+backend contract that unit/integration tests on one side alone
@@ -520,7 +520,7 @@ pass found the original wording had conflated two different things)**:
   support at all (no `minimum`/`maximum`/fixed-length constraints of any
   kind, for any type — not even the integer-only support the llama.cpp
   reference converter has), and a known issue with underscore characters
-  in property names. The latter is the bigger practical risk for Doce
+  in property names. The latter is the bigger practical risk for doce
   specifically: MCP tool schemas commonly use `snake_case` parameter names
   (e.g. `file_path`), so this could affect a meaningful fraction of
   real-world MCP tools, not just an edge case.
@@ -707,7 +707,7 @@ plus `state_seq_get_size_ext`/`state_seq_get_data_ext`/
 lower-level FFI needed. (The older whole-context `save_session_file`/
 `load_session_file` are deprecated in favor of `state_save_file`/
 `state_load_file` and the sequence-scoped variants above; use the
-sequence-scoped ones, since Doce's design already keys work by
+sequence-scoped ones, since doce's design already keys work by
 conversation/sequence.) This is no longer a spike — it's a known
 implementation path, though it still carries the memory-vs-throughput
 tension noted below.
@@ -855,7 +855,7 @@ external-content avoids the duplication for no loss of functionality.
 
 ## 27. Built-in tool set (FR-009, FR-010)
 
-**Decision**: Doce's agent tool-use loop exposes exactly the following
+**Decision**: doce's agent tool-use loop exposes exactly the following
 built-in tools, matching Claude Code's own tool names and parameter
 shapes (per the earlier tool-signature research this session, cross-
 verified against directly-observed Claude Code tool schemas):
@@ -874,7 +874,7 @@ verified against directly-observed Claude Code tool schemas):
 exact tool-set parity with Claude Code, not just "a similar coding agent
 tool set" — matching names and parameter shapes means anything written
 about Claude Code's tool behavior (prompting patterns, documentation,
-user intuition from using Claude Code itself) transfers directly to Doce.
+user intuition from using Claude Code itself) transfers directly to doce.
 `AskUserQuestion` specifically also now backs the `requires_action`
 conversation status (§28) — its exact name matters because the status
 computation checks for it by name (`Message.tool_name = 'AskUserQuestion'`,
@@ -1000,7 +1000,7 @@ couple minutes) before paying the cost of a full Tauri build + e2e run
 (the slowest job, matching the testing-strategy rationale that e2e is
 comparatively expensive and reserved for what unit/integration tests
 can't cover). Apple Silicon runners are required rather than optional —
-Doce is arm64-only, and Rosetta-emulated x64 runners wouldn't reflect the
+doce is arm64-only, and Rosetta-emulated x64 runners wouldn't reflect the
 actual target architecture.
 
 **Alternatives considered**: A single monolithic job running everything

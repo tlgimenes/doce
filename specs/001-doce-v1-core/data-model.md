@@ -1,4 +1,4 @@
-# Phase 1 Data Model: Doce v1.0 — Zero-Config Local Personal Agent
+# Phase 1 Data Model: doce v1.0 — Zero-Config Local Personal Agent
 
 Storage: local SQLite (`rusqlite`/`tokio-rusqlite`), one file under the
 app's local data directory. All entities below are local-only per

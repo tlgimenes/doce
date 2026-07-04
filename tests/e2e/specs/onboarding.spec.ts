@@ -29,11 +29,11 @@ import { expect } from "@wdio/globals";
 const EARLY_UI_TIMEOUT = 60000;
 
 describe("Onboarding (User Story 1: zero-config first run)", () => {
-  it("shows the Doce heading with no model picker, API key field, or account step", async () => {
+  it("shows the doce heading with no model picker, API key field, or account step", async () => {
     await browser.pause(1500);
     const heading = await browser.$("h1");
     await heading.waitForExist({ timeout: EARLY_UI_TIMEOUT });
-    await expect(heading).toHaveText("Doce");
+    await expect(heading).toHaveText("doce");
 
     const apiKeyInputs = await browser.$$("input[type='password']");
     expect(apiKeyInputs.length).toBe(0);

@@ -71,8 +71,8 @@ export default function Onboarding({ onReady }: OnboardingProps) {
 
   return (
     <div className="flex h-dvh flex-col items-center justify-center gap-6 bg-background text-foreground">
-      <img src={logo} alt="Doce" className="h-24 w-auto" />
-      <h1 className="text-balance text-2xl font-semibold">Doce</h1>
+      <img src={logo} alt="doce" className="h-24 w-auto" />
+      <h1 className="text-balance text-2xl font-semibold">doce</h1>
       {profile && (
         <p className="text-sm text-muted-foreground">
           {profile.chip} · {profile.ramGb}GB · tier {profile.tier}

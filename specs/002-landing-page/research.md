@@ -1,4 +1,4 @@
-# Phase 0 Research: Doce Landing Page
+# Phase 0 Research: doce Landing Page
 
 All Technical Context items had a clear default given the feature's scope
 (one static marketing page); no `[NEEDS CLARIFICATION]` markers were carried

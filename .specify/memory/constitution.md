@@ -16,7 +16,7 @@ Sync Impact Report
   - ✅ .specify/templates/tasks-template.md (generic, no changes needed)
   - ✅ .specify/templates/commands/*.md (none present besides skills already generic)
 - Follow-up TODOs:
-  - TODO(DOMAIN_VERIFICATION) — trademark/domain availability for "Doce" not yet
+  - TODO(DOMAIN_VERIFICATION) — trademark/domain availability for "doce" not yet
     confirmed through an authoritative registrar/trademark search (carried over
     from v1.0.0; unrelated to this amendment).
   - TODO(V1_1_SECURITY_REVIEW) — before v1.1 WhatsApp bridging design begins,
@@ -27,7 +27,7 @@ Sync Impact Report
     not resolve that question — it explicitly defers it, same as before.
 -->
 
-# Doce Constitution
+# doce Constitution
 
 ## Core Principles
 
@@ -42,7 +42,7 @@ first run (a picker, a prompt for credentials, a required account) is a
 violation unless it ships behind an explicit "advanced" affordance outside the
 default flow.
 
-**Rationale**: Zero-config is Doce's entire reason to exist relative to
+**Rationale**: Zero-config is doce's entire reason to exist relative to
 OpenClaw and other local-agent projects — it is the product's core
 differentiator, not a nice-to-have.
 
@@ -61,7 +61,7 @@ access before they've had time to build trust through configuration, so the
 privacy guarantee has to be structural, not a settings toggle they must find.
 
 ### III. Native macOS Polish
-Doce MUST feel like a first-class, signed and notarized Mac app, not a ported
+doce MUST feel like a first-class, signed and notarized Mac app, not a ported
 CLI tool or Electron shell with rough edges. This applies to install/launch
 experience, window chrome, and settings — all should match platform
 conventions. Apple Silicon is the target architecture for v1.
@@ -71,14 +71,14 @@ plus onboarding flow" competitors; native polish is part of the zero-config
 promise, not a separate cosmetic concern.
 
 ### IV. Extensibility via MCP and Skills
-Doce MUST ship an MCP client so users can connect arbitrary MCP servers, and
+doce MUST ship an MCP client so users can connect arbitrary MCP servers, and
 MUST support filesystem-based `SKILL.md`-style capability packs (bundled
 defaults + user-added) that the agent loop discovers and pulls into context
 contextually. This mirrors the extensibility model of Claude Desktop/Code
 rather than inventing a bespoke plugin system.
 
 **Rationale**: MCP and skills are an established, growing ecosystem; adopting
-existing conventions maximizes what Doce can use on day one and what users
+existing conventions maximizes what doce can use on day one and what users
 already know how to extend.
 
 ### V. v1 Scope Discipline
@@ -88,7 +88,7 @@ services, and RAG over arbitrary personal document stores are out of scope for
 v1. Channel bridging beyond WhatsApp (iMessage, Telegram, Discord, Signal,
 ...) is explicitly deferred until WhatsApp validates demand for bridging at
 all; WhatsApp bridging itself is v1.1 (fast-follow), not launch-blocking.
-Doce v1.0 also ships with no permission/approval system: once agent mode is
+doce v1.0 also ships with no permission/approval system: once agent mode is
 engaged, the agent may read, write, and execute without user confirmation,
 anywhere on the local filesystem, not scoped to the opened workspace folder.
 This is an explicit v1.0 simplification, not an oversight, and MUST be

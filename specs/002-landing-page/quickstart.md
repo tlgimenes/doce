@@ -1,4 +1,4 @@
-# Quickstart: Doce Landing Page
+# Quickstart: doce Landing Page
 
 Validates the `site/` static page end-to-end against the acceptance
 scenarios in `spec.md`. No build step is required — see `research.md` § 1.
@@ -23,7 +23,7 @@ python3 -m http.server 8080
 Walk through each item and confirm the observed behavior matches the spec:
 
 1. **Value proposition (User Story 1 / FR-001, SC-001)** — Load the page.
-   Without scrolling, confirm you can read that Doce is a fully local,
+   Without scrolling, confirm you can read that doce is a fully local,
    zero-config personal AI agent for macOS, with no API keys and no cloud
    dependency.
 2. **Download CTA (User Story 1 / FR-002, FR-006, SC-002)** — Confirm the

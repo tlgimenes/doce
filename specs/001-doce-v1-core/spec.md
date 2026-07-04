@@ -1,4 +1,4 @@
-# Feature Specification: Doce v1.0 — Zero-Config Local Personal Agent
+# Feature Specification: doce v1.0 — Zero-Config Local Personal Agent
 
 **Feature Branch**: `001-doce-v1-core`
 
@@ -6,13 +6,13 @@
 
 **Status**: Draft
 
-**Input**: User description: "Create the baseline specification for Doce v1.0 using the existing design document at docs/superpowers/specs/2026-07-02-doce-design.md as the source of truth. Doce is a fully local, zero-config personal AI agent for macOS — the Claude Desktop + Claude Code experience, running entirely on-device via an embedded llama.cpp, with no API keys, no cloud dependency, and no setup beyond opening the app. Scope: v1.0 launch only — onboarding, chat mode, agent mode, MCP client and skills, sandboxed-workspace permissions. WhatsApp bridging and other channels are v1.1+ and explicitly deferred, not silently dropped. Target users: people who want a personal AI agent that acts on their own Mac without cloud dependency, API key management, or account setup, evaluated against OpenClaw and Enclave AI."
+**Input**: User description: "Create the baseline specification for doce v1.0 using the existing design document at docs/superpowers/specs/2026-07-02-doce-design.md as the source of truth. doce is a fully local, zero-config personal AI agent for macOS — the Claude Desktop + Claude Code experience, running entirely on-device via an embedded llama.cpp, with no API keys, no cloud dependency, and no setup beyond opening the app. Scope: v1.0 launch only — onboarding, chat mode, agent mode, MCP client and skills, sandboxed-workspace permissions. WhatsApp bridging and other channels are v1.1+ and explicitly deferred, not silently dropped. Target users: people who want a personal AI agent that acts on their own Mac without cloud dependency, API key management, or account setup, evaluated against OpenClaw and Enclave AI."
 
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Open the app and start talking, with zero setup (Priority: P1)
 
-A new user downloads and opens Doce for the first time on their Mac. Without
+A new user downloads and opens doce for the first time on their Mac. Without
 entering any API key, creating an account, or picking a model, the app
 detects their hardware, downloads a suitable local model, and lets them start
 a conversation.
@@ -47,7 +47,7 @@ account.
 
 ### User Story 2 - Chat with the local assistant (Priority: P1)
 
-A user has an ongoing conversation with Doce for everyday questions, writing
+A user has an ongoing conversation with doce for everyday questions, writing
 help, or general assistance — the Claude-Desktop-equivalent experience.
 
 **Why this priority**: Chat is the baseline surface every user touches first
@@ -72,15 +72,15 @@ across app restarts, without opening any workspace folder.
 
 ### User Story 3 - Turn a folder into a coding/system agent (Priority: P1)
 
-A user opens a project folder in Doce. The app becomes an agent that can read
+A user opens a project folder in doce. The app becomes an agent that can read
 and edit files and run shell commands to complete a task the user describes,
 iterating in a tool-use loop — the Claude-Code-equivalent experience. The
 opened folder is the agent's working project context, not a restriction on
 where it can act.
 
 **Why this priority**: Acting on the user's machine (not just chatting) is
-the second half of Doce's core differentiation versus passive local
-assistants like Enclave AI; without it, Doce is not meaningfully different
+the second half of doce's core differentiation versus passive local
+assistants like Enclave AI; without it, doce is not meaningfully different
 from a local chatbot.
 
 **Independent Test**: Can be fully tested by opening a sample project folder,
@@ -144,7 +144,7 @@ the app queues the underlying work rather than attempting it all at once —
 but stays responsive and visibly shows what's queued rather than appearing
 frozen or silently dropping a message.
 
-**Why this priority**: This is what makes it safe to use Doce across
+**Why this priority**: This is what makes it safe to use doce across
 multiple chats/tasks at once without it appearing broken or monopolizing
 the machine. It's P2 rather than P1 because a single active conversation
 (User Stories 2/3) must work correctly on its own regardless of this
@@ -310,7 +310,7 @@ the correct status without opening the conversation.
   the user's first message to a fixed maximum length at a word boundary —
   no additional model inference is used for title generation.
 - **FR-013**: The app MUST perform agent-mode file and shell actions without
-  requiring user confirmation or approval; Doce v1.0 has no permission/
+  requiring user confirmation or approval; doce v1.0 has no permission/
   approval system gating agent actions. The one narrow exception: the app
   MUST hard-block a small, fixed set of catastrophic, irreversible shell
   command patterns (e.g. recursive deletion of the user's home directory
@@ -472,7 +472,7 @@ the correct status without opening the conversation.
   and RAG over arbitrary personal document stores are out of scope for this
   spec and tracked separately for a future release, per project scope
   discipline.
-- Doce v1.0 ships with no permission/approval system (FR-013): once agent
+- doce v1.0 ships with no permission/approval system (FR-013): once agent
   mode is engaged, the agent may read, write, and execute anywhere on the
   local filesystem without user confirmation, not scoped to the opened
   workspace folder. This is an explicit v1.0 simplification (see

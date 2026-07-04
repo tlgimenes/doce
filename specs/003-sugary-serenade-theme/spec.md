@@ -6,13 +6,13 @@
 
 **Status**: Draft
 
-**Input**: User description: "Apply a new color theme to the Doce landing page (specs/002-landing-page), called 'Sugary Serenade'. The palette is five pastel colors: --color-1 #f9b4a9 (peach/coral), --color-2 #f6d9b6 (light apricot), --color-3 #fce4a6 (pale yellow), --color-4 #fae3b2 (cream), --color-5 #f4c1a4 (soft salmon). The theme also defines a linear gradient (0.25turn through all 5 colors in order) and a radial gradient (circle, same 5 colors in order). Goal: replace/restyle the current dark navy landing page theme with this warmer, softer 'Sugary Serenade' palette across backgrounds, buttons/CTAs, and accents, using the gradients where appropriate (e.g. hero background or button hover states), while keeping all text readable (WCAG-appropriate contrast) and preserving every existing piece of content/functionality (hero copy, download CTA, GitHub star count, Buy Me a Coffee button) from 002-landing-page unchanged."
+**Input**: User description: "Apply a new color theme to the doce landing page (specs/002-landing-page), called 'Sugary Serenade'. The palette is five pastel colors: --color-1 #f9b4a9 (peach/coral), --color-2 #f6d9b6 (light apricot), --color-3 #fce4a6 (pale yellow), --color-4 #fae3b2 (cream), --color-5 #f4c1a4 (soft salmon). The theme also defines a linear gradient (0.25turn through all 5 colors in order) and a radial gradient (circle, same 5 colors in order). Goal: replace/restyle the current dark navy landing page theme with this warmer, softer 'Sugary Serenade' palette across backgrounds, buttons/CTAs, and accents, using the gradients where appropriate (e.g. hero background or button hover states), while keeping all text readable (WCAG-appropriate contrast) and preserving every existing piece of content/functionality (hero copy, download CTA, GitHub star count, Buy Me a Coffee button) from 002-landing-page unchanged."
 
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - See a cohesive Sugary Serenade theme (Priority: P1)
 
-A visitor loads the Doce landing page and sees a warm, soft, pastel visual
+A visitor loads the doce landing page and sees a warm, soft, pastel visual
 theme — "Sugary Serenade" — applied consistently across the page's
 background, buttons, and accents, replacing the previous dark navy theme.
 Every word on the page remains easy to read.
@@ -44,7 +44,7 @@ its background.
 
 ### User Story 2 - Every existing feature still works exactly as before (Priority: P2)
 
-A visitor who already knew the landing page can still download Doce, see
+A visitor who already knew the landing page can still download doce, see
 the GitHub star count, and reach the "Buy Me a Coffee" page — nothing about
 what the page says or does has changed, only how it looks.
 

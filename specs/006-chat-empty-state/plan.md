@@ -136,7 +136,7 @@ existing chat/workspace/settings views, matching the project's existing
 per-feature-folder convention. `FolderPicker.tsx` is placed under a new
 `views/shared/` rather than `components/` (unlike the generic `Timer.tsx`
 or `Dialog.tsx` primitives) since it's not a generic UI primitive — it's
-specifically about Doce's workspace/recents concept, not reusable outside
+specifically about doce's workspace/recents concept, not reusable outside
 this domain. The Rust change is deliberately narrow (one prompt-string
 addition, one plugin registration) — no new command, no schema change.
 

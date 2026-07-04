@@ -81,7 +81,7 @@ export default function MessageContent({ message: m, showTimer = false }: Messag
   if (m.contentType === "tool_result") {
     const detail = parseToolResultDetail(m.content, m.toolName);
     return (
-      <div className="mb-6" data-testid="chat-message" role="group" aria-label="Doce replied">
+      <div className="mb-6" data-testid="chat-message" role="group" aria-label="doce replied">
         <ToolWidget detail={detail} />
       </div>
     );
@@ -93,7 +93,7 @@ export default function MessageContent({ message: m, showTimer = false }: Messag
         className="mb-6 rounded-lg bg-destructive/10 p-3 text-sm text-destructive"
         data-testid="chat-message"
         role="group"
-        aria-label="Doce replied"
+        aria-label="doce replied"
       >
         {m.content}
       </div>
@@ -101,7 +101,7 @@ export default function MessageContent({ message: m, showTimer = false }: Messag
   }
 
   return (
-    <div className="mb-6" data-testid="chat-message" role="group" aria-label="Doce replied">
+    <div className="mb-6" data-testid="chat-message" role="group" aria-label="doce replied">
       <div className="prose prose-sm dark:prose-invert max-w-none">
         <ReactMarkdown>{m.content}</ReactMarkdown>
       </div>

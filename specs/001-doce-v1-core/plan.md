@@ -1,4 +1,4 @@
-# Implementation Plan: Doce v1.0 — Zero-Config Local Personal Agent
+# Implementation Plan: doce v1.0 — Zero-Config Local Personal Agent
 
 **Branch**: `001-doce-v1-core` | **Date**: 2026-07-02 | **Spec**: [spec.md](./spec.md)
 
@@ -8,7 +8,7 @@
 
 ## Summary
 
-Doce v1.0 is a native macOS (Apple Silicon) desktop app that opens directly
+doce v1.0 is a native macOS (Apple Silicon) desktop app that opens directly
 into a working local AI agent: on first launch it profiles the host
 hardware, auto-downloads a matched local model (no picker, no API key, no
 account), and offers two surfaces — a streaming chat assistant and a
@@ -185,7 +185,7 @@ convention rather than a generic library/CLI layout. Module boundaries in
 `src-tauri/src/` map directly to the constitution's Technology & Platform
 Constraints list (inference, hardware, model_registry, downloader, agent,
 mcp, skills, storage) so each constitution-mandated component has exactly
-one home; there is deliberately no `permissions/` module, since Doce v1.0
+one home; there is deliberately no `permissions/` module, since doce v1.0
 ships with no permission/approval system (constitution Principle V).
 `scheduler/` was added alongside `inference/` (not
 folded into it) because it's a distinct concern — request queuing,

@@ -1,4 +1,4 @@
-# Implementation Plan: Doce Landing Page
+# Implementation Plan: doce Landing Page
 
 **Branch**: `002-landing-page` | **Date**: 2026-07-03 | **Spec**: [spec.md](./spec.md)
 
@@ -8,7 +8,7 @@
 
 ## Summary
 
-A single-page, static marketing site for Doce, published via GitHub Pages,
+A single-page, static marketing site for doce, published via GitHub Pages,
 that explains the project's value proposition, drives visitors to download
 the app, shows the repository's GitHub star count, and offers a "Buy Me a
 Coffee" support link. Technical approach: plain HTML/CSS/vanilla JS (no

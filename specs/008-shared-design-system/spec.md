@@ -219,7 +219,7 @@ confirm no regressions.
 - No new visual design language (colors, spacing scale, typography) is
   required beyond what already exists; this feature standardizes
   interaction behavior and component structure, not the visual theme.
-- Doce is a macOS desktop app (per project constitution); touch/mobile-
+- doce is a macOS desktop app (per project constitution); touch/mobile-
   specific interaction patterns are out of scope.
 - Exemptions from migration (FR-008) are expected to be rare and must be
   recorded with a reason rather than silently skipped.

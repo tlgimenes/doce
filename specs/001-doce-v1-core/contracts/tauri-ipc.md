@@ -1,6 +1,6 @@
 # IPC Contract: Frontend ↔ Rust Backend
 
-Doce has no external network API in v1.0 (per constitution Principle II).
+doce has no external network API in v1.0 (per constitution Principle II).
 The only interface contract is the Tauri IPC boundary between the React
 frontend and the Rust backend: `invoke` commands for request/response calls,
 and `emit`/`listen` events for backend→frontend streaming. This contract is
@@ -34,7 +34,7 @@ All commands return a typed error variant (`{ error: { code: string, message: st
 on failure rather than throwing opaque strings, so the frontend can render
 clear, plain-language error messages rather than opaque failures.
 
-Doce v1.0 has no permission/approval IPC surface: agent-mode file and shell
+doce v1.0 has no permission/approval IPC surface: agent-mode file and shell
 actions execute directly (FR-013), with no prompt/response round-trip
 gating them. The one exception is `AskUserQuestion` (FR-010) — that's the
 agent explicitly choosing to pause and ask, not a system-imposed approval
@@ -55,7 +55,7 @@ gate on an action it would otherwise take unprompted.
 
 - No HTTP/REST API — there is no remote client of this app in v1.0.
 - The MCP client (`rmcp`) contract itself is the standard, externally-defined
-  Model Context Protocol, not something this project defines; Doce is a
+  Model Context Protocol, not something this project defines; doce is a
   protocol *consumer* on that side, configured via `add_mcp_server`/
   `list_mcp_servers` above.
 - WhatsApp bridging has no contract here — deferred per constitution Principle V.

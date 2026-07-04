@@ -1,7 +1,7 @@
 [package]
 name = "doce"
 version = "0.1.0"
-description = "Doce — a fully local, zero-config personal AI agent for macOS"
+description = "doce — a fully local, zero-config personal AI agent for macOS"
 edition = "2021"
 rust-version = "1.80"
 

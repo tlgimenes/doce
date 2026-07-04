@@ -10,7 +10,7 @@
 
 ## User Scenarios & Testing *(mandatory)*
 
-### User Story 1 - One consistent, capable input everywhere you type to Doce (Priority: P1)
+### User Story 1 - One consistent, capable input everywhere you type to doce (Priority: P1)
 
 Today, the three places a user types a message (starting a new conversation, chatting in a plain conversation, chatting in an agent/workspace conversation) are three separate, plain, single-line-feeling text boxes that behave slightly differently from each other. A user typing a message in any of them gets the same capable, multi-line-aware input: Enter sends, Shift+Enter adds a new line, and the input feels and behaves identically no matter which view they're in.
 
@@ -63,7 +63,7 @@ A user wants the agent to use one of their locally-installed skills for the curr
 
 ### User Story 4 - Attach an image for the record, even though the agent can't see it yet (Priority: P3)
 
-A user wants to attach an image to their message — for their own reference, or in preparation for a future version of Doce that can actually see images. They can paste an image from the clipboard, drag one into the input, or pick one via a familiar file-selection dialog. However they attach it, it appears as a compact "<imagename.png>" chip rather than raw data cluttering the input, and hovering it shows a preview.
+A user wants to attach an image to their message — for their own reference, or in preparation for a future version of doce that can actually see images. They can paste an image from the clipboard, drag one into the input, or pick one via a familiar file-selection dialog. However they attach it, it appears as a compact "<imagename.png>" chip rather than raw data cluttering the input, and hovering it shows a preview.
 
 **Why this priority**: Lowest priority of the four because the current agent genuinely cannot see or use an image yet — this delivers a consistent, ready-for-later attachment experience and visual parity with the other chip types, but not a new agent capability today.
 
@@ -93,7 +93,7 @@ A user wants to attach an image to their message — for their own reference, or
 
 ### Functional Requirements
 
-- **FR-001**: The system MUST present one consistent rich-text input experience across all three places a user composes a message to Doce (starting a new conversation, a plain conversation, an agent/workspace conversation), replacing the three separate plain-text inputs that exist today.
+- **FR-001**: The system MUST present one consistent rich-text input experience across all three places a user composes a message to doce (starting a new conversation, a plain conversation, an agent/workspace conversation), replacing the three separate plain-text inputs that exist today.
 - **FR-002**: The input MUST send the message on Enter and insert a new line on Shift+Enter, consistently across all three surfaces.
 - **FR-003**: Pasting text that exceeds roughly 10 lines or 500 characters (whichever is reached first) MUST collapse into a compact chip showing how many lines were pasted, instead of inserting the raw text.
 - **FR-004**: A pasted-text chip MUST be expandable back into its original, fully editable text by interacting with it.

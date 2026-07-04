@@ -1,4 +1,4 @@
-# Feature Specification: Doce Landing Page
+# Feature Specification: doce Landing Page
 
 **Feature Branch**: `002-landing-page`
 
@@ -6,14 +6,14 @@
 
 **Status**: Draft
 
-**Input**: User description: "Create a landing page for the Doce project hosted on GitHub Pages. Goals: bring visitors in and explain what Doce is and why it matters (fully local, zero-config personal AI agent for macOS, no API keys, no cloud dependency); provide a clear download link/button to get the app; display live GitHub stars count for the repo; include a 'Buy Me a Coffee' support button/link. This is a marketing/informational static site, separate from the core macOS app feature (001-doce-v1-core)."
+**Input**: User description: "Create a landing page for the doce project hosted on GitHub Pages. Goals: bring visitors in and explain what doce is and why it matters (fully local, zero-config personal AI agent for macOS, no API keys, no cloud dependency); provide a clear download link/button to get the app; display live GitHub stars count for the repo; include a 'Buy Me a Coffee' support button/link. This is a marketing/informational static site, separate from the core macOS app feature (001-doce-v1-core)."
 
 ## User Scenarios & Testing *(mandatory)*
 
-### User Story 1 - Learn about Doce and download it (Priority: P1)
+### User Story 1 - Learn about doce and download it (Priority: P1)
 
-A person who has never heard of Doce arrives at the landing page (from a
-link, search, or the GitHub repo). Within seconds they understand that Doce
+A person who has never heard of doce arrives at the landing page (from a
+link, search, or the GitHub repo). Within seconds they understand that doce
 is a fully local, zero-config personal AI agent for macOS, with no API keys
 and no cloud dependency, and can click a clearly visible button to download
 it.
@@ -28,23 +28,23 @@ the value proposition and locate the download call-to-action.
 
 **Acceptance Scenarios**:
 
-1. **Given** a visitor with no prior knowledge of Doce lands on the page,
+1. **Given** a visitor with no prior knowledge of doce lands on the page,
    **When** the page finishes loading, **Then** they see, within the first
-   screen of content, a clear statement that Doce is a free, fully local,
+   screen of content, a clear statement that doce is a free, fully local,
    zero-config personal AI agent for macOS.
-2. **Given** the visitor wants to try Doce, **When** they click the primary
+2. **Given** the visitor wants to try doce, **When** they click the primary
    download button, **Then** they are taken to the location that hosts the
    current build/release of the app.
 3. **Given** a visitor on a device that is not a macOS/Apple Silicon machine,
    **When** they view the page, **Then** the platform requirement is stated
    clearly enough that they understand, before attempting to download,
-   whether Doce will run on their machine.
+   whether doce will run on their machine.
 
 ---
 
 ### User Story 2 - Gauge project credibility via GitHub stars (Priority: P2)
 
-A visitor deciding whether to trust or adopt Doce wants a quick signal of
+A visitor deciding whether to trust or adopt doce wants a quick signal of
 community traction. The landing page shows the current GitHub star count for
 the project's repository.
 
@@ -58,7 +58,7 @@ a reasonable refresh window.
 **Acceptance Scenarios**:
 
 1. **Given** the visitor is on the landing page, **When** the page finishes
-   loading, **Then** a GitHub star count for the Doce repository is visible.
+   loading, **Then** a GitHub star count for the doce repository is visible.
 2. **Given** the star count cannot be retrieved (e.g. the data source is
    temporarily unreachable), **When** the page loads, **Then** the rest of
    the page still renders correctly with no broken or error element in place
@@ -68,13 +68,13 @@ a reasonable refresh window.
 
 ### User Story 3 - Support the project financially (Priority: P3)
 
-A visitor who wants to support Doce's development — independent of whether
+A visitor who wants to support doce's development — independent of whether
 they use the app — can click a "Buy Me a Coffee" button to make a small
 contribution.
 
 **Why this priority**: A nice-to-have support channel; it does not affect
 the page's primary conversion goal (helping visitors understand and download
-Doce).
+doce).
 
 **Independent Test**: Can be fully tested by confirming a clearly labeled
 "Buy Me a Coffee" button/link is present and opens a valid contribution page.
@@ -110,12 +110,12 @@ Doce).
 ### Functional Requirements
 
 - **FR-001**: The page MUST present, within the first screen of content, a
-  concise explanation of what Doce is and its core value proposition (fully
+  concise explanation of what doce is and its core value proposition (fully
   local, zero-config personal AI agent for macOS, no API keys, no cloud
   dependency).
 - **FR-002**: The page MUST provide a single, visually prominent primary
-  call-to-action that lets visitors download the current build of Doce.
-- **FR-003**: The page MUST display the current star count of the Doce
+  call-to-action that lets visitors download the current build of doce.
+- **FR-003**: The page MUST display the current star count of the doce
   GitHub repository, refreshed at least once every 24 hours.
 - **FR-004**: The page MUST provide a clearly labeled "Buy Me a Coffee"
   button/link that takes visitors to a valid external contribution page.
@@ -123,7 +123,7 @@ Doce).
   reachable without login, account creation, or any form submission.
 - **FR-006**: The page MUST state the supported platform (macOS, Apple
   Silicon) clearly enough that a visitor knows, before downloading, whether
-  Doce will run on their machine.
+  doce will run on their machine.
 - **FR-007**: The page MUST remain fully readable and navigable if the
   GitHub star count cannot be retrieved, with no visible error state or
   broken layout in its place.
@@ -140,7 +140,7 @@ Doce).
 
 ### Measurable Outcomes
 
-- **SC-001**: A first-time visitor can identify what Doce is and locate the
+- **SC-001**: A first-time visitor can identify what doce is and locate the
   download call-to-action within 10 seconds of the page loading, without
   scrolling past the first screen.
 - **SC-002**: The download call-to-action and the platform requirement
@@ -159,7 +159,7 @@ Doce).
 
 ## Assumptions
 
-- No packaged release/build of Doce exists yet at the time of writing; the
+- No packaged release/build of doce exists yet at the time of writing; the
   download button will point to the project's GitHub Releases page and will
   resolve to the latest published build once one exists.
 - The page is hosted at the repository's default GitHub Pages URL; a custom

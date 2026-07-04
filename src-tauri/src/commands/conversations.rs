@@ -17,7 +17,7 @@ use uuid::Uuid;
 /// turn. Agent mode uses its own, tool-focused system prompt instead
 /// (`agent::SYSTEM_PROMPT`).
 const CHAT_SYSTEM_PROMPT: &str =
-    "You are Doce, a helpful AI assistant running entirely locally on the user's device.";
+    "You are doce, a helpful AI assistant running entirely locally on the user's device.";
 
 pub struct InferenceState(pub Arc<AsyncMutex<Option<InferenceEngine>>>);
 

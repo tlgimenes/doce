@@ -1,4 +1,4 @@
-# Data Model: Doce Landing Page
+# Data Model: doce Landing Page
 
 This feature has no persistent storage or database — it is a static page.
 The "data" involved is limited to two small pieces of client-side state
@@ -11,7 +11,7 @@ FR-003, FR-007).
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `count` | integer | Current star count for the Doce repository |
+| `count` | integer | Current star count for the doce repository |
 | `fetchedAt` | timestamp | When `count` was last successfully retrieved |
 | `isFallback` | boolean | `true` when `count` is the baked-in static fallback rather than a live fetch |
 
