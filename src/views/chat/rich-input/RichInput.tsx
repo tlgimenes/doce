@@ -491,17 +491,17 @@ export default function RichInput({
           >
             <PaperclipIcon size={16} />
           </Button>
-        <Button
-          type="button"
-          variant="primary"
-          className="h-8 w-8 shrink-0 rounded-full p-0"
-          onClick={submitCurrentContent}
-          disabled={disabled || isEmpty}
-          aria-label="Send message"
-          data-testid={submitTestId}
-        >
-          <PaperPlaneRightIcon size={16} />
-        </Button>
+          <Button
+            type="button"
+            variant="primary"
+            className="h-8 w-8 shrink-0 rounded-full p-0 enabled:bg-gradient-to-r enabled:from-[var(--color-primary)] enabled:via-[var(--color-gray-2)] enabled:to-[var(--color-gray-1)] enabled:hover:from-[var(--color-gray-2)] enabled:hover:via-[var(--color-gray-1)] enabled:hover:to-[var(--color-foreground)]"
+            onClick={submitCurrentContent}
+            disabled={disabled || isEmpty}
+            aria-label="Send message"
+            data-testid={submitTestId}
+          >
+            <PaperPlaneRightIcon size={16} />
+          </Button>
         </div>
       </div>
       {/* Inline error surface for an oversized/unreadable attachment —

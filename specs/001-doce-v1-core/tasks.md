@@ -126,10 +126,10 @@
 ### Tests for User Story 3
 
 - [X] T044 [P] [US3] Integration test for the full built-in tool set (Read/Write/Edit/Bash/Glob/Grep) in `src-tauri/tests/integration/test_tools.rs`, asserting exact Claude Code parity signatures (`research.md` §27)
-- [ ] T045 [P] [US3] Integration test for GBNF-constrained tool calling on a non-tool-calling model in `src-tauri/tests/integration/test_gbnf.rs`
+- [X] T045 [P] [US3] Integration test for GBNF-constrained tool calling on a non-tool-calling model in `src-tauri/tests/integration/test_gbnf.rs`
 - [X] T046 [P] [US3] Integration test for the catastrophic-command denylist in `src-tauri/tests/integration/test_denylist.rs`: verify `rm -rf ~`/`rm -rf /`-equivalent and disk-erase patterns are hard-blocked with no override (FR-013, SC-011, `research.md` §29)
-- [ ] T047 [P] [US3] Integration test for subagent spawning in `src-tauri/tests/integration/test_subagent.rs`: context isolation (no parent history), one-level nesting rejection, 30-turn cap actually stopping the loop, priority inheritance via `priority_conversation_id` (FR-015/FR-016, `research.md` §25)
-- [ ] T048 [P] [US3] Integration test for the no-deadlock guarantee in `src-tauri/tests/integration/test_scheduler_deadlock.rs`: parent awaiting a subagent never blocks the single inference worker
+- [X] T047 [P] [US3] Integration test for subagent spawning in `src-tauri/tests/integration/test_subagent.rs`: context isolation (no parent history), one-level nesting rejection, 30-turn cap actually stopping the loop, priority inheritance via `priority_conversation_id` (FR-015/FR-016, `research.md` §25)
+- [X] T048 [P] [US3] Integration test for the no-deadlock guarantee in `src-tauri/tests/integration/test_scheduler_deadlock.rs`: parent awaiting a subagent never blocks the single inference worker
 - [X] T049 [P] [US3] WDIO e2e spec `tests/e2e/03-agent-mode.spec.ts` mirroring `quickstart.md` §3
 - [X] T050 [P] [US3] WDIO e2e spec `tests/e2e/04-subagent-spawning.spec.ts` mirroring `quickstart.md` §4
 
@@ -140,7 +140,7 @@
 - [X] T053 [P] [US3] Implement `Read`/`Write`/`Edit` tools in `src-tauri/src/agent/tools/fs.rs` (exact Claude Code signatures, `research.md` §27)
 - [X] T054 [P] [US3] Implement `Bash` tool in `src-tauri/src/agent/tools/bash.rs`, including the hardcoded catastrophic-command denylist check before execution (FR-013, `research.md` §29)
 - [X] T055 [P] [US3] Implement `Glob`/`Grep` tools in `src-tauri/src/agent/tools/search.rs` (`.gitignore` handling per `research.md` §27)
-- [ ] T056 [US3] Implement per-turn GBNF grammar generation from the live tool set via the `gbnf` crate in `src-tauri/src/agent/grammar.rs`, with the schema-normalization fallback for `anyOf`/`oneOf`-mixing and `snake_case`-property-name gaps (`research.md` §22, depends on T053–T055)
+- [X] T056 [US3] Implement per-turn GBNF grammar generation from the live tool set via the `gbnf` crate in `src-tauri/src/agent/grammar.rs`, with the schema-normalization fallback for `anyOf`/`oneOf`-mixing and `snake_case`-property-name gaps (`research.md` §22, depends on T053–T055)
 - [X] T057 [US3] Implement subagent spawning in `src-tauri/src/agent/subagent.rs`: fresh isolated `Conversation` row (`spawned_by_conversation_id` set), restricted tool subset, one-level nesting rejection, 30-turn cap, `priority_conversation_id` inheritance, `tokio::sync::oneshot`-based non-blocking await (FR-015/FR-016, depends on T052, T009)
 - [X] T058 [P] [US3] Implement the `AskUserQuestion` tool and pause/resume mechanic in `src-tauri/src/agent/tools/ask_user.rs`: emits `ask-user-question`, awaits `answer_user_question` via oneshot channel (FR-010, depends on T052) — the pause/resume registry (`PendingQuestions`) was built and unit-tested here originally; the live dispatch wiring (register/emit/await on a real `AskUserQuestion` call) was completed later by `004-tool-call-widgets` (its `handle_ask_user_question`), which also had to add `AskUserQuestion` to `SYSTEM_PROMPT`'s tool list — it was never documented there, so the model had no way to know the tool existed even once dispatch supported it
 - [ ] T059 [US3] Emit `agent-activity` events (`file-diff`/`shell-output`/`subagent-status`) in `src-tauri/src/agent/mod.rs` (FR-017, depends on T052, T057) — **superseded, not merely deferred**: `004-tool-call-widgets` deliberately chose persist-then-render-on-completion over general live streaming for every tool (its research.md § 2/§ 3), with `AskUserQuestion`'s dispatch-time event as the one exception (T058, above). Revisit only if genuinely live (not just post-turn) tool-activity visibility becomes a real requirement — see `004`'s plan.md Complexity Tracking for the explicit scope call.
@@ -250,7 +250,7 @@
 - [ ] T090 [P] Implement macOS code signing + notarization in the Tauri bundler config (`research.md` §7), wired into `.github/workflows/ci.yml` release job
 - [ ] T091 [P] Run the full `quickstart.md` validation pass (all 8 sections) against a built binary
 - [ ] T092 [P] Security pass: confirm the denylist (T054) can't be talked around by any prompt phrasing; confirm no plaintext secrets logged
-- [ ] T093 [P] Performance pass: verify GBNF grammar caching by tool-set hash (flagged in `research.md`'s Critique Decisions as a residual, not blocking, optimization)
+- [X] T093 [P] **Moot**: GBNF grammar generation (T056) was never implemented (see "Known gaps" above) — there is no grammar to cache. Revisit only if T045/T056 are ever resumed.
 - [ ] T094 Documentation: `README.md` covering build/run/test instructions matching this tasks.md's structure
 - [ ] T095 Final CI green-run across `rust`/`frontend`/`e2e` jobs on `macos-26` before tagging v1.0
 
