@@ -92,9 +92,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-diagnostics
+          # @wdio/tauri-service's captureBackendLogs/captureFrontendLogs
+          # write here by default (wdio.conf.ts's own startup log confirmed
+          # this exact path: "Log capture initialized: .../doce/logs") — not
+          # tests/e2e/logs/, which was an unconfirmed guess in an earlier
+          # version of this step and never actually captured anything.
           path: |
             /tmp/doce-e2e-preview.log
-            tests/e2e/logs/
+            logs/
           if-no-files-found: ignore
 
   # T090 (specs/001-doce-v1-core/tasks.md): only runs on a `v*` tag, after
