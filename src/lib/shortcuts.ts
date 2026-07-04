@@ -10,6 +10,7 @@ export interface Shortcut {
 export interface ShortcutHandlers {
   focusInput: () => void;
   newConversation: () => void;
+  openSearch: () => void;
   toggleShortcutsDialog: () => void;
 }
 
@@ -34,6 +35,14 @@ export function buildShortcuts(handlers: ShortcutHandlers): Shortcut[] {
       key: "n",
       description: "Start a new conversation",
       action: handlers.newConversation,
+    },
+    {
+      id: "search-conversations",
+      combo: "⌘F",
+      metaKey: true,
+      key: "f",
+      description: "Open conversation search",
+      action: handlers.openSearch,
     },
     {
       id: "show-shortcuts",

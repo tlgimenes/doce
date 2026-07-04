@@ -33,7 +33,9 @@ describe("Dialog", () => {
       </Dialog>,
     );
 
-    const dialog = await screen.findByText("Hello").then((el) => el.closest("dialog") as HTMLDialogElement);
+    const dialog = await screen
+      .findByText("Hello")
+      .then((el) => el.closest("dialog") as HTMLDialogElement);
     dialog.dispatchEvent(new Event("cancel", { cancelable: true }));
 
     expect(onClose).toHaveBeenCalledTimes(1);

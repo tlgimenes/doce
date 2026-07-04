@@ -17,7 +17,12 @@ describe("SearchPanel", () => {
 
   it("renders ranked results with highlighted excerpts, selecting one calls onSelect", async () => {
     vi.mocked(commands.searchConversations).mockResolvedValue([
-      { conversationId: "c1", title: "About foxes", excerpt: "the quick brown <mark>fox</mark> jumps", rank: -5 },
+      {
+        conversationId: "c1",
+        title: "About foxes",
+        excerpt: "the quick brown <mark>fox</mark> jumps",
+        rank: -5,
+      },
     ]);
 
     const onSelect = vi.fn();

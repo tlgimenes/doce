@@ -35,7 +35,11 @@ vi.mock("@/lib/ipc", () => ({
 // sidesteps that race entirely.
 describe("Chat loading states", () => {
   let tokenCallback: (p: { conversationId: string; messageId: string; token: string }) => void;
-  let completeCallback: (p: { conversationId: string; messageId: string; durationMs: number }) => void;
+  let completeCallback: (p: {
+    conversationId: string;
+    messageId: string;
+    durationMs: number;
+  }) => void;
   let errorCallback: ErrorCb;
   let queueCallback: QueueCb;
 
@@ -190,7 +194,11 @@ describe("Chat loading states", () => {
     await userEvent.click(screen.getByTestId("chat-send"));
 
     await screen.findByTestId("generation-status");
-    errorCallback({ conversationId: "conv-1", messageId: "assistant-msg-1", error: "inference crashed" });
+    errorCallback({
+      conversationId: "conv-1",
+      messageId: "assistant-msg-1",
+      error: "inference crashed",
+    });
 
     await waitFor(() => {
       expect(screen.queryByTestId("generation-status")).not.toBeInTheDocument();

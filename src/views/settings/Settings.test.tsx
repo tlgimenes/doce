@@ -49,14 +49,24 @@ describe("Settings (User Story 4: MCP servers + skills)", () => {
     await userEvent.click(screen.getByTestId("add-mcp-server"));
 
     await waitFor(() => {
-      expect(commands.addMcpServer).toHaveBeenCalledWith("my-server", "npx", ["-y", "some-package"]);
+      expect(commands.addMcpServer).toHaveBeenCalledWith("my-server", "npx", [
+        "-y",
+        "some-package",
+      ]);
       expect(commands.listMcpServers).toHaveBeenCalledTimes(2); // initial + post-add refresh
     });
   });
 
   it("testing a server connection shows its tools", async () => {
     vi.mocked(commands.listMcpServers).mockResolvedValue([
-      { id: "srv-1", name: "my-server", transport: "stdio", config: "{}", enabled: true, createdAt: 1 },
+      {
+        id: "srv-1",
+        name: "my-server",
+        transport: "stdio",
+        config: "{}",
+        enabled: true,
+        createdAt: 1,
+      },
     ]);
     vi.mocked(commands.listMcpServerTools).mockResolvedValue([
       { name: "echo", description: "Echoes input" },
@@ -73,7 +83,14 @@ describe("Settings (User Story 4: MCP servers + skills)", () => {
 
   it("shows an error if testing a server connection fails", async () => {
     vi.mocked(commands.listMcpServers).mockResolvedValue([
-      { id: "srv-1", name: "my-server", transport: "stdio", config: "{}", enabled: true, createdAt: 1 },
+      {
+        id: "srv-1",
+        name: "my-server",
+        transport: "stdio",
+        config: "{}",
+        enabled: true,
+        createdAt: 1,
+      },
     ]);
     vi.mocked(commands.listMcpServerTools).mockRejectedValue(new Error("connection refused"));
 

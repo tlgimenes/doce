@@ -22,7 +22,10 @@ export default function AskUserQuestionWidget({ detail }: AskUserQuestionWidgetP
 
   if (detail.answer) {
     return (
-      <div className="rounded-lg border border-border bg-card p-3 text-sm" data-testid="question-answered">
+      <div
+        className="rounded-lg border border-border bg-card p-3 text-sm"
+        data-testid="question-answered"
+      >
         <p className="mb-1 text-muted-foreground">{detail.question}</p>
         <p className="font-medium">You chose: {detail.answer.join(", ")}</p>
       </div>
@@ -34,7 +37,9 @@ export default function AskUserQuestionWidget({ detail }: AskUserQuestionWidgetP
       submit([label]);
       return;
     }
-    setSelected((prev) => (prev.includes(label) ? prev.filter((l) => l !== label) : [...prev, label]));
+    setSelected((prev) =>
+      prev.includes(label) ? prev.filter((l) => l !== label) : [...prev, label],
+    );
   };
 
   const submit = async (answer: string[]) => {
@@ -48,7 +53,10 @@ export default function AskUserQuestionWidget({ detail }: AskUserQuestionWidgetP
   };
 
   return (
-    <div className="rounded-lg border border-border bg-card p-3 text-sm" data-testid="question-widget">
+    <div
+      className="rounded-lg border border-border bg-card p-3 text-sm"
+      data-testid="question-widget"
+    >
       {detail.header && <p className="mb-1 text-xs text-muted-foreground">{detail.header}</p>}
       <p className="mb-2 font-medium">{detail.question}</p>
       {detail.multiSelect && (

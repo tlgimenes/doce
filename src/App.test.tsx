@@ -108,7 +108,14 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
 
   it("Cmd+L focuses the plain chat input for a pre-existing, non-workspace conversation (US1, FR-012 regression guard)", async () => {
     vi.mocked(commands.listConversations).mockResolvedValue([
-      { id: "legacy-1", workspaceId: null, title: "Before 006", createdAt: 1, updatedAt: 1, status: "done" },
+      {
+        id: "legacy-1",
+        workspaceId: null,
+        title: "Before 006",
+        createdAt: 1,
+        updatedAt: 1,
+        status: "done",
+      },
     ]);
 
     render(<App />);

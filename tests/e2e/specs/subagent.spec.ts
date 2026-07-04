@@ -14,7 +14,10 @@ import { startWorkspaceConversationViaComposer } from "./helpers";
 describe("Agent mode subagent spawning (FR-015)", () => {
   it("delegating a task via the Task tool produces a real subagent conversation with an isolated context", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "doce-subagent-e2e-"));
-    writeFileSync(path.join(dir, "notes.txt"), "The secret ingredient is DOCE_E2E_SUBAGENT_WAFFLES.");
+    writeFileSync(
+      path.join(dir, "notes.txt"),
+      "The secret ingredient is DOCE_E2E_SUBAGENT_WAFFLES.",
+    );
 
     // Generous timeout: delegation may involve multiple real model turns
     // across both the parent and the subagent loop.
@@ -28,10 +31,13 @@ describe("Agent mode subagent spawning (FR-015)", () => {
     // this run (it may just answer directly, which is also a valid
     // response to "delegate this"), the request must complete with some
     // real, non-empty answer rather than hanging or erroring out.
-    await browser.waitUntil(async () => (await browser.$$("[data-testid='chat-message']")).length >= 2, {
-      timeout: 15000,
-      timeoutMsg: "messages never loaded after the composer created the conversation",
-    });
+    await browser.waitUntil(
+      async () => (await browser.$$("[data-testid='chat-message']")).length >= 2,
+      {
+        timeout: 15000,
+        timeoutMsg: "messages never loaded after the composer created the conversation",
+      },
+    );
     const bubbles = await browser.$$("[data-testid='chat-message']");
     const texts: string[] = [];
     for (let i = 0; i < bubbles.length; i++) {

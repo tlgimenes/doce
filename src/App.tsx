@@ -53,6 +53,9 @@ export default function App() {
         newConversation: () => {
           conversationListRef.current?.createNew();
         },
+        openSearch: () => {
+          conversationListRef.current?.openSearch();
+        },
         toggleShortcutsDialog: () => {
           setShowShortcutsDialog((prev) => !prev);
         },
@@ -110,7 +113,9 @@ export default function App() {
             <Chat key={activeConversation.id} conversationId={activeConversation.id} />
           )
         ) : (
-          <EmptyState onConversationCreated={(conversation) => setActiveConversation(conversation)} />
+          <EmptyState
+            onConversationCreated={(conversation) => setActiveConversation(conversation)}
+          />
         )}
       </div>
       <ShortcutsDialog

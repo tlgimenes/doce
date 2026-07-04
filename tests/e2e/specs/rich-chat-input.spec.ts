@@ -38,7 +38,11 @@ async function pasteInto(selector: string, text: string) {
       el.focus();
       const dt = new DataTransfer();
       dt.setData("text/plain", pastedText);
-      const event = new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: dt });
+      const event = new ClipboardEvent("paste", {
+        bubbles: true,
+        cancelable: true,
+        clipboardData: dt,
+      });
       el.dispatchEvent(event);
     },
     selector,
@@ -85,7 +89,10 @@ describe("Rich chat input (009-rich-chat-input)", () => {
         const messages = await browser.$$("[data-testid='assistant-stream'], .prose");
         for (const m of messages) {
           const text = await m.getText().catch(() => "");
-          if (text.includes("DOCE_E2E_PASTE_LINE_MARKER_0") && text.includes("DOCE_E2E_PASTE_LINE_MARKER_24")) {
+          if (
+            text.includes("DOCE_E2E_PASTE_LINE_MARKER_0") &&
+            text.includes("DOCE_E2E_PASTE_LINE_MARKER_24")
+          ) {
             return true;
           }
         }
@@ -96,7 +103,11 @@ describe("Rich chat input (009-rich-chat-input)", () => {
   });
 
   it("US3: selecting a skill actually changes the agent's reply, not just a rendered chip (FR-013)", async () => {
-    const skillsDir = path.join(homedir(), "Library/Application Support/app.doce.desktop/skills", "doce-e2e-test-skill");
+    const skillsDir = path.join(
+      homedir(),
+      "Library/Application Support/app.doce.desktop/skills",
+      "doce-e2e-test-skill",
+    );
     mkdirSync(skillsDir, { recursive: true });
     writeFileSync(
       path.join(skillsDir, "SKILL.md"),

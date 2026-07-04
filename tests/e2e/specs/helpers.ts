@@ -18,8 +18,11 @@ export async function startWorkspaceConversationViaComposer(
     // window.__TAURI_INTERNALS__ is always injected into a Tauri webview
     // regardless of the `withGlobalTauri` config — it's what
     // @tauri-apps/api/core's own `invoke()` calls internally.
-    return (window as unknown as { __TAURI_INTERNALS__: { invoke: (cmd: string, args: unknown) => Promise<unknown> } })
-      .__TAURI_INTERNALS__.invoke("open_workspace", { path });
+    return (
+      window as unknown as {
+        __TAURI_INTERNALS__: { invoke: (cmd: string, args: unknown) => Promise<unknown> };
+      }
+    ).__TAURI_INTERNALS__.invoke("open_workspace", { path });
   }, dir);
 
   // Return to the empty-state composer regardless of what the app is

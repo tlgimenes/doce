@@ -17,6 +17,7 @@ interface ConversationListProps {
 // not a duplicate (research.md § 3).
 export interface ConversationListHandle {
   createNew: () => void;
+  openSearch: () => void;
 }
 
 const STATUS_COLOR: Record<ConversationStatus, string> = {
@@ -34,7 +35,7 @@ const STATUS_LABEL: Record<ConversationStatus, string> = {
 };
 
 const SIDEBAR_ACTION_BUTTON =
-  "w-full justify-start gap-1 h-10 rounded-lg border-0 bg-transparent px-1 py-0 text-sm text-sidebar-foreground/95 hover:bg-sidebar-foreground/8 hover:text-sidebar-foreground focus-visible:ring-0 focus-visible:outline-none";
+  "w-full justify-start gap-1 h-8 rounded-lg border-0 bg-transparent px-1 py-0 text-sm text-sidebar-foreground/95 hover:bg-sidebar-foreground/8 hover:text-sidebar-foreground focus-visible:ring-0 focus-visible:outline-none";
 
 /**
  * User Story 7: at-a-glance conversation status (FR-011) and auto-generated
@@ -68,14 +69,20 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
       onNewConversation();
     };
 
-    useImperativeHandle(ref, () => ({ createNew }));
+    const openSearch = () => {
+      setSearching(true);
+    };
+
+    useImperativeHandle(ref, () => ({ createNew, openSearch }));
 
     const startDrag = async (event: MouseEvent<HTMLDivElement>) => {
       if (event.button !== 0) return;
       event.preventDefault();
-      await getCurrentWindow().startDragging().catch((error) => {
-        console.error("Failed to start window dragging", error);
-      });
+      await getCurrentWindow()
+        .startDragging()
+        .catch((error) => {
+          console.error("Failed to start window dragging", error);
+        });
     };
 
     return (
@@ -107,24 +114,34 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
           <Button
             variant="ghost"
             size="sm"
-            className={SIDEBAR_ACTION_BUTTON}
+            className={`${SIDEBAR_ACTION_BUTTON} group justify-between`}
             onClick={createNew}
             data-testid="new-conversation"
             aria-label="New agent"
           >
-            <PlusIcon size={16} weight="bold" />
-            New Agent
+            <span className="flex items-center gap-1">
+              <PlusIcon size={16} weight="bold" />
+              New Agent
+            </span>
+            <span className="text-xs text-sidebar-foreground/60 opacity-0 transition-opacity group-hover:opacity-100">
+              ⌘N
+            </span>
           </Button>
           <Button
             variant="ghost"
             size="sm"
-            className={SIDEBAR_ACTION_BUTTON}
-            onClick={() => setSearching(true)}
+            className={`${SIDEBAR_ACTION_BUTTON} group justify-between`}
+            onClick={openSearch}
             data-testid="open-search"
             aria-label="Search conversations"
           >
-            <MagnifyingGlassIcon size={16} />
-            Search
+            <span className="flex items-center gap-1">
+              <MagnifyingGlassIcon size={16} />
+              Search
+            </span>
+            <span className="font-mono text-xs text-sidebar-foreground/60 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+              ⌘F
+            </span>
           </Button>
           <Button
             variant="ghost"

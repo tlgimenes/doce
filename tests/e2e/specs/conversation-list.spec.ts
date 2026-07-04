@@ -33,7 +33,9 @@ describe("Conversation list (User Story 7)", () => {
     const before = (await browser.$$("[data-testid='conversation-item']")).length;
     await (await browser.$("[data-testid='new-conversation']")).click();
 
-    await browser.$("[data-testid='empty-state-input']").then((el) => el.waitForExist({ timeout: 10000 }));
+    await browser
+      .$("[data-testid='empty-state-input']")
+      .then((el) => el.waitForExist({ timeout: 10000 }));
     expect((await browser.$$("[data-testid='conversation-item']")).length).toBe(before);
   });
 
@@ -45,7 +47,10 @@ describe("Conversation list (User Story 7)", () => {
     await submitComposer("DOCE_E2E_THREAD_TWO say hello in exactly three words");
     await browser.waitUntil(
       async () => (await browser.$$("[data-testid='conversation-item']")).length > afterFirst,
-      { timeout: 15000, timeoutMsg: "second thread never appeared — this is the exact reported bug" },
+      {
+        timeout: 15000,
+        timeoutMsg: "second thread never appeared — this is the exact reported bug",
+      },
     );
 
     const items = await browser.$$("[data-testid='conversation-item']");

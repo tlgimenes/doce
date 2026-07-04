@@ -21,8 +21,20 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 }));
 
 const WORKSPACES = [
-  { id: "ws-1", path: "/Users/tester/code/doce", displayName: "doce", createdAt: 1, lastOpenedAt: 20 },
-  { id: "ws-2", path: "/Users/tester/code/other", displayName: "other", createdAt: 1, lastOpenedAt: 10 },
+  {
+    id: "ws-1",
+    path: "/Users/tester/code/doce",
+    displayName: "doce",
+    createdAt: 1,
+    lastOpenedAt: 20,
+  },
+  {
+    id: "ws-2",
+    path: "/Users/tester/code/other",
+    displayName: "other",
+    createdAt: 1,
+    lastOpenedAt: 10,
+  },
 ];
 const WORKSPACES_WITH_HOME = [
   { id: "ws-0", path: "/Users/tester", displayName: "gimenes", createdAt: 1, lastOpenedAt: 30 },
@@ -45,7 +57,9 @@ describe("FolderPicker (006-chat-empty-state, US2/US3)", () => {
   it("renders one row per listWorkspaces() result, with the current selection indicated", async () => {
     vi.mocked(commands.listWorkspaces).mockResolvedValue(WORKSPACES);
 
-    render(<FolderPicker currentPath="/Users/tester/code/doce" onSelect={vi.fn()} onDismiss={vi.fn()} />);
+    render(
+      <FolderPicker currentPath="/Users/tester/code/doce" onSelect={vi.fn()} onDismiss={vi.fn()} />,
+    );
 
     await waitFor(() => {
       expect(screen.getAllByTestId("folder-picker-item")).toHaveLength(2);
@@ -70,7 +84,9 @@ describe("FolderPicker (006-chat-empty-state, US2/US3)", () => {
   it("does not render the user's home folder as a duplicate folder row", async () => {
     vi.mocked(commands.listWorkspaces).mockResolvedValue(WORKSPACES_WITH_HOME);
 
-    render(<FolderPicker currentPath="/Users/tester/code/doce" onSelect={vi.fn()} onDismiss={vi.fn()} />);
+    render(
+      <FolderPicker currentPath="/Users/tester/code/doce" onSelect={vi.fn()} onDismiss={vi.fn()} />,
+    );
 
     await waitFor(() => {
       expect(screen.getAllByTestId("folder-picker-item")).toHaveLength(2);
@@ -178,12 +194,20 @@ describe("FolderPicker (006-chat-empty-state, US2/US3)", () => {
     vi.mocked(commands.listWorkspaces).mockResolvedValue(WORKSPACES);
     const onSelect = vi.fn();
 
-    render(<FolderPicker currentPath="/Users/tester/code/other" onSelect={onSelect} onDismiss={vi.fn()} />);
+    render(
+      <FolderPicker
+        currentPath="/Users/tester/code/other"
+        onSelect={onSelect}
+        onDismiss={vi.fn()}
+      />,
+    );
     await waitFor(() => expect(screen.getAllByTestId("folder-picker-item")).toHaveLength(2));
 
     await userEvent.type(screen.getByTestId("folder-picker-filter"), "d");
 
-    await waitFor(() => expect(screen.getByText("doce").closest("button")).toHaveAttribute("aria-selected", "true"));
+    await waitFor(() =>
+      expect(screen.getByText("doce").closest("button")).toHaveAttribute("aria-selected", "true"),
+    );
     await userEvent.keyboard("{Enter}");
 
     expect(onSelect).toHaveBeenCalledWith({
@@ -197,7 +221,13 @@ describe("FolderPicker (006-chat-empty-state, US2/US3)", () => {
     vi.mocked(commands.listWorkspaces).mockResolvedValue(WORKSPACES);
     const onSelect = vi.fn();
 
-    render(<FolderPicker currentPath="/Users/tester/code/other" onSelect={onSelect} onDismiss={vi.fn()} />);
+    render(
+      <FolderPicker
+        currentPath="/Users/tester/code/other"
+        onSelect={onSelect}
+        onDismiss={vi.fn()}
+      />,
+    );
     await waitFor(() => expect(screen.getAllByTestId("folder-picker-item")).toHaveLength(2));
 
     await userEvent.click(screen.getByTestId("folder-picker-filter"));
@@ -259,13 +289,13 @@ describe("FolderPicker (006-chat-empty-state, US2/US3)", () => {
 
     expect(open).toHaveBeenCalledWith({ directory: true });
     await waitFor(() =>
-    expect(onSelect).toHaveBeenCalledWith({
-      kind: "browsed",
-      path: "/Volumes/External/never-opened-before",
-      displayLabel: "/Volumes/External/never-opened-before",
-    }),
-  );
-});
+      expect(onSelect).toHaveBeenCalledWith({
+        kind: "browsed",
+        path: "/Volumes/External/never-opened-before",
+        displayLabel: "/Volumes/External/never-opened-before",
+      }),
+    );
+  });
 
   it("US3: cancelling the native dialog leaves the current target unchanged", async () => {
     vi.mocked(commands.listWorkspaces).mockResolvedValue([]);

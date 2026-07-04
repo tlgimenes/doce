@@ -21,7 +21,8 @@ interface EmptyStateProps {
 
 const toDisplayFolderLabel = (path: string, homePath: string | null) => {
   if (!homePath) return path;
-  const normalizedHome = homePath.endsWith("/") && homePath.length > 1 ? homePath.slice(0, -1) : homePath;
+  const normalizedHome =
+    homePath.endsWith("/") && homePath.length > 1 ? homePath.slice(0, -1) : homePath;
   if (path === normalizedHome || path === `${normalizedHome}/`) return "Home";
   if (path.startsWith(`${normalizedHome}/`)) {
     return `~${path.slice(normalizedHome.length)}`;

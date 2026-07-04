@@ -376,7 +376,7 @@ export default function RichInput({
     editorProps: {
       attributes: {
         ...(inputTestId ? { "data-testid": inputTestId } : {}),
-        class: "min-h-[96px] flex-1 text-sm leading-6 outline-none [&_p]:m-0",
+        class: "min-h-[72px] w-full text-sm leading-6 outline-none [&_p]:m-0",
       },
       handleKeyDown: (view, event) => {
         // `editorProps.handleKeyDown` (this function) is checked by
@@ -462,27 +462,12 @@ export default function RichInput({
 
   return (
     <div className="flex flex-col gap-1">
-      <div className="flex items-end gap-2 rounded-2xl border border-border bg-card px-3 py-2 shadow-sm">
-        {/* T047: the file-picker button (paperclip, matching this
-            codebase's existing icon-button styling — same shape as the
-            submit button below, `variant="ghost"` since this is a
-            secondary action). */}
-        <Button
-          type="button"
-          variant="ghost"
-          className="h-8 w-8 shrink-0 rounded-full p-0"
-          onClick={() => void pickAttachment()}
-          disabled={disabled}
-          aria-label="Attach a file"
-          data-testid="rich-input-attach"
-        >
-          <PaperclipIcon size={16} />
-        </Button>
+      <div className="flex flex-col gap-2 rounded-2xl border border-border bg-card px-3 py-2 shadow-xs transition-shadow focus-within:shadow-sm">
         <EditorContent
           editor={editor}
           className={cn(
-            "flex-1",
-            "[&_.ProseMirror]:min-h-[96px] [&_.ProseMirror]:outline-none",
+            "w-full",
+            "[&_.ProseMirror]:min-h-[72px] [&_.ProseMirror]:!outline-none [&_.ProseMirror:focus-visible]:!outline-none [&_.ProseMirror:focus]:!outline-none",
             "[&_.ProseMirror_p.is-editor-empty:first-child::before]:content-[attr(data-placeholder)]",
             "[&_.ProseMirror_p.is-editor-empty:first-child::before]:text-muted-foreground",
             "[&_.ProseMirror_p.is-editor-empty:first-child::before]:float-left",
@@ -490,6 +475,22 @@ export default function RichInput({
             "[&_.ProseMirror_p.is-editor-empty:first-child::before]:h-0",
           )}
         />
+        <div className="flex items-center justify-between">
+          {/* T047: the file-picker button (paperclip, matching this
+              codebase's existing icon-button styling — same shape as the
+              submit button below, `variant="ghost"` since this is a
+              secondary action). */}
+          <Button
+            type="button"
+            variant="ghost"
+            className="h-8 w-8 shrink-0 rounded-full p-0"
+            onClick={() => void pickAttachment()}
+            disabled={disabled}
+            aria-label="Attach a file"
+            data-testid="rich-input-attach"
+          >
+            <PaperclipIcon size={16} />
+          </Button>
         <Button
           type="button"
           variant="primary"
@@ -501,6 +502,7 @@ export default function RichInput({
         >
           <PaperPlaneRightIcon size={16} />
         </Button>
+        </div>
       </div>
       {/* Inline error surface for an oversized/unreadable attachment —
           same pattern as EmptyState.tsx's own `data-testid="empty-state-error"`

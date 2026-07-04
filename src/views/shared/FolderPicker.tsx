@@ -2,11 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { homeDir } from "@tauri-apps/api/path";
 import { open } from "@tauri-apps/plugin-dialog";
 import { FolderSimpleIcon } from "@phosphor-icons/react";
-import {
-  commands,
-  type FolderSearchResult,
-  type Workspace,
-} from "@/lib/ipc";
+import { commands, type FolderSearchResult, type Workspace } from "@/lib/ipc";
 import type { FolderTarget } from "@/views/chat/EmptyState";
 
 const FOLDER_SEARCH_LIMIT = 10;
@@ -20,7 +16,8 @@ export interface FolderPickerProps {
 
 const formatDisplayLabel = (path: string, homePath: string | null) => {
   if (!homePath) return path;
-  const normalizedHome = homePath.endsWith("/") && homePath.length > 1 ? homePath.slice(0, -1) : homePath;
+  const normalizedHome =
+    homePath.endsWith("/") && homePath.length > 1 ? homePath.slice(0, -1) : homePath;
   if (path === normalizedHome || path === `${normalizedHome}/`) return "Home";
   if (path.startsWith(`${normalizedHome}/`)) {
     return `~${path.slice(normalizedHome.length)}`;
@@ -95,7 +92,9 @@ export default function FolderPicker({ currentPath, onSelect, onDismiss }: Folde
 
   const needle = filter.trim().toLowerCase();
   const showSearchResults =
-    needle.startsWith("/") || needle.startsWith("~") || needle.length >= FOLDER_SEARCH_MIN_QUERY_LENGTH;
+    needle.startsWith("/") ||
+    needle.startsWith("~") ||
+    needle.length >= FOLDER_SEARCH_MIN_QUERY_LENGTH;
   const filterMode = filter.trim();
   const isPathMode = filterMode.startsWith("/") || filterMode.startsWith("~");
   const rows = (showSearchResults ? searchResults : workspaces).filter(
@@ -226,7 +225,11 @@ export default function FolderPicker({ currentPath, onSelect, onDismiss }: Folde
                 aria-selected={isSelected}
                 onClick={() => {
                   setSelectedIndex(index);
-                  onSelect({ kind: "recent", path, displayLabel: formatDisplayLabel(path, homePath) });
+                  onSelect({
+                    kind: "recent",
+                    path,
+                    displayLabel: formatDisplayLabel(path, homePath),
+                  });
                 }}
                 data-testid="folder-picker-item"
                 title={path}

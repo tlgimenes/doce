@@ -47,7 +47,9 @@ describe("Chat (User Story 2: send a message, get a real response)", () => {
     // UI path that no longer exists.
     await browser.execute(() => {
       return (
-        window as unknown as { __TAURI_INTERNALS__: { invoke: (cmd: string, args: unknown) => Promise<unknown> } }
+        window as unknown as {
+          __TAURI_INTERNALS__: { invoke: (cmd: string, args: unknown) => Promise<unknown> };
+        }
       ).__TAURI_INTERNALS__.invoke("create_conversation", {});
     });
 
@@ -66,7 +68,10 @@ describe("Chat (User Story 2: send a message, get a real response)", () => {
         const idx = texts.findIndex((t) => t.includes(MARKER_ONE));
         return idx !== -1 && idx + 1 < texts.length;
       },
-      { timeout: 60000, timeoutMsg: "assistant reply never appeared as a persisted message bubble" },
+      {
+        timeout: 60000,
+        timeoutMsg: "assistant reply never appeared as a persisted message bubble",
+      },
     );
 
     const texts = await bubbleTexts();

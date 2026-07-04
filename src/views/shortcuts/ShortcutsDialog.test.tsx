@@ -5,9 +5,30 @@ import ShortcutsDialog from "./ShortcutsDialog";
 import type { Shortcut } from "@/lib/shortcuts";
 
 const SHORTCUTS: Shortcut[] = [
-  { id: "focus-input", combo: "⌘L", metaKey: true, key: "l", description: "Focus the message input", action: vi.fn() },
-  { id: "new-conversation", combo: "⌘N", metaKey: true, key: "n", description: "Start a new conversation", action: vi.fn() },
-  { id: "show-shortcuts", combo: "⌘K", metaKey: true, key: "k", description: "Show keyboard shortcuts", action: vi.fn() },
+  {
+    id: "focus-input",
+    combo: "⌘L",
+    metaKey: true,
+    key: "l",
+    description: "Focus the message input",
+    action: vi.fn(),
+  },
+  {
+    id: "new-conversation",
+    combo: "⌘N",
+    metaKey: true,
+    key: "n",
+    description: "Start a new conversation",
+    action: vi.fn(),
+  },
+  {
+    id: "show-shortcuts",
+    combo: "⌘K",
+    metaKey: true,
+    key: "k",
+    description: "Show keyboard shortcuts",
+    action: vi.fn(),
+  },
 ];
 
 describe("ShortcutsDialog", () => {

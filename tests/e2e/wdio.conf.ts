@@ -17,7 +17,9 @@ export const config: WebdriverIO.Config = {
   // can rely on a model already being installed and active. Both specs
   // share one persistent app-data directory across the whole suite, not
   // an isolated one per spec file.
-  specs: process.env.WDIO_SPECS ? process.env.WDIO_SPECS.split(",") : ["./specs/onboarding.spec.ts", "./specs/chat.spec.ts"],
+  specs: process.env.WDIO_SPECS
+    ? process.env.WDIO_SPECS.split(",")
+    : ["./specs/onboarding.spec.ts", "./specs/chat.spec.ts"],
   maxInstances: 1,
 
   onPrepare: () => {

@@ -8,11 +8,7 @@ import tailwindcss from "@tailwindcss/vite";
 // bundles (it moved to an oxc-based transform for speed). The babel plugin
 // must run before the react plugin so the compiler sees un-transformed JSX.
 export default defineConfig(async () => ({
-  plugins: [
-    await babel({ presets: [reactCompilerPreset()] }),
-    react(),
-    tailwindcss(),
-  ],
+  plugins: [await babel({ presets: [reactCompilerPreset()] }), react(), tailwindcss()],
   resolve: {
     // Vite doesn't read tsconfig.json's `paths` at runtime — this alias
     // has to be declared separately to match.

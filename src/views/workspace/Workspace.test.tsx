@@ -96,7 +96,11 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     const [, , richContentArg] = vi.mocked(commands.sendAgentMessage).mock.calls[0];
     expect(richContentArg).toBeDefined();
     const parsed = JSON.parse(richContentArg as string);
-    expect(parsed.segments.some((s: { type: string; text?: string }) => s.type === "pastedText" && s.text === pastedBlock)).toBe(true);
+    expect(
+      parsed.segments.some(
+        (s: { type: string; text?: string }) => s.type === "pastedText" && s.text === pastedBlock,
+      ),
+    ).toBe(true);
   });
 
   it("switching to a different conversationId reloads its own messages", async () => {

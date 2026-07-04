@@ -184,9 +184,17 @@ export function parseToolResultDetail(
     if (parsed && typeof parsed.toolName === "string" && KNOWN_TOOL_NAMES.has(parsed.toolName)) {
       return parsed as ToolResultDetail;
     }
-    return { toolName: toolName ?? "Unknown", arguments: parsed, outcome: { ok: false, text: content } };
+    return {
+      toolName: toolName ?? "Unknown",
+      arguments: parsed,
+      outcome: { ok: false, text: content },
+    };
   } catch {
-    return { toolName: toolName ?? "Unknown", arguments: null, outcome: { ok: false, text: content } };
+    return {
+      toolName: toolName ?? "Unknown",
+      arguments: null,
+      outcome: { ok: false, text: content },
+    };
   }
 }
 
@@ -310,10 +318,8 @@ export const commands = {
     invoke<SendMessageResult>("send_message", { conversationId, content, richContent }),
   listConversations: (workspaceId?: string) =>
     invoke<Conversation[]>("list_conversations", { workspaceId }),
-  listMessages: (conversationId: string) =>
-    invoke<Message[]>("list_messages", { conversationId }),
-  searchConversations: (query: string) =>
-    invoke<SearchResult[]>("search_conversations", { query }),
+  listMessages: (conversationId: string) => invoke<Message[]>("list_messages", { conversationId }),
+  searchConversations: (query: string) => invoke<SearchResult[]>("search_conversations", { query }),
   // Values cross as JSON-encoded strings (see commands/settings.rs for why)
   // — parse/stringify at the call site.
   getSettings: () => invoke<Record<string, string>>("get_settings"),

@@ -79,10 +79,7 @@ describe("RichInput (009-rich-chat-input, US4 — paste)", () => {
     expect(chip).toHaveTextContent("photo.png");
     const preview = await screen.findByTestId("attachment-preview");
     // "hello" base64-encoded, matching fileToBase64's own encoding.
-    expect(preview.querySelector("img")).toHaveAttribute(
-      "src",
-      "data:image/png;base64,aGVsbG8=",
-    );
+    expect(preview.querySelector("img")).toHaveAttribute("src", "data:image/png;base64,aGVsbG8=");
     expect(commands.readAttachedFile).not.toHaveBeenCalled();
   });
 

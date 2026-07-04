@@ -25,10 +25,13 @@ describe("Agent mode (User Story 3: open a folder to enter agent mode)", () => {
     // The composer only switches to this view once the full turn (which may
     // involve multiple real tool-call round-trips) has already completed —
     // just wait for the resulting bubbles to render.
-    await browser.waitUntil(async () => (await browser.$$("[data-testid='chat-message']")).length >= 2, {
-      timeout: 15000,
-      timeoutMsg: "messages never loaded after the composer created the conversation",
-    });
+    await browser.waitUntil(
+      async () => (await browser.$$("[data-testid='chat-message']")).length >= 2,
+      {
+        timeout: 15000,
+        timeoutMsg: "messages never loaded after the composer created the conversation",
+      },
+    );
     const bubbles = await browser.$$("[data-testid='chat-message']");
     const texts: string[] = [];
     for (let i = 0; i < bubbles.length; i++) {

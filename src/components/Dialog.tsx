@@ -40,7 +40,7 @@ export default function Dialog({ open, onClose, children }: DialogProps) {
         // descendant, not the dialog element.
         if (e.target === ref.current) onClose();
       }}
-      className="rounded-lg border border-border bg-card p-0 text-card-foreground backdrop:bg-black/40"
+      className="fixed left-1/2 top-1/2 z-50 w-[30rem] max-w-[90vw] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-lg border border-border bg-card p-0 text-card-foreground backdrop:bg-black/40"
     >
       {/* Only mounted while open: a closed native <dialog> keeps its own
           box invisible via UA styles, but its content would otherwise stay

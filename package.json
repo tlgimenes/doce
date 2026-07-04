@@ -1,7 +1,7 @@
 {
   "name": "doce",
-  "private": true,
   "version": "0.1.0",
+  "private": true,
   "type": "module",
   "scripts": {
     "postinstall": "patch-package",
@@ -32,15 +32,11 @@
     "@tiptap/react": "^3.20.2",
     "@tiptap/starter-kit": "^3.20.2",
     "@tiptap/suggestion": "^3.20.2",
-    "@uiw/react-codemirror": "^4",
-    "@xterm/xterm": "^6",
     "clsx": "^2",
     "diff": "^9.0.0",
     "react": "^19",
     "react-dom": "^19",
     "react-markdown": "^10",
-    "react-xtermjs": "^1",
-    "shiki": "^4",
     "tailwind-merge": "^3",
     "zustand": "^5"
   },

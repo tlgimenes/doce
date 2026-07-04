@@ -24,10 +24,13 @@ describe("Workspace cwd resolution (007): Bash reflects the chosen folder", () =
       "Run the command `ls .` using the Bash tool (a relative reference, not an absolute path) and tell me exactly what it printed, verbatim.",
     );
 
-    await browser.waitUntil(async () => (await browser.$$("[data-testid='chat-message']")).length >= 2, {
-      timeout: 15000,
-      timeoutMsg: "messages never loaded after the composer created the conversation",
-    });
+    await browser.waitUntil(
+      async () => (await browser.$$("[data-testid='chat-message']")).length >= 2,
+      {
+        timeout: 15000,
+        timeoutMsg: "messages never loaded after the composer created the conversation",
+      },
+    );
     const bubbles = await browser.$$("[data-testid='chat-message']");
     const texts: string[] = [];
     for (let i = 0; i < bubbles.length; i++) {

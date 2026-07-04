@@ -51,7 +51,9 @@ describe("EmptyState (006-chat-empty-state)", () => {
     const onConversationCreated = vi.fn();
 
     render(<EmptyState onConversationCreated={onConversationCreated} />);
-    await waitFor(() => expect(screen.getByTestId("folder-target-selector")).toHaveTextContent("Home"));
+    await waitFor(() =>
+      expect(screen.getByTestId("folder-target-selector")).toHaveTextContent("Home"),
+    );
 
     await userEvent.type(screen.getByTestId("empty-state-input"), "fix the login bug");
     await userEvent.click(screen.getByTestId("empty-state-submit"));
@@ -64,7 +66,11 @@ describe("EmptyState (006-chat-empty-state)", () => {
 
     expect(commands.openWorkspace).toHaveBeenCalledWith("/Users/tester");
     expect(commands.createConversation).toHaveBeenCalledWith("ws-home");
-    expect(commands.sendAgentMessage).toHaveBeenCalledWith("conv-1", "fix the login bug", undefined);
+    expect(commands.sendAgentMessage).toHaveBeenCalledWith(
+      "conv-1",
+      "fix the login bug",
+      undefined,
+    );
 
     // Order matters: workspace, then conversation, then the first message —
     // never out of order (contracts/conversation-creation.md's Sequence).
@@ -94,7 +100,9 @@ describe("EmptyState (006-chat-empty-state)", () => {
     vi.mocked(commands.sendAgentMessage).mockResolvedValue("ok");
 
     render(<EmptyState onConversationCreated={vi.fn()} />);
-    await waitFor(() => expect(screen.getByTestId("folder-target-selector")).toHaveTextContent("Home"));
+    await waitFor(() =>
+      expect(screen.getByTestId("folder-target-selector")).toHaveTextContent("Home"),
+    );
 
     const input = screen.getByTestId("empty-state-input");
     const pastedBlock = Array.from({ length: 15 }, (_, i) => `line-${i}`).join("\n");
@@ -116,7 +124,9 @@ describe("EmptyState (006-chat-empty-state)", () => {
 
   it("submitting empty or whitespace-only text does nothing", async () => {
     render(<EmptyState onConversationCreated={vi.fn()} />);
-    await waitFor(() => expect(screen.getByTestId("folder-target-selector")).toHaveTextContent("Home"));
+    await waitFor(() =>
+      expect(screen.getByTestId("folder-target-selector")).toHaveTextContent("Home"),
+    );
 
     await userEvent.type(screen.getByTestId("empty-state-input"), "   ");
     await userEvent.click(screen.getByTestId("empty-state-submit"));
@@ -129,7 +139,9 @@ describe("EmptyState (006-chat-empty-state)", () => {
     const onConversationCreated = vi.fn();
 
     render(<EmptyState onConversationCreated={onConversationCreated} />);
-    await waitFor(() => expect(screen.getByTestId("folder-target-selector")).toHaveTextContent("Home"));
+    await waitFor(() =>
+      expect(screen.getByTestId("folder-target-selector")).toHaveTextContent("Home"),
+    );
 
     await userEvent.type(screen.getByTestId("empty-state-input"), "do a thing");
     await userEvent.click(screen.getByTestId("empty-state-submit"));
@@ -144,7 +156,13 @@ describe("EmptyState (006-chat-empty-state)", () => {
 
   it("US2: clicking the folder-target selector opens the picker, and picking a folder updates the target used on submit", async () => {
     vi.mocked(commands.listWorkspaces).mockResolvedValue([
-      { id: "ws-1", path: "/Users/tester/code/doce", displayName: "doce", createdAt: 1, lastOpenedAt: 5 },
+      {
+        id: "ws-1",
+        path: "/Users/tester/code/doce",
+        displayName: "doce",
+        createdAt: 1,
+        lastOpenedAt: 5,
+      },
     ]);
     vi.mocked(commands.openWorkspace).mockResolvedValue({
       id: "ws-1",
@@ -164,28 +182,42 @@ describe("EmptyState (006-chat-empty-state)", () => {
     vi.mocked(commands.sendAgentMessage).mockResolvedValue("ok");
 
     render(<EmptyState onConversationCreated={vi.fn()} />);
-    await waitFor(() => expect(screen.getByTestId("folder-target-selector")).toHaveTextContent("Home"));
+    await waitFor(() =>
+      expect(screen.getByTestId("folder-target-selector")).toHaveTextContent("Home"),
+    );
 
     await userEvent.click(screen.getByTestId("folder-target-selector"));
     await screen.findByTestId("folder-picker");
     await userEvent.click(await screen.findByText("doce"));
 
-    await waitFor(() => expect(screen.getByTestId("folder-target-selector")).toHaveTextContent("~/code/doce"));
+    await waitFor(() =>
+      expect(screen.getByTestId("folder-target-selector")).toHaveTextContent("~/code/doce"),
+    );
     expect(screen.queryByTestId("folder-picker")).not.toBeInTheDocument();
 
     await userEvent.type(screen.getByTestId("empty-state-input"), "work on doce");
     await userEvent.click(screen.getByTestId("empty-state-submit"));
 
-    await waitFor(() => expect(commands.openWorkspace).toHaveBeenCalledWith("/Users/tester/code/doce"));
+    await waitFor(() =>
+      expect(commands.openWorkspace).toHaveBeenCalledWith("/Users/tester/code/doce"),
+    );
   });
 
   it("US2: dismissing the picker without picking anything leaves the target unchanged (FR-011)", async () => {
     vi.mocked(commands.listWorkspaces).mockResolvedValue([
-      { id: "ws-1", path: "/Users/tester/code/doce", displayName: "doce", createdAt: 1, lastOpenedAt: 5 },
+      {
+        id: "ws-1",
+        path: "/Users/tester/code/doce",
+        displayName: "doce",
+        createdAt: 1,
+        lastOpenedAt: 5,
+      },
     ]);
 
     render(<EmptyState onConversationCreated={vi.fn()} />);
-    await waitFor(() => expect(screen.getByTestId("folder-target-selector")).toHaveTextContent("Home"));
+    await waitFor(() =>
+      expect(screen.getByTestId("folder-target-selector")).toHaveTextContent("Home"),
+    );
 
     await userEvent.click(screen.getByTestId("folder-target-selector"));
     await screen.findByTestId("folder-picker");

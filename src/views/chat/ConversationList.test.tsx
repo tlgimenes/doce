@@ -18,8 +18,22 @@ describe("ConversationList", () => {
 
   it("renders titles and a status dot per conversation (FR-011/FR-012)", async () => {
     vi.mocked(commands.listConversations).mockResolvedValue([
-      { id: "a", workspaceId: null, title: "First one", createdAt: 1, updatedAt: 3, status: "done" },
-      { id: "b", workspaceId: null, title: "Needs input", createdAt: 2, updatedAt: 2, status: "requires_action" },
+      {
+        id: "a",
+        workspaceId: null,
+        title: "First one",
+        createdAt: 1,
+        updatedAt: 3,
+        status: "done",
+      },
+      {
+        id: "b",
+        workspaceId: null,
+        title: "Needs input",
+        createdAt: 2,
+        updatedAt: 2,
+        status: "requires_action",
+      },
       { id: "c", workspaceId: null, title: "Broke", createdAt: 3, updatedAt: 1, status: "failed" },
     ]);
 

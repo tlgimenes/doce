@@ -9,7 +9,10 @@ export default function SearchResultsWidget({ detail }: SearchResultsWidgetProps
   const isGrep = detail.toolName === "Grep";
 
   return (
-    <div className="rounded-lg border border-border bg-card p-3 text-sm" data-testid="search-widget">
+    <div
+      className="rounded-lg border border-border bg-card p-3 text-sm"
+      data-testid="search-widget"
+    >
       <p className="mb-1 font-mono text-xs text-muted-foreground">
         {detail.toolName} {detail.pattern}
       </p>

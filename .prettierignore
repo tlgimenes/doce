@@ -1,0 +1,9 @@
+# Respected by oxfmt (npm run format / format:check) in addition to
+# .gitignore. These are tracked, legitimate parts of the repo, but none of
+# them are app source code this project's formatter should touch: Claude
+# Code's own skill/tooling definitions, spec-kit scaffolding, and the
+# static marketing site (which has its own separate toolchain, if any).
+.claude/
+.specify/
+site/
+specs/

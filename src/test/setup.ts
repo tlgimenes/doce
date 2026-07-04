@@ -39,12 +39,26 @@ if (!HTMLDialogElement.prototype.showModal) {
 // an otherwise-green suite.
 if (!Range.prototype.getBoundingClientRect) {
   Range.prototype.getBoundingClientRect = function (this: Range) {
-    return { top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0, x: 0, y: 0, toJSON() {} } as DOMRect;
+    return {
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      width: 0,
+      height: 0,
+      x: 0,
+      y: 0,
+      toJSON() {},
+    } as DOMRect;
   };
 }
 if (!Range.prototype.getClientRects) {
   Range.prototype.getClientRects = function (this: Range) {
-    return { length: 0, item: () => null, [Symbol.iterator]: [][Symbol.iterator] } as unknown as DOMRectList;
+    return {
+      length: 0,
+      item: () => null,
+      [Symbol.iterator]: [][Symbol.iterator],
+    } as unknown as DOMRectList;
   };
 }
 if (!document.elementFromPoint) {
