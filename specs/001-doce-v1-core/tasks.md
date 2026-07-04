@@ -142,11 +142,11 @@
 - [X] T055 [P] [US3] Implement `Glob`/`Grep` tools in `src-tauri/src/agent/tools/search.rs` (`.gitignore` handling per `research.md` §27)
 - [ ] T056 [US3] Implement per-turn GBNF grammar generation from the live tool set via the `gbnf` crate in `src-tauri/src/agent/grammar.rs`, with the schema-normalization fallback for `anyOf`/`oneOf`-mixing and `snake_case`-property-name gaps (`research.md` §22, depends on T053–T055)
 - [X] T057 [US3] Implement subagent spawning in `src-tauri/src/agent/subagent.rs`: fresh isolated `Conversation` row (`spawned_by_conversation_id` set), restricted tool subset, one-level nesting rejection, 30-turn cap, `priority_conversation_id` inheritance, `tokio::sync::oneshot`-based non-blocking await (FR-015/FR-016, depends on T052, T009)
-- [ ] T058 [P] [US3] Implement the `AskUserQuestion` tool and pause/resume mechanic in `src-tauri/src/agent/tools/ask_user.rs`: emits `ask-user-question`, awaits `answer_user_question` via oneshot channel (FR-010, depends on T052)
-- [ ] T059 [US3] Emit `agent-activity` events (`file-diff`/`shell-output`/`subagent-status`) in `src-tauri/src/agent/mod.rs` (FR-017, depends on T052, T057)
-- [ ] T060 [P] [US3] Build the workspace view in `src/views/workspace/`: file tree, CodeMirror 6 diff viewer, `react-xtermjs` read-only terminal output panel
-- [ ] T061 [US3] Implement `answer_user_question` command and the frontend `ask-user-question` modal/prompt UI in `src/views/workspace/AskUserQuestionPrompt.tsx` (depends on T058)
-- [ ] T062 [US3] Wire `useWorkspaceActivityStore` to `agent-activity` events (depends on T023, T059)
+- [X] T058 [P] [US3] Implement the `AskUserQuestion` tool and pause/resume mechanic in `src-tauri/src/agent/tools/ask_user.rs`: emits `ask-user-question`, awaits `answer_user_question` via oneshot channel (FR-010, depends on T052) — the pause/resume registry (`PendingQuestions`) was built and unit-tested here originally; the live dispatch wiring (register/emit/await on a real `AskUserQuestion` call) was completed later by `004-tool-call-widgets` (its `handle_ask_user_question`), which also had to add `AskUserQuestion` to `SYSTEM_PROMPT`'s tool list — it was never documented there, so the model had no way to know the tool existed even once dispatch supported it
+- [ ] T059 [US3] Emit `agent-activity` events (`file-diff`/`shell-output`/`subagent-status`) in `src-tauri/src/agent/mod.rs` (FR-017, depends on T052, T057) — **superseded, not merely deferred**: `004-tool-call-widgets` deliberately chose persist-then-render-on-completion over general live streaming for every tool (its research.md § 2/§ 3), with `AskUserQuestion`'s dispatch-time event as the one exception (T058, above). Revisit only if genuinely live (not just post-turn) tool-activity visibility becomes a real requirement — see `004`'s plan.md Complexity Tracking for the explicit scope call.
+- [ ] T060 [P] [US3] Build the workspace view in `src/views/workspace/`: file tree, CodeMirror 6 diff viewer, `react-xtermjs` read-only terminal output panel — **superseded, not merely deferred**: `004-tool-call-widgets` replaced this with lightweight per-tool-call widgets (diff/terminal/etc.) embedded directly in the message transcript rather than a separate file-tree/editor/terminal panel — a deliberate, documented choice (`004`'s research.md § 6), not an oversight. `Workspace.tsx` itself was later restructured into a lean, `Chat.tsx`-shaped message view by `006-chat-empty-state`.
+- [X] T061 [US3] Implement `answer_user_question` command and the frontend `ask-user-question` modal/prompt UI in `src/views/workspace/AskUserQuestionPrompt.tsx` (depends on T058) — done by `004-tool-call-widgets`, at `src-tauri/src/commands/agent.rs::answer_user_question` and `src/views/chat/tool-widgets/AskUserQuestionWidget.tsx` (not the originally-planned path — `AskUserQuestionPrompt.tsx` under `views/workspace/` — since the widget now lives alongside every other tool widget under `views/chat/tool-widgets/`, per `004`'s own structure decision)
+- [ ] T062 [US3] Wire `useWorkspaceActivityStore` to `agent-activity` events (depends on T023, T059) — **moot**, not just blocked: depends on T059, which `004` superseded rather than implementing; no `useWorkspaceActivityStore` was ever built, and nothing in `004`'s design needs one (each widget renders directly from its own persisted message).
 
 **Checkpoint**: Agent mode is fully functional — unrestricted, GBNF-constrained where needed, denylist-protected, with working subagent delegation. All three P1 stories are now complete; this is a viable full MVP.
 
@@ -369,16 +369,30 @@ silently marked done:
   `priority_conversation_id` inheritance to test and no deadlock risk to
   guard against in the first place — a simpler design than spec'd, not a
   missing test.
-- **T058/T061 (`AskUserQuestion` pause/resume wiring)**: the pause/resume
-  registry (`agent::tools::ask_user::PendingQuestions`) is implemented and
-  unit-tested in isolation, but isn't wired into the live dispatch path,
-  any Tauri command, or a frontend prompt UI yet.
-- **T059/T060/T062 (live agent-activity streaming, full workspace UI)**:
-  `send_agent_message` runs the tool-use loop synchronously to completion
-  server-side; the frontend shows a single "thinking…" state rather than
-  a live trace of each tool call, and the workspace view is a minimal
-  chat-style vertical slice, not the file-tree/diff-viewer/terminal UI
-  originally scoped.
+- **T058/T061 (`AskUserQuestion` pause/resume wiring) — now done**: completed
+  by `004-tool-call-widgets`. The pause/resume registry
+  (`agent::tools::ask_user::PendingQuestions`) was already implemented and
+  unit-tested in isolation here; `004` wired it into the live dispatch
+  path, added the `answer_user_question` command, built the frontend
+  prompt (`AskUserQuestionWidget.tsx`, under `views/chat/tool-widgets/`
+  rather than the originally-planned `views/workspace/
+  AskUserQuestionPrompt.tsx`), and — a real functional gap this uncovered,
+  not just missing UI — added `AskUserQuestion` to `SYSTEM_PROMPT`'s tool
+  list, since it was never documented there and so was unreachable by the
+  model regardless of dispatch/UI support.
+- **T059/T060/T062 (live agent-activity streaming, full workspace UI) —
+  superseded, not just still open**: `004-tool-call-widgets` considered
+  this scope directly and chose a different design rather than leaving it
+  merely undone — persist-then-render-on-completion for every tool except
+  `AskUserQuestion` (see that spec's research.md § 2/§ 3 and plan.md's
+  Complexity Tracking for the explicit reasoning), and lightweight
+  per-tool-call widgets embedded in the message transcript instead of a
+  separate file-tree/diff-viewer/terminal panel (research.md § 6).
+  `Workspace.tsx` was also restructured into a lean, `Chat.tsx`-shaped
+  message view by `006-chat-empty-state`. Revisit as a fresh, intentional
+  feature if genuinely live (not just post-turn) tool-activity visibility
+  becomes a real requirement — don't resume T059/T060/T062 as originally
+  scoped without re-deciding this.
 - **T065/T081/T086 (additional WDIO specs)**: US4/US6/US7 are covered by
   Rust-level unit/integration tests plus frontend component tests; the
   dedicated e2e specs for those specific flows weren't added (US3's core
