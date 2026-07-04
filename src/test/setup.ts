@@ -6,8 +6,22 @@ import { cleanup } from "@testing-library/react";
 // output accumulates in the DOM instead of being torn down, which broke
 // exactly this way: a second test's `findByTestId` failed because the
 // previous test's still-mounted component had a matching element too.
-afterEach(() => {
+//
+// The extra tick after cleanup() exists for @tiptap/react specifically:
+// its useEditor() hook always defers the real editor.destroy() by
+// setTimeout(..., 1) (to survive React StrictMode's double-invoke without
+// tearing down a still-mounted editor — see its scheduleDestroy()).
+// cleanup() only unmounts synchronously, so that deferred destroy still
+// fires later; if it fires after vitest has already moved on to tearing
+// down this test file's jsdom environment (observed on a slower CI
+// runner, not reproducible on a fast local machine), it throws
+// "ReferenceError: window is not defined" as an *unhandled* exception —
+// individual tests still pass, but it flips the whole run's exit code to
+// 1, the same class of silent-poisoning issue documented below for
+// unmocked ProseMirror exceptions.
+afterEach(async () => {
   cleanup();
+  await new Promise((resolve) => setTimeout(resolve, 10));
 });
 
 // jsdom's <dialog> implementation is a bare stub with no showModal()/close()
