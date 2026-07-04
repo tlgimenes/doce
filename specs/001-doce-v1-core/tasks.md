@@ -247,11 +247,11 @@
 
 **Purpose**: Improvements spanning multiple stories; final release readiness.
 
-- [ ] T090 [P] Implement macOS code signing + notarization in the Tauri bundler config (`research.md` §7), wired into `.github/workflows/ci.yml` release job
+- [X] T090 [P] **Partial — CI wiring done, real signing untested**: added a `release` job to `.github/workflows/ci.yml`, gated on a `v*` tag and on `rust`/`frontend`/`e2e` all passing first, that runs `npm run tauri build` with `APPLE_CERTIFICATE`/`APPLE_CERTIFICATE_PASSWORD`/`APPLE_SIGNING_IDENTITY`/`APPLE_ID`/`APPLE_PASSWORD`/`APPLE_TEAM_ID` sourced from GitHub Actions secrets, per Tauri v2's documented macOS signing/notarization flow (research.md § 7). This is genuinely untested against a real Apple Developer certificate/account — none is available in this environment. Before this can produce a real signed, notarized `.dmg`, the repo owner needs to: (1) enroll in the Apple Developer Program if not already, (2) generate a "Developer ID Application" certificate, export it as a base64-encoded `.p12`, (3) generate an app-specific password for notarization, (4) add all six values as repository secrets, (5) verify the exact env var names against Tauri's current official macOS code-signing guide before trusting a tag push to actually produce a distributable artifact.
 - [ ] T091 [P] Run the full `quickstart.md` validation pass (all 8 sections) against a built binary
-- [ ] T092 [P] Security pass: confirm the denylist (T054) can't be talked around by any prompt phrasing; confirm no plaintext secrets logged
+- [X] T092 [P] Security pass done — found and fixed 7 real, in-scope denylist bypasses in `src-tauri/src/agent/tools/bash.rs` (quote/wrap-based: `bash -c`/`sh -c`/`eval` wrapping, a quoted `"$HOME"`, a no-space-before-`;` chain, plus a missing literal-resolved-home-path target, two missing `diskutil` verbs, missing `newfs_*` coverage, and a quoted `dd` device path), each with a new regression test (`cargo test` now 167 passing, up from 159). Secret-logging sweep came back clean: no `log`/`tracing` crate is even initialized anywhere in `src-tauri/src/`, and the one plausible secret-bearing surface (MCP server `config`, which can hold a user-supplied command/args) is never printed or logged anywhere along its one call path.
 - [X] T093 [P] **Moot**: GBNF grammar generation (T056) was never implemented (see "Known gaps" above) — there is no grammar to cache. Revisit only if T045/T056 are ever resumed.
-- [ ] T094 Documentation: `README.md` covering build/run/test instructions matching this tasks.md's structure
+- [X] T094 Added `README.md`: description (pulled from the constitution's actual principles, not marketing copy), prerequisites, dev/build/test instructions (all script names verified against `package.json`/`.github/workflows/ci.yml`, not guessed), the e2e-build `--features wdio` requirement and the `DOCE_E2E_SKIP_WIPE` data-wipe warning (both real gotchas hit during this session), project structure, a pointer to `specs/` as the authoritative design history, and an honest note on current build/packaging status (unsigned local build; see T090).
 - [ ] T095 Final CI green-run across `rust`/`frontend`/`e2e` jobs on `macos-26` before tagging v1.0
 
 ---
@@ -398,9 +398,9 @@ silently marked done:
   dedicated e2e specs for those specific flows weren't added (US3's core
   loop, subagent spawning, and the conversation-list/chat flows are the
   ones with real e2e coverage).
-- **T090–T095 (release polish)**: code signing/notarization, a formal
-  full-`quickstart.md` pass against a signed binary, a dedicated
-  adversarial denylist-bypass pass, GBNF grammar caching (moot without
-  T056), `README.md`, and a CI green-run are all still open — this pass
-  focused on feature completeness and functional test coverage, not
-  release packaging.
+- **T090–T095 (release polish) — updated in a later pass**: `T090`
+  (signing/notarization CI wiring — real credentials still needed from the
+  repo owner), `T092` (security pass), `T093` (moot), and `T094`
+  (`README.md`) are now done; `T091` (full `quickstart.md` pass against a
+  built binary) and `T095` (final green CI run) remain open. See each
+  task's own entry above for specifics.

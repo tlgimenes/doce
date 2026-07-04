@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
 
 concurrency:
@@ -83,3 +84,60 @@ jobs:
 
       - name: Run e2e suite
         run: npm run test:e2e
+
+  # T090 (specs/001-doce-v1-core/tasks.md): only runs on a `v*` tag, after
+  # rust/frontend/e2e all pass. UNTESTED against a real Apple Developer
+  # account — there is no such account/certificate available in this
+  # environment to verify against. This wires the configuration Tauri v2's
+  # documented macOS signing/notarization flow expects (research.md § 7);
+  # it does not itself obtain or vouch for real credentials. Before this
+  # job can produce a signed, notarized build, the repo needs these
+  # secrets set (Settings -> Secrets and variables -> Actions):
+  #   APPLE_CERTIFICATE          - base64-encoded Developer ID Application
+  #                                .p12 certificate
+  #   APPLE_CERTIFICATE_PASSWORD - the .p12's export password
+  #   APPLE_SIGNING_IDENTITY     - e.g. "Developer ID Application: NAME (TEAMID)"
+  #   APPLE_ID                   - Apple ID email used for notarization
+  #   APPLE_PASSWORD             - an app-specific password for that Apple ID
+  #                                (not the account password)
+  #   APPLE_TEAM_ID              - the Developer Team ID
+  # Verify these exact variable names against Tauri's current official
+  # macOS code-signing guide before relying on this job — they were not
+  # confirmed against a real signing run.
+  release:
+    name: Release (signed .dmg)
+    runs-on: macos-26
+    needs: [rust, frontend, e2e]
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build signed, notarized .dmg
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npm run tauri build
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: doce-dmg
+          path: src-tauri/target/release/bundle/dmg/*.dmg
+          if-no-files-found: error
