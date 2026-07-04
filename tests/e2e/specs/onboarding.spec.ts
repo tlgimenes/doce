@@ -32,7 +32,23 @@ describe("Onboarding (User Story 1: zero-config first run)", () => {
   it("shows the doce heading with no model picker, API key field, or account step", async () => {
     await browser.pause(1500);
     const heading = await browser.$("h1");
-    await heading.waitForExist({ timeout: EARLY_UI_TIMEOUT });
+    try {
+      await heading.waitForExist({ timeout: EARLY_UI_TIMEOUT });
+    } catch (err) {
+      // Temporary diagnostic (not permanent test logic): App.tsx renders
+      // literally nothing while its first invoke() call (listModels()) is
+      // pending — which was otherwise invisible to any query. A new,
+      // equally temporary [data-testid="ipc-diagnostic"] element in
+      // App.tsx now surfaces that promise's real outcome (still pending /
+      // resolved with a value / rejected with an error) directly in the
+      // DOM, so this reads it instead of just re-throwing blind.
+      const diag = await browser.$("[data-testid='ipc-diagnostic']");
+      const diagText = await diag
+        .getText()
+        .catch((e) => `<ipc-diagnostic not found or getText failed: ${e}>`);
+      console.log(`[diagnostic] ipc-diagnostic element text: ${diagText}`);
+      throw err;
+    }
     await expect(heading).toHaveText("doce");
 
     const apiKeyInputs = await browser.$$("input[type='password']");

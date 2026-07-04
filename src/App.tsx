@@ -12,6 +12,15 @@ import { wireConversationStreamEvents } from "@/state/conversationStreamStore";
 
 export default function App() {
   const [ready, setReady] = useState<boolean | null>(null);
+  // Temporary diagnostic (not permanent app logic): investigating why the
+  // app's very first invoke() call — listModels(), below — appears to
+  // never settle in GitHub Actions CI specifically (confirmed the webview
+  // navigates and runs JS, but with ready stuck at null the app renders
+  // literally nothing, which was otherwise invisible to any e2e query).
+  // Surfaces the raw promise outcome as a real, queryable DOM element
+  // instead of relying on console capture, which has proven unreliable in
+  // this same CI environment.
+  const [ipcDiag, setIpcDiag] = useState("pending");
   // 006-chat-empty-state: the active conversation's own `workspaceId` (not a
   // separate `agentMode` flag) decides which view renders — a flag
   // disconnected from the actually-selected conversation was already a
@@ -25,10 +34,17 @@ export default function App() {
 
   useEffect(() => {
     wireConversationStreamEvents();
+    setIpcDiag(`calling at ${Date.now()}`);
     commands
       .listModels()
-      .then((models) => setReady(models.some((m) => m.installed)))
-      .catch(() => setReady(false));
+      .then((models) => {
+        setIpcDiag(`resolved: ${JSON.stringify(models)}`);
+        setReady(models.some((m) => m.installed));
+      })
+      .catch((err) => {
+        setIpcDiag(`rejected: ${String(err)}`);
+        setReady(false);
+      });
   }, []);
 
   // 005-keyboard-shortcuts: the app's first global (not input-scoped)
@@ -85,7 +101,7 @@ export default function App() {
     commands.setFocusedConversation(activeConversation?.id ?? null);
   }, [activeConversation]);
 
-  if (ready === null) return null;
+  if (ready === null) return <div data-testid="ipc-diagnostic">{ipcDiag}</div>;
   if (!ready) return <Onboarding onReady={() => setReady(true)} />;
 
   return (
