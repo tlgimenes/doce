@@ -9,11 +9,27 @@ import { expect } from "@wdio/globals";
 // GB over the network) rather than just checking that it started — this is
 // deliberate: chat.spec.ts runs next in the same suite and depends on a
 // real, active model being installed by the time this spec finishes.
+//
+// EARLY_UI_TIMEOUT: on GitHub Actions' macOS runners specifically (not
+// reproducible on real local hardware, confirmed by running this exact
+// spec locally under an identical full data wipe — all 4 tests passed in
+// ~6.5 minutes), these first few UI checks were seen timing out at their
+// previous, tighter values (15-20s). CI's runner reports its GPU as "MTL0
+// (Apple Paravirtual device)" (captured from a real run's backend log) —
+// a paravirtualized, not passed-through, Metal device — and one
+// unrelated but revealing data point from that same run: the Metal
+// shader library alone took 11+ seconds to load, something that's near-
+// instant on real hardware. That's strong evidence this environment runs
+// at a fraction of real-hardware speed for anything graphics/webview-
+// related, so these checks get a much more generous budget here than a
+// real machine would ever need.
+const EARLY_UI_TIMEOUT = 60000;
+
 describe("Onboarding (User Story 1: zero-config first run)", () => {
   it("shows the Doce heading with no model picker, API key field, or account step", async () => {
     await browser.pause(1500);
     const heading = await browser.$("h1");
-    await heading.waitForExist({ timeout: 15000 });
+    await heading.waitForExist({ timeout: EARLY_UI_TIMEOUT });
     await expect(heading).toHaveText("Doce");
 
     const apiKeyInputs = await browser.$$("input[type='password']");
@@ -22,7 +38,7 @@ describe("Onboarding (User Story 1: zero-config first run)", () => {
 
   it("displays real detected hardware info, not a placeholder", async () => {
     const hardwareLine = await browser.$("p*=tier");
-    await hardwareLine.waitForExist({ timeout: 15000 });
+    await hardwareLine.waitForExist({ timeout: EARLY_UI_TIMEOUT });
     const text = await hardwareLine.getText();
 
     // Real chip/RAM values from sysctlbyname, not "unknown"/0 fallbacks.
@@ -32,7 +48,7 @@ describe("Onboarding (User Story 1: zero-config first run)", () => {
 
   it("starts downloading the model automatically", async () => {
     const progressLabel = await browser.$("p*=Downloading");
-    await progressLabel.waitForExist({ timeout: 20000 });
+    await progressLabel.waitForExist({ timeout: EARLY_UI_TIMEOUT });
   });
 
   it("finishes the download, verifies it, and transitions to the empty-state composer", async () => {

@@ -53,12 +53,17 @@ describe("Chat (User Story 2: send a message, get a real response)", () => {
       ).__TAURI_INTERNALS__.invoke("create_conversation", {});
     });
 
+    // 60s, not the 15s this used before: GitHub Actions' macOS runners run
+    // Tauri/webview startup dramatically slower than real hardware (see
+    // onboarding.spec.ts's EARLY_UI_TIMEOUT comment for the concrete
+    // evidence — an 11+ second Metal shader library load on a
+    // paravirtualized GPU, confirmed via a real run's backend log).
     const item = await browser.$("[data-testid='conversation-item']");
-    await item.waitForExist({ timeout: 15000 });
+    await item.waitForExist({ timeout: 60000 });
     await item.click();
 
     const input = await browser.$("[data-testid='chat-input']");
-    await input.waitForExist({ timeout: 15000 });
+    await input.waitForExist({ timeout: 60000 });
     await input.setValue(MARKER_ONE);
     await (await browser.$("[data-testid='chat-send']")).click();
 
