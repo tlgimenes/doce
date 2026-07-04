@@ -11,49 +11,28 @@ import { expect } from "@wdio/globals";
 // real, active model being installed by the time this spec finishes.
 //
 // EARLY_UI_TIMEOUT: on GitHub Actions' macOS runners specifically (not
-// reproducible on real local hardware, confirmed by running this exact
-// spec locally under an identical full data wipe — all 4 tests passed in
-// ~6.5 minutes), these first few UI checks were seen timing out at their
-// previous, tighter values (15-20s). CI's runner reports its GPU as "MTL0
-// (Apple Paravirtual device)" (captured from a real run's backend log) —
-// a paravirtualized, not passed-through, Metal device — and one
-// unrelated but revealing data point from that same run: the Metal
-// shader library alone took 11+ seconds to load, something that's near-
-// instant on real hardware. That's strong evidence this environment runs
-// at a fraction of real-hardware speed for anything graphics/webview-
-// related, so these checks get a much more generous budget here than a
-// real machine would ever need.
+// reproducible on real local hardware — confirmed by running this exact
+// spec locally under an identical full data wipe, all 4 tests passing in
+// ~6.5 minutes), these checks fail even at 60s. A diagnostic pass (see
+// git history around 2026-07-04 for the temporary instrumentation)
+// narrowed this down further: the webview does navigate to the right URL
+// and does run JS (Tiptap's dynamic style injection appears in <head>),
+// and React does mount something into #root (childElementCount: 1) — but
+// that mounted content's body.innerHTML comes back functionally empty.
+// That's consistent with some async initialization the app performs on
+// mount (e.g. its initial hardware-detection/settings IPC call) hanging
+// indefinitely in this specific CI environment while rendering nothing
+// visible in the meantime — not yet root-caused further; see
+// specs/001-doce-v1-core/tasks.md's T095 note. 60s is kept here as a
+// reasonable, evidence-based budget for genuinely slow (not broken) CI
+// runs; it does not fix the actual hang.
 const EARLY_UI_TIMEOUT = 60000;
 
 describe("Onboarding (User Story 1: zero-config first run)", () => {
   it("shows the Doce heading with no model picker, API key field, or account step", async () => {
     await browser.pause(1500);
     const heading = await browser.$("h1");
-    try {
-      await heading.waitForExist({ timeout: EARLY_UI_TIMEOUT });
-    } catch (err) {
-      // Temporary diagnostic (not permanent test logic): a prior CI run
-      // already proved the webview DOES navigate to the right URL and DOES
-      // run JS (Tiptap's dynamic style injection showed up in <head>) --
-      // ruling out "webview never loads anything". But that same run's
-      // 2000-char page-source slice never reached <body> at all -- it was
-      // entirely consumed by Tiptap's own (large) injected stylesheet.
-      // Grabbing body.innerHTML directly this time to actually see what's
-      // rendered (or not) inside it, plus any real console errors React
-      // itself would have logged on a render-time exception.
-      const url = await browser.getUrl().catch((e) => `<getUrl failed: ${e}>`);
-      const bodyHtml = await browser
-        .execute(() => document.body.innerHTML)
-        .then((s) => (typeof s === "string" ? s.slice(0, 4000) : String(s)))
-        .catch((e) => `<execute failed: ${e}>`);
-      const rootChildCount = await browser
-        .execute(() => document.getElementById("root")?.childElementCount ?? -1)
-        .catch((e) => `<execute failed: ${e}>`);
-      console.log(`[diagnostic] current URL: ${url}`);
-      console.log(`[diagnostic] #root childElementCount: ${rootChildCount}`);
-      console.log(`[diagnostic] body.innerHTML (first 4000 chars): ${bodyHtml}`);
-      throw err;
-    }
+    await heading.waitForExist({ timeout: EARLY_UI_TIMEOUT });
     await expect(heading).toHaveText("Doce");
 
     const apiKeyInputs = await browser.$$("input[type='password']");
