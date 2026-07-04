@@ -29,7 +29,24 @@ describe("Onboarding (User Story 1: zero-config first run)", () => {
   it("shows the Doce heading with no model picker, API key field, or account step", async () => {
     await browser.pause(1500);
     const heading = await browser.$("h1");
-    await heading.waitForExist({ timeout: EARLY_UI_TIMEOUT });
+    try {
+      await heading.waitForExist({ timeout: EARLY_UI_TIMEOUT });
+    } catch (err) {
+      // Temporary diagnostic (not permanent test logic): investigating why
+      // the webview renders nothing at all specifically in GitHub Actions
+      // CI. Dump what the webview actually has, if anything, to distinguish
+      // "never navigated" (blank/about:blank) from "navigated but React
+      // never mounted" (real HTML shell, no rendered content) from
+      // "navigated to the wrong thing entirely".
+      const url = await browser.getUrl().catch((e) => `<getUrl failed: ${e}>`);
+      const source = await browser
+        .getPageSource()
+        .then((s) => s.slice(0, 2000))
+        .catch((e) => `<getPageSource failed: ${e}>`);
+      console.log(`[diagnostic] current URL: ${url}`);
+      console.log(`[diagnostic] page source (first 2000 chars): ${source}`);
+      throw err;
+    }
     await expect(heading).toHaveText("Doce");
 
     const apiKeyInputs = await browser.$$("input[type='password']");

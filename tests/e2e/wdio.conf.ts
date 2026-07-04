@@ -53,7 +53,13 @@ export const config: WebdriverIO.Config = {
     },
   ],
 
-  logLevel: "info",
+  // "debug" temporarily, not "info": investigating why the webview never
+  // renders any content specifically in GitHub Actions CI (the app's own
+  // <h1> heading never appears even after a 60s wait) despite the exact
+  // same build passing reliably every time locally under identical
+  // conditions (a full data wipe) — need the driver's own window-
+  // creation/navigation detail that "info" doesn't surface.
+  logLevel: "debug",
   bail: 0,
   waitforTimeout: 20000,
   connectionRetryTimeout: 120000,
