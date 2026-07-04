@@ -32,19 +32,26 @@ describe("Onboarding (User Story 1: zero-config first run)", () => {
     try {
       await heading.waitForExist({ timeout: EARLY_UI_TIMEOUT });
     } catch (err) {
-      // Temporary diagnostic (not permanent test logic): investigating why
-      // the webview renders nothing at all specifically in GitHub Actions
-      // CI. Dump what the webview actually has, if anything, to distinguish
-      // "never navigated" (blank/about:blank) from "navigated but React
-      // never mounted" (real HTML shell, no rendered content) from
-      // "navigated to the wrong thing entirely".
+      // Temporary diagnostic (not permanent test logic): a prior CI run
+      // already proved the webview DOES navigate to the right URL and DOES
+      // run JS (Tiptap's dynamic style injection showed up in <head>) --
+      // ruling out "webview never loads anything". But that same run's
+      // 2000-char page-source slice never reached <body> at all -- it was
+      // entirely consumed by Tiptap's own (large) injected stylesheet.
+      // Grabbing body.innerHTML directly this time to actually see what's
+      // rendered (or not) inside it, plus any real console errors React
+      // itself would have logged on a render-time exception.
       const url = await browser.getUrl().catch((e) => `<getUrl failed: ${e}>`);
-      const source = await browser
-        .getPageSource()
-        .then((s) => s.slice(0, 2000))
-        .catch((e) => `<getPageSource failed: ${e}>`);
+      const bodyHtml = await browser
+        .execute(() => document.body.innerHTML)
+        .then((s) => (typeof s === "string" ? s.slice(0, 4000) : String(s)))
+        .catch((e) => `<execute failed: ${e}>`);
+      const rootChildCount = await browser
+        .execute(() => document.getElementById("root")?.childElementCount ?? -1)
+        .catch((e) => `<execute failed: ${e}>`);
       console.log(`[diagnostic] current URL: ${url}`);
-      console.log(`[diagnostic] page source (first 2000 chars): ${source}`);
+      console.log(`[diagnostic] #root childElementCount: ${rootChildCount}`);
+      console.log(`[diagnostic] body.innerHTML (first 4000 chars): ${bodyHtml}`);
       throw err;
     }
     await expect(heading).toHaveText("Doce");
