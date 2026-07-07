@@ -3,6 +3,7 @@ import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import Workspace from "./Workspace";
 import { commands, events } from "@/lib/ipc";
+import type { RichMessageContent } from "@/lib/ipc";
 
 vi.mock("@/lib/ipc", async (importOriginal) => {
   // Partial mock: `commands`/`events` are fully replaced, but
@@ -306,6 +307,97 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
         (s: { type: string; text?: string }) => s.type === "pastedText" && s.text === pastedBlock,
       ),
     ).toBe(true);
+  });
+
+  it("consumes a pending initial turn once without wiping the optimistic first message", async () => {
+    let resolveInitialMessages!: (messages: []) => void;
+    vi.mocked(commands.listMessages).mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveInitialMessages = resolve;
+      }),
+    );
+    vi.mocked(commands.sendAgentMessage).mockReturnValue(new Promise(() => {}));
+    const onConsumed = vi.fn();
+    const pendingInitialTurn = { conversationId: "conv-1", content: "first task" };
+
+    const { rerender } = render(
+      <Workspace
+        conversationId="conv-1"
+        pendingInitialTurn={pendingInitialTurn}
+        onPendingInitialTurnConsumed={onConsumed}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("first task")).toBeInTheDocument();
+      expect(screen.getByTestId("agent-thinking")).toBeInTheDocument();
+      expect(commands.sendAgentMessage).toHaveBeenCalledWith("conv-1", "first task", undefined);
+      expect(onConsumed).toHaveBeenCalledWith("conv-1");
+    });
+
+    resolveInitialMessages([]);
+    await waitFor(() => {
+      expect(screen.getByText("first task")).toBeInTheDocument();
+    });
+
+    rerender(
+      <Workspace
+        conversationId="conv-1"
+        pendingInitialTurn={pendingInitialTurn}
+        onPendingInitialTurnConsumed={onConsumed}
+      />,
+    );
+
+    expect(commands.sendAgentMessage).toHaveBeenCalledTimes(1);
+    expect(onConsumed).toHaveBeenCalledTimes(1);
+  });
+
+  it("forwards rich content from a pending initial turn as a JSON string", async () => {
+    const richContent: RichMessageContent = {
+      segments: [
+        { type: "text", text: "review this" },
+        { type: "pastedText", text: "line 1\nline 2" },
+      ],
+    };
+    vi.mocked(commands.sendAgentMessage).mockReturnValue(new Promise(() => {}));
+
+    render(
+      <Workspace
+        conversationId="conv-1"
+        pendingInitialTurn={{ conversationId: "conv-1", content: "review this", richContent }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(commands.sendAgentMessage).toHaveBeenCalledWith(
+        "conv-1",
+        "review this",
+        JSON.stringify(richContent),
+      );
+    });
+  });
+
+  it("surfaces an error when a pending initial turn send fails", async () => {
+    vi.mocked(commands.sendAgentMessage).mockRejectedValue(new Error("pending send failed"));
+
+    render(
+      <Workspace
+        conversationId="conv-1"
+        pendingInitialTurn={{ conversationId: "conv-1", content: "first task" }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("workspace-error")).toHaveTextContent("pending send failed");
+    });
+  });
+
+  it("marks the workspace composer shell for chat composer view transitions", async () => {
+    render(<Workspace conversationId="conv-1" />);
+
+    const shell = await screen.findByTestId("workspace-composer-shell");
+    expect(shell).toHaveClass("border-t", "border-border", "p-4");
+    expect(shell.className).toContain("[view-transition-name:chat-composer]");
   });
 
   it("switching to a different conversationId reloads its own messages", async () => {

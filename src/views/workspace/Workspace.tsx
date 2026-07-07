@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import MessageContent from "@/components/MessageContent";
 import ContextUsageGauge from "@/components/ContextUsageGauge";
 import RichInput from "@/views/chat/rich-input/RichInput";
@@ -12,9 +12,12 @@ import {
 } from "@/lib/ipc";
 import { useContextUsageStore } from "@/state/contextUsageStore";
 import { isCompactCommand } from "@/lib/compactCommand";
+import type { PendingInitialTurn } from "@/views/workspace/pendingInitialTurn";
 
 interface WorkspaceProps {
   conversationId: string;
+  pendingInitialTurn?: PendingInitialTurn | null;
+  onPendingInitialTurnConsumed?: (conversationId: string) => void;
 }
 
 /**
@@ -32,15 +35,32 @@ interface WorkspaceProps {
  * token deltas: the transcript grows message-by-message as the loop
  * actually progresses, rather than appearing all at once at the end.
  */
-export default function Workspace({ conversationId }: WorkspaceProps) {
+export default function Workspace({
+  conversationId,
+  pendingInitialTurn = null,
+  onPendingInitialTurnConsumed,
+}: WorkspaceProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [thinking, setThinking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const pendingInitialTurnRef = useRef<PendingInitialTurn | null>(pendingInitialTurn);
+  pendingInitialTurnRef.current = pendingInitialTurn;
+  const consumedInitialTurnRef = useRef<string | null>(null);
 
   useEffect(() => {
     setMessages([]);
     setError(null);
-    commands.listMessages(conversationId).then(setMessages);
+    commands.listMessages(conversationId).then((loadedMessages) => {
+      if (
+        loadedMessages.length === 0 &&
+        pendingInitialTurnRef.current?.conversationId === conversationId
+      ) {
+        setMessages((prev) => (prev.length > 0 ? prev : loadedMessages));
+        return;
+      }
+
+      setMessages(loadedMessages);
+    });
   }, [conversationId]);
 
   useEffect(() => {
@@ -76,7 +96,7 @@ export default function Workspace({ conversationId }: WorkspaceProps) {
     return null;
   }, [messages]);
 
-  const send = async (content: string, richContent?: RichMessageContent) => {
+  const send = useCallback(async (content: string, richContent?: RichMessageContent) => {
     // 010-context-window-management (UI refactor): `/compact`, typed and
     // submitted like any other message, is intercepted here before it ever
     // becomes a persisted agent turn — it triggers compaction directly and
@@ -146,7 +166,17 @@ export default function Workspace({ conversationId }: WorkspaceProps) {
       // covers both the happy path and an error partway through the loop.
       commands.listMessages(conversationId).then(setMessages);
     }
-  };
+  }, [conversationId, pendingQuestion, thinking]);
+
+  useEffect(() => {
+    if (!pendingInitialTurn) return;
+    if (pendingInitialTurn.conversationId !== conversationId) return;
+    if (consumedInitialTurnRef.current === conversationId) return;
+
+    consumedInitialTurnRef.current = conversationId;
+    void send(pendingInitialTurn.content, pendingInitialTurn.richContent);
+    onPendingInitialTurnConsumed?.(conversationId);
+  }, [conversationId, onPendingInitialTurnConsumed, pendingInitialTurn, send]);
 
   return (
     <div className="flex h-dvh flex-col bg-background text-foreground">
@@ -176,7 +206,10 @@ export default function Workspace({ conversationId }: WorkspaceProps) {
           )}
         </div>
       </div>
-      <div className="border-t border-border p-4">
+      <div
+        className="border-t border-border p-4 [view-transition-name:chat-composer]"
+        data-testid="workspace-composer-shell"
+      >
         <RichInput
           onSubmit={(content, richContent) => {
             send(content, richContent);
