@@ -56,8 +56,8 @@ describe("Context window management (010-context-window-management)", () => {
     await browser.pause(3000);
     const bubbles = await browser.$$("[data-testid='chat-message']");
     // A manual for-loop, not `.map()` — webdriverio's `ElementArray` isn't a
-    // plain iterable Array (chat.spec.ts's own `bubbleTexts()` helper uses
-    // the same pattern for exactly this reason).
+    // plain iterable Array (workspace-chat.spec.ts's own `bubbleTexts()`
+    // helper uses the same pattern for exactly this reason).
     const texts: string[] = [];
     for (let i = 0; i < bubbles.length; i++) {
       texts.push(await bubbles[i].getText());

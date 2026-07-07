@@ -7,8 +7,9 @@ import { expect } from "@wdio/globals";
 // first run regardless of what was previously installed on the test
 // machine. The final test waits out the real, full model download (a few
 // GB over the network) rather than just checking that it started — this is
-// deliberate: chat.spec.ts runs next in the same suite and depends on a
-// real, active model being installed by the time this spec finishes.
+// deliberate: workspace-chat.spec.ts runs next in the same suite and
+// depends on a real, active model being installed by the time this spec
+// finishes.
 //
 // EARLY_UI_TIMEOUT: on GitHub Actions' macOS runners specifically (not
 // reproducible on real local hardware — confirmed by running this exact

@@ -13,13 +13,13 @@ const appDataDir = path.join(os.homedir(), "Library/Application Support/app.doce
 export const config: WebdriverIO.Config = {
   runner: "local",
   // Explicit order, not a glob: onboarding must run first (it wipes app
-  // data below, then waits out the real model download) so chat.spec.ts
-  // can rely on a model already being installed and active. Both specs
-  // share one persistent app-data directory across the whole suite, not
-  // an isolated one per spec file.
+  // data below, then waits out the real model download) so the workspace
+  // chat spec can rely on a model already being installed and active. Both
+  // specs share one persistent app-data directory across the whole suite,
+  // not an isolated one per spec file.
   specs: process.env.WDIO_SPECS
     ? process.env.WDIO_SPECS.split(",")
-    : ["./specs/onboarding.spec.ts", "./specs/chat.spec.ts"],
+    : ["./specs/onboarding.spec.ts", "./specs/workspace-chat.spec.ts"],
   maxInstances: 1,
 
   onPrepare: () => {

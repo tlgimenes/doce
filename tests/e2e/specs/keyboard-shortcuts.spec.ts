@@ -1,48 +1,58 @@
 import { expect } from "@wdio/globals";
 import { Key } from "webdriverio";
 
-// Covers specs/005-keyboard-shortcuts: proves the three global shortcuts
+// Covers specs/005-keyboard-shortcuts: proves the global shortcuts
 // against the real, running app in real WebKit — not jsdom, which has no
 // implementation of <dialog>'s interactive behavior at all (App.test.tsx's
 // unit coverage relies on a polyfill for that reason; this spec is the
 // live check that the real thing actually works).
-describe("Keyboard shortcuts (005)", () => {
-  it("Cmd+N creates a new conversation and switches to it (US2)", async () => {
-    const before = (await browser.$$("[data-testid='conversation-item']")).length;
+async function waitForEditableWorkspaceInput() {
+  const input = await browser.$("[data-testid='agent-input']");
+  await input.waitForExist({ timeout: 60000 });
+  await browser.waitUntil(async () => (await input.getAttribute("contenteditable")) === "true", {
+    timeout: 60000,
+    timeoutMsg: "workspace input never became editable",
+  });
+  return input;
+}
 
+describe("Keyboard shortcuts (005)", () => {
+  it("Cmd+N opens the empty-state composer", async () => {
     await browser.keys([Key.Command, "n"]);
 
-    await browser.waitUntil(
-      async () => (await browser.$$("[data-testid='conversation-item']")).length > before,
-      { timeout: 15000, timeoutMsg: "Cmd+N never created a new conversation" },
-    );
-    const input = await browser.$("[data-testid='chat-input']");
+    const input = await browser.$("[data-testid='empty-state-input']");
     await input.waitForExist({ timeout: 10000 });
+    expect(await input.isExisting()).toBe(true);
   });
 
-  it("Cmd+L focuses the chat input from elsewhere on the page (US1)", async () => {
+  it("Cmd+L focuses the workspace input from elsewhere on the page (US1)", async () => {
+    await browser.keys([Key.Command, "n"]);
+    const emptyInput = await browser.$("[data-testid='empty-state-input']");
+    await emptyInput.waitForExist({ timeout: 10000 });
+    await emptyInput.setValue("DOCE_E2E_SHORTCUT_FOCUS create a workspace conversation");
+    await (await browser.$("[data-testid='empty-state-submit']")).click();
+
+    const input = await waitForEditableWorkspaceInput();
+
     const sidebar = await browser.$("[data-testid='conversation-list']");
     await sidebar.click();
-
-    const input = await browser.$("[data-testid='chat-input']");
-    await input.waitForExist({ timeout: 10000 });
     expect(await input.isFocused()).toBe(false);
 
     await browser.keys([Key.Command, "l"]);
 
     await browser.waitUntil(async () => input.isFocused(), {
       timeout: 5000,
-      timeoutMsg: "Cmd+L never focused the chat input",
+      timeoutMsg: "Cmd+L never focused the workspace input",
     });
   });
 
-  it("Cmd+K opens the shortcuts dialog listing all three shortcuts; Cmd+K again closes it (US3, FR-006)", async () => {
+  it("Cmd+K opens the shortcuts dialog listing all four shortcuts; Cmd+K again closes it (US3, FR-006)", async () => {
     await browser.keys([Key.Command, "k"]);
 
     const dialog = await browser.$("[data-testid='shortcuts-dialog']");
     await dialog.waitForExist({ timeout: 10000 });
     const rows = await browser.$$("[data-testid='shortcut-item']");
-    expect(rows.length).toBe(3);
+    expect(rows.length).toBe(4);
 
     await browser.keys([Key.Command, "k"]);
     await browser.waitUntil(async () => !(await dialog.isExisting()), {
