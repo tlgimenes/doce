@@ -181,8 +181,7 @@ impl ChatMessage {
         match &self.content {
             MessageContent::Text(s) => s.clone(),
             MessageContent::ToolUse { name, input, .. } => {
-                serde_json::json!({ "tool_call": { "name": name, "arguments": input } })
-                    .to_string()
+                serde_json::json!({ "tool_call": { "name": name, "arguments": input } }).to_string()
             }
             // No "Tool result for {tool_name}:" framing -- Qwen's own
             // convention (per its chat template) is just the raw content
@@ -266,6 +265,43 @@ impl InferenceEngine {
             .str_to_token(text, AddBos::Always)
             .map_err(|e| InferenceError::Backend(e.to_string()))?;
         Ok(tokens.len())
+    }
+
+    /// Trims `messages` down to what actually fits this model's context
+    /// window, verified against the real chat template + tokenizer rather
+    /// than trusted as an estimate. `context::fit_to_budget`'s per-message
+    /// sums (counted on each message's own text, not its rendered form) are
+    /// a fast first pass that doesn't account for the chat template's
+    /// per-turn overhead (role tags, etc.), so this renders the candidate
+    /// and re-checks, dropping one more message from the oldest end of the
+    /// kept (non-pinned) suffix and retrying if it's still over — the same
+    /// "render then count, trust the real number" discipline
+    /// `context::usage_from_history` already uses elsewhere, rather than
+    /// trusting the estimate to be exact. `reserve` is subtracted from the
+    /// window up front to leave room for output tokens that don't exist yet
+    /// to count.
+    pub fn fit_to_context(
+        &self,
+        messages: &[ChatMessage],
+        pinned_prefix: usize,
+        reserve: u32,
+    ) -> Result<Vec<ChatMessage>, InferenceError> {
+        let budget = self.context_window().saturating_sub(reserve);
+        let costs: Vec<u32> = messages
+            .iter()
+            .map(|m| self.count_tokens(&m.text()).map(|n| n as u32))
+            .collect::<Result<_, _>>()?;
+
+        let mut candidate = crate::context::fit_to_budget(messages, &costs, budget, pinned_prefix);
+        loop {
+            let rendered = self.render_chat_prompt(&candidate)?;
+            let actual = self.count_tokens(&rendered)? as u32;
+            let pinned = pinned_prefix.min(candidate.len());
+            if actual <= budget || candidate.len() <= pinned {
+                return Ok(candidate);
+            }
+            candidate.remove(pinned);
+        }
     }
 
     /// Builds the grammar-constrained sampler that guarantees any

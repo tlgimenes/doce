@@ -70,7 +70,15 @@ pub fn load_history_annotated(
             let tool_name: Option<String> = row.get(4)?;
             let tool_call_id: Option<String> = row.get(5)?;
             let model_text: Option<String> = row.get(6)?;
-            Ok((role, content_type, content, sequence, tool_name, tool_call_id, model_text))
+            Ok((
+                role,
+                content_type,
+                content,
+                sequence,
+                tool_name,
+                tool_call_id,
+                model_text,
+            ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
 
@@ -429,7 +437,10 @@ mod tests {
         }
         // The rendered text the model actually sees matches exactly what
         // it would have seen live in the same turn, not a raw JSON dump.
-        assert_eq!(history[1].chat.text(), "<tool_response>a.txt</tool_response>");
+        assert_eq!(
+            history[1].chat.text(),
+            "<tool_response>a.txt</tool_response>"
+        );
     }
 
     /// No test exercises a real skill directory except the two rich-text
@@ -661,7 +672,10 @@ mod tests {
         let history = load_history_annotated(&conn, "c1", skills_dir.path()).unwrap();
 
         assert_eq!(history.len(), 2);
-        assert_eq!(history[0].chat.text(), "second summary covers the first too");
+        assert_eq!(
+            history[0].chat.text(),
+            "second summary covers the first too"
+        );
         assert_eq!(history[0].sequence, 3);
         assert_eq!(history[1].chat.text(), "recent message");
     }

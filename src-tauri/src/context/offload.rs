@@ -64,8 +64,7 @@ mod tests {
     fn under_threshold_passes_through_unchanged() {
         let dir = tempfile::tempdir().unwrap();
         let (text, path) =
-            offload_if_oversized(dir.path(), "conv1", "call1", "short output", 2000)
-                .unwrap();
+            offload_if_oversized(dir.path(), "conv1", "call1", "short output", 2000).unwrap();
         assert_eq!(text, "short output");
         assert!(path.is_none());
     }
@@ -90,21 +89,25 @@ mod tests {
         let path = path.expect("expected a file path for an over-threshold result");
         assert!(text.contains("truncated"));
         assert!(text.contains(&"x".repeat(500)));
-        assert!(!text.contains(&"x".repeat(501)), "preview must not exceed PREVIEW_CHARS");
+        assert!(
+            !text.contains(&"x".repeat(501)),
+            "preview must not exceed PREVIEW_CHARS"
+        );
         assert!(text.contains(&path));
 
         let written = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(written, result, "the file must contain the exact original result");
+        assert_eq!(
+            written, result,
+            "the file must contain the exact original result"
+        );
     }
 
     #[test]
     fn different_tool_calls_in_the_same_conversation_get_distinct_files() {
         let dir = tempfile::tempdir().unwrap();
         let result = "y".repeat(3000);
-        let (_, path1) =
-            offload_if_oversized(dir.path(), "conv1", "call1", &result, 2000).unwrap();
-        let (_, path2) =
-            offload_if_oversized(dir.path(), "conv1", "call2", &result, 2000).unwrap();
+        let (_, path1) = offload_if_oversized(dir.path(), "conv1", "call1", &result, 2000).unwrap();
+        let (_, path2) = offload_if_oversized(dir.path(), "conv1", "call2", &result, 2000).unwrap();
         assert_ne!(path1, path2);
     }
 }

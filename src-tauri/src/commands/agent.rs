@@ -102,7 +102,10 @@ async fn persist_tool_call(
         })
         .await;
     if let Some(app) = app {
-        let _ = app.emit("agent-message-persisted", AgentMessagePersisted { conversation_id });
+        let _ = app.emit(
+            "agent-message-persisted",
+            AgentMessagePersisted { conversation_id },
+        );
     }
 }
 
@@ -149,7 +152,10 @@ async fn persist_tool_result(
         })
         .await;
     if let Some(app) = app {
-        let _ = app.emit("agent-message-persisted", AgentMessagePersisted { conversation_id });
+        let _ = app.emit(
+            "agent-message-persisted",
+            AgentMessagePersisted { conversation_id },
+        );
     }
 }
 
@@ -168,8 +174,25 @@ async fn persist_tool_call_and_result(
     model_text: &str,
     detail: serde_json::Value,
 ) {
-    persist_tool_call(app, conn, conversation_id, tool_call_id, tool_name, arguments).await;
-    persist_tool_result(app, conn, conversation_id, tool_call_id, tool_name, model_text, detail).await;
+    persist_tool_call(
+        app,
+        conn,
+        conversation_id,
+        tool_call_id,
+        tool_name,
+        arguments,
+    )
+    .await;
+    persist_tool_result(
+        app,
+        conn,
+        conversation_id,
+        tool_call_id,
+        tool_name,
+        model_text,
+        detail,
+    )
+    .await;
 }
 
 fn parse_question_options(call: &ToolCall) -> Vec<QuestionOption> {
@@ -294,6 +317,142 @@ async fn handle_ask_user_question(
     model_text
 }
 
+/// `AgentBackend` (see that trait's own doc comment for why this is a
+/// struct+impl rather than four closures) for the top-level agent loop
+/// (`send_agent_message`): wraps the real `InferenceEngine`, DB connection,
+/// and event emission that loop actually runs against.
+struct RealBackend<'a> {
+    engine: &'a InferenceEngine,
+    conn: &'a tokio_rusqlite::Connection,
+    conversation_id: &'a str,
+    app: &'a AppHandle,
+    settings: &'a crate::context::ContextSettings,
+    threshold: u32,
+    cwd: Option<&'a Path>,
+    pending: &'a PendingQuestions,
+}
+
+impl crate::agent::AgentBackend for RealBackend<'_> {
+    fn measure(&mut self, messages: &[ChatMessage]) -> u32 {
+        // Reuses `settings` (already loaded by the caller for the
+        // hard-limit check) rather than a DB round-trip every turn --
+        // still emits `context-usage-update` on every turn (not just when
+        // `compact` actually runs) to keep the UI's live indicator
+        // responsive, not just notified of compaction events.
+        match crate::context::usage_from_fitted_messages(
+            self.engine,
+            self.conversation_id,
+            messages,
+            self.settings,
+        ) {
+            Ok(usage) => {
+                let tokens_used = usage.tokens_used;
+                let _ = self.app.emit("context-usage-update", usage);
+                tokens_used
+            }
+            // Fail-safe: treat a measurement failure as over-threshold so
+            // `compact` runs defensively, rather than silently
+            // under-measuring and letting a too-large prompt through.
+            Err(_) => u32::MAX,
+        }
+    }
+
+    fn threshold(&self) -> u32 {
+        self.threshold
+    }
+
+    fn compact(&mut self, messages: &[ChatMessage]) -> Vec<ChatMessage> {
+        crate::context::fit_turn_to_budget(self.engine, messages).unwrap_or_else(|_| messages.to_vec())
+    }
+
+    async fn generate(&mut self, messages: Vec<ChatMessage>) -> String {
+        match self.engine.render_chat_prompt(&messages) {
+            Ok(rendered) => self
+                .engine
+                .generate(&rendered, 256, true, |_piece| {}, || false)
+                .unwrap_or_else(|e| format!("Error: inference failed: {e}")),
+            Err(e) => format!("Error: failed to render chat prompt: {e}"),
+        }
+    }
+
+    async fn execute_tool(&mut self, tool_call_id: String, call: ToolCall) -> String {
+        execute_top_level_tool(
+            tool_call_id,
+            call,
+            self.conn,
+            self.engine,
+            self.conversation_id,
+            self.cwd,
+            self.app,
+            self.pending,
+        )
+        .await
+    }
+}
+
+/// `AgentBackend` for the `Task`-tool's delegated subagent loop
+/// (`execute_top_level_tool` below): same fit-to-budget guarantee as
+/// `RealBackend`, minus event emission -- FR-015 isolation means the
+/// subagent's own transcript isn't rendered by any current view, so
+/// there's no live indicator to notify.
+struct SubagentBackend<'a> {
+    engine: &'a InferenceEngine,
+    conn: &'a tokio_rusqlite::Connection,
+    subagent_id: &'a str,
+    cwd: Option<&'a Path>,
+    threshold: u32,
+}
+
+impl crate::agent::AgentBackend for SubagentBackend<'_> {
+    fn measure(&mut self, messages: &[ChatMessage]) -> u32 {
+        self.engine
+            .render_chat_prompt(messages)
+            .and_then(|r| self.engine.count_tokens(&r).map(|n| n as u32))
+            .unwrap_or(u32::MAX)
+    }
+
+    fn threshold(&self) -> u32 {
+        self.threshold
+    }
+
+    fn compact(&mut self, messages: &[ChatMessage]) -> Vec<ChatMessage> {
+        crate::context::fit_turn_to_budget(self.engine, messages).unwrap_or_else(|_| messages.to_vec())
+    }
+
+    async fn generate(&mut self, messages: Vec<ChatMessage>) -> String {
+        match self.engine.render_chat_prompt(&messages) {
+            Ok(rendered) => self
+                .engine
+                .generate(&rendered, 256, true, |_piece| {}, || false)
+                .unwrap_or_else(|e| format!("Error: inference failed: {e}")),
+            Err(e) => format!("Error: failed to render chat prompt: {e}"),
+        }
+    }
+
+    async fn execute_tool(&mut self, tool_call_id: String, call: ToolCall) -> String {
+        // 004-tool-call-widgets: the subagent's own tool activity persists
+        // under its own conversation row -- never the parent's --
+        // preserving 001's existing FR-015/SC-008 isolation guarantee
+        // (only its final answer, inserted by the caller, ever reaches the
+        // parent's transcript). No live-refresh event (`app: None`) -- it
+        // isn't rendered by any current view, so there's no consumer to
+        // notify.
+        let outcome = dispatch::execute(&call, self.cwd);
+        persist_tool_call_and_result(
+            None,
+            self.conn,
+            self.subagent_id,
+            &tool_call_id,
+            &call.name,
+            call.arguments.clone(),
+            &outcome.model_text,
+            outcome.detail.clone(),
+        )
+        .await;
+        outcome.model_text
+    }
+}
+
 /// Handles a single tool call for the top-level agent loop: `Task` spawns
 /// a real, isolated subagent (FR-015) and runs its own nested loop to
 /// completion against the same loaded model, returning its final answer
@@ -401,49 +560,21 @@ async fn execute_top_level_tool(
         ChatMessage::system(SYSTEM_PROMPT),
         ChatMessage::user(prompt.clone()),
     ];
-    let sub_cwd = sub_context.cwd.clone();
-    let sub_result = run_loop(
-        &sub_context,
-        sub_messages,
-        |messages| async move {
-            match engine.render_chat_prompt(&messages) {
-                Ok(rendered) => engine
-                    .generate(&rendered, 256, true, |_piece| {}, || false)
-                    .unwrap_or_else(|e| format!("Error: inference failed: {e}")),
-                Err(e) => format!("Error: failed to render chat prompt: {e}"),
-            }
-        },
-        |tool_call_id, c| {
-            // 004-tool-call-widgets: the subagent's own tool activity
-            // persists under its own conversation row — never the
-            // parent's — preserving 001's existing FR-015/SC-008
-            // isolation guarantee (only its final answer, inserted below,
-            // ever reaches the parent's transcript).
-            let sub_cwd = sub_cwd.clone();
-            let subagent_id = subagent_id.clone();
-            async move {
-                let outcome = dispatch::execute(&c, sub_cwd.as_deref());
-                // No live-refresh event for the subagent's own isolated
-                // transcript (`app: None`) -- it isn't rendered by any
-                // current view (FR-015 isolation), so there's no consumer
-                // to notify; only the delegation's final persist on the
-                // *parent* conversation (below) needs to signal the UI.
-                persist_tool_call_and_result(
-                    None,
-                    conn,
-                    &subagent_id,
-                    &tool_call_id,
-                    &c.name,
-                    c.arguments.clone(),
-                    &outcome.model_text,
-                    outcome.detail.clone(),
-                )
-                .await;
-                outcome.model_text
-            }
-        },
-    )
-    .await;
+    // Same fit-to-budget guarantee as the top-level loop, now automatic for
+    // every `run_loop` caller (this subagent path had no such protection
+    // before this became the loop's own per-turn decision rather than
+    // something each caller's `generate` closure had to remember to do).
+    let sub_threshold = engine
+        .context_window()
+        .saturating_sub(crate::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS);
+    let mut sub_backend = SubagentBackend {
+        engine,
+        conn,
+        subagent_id: &subagent_id,
+        cwd: sub_context.cwd.as_deref(),
+        threshold: sub_threshold,
+    };
+    let sub_result = run_loop(&sub_context, sub_messages, &mut sub_backend).await;
 
     let sub_final = match sub_result {
         Ok(text) => text,
@@ -456,7 +587,10 @@ async fn execute_top_level_tool(
     // 010-context-window-management (UI refactor): output tokens for the
     // subagent's own final answer -- `engine` is already in scope here
     // (this function's own parameter), so no follow-up-update dance needed.
-    let sub_token_count = engine.count_tokens(&sub_final_for_db).ok().map(|n| n as i64);
+    let sub_token_count = engine
+        .count_tokens(&sub_final_for_db)
+        .ok()
+        .map(|n| n as i64);
     let _ = conn
         .call(move |conn: &mut Connection| -> rusqlite::Result<()> {
             let seq: i64 = conn.query_row(
@@ -793,9 +927,15 @@ pub async fn send_agent_message(
     // isn't sufficient for agent mode (tool results can push a *later* turn
     // over budget even when the first turn was fine).
     let system_prompt = system_message(cwd.as_deref());
-    let usage =
-        crate::context::maybe_compact(&conn, engine, &conversation_id, &skills_dir, &system_prompt, false)
-            .await?;
+    let usage = crate::context::maybe_compact(
+        &conn,
+        engine,
+        &conversation_id,
+        &skills_dir,
+        &system_prompt,
+        false,
+    )
+    .await?;
     let settings = crate::context::ContextSettings::load(&conn).await?;
     // Emitted *before* the hard-limit check (not after) -- otherwise the
     // one reading that actually caused a rejection is the one the user
@@ -837,76 +977,26 @@ pub async fn send_agent_message(
         }
     }
 
-    let result = run_loop(
-        &context,
-        initial_messages,
-        |mut messages| {
-            let conn = conn.clone();
-            let conversation_id = conversation_id.clone();
-            let system_prompt = system_prompt.clone();
-            let app = app.clone();
-            async move {
-                // 010-context-window-management: compacts *this turn's*
-                // in-flight messages before every single generate call, not
-                // just once before the loop started (`maybe_compact` above)
-                // -- without this, a turn that makes several tool calls can
-                // blow past the model's context window with nothing to
-                // stop it until the next top-level message, which is
-                // exactly what let a raw `NoKvCacheSlot` llama.cpp decode
-                // error reach the user instead of a graceful compaction.
-                match crate::context::compact_in_memory(
-                    &conn,
-                    engine,
-                    &conversation_id,
-                    &mut messages,
-                    &system_prompt,
-                )
-                .await
-                {
-                    Ok(usage) => {
-                        let _ = app.emit("context-usage-update", usage.clone());
-                        if let Ok(settings) = crate::context::ContextSettings::load(&conn).await {
-                            if (usage.tokens_used as f64)
-                                >= settings.hard_limit_pct * usage.token_budget as f64
-                            {
-                                // Refuses to call generate() at all rather than
-                                // handing the model a prompt already measured
-                                // to be over budget -- this is what makes the
-                                // NoKvCacheSlot decode error structurally
-                                // unreachable, instead of just less likely.
-                                return "Error: This task grew too large for the model's context window mid-run, even after compacting. Try a narrower request or start a new conversation.".to_string();
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        // Best-effort, same spirit as emit_context_usage_update
-                        // elsewhere in this file: a transient usage-computation
-                        // failure (e.g. a DB hiccup) shouldn't block generation.
-                    }
-                }
+    // The loop's own per-turn decision (`run_loop`'s `measure`/`threshold`/
+    // `compact`): every turn checks whether the in-flight messages already
+    // fit this same budget before ever calling `fit_turn_to_budget` --
+    // skips the fit entirely on turns that don't need it, rather than
+    // unconditionally re-measuring every message every turn.
+    let threshold = engine
+        .context_window()
+        .saturating_sub(crate::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS);
 
-                match engine.render_chat_prompt(&messages) {
-                    Ok(rendered) => engine
-                        .generate(&rendered, 256, true, |_piece| {}, || false)
-                        .unwrap_or_else(|e| format!("Error: inference failed: {e}")),
-                    Err(e) => format!("Error: failed to render chat prompt: {e}"),
-                }
-            }
-        },
-        |tool_call_id, call| {
-            execute_top_level_tool(
-                tool_call_id,
-                call,
-                &conn,
-                engine,
-                &conversation_id,
-                cwd.as_deref(),
-                &app,
-                &pending_questions,
-            )
-        },
-    )
-    .await;
+    let mut backend = RealBackend {
+        engine,
+        conn: &conn,
+        conversation_id: &conversation_id,
+        app: &app,
+        settings: &settings,
+        threshold,
+        cwd: cwd.as_deref(),
+        pending: &pending_questions,
+    };
+    let result = run_loop(&context, initial_messages, &mut backend).await;
     drop(guard);
 
     let final_text = match result {

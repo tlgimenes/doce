@@ -39,3 +39,10 @@ pub const DEFAULT_HARD_LIMIT_PCT: f64 = 0.9;
 /// chars ~= 125 tokens). A single tool result over this threshold gets
 /// offloaded to disk with only a preview + pointer left inline.
 pub const DEFAULT_TOOL_OUTPUT_OFFLOAD_CHARS: usize = 500;
+
+/// `reserve` for `InferenceEngine::fit_to_context`'s per-turn call inside
+/// `agent::run_loop` (`context::fit_turn_to_budget`) -- matches
+/// `commands::agent`'s actual `generate()` `max_tokens` for an agent turn,
+/// the room the fitted prompt must leave for output that doesn't exist yet
+/// to count.
+pub const AGENT_TURN_MAX_OUTPUT_TOKENS: u32 = 256;

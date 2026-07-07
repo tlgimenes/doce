@@ -9,6 +9,11 @@
 //! Calls `doce_lib::agent::run_loop` + `dispatch::execute` directly against
 //! the real `InferenceEngine` -- the harness itself, no Tauri/UI involved,
 //! matching how these tasks would actually run through `send_agent_message`.
+//! Deliberately calls `context::fit_turn_to_budget` (the exact function
+//! `commands::agent`'s real generate closure calls) rather than
+//! reimplementing its own version of the pre-generate context-fit step --
+//! this benchmark exists to test what actually ships, not a parallel
+//! implementation that could quietly drift from it.
 //!
 //! Four tiers of increasing difficulty. Tiers 1-2 are baseline sanity --
 //! they must always pass; a failure there means something is fundamentally
@@ -24,7 +29,8 @@
 //! work -- the exact failure mode motivating the redesign this benchmark
 //! exists to validate.
 
-use doce_lib::agent::{dispatch, run_loop, AgentContext, AgentError, SYSTEM_PROMPT};
+use doce_lib::agent::{dispatch, run_loop, AgentBackend, AgentContext, AgentError, SYSTEM_PROMPT};
+use doce_lib::context;
 use doce_lib::inference::{ChatMessage, InferenceEngine};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -58,11 +64,55 @@ fn report(name: &str, run: &BenchmarkRun) {
     }
 }
 
+/// `AgentBackend` for this benchmark -- the exact same shape
+/// `commands::agent`'s `SubagentBackend` uses (measure/compact call
+/// `context::fit_turn_to_budget`/its `InferenceEngine` counterparts
+/// directly, not a benchmark-only reimplementation), plus a turn counter
+/// `run_loop` itself has no reason to expose (it only reports turn count
+/// on the `TurnCapExceeded` error path, not on success).
+struct BenchBackend<'a> {
+    engine: &'a InferenceEngine,
+    cwd: &'a Path,
+    threshold: u32,
+    turns: u32,
+}
+
+impl AgentBackend for BenchBackend<'_> {
+    fn measure(&mut self, messages: &[ChatMessage]) -> u32 {
+        self.engine
+            .render_chat_prompt(messages)
+            .and_then(|r| self.engine.count_tokens(&r).map(|n| n as u32))
+            .unwrap_or(u32::MAX)
+    }
+
+    fn threshold(&self) -> u32 {
+        self.threshold
+    }
+
+    fn compact(&mut self, messages: &[ChatMessage]) -> Vec<ChatMessage> {
+        context::fit_turn_to_budget(self.engine, messages).unwrap_or_else(|_| messages.to_vec())
+    }
+
+    async fn generate(&mut self, messages: Vec<ChatMessage>) -> String {
+        self.turns += 1;
+        let rendered = self
+            .engine
+            .render_chat_prompt(&messages)
+            .expect("chat template should render");
+        // max_tokens matches commands::agent's real generate() call
+        // (limits::AGENT_TURN_MAX_OUTPUT_TOKENS) for the same reason.
+        self.engine
+            .generate(&rendered, 256, true, |_| {}, || false)
+            .unwrap_or_else(|e| format!("Error: generation failed: {e}"))
+    }
+
+    async fn execute_tool(&mut self, _tool_call_id: String, call: doce_lib::agent::ToolCall) -> String {
+        dispatch::execute(&call, Some(self.cwd)).model_text
+    }
+}
+
 /// Runs `task` through the real agent harness rooted at `cwd`, capturing
-/// turns taken and wall-clock time alongside the loop's own `Result` --
-/// `run_loop` itself only reports turn count on the `TurnCapExceeded` error
-/// path, not on success, so a turn counter is threaded through the
-/// `generate` closure (called exactly once per turn) to get it either way.
+/// turns taken and wall-clock time alongside the loop's own `Result`.
 async fn run_benchmark_task(
     engine: &InferenceEngine,
     task: &str,
@@ -75,30 +125,27 @@ async fn run_benchmark_task(
         cwd: Some(cwd.to_path_buf()),
     };
     let initial_messages = vec![ChatMessage::system(SYSTEM_PROMPT), ChatMessage::user(task)];
-    let turns = std::cell::Cell::new(0u32);
     let start = Instant::now();
 
-    let result = run_loop(
-        &context,
-        initial_messages,
-        |messages| {
-            turns.set(turns.get() + 1);
-            async move {
-                let rendered = engine
-                    .render_chat_prompt(&messages)
-                    .expect("chat template should render");
-                engine
-                    .generate(&rendered, 512, true, |_| {}, || false)
-                    .unwrap_or_else(|e| format!("Error: generation failed: {e}"))
-            }
-        },
-        |_tool_call_id, call| async move { dispatch::execute(&call, Some(cwd)).model_text },
-    )
-    .await;
+    // Same measure/threshold/compact commands::agent's real generate
+    // closure uses -- run_loop itself now makes the fit-to-budget decision
+    // on every turn, so this benchmark calls exactly what ships rather than
+    // reimplementing its own version of the pre-generate step.
+    let threshold = engine
+        .context_window()
+        .saturating_sub(doce_lib::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS);
+    let mut backend = BenchBackend {
+        engine,
+        cwd,
+        threshold,
+        turns: 0,
+    };
+
+    let result = run_loop(&context, initial_messages, &mut backend).await;
 
     BenchmarkRun {
         result,
-        turns_taken: turns.get(),
+        turns_taken: backend.turns,
         elapsed: start.elapsed(),
     }
 }
@@ -372,7 +419,9 @@ fn tier5_check(dir: &Path, original: &[String]) -> Result<(), String> {
             continue;
         }
         if got != want {
-            return Err(format!("unrelated line {i} was altered: expected {want:?}, got {got:?}"));
+            return Err(format!(
+                "unrelated line {i} was altered: expected {want:?}, got {got:?}"
+            ));
         }
     }
     Ok(())

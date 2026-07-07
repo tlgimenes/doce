@@ -34,7 +34,14 @@ pub async fn get_context_usage(
     // live `context-usage-update` events emitted from the real send_message/
     // send_agent_message paths (which do know their exact mode) supersede
     // this snapshot the moment a turn actually runs.
-    context::compute_usage(&conn, engine, &conversation_id, &skills_dir, CHAT_SYSTEM_PROMPT).await
+    context::compute_usage(
+        &conn,
+        engine,
+        &conversation_id,
+        &skills_dir,
+        CHAT_SYSTEM_PROMPT,
+    )
+    .await
 }
 
 /// 010-context-window-management/US2 (FR-009): forces the same tiered

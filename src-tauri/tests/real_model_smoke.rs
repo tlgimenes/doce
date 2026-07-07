@@ -19,18 +19,25 @@ use std::path::PathBuf;
 
 fn installed_model_path() -> PathBuf {
     let home = std::env::var("HOME").expect("HOME must be set");
-    PathBuf::from(home)
-        .join("Library/Application Support/app.doce.desktop/models/qwen3-4b-instruct-2507-q4_k_m.gguf")
+    PathBuf::from(home).join(
+        "Library/Application Support/app.doce.desktop/models/qwen3-4b-instruct-2507-q4_k_m.gguf",
+    )
 }
 
 #[test]
 #[ignore]
 fn count_tokens_and_context_window_report_sane_values_against_the_real_model() {
     let path = installed_model_path();
-    assert!(path.exists(), "expected the real installed model at {path:?}");
+    assert!(
+        path.exists(),
+        "expected the real installed model at {path:?}"
+    );
 
     let engine = InferenceEngine::load(&path, 4).expect("model should load");
-    assert_eq!(engine.context_window(), doce_lib::inference::CONTEXT_WINDOW_TOKENS);
+    assert_eq!(
+        engine.context_window(),
+        doce_lib::inference::CONTEXT_WINDOW_TOKENS
+    );
 
     let count = engine
         .count_tokens("Hello, how are you today?")
@@ -66,8 +73,14 @@ fn render_chat_prompt_and_generate_produce_a_real_short_completion() {
 
     let full_text = result.expect("generation should succeed");
     println!("real model output: {full_text:?}");
-    assert!(!full_text.trim().is_empty(), "expected a non-empty completion");
-    assert_eq!(output, full_text, "on_token callback must match the returned text");
+    assert!(
+        !full_text.trim().is_empty(),
+        "expected a non-empty completion"
+    );
+    assert_eq!(
+        output, full_text,
+        "on_token callback must match the returned text"
+    );
 }
 
 #[test]
@@ -87,7 +100,9 @@ fn grammar_constrained_tool_call_produces_syntactically_valid_json_against_the_r
             "Use the Bash tool right now to run the command `pwd`. Call the tool, don't just describe it.",
         ),
     ];
-    let rendered = engine.render_chat_prompt(&messages).expect("render should succeed");
+    let rendered = engine
+        .render_chat_prompt(&messages)
+        .expect("render should succeed");
 
     let result = engine
         .generate(&rendered, 128, true, |_| {}, || false)
@@ -98,7 +113,10 @@ fn grammar_constrained_tool_call_produces_syntactically_valid_json_against_the_r
         LoopStep::ToolCall(call) => {
             assert_eq!(call.name, "Bash");
             assert!(
-                call.arguments.get("command").and_then(|v| v.as_str()).is_some(),
+                call.arguments
+                    .get("command")
+                    .and_then(|v| v.as_str())
+                    .is_some(),
                 "expected a string `command` argument, got: {:?}",
                 call.arguments
             );
@@ -131,8 +149,13 @@ fn tool_result_renders_wrapped_in_qwens_own_tool_response_tags() {
         ChatMessage::tool_use("call-1", "Bash", serde_json::json!({"command": "pwd"})),
         ChatMessage::tool_result("call-1", "Bash", "/tmp/example"),
     ];
-    let rendered = engine.render_chat_prompt(&messages).expect("render should succeed");
-    println!("rendered prompt tail: {:?}", &rendered[rendered.len().saturating_sub(300)..]);
+    let rendered = engine
+        .render_chat_prompt(&messages)
+        .expect("render should succeed");
+    println!(
+        "rendered prompt tail: {:?}",
+        &rendered[rendered.len().saturating_sub(300)..]
+    );
 
     assert!(
         rendered.contains("<|im_start|>user\n<tool_response>/tmp/example</tool_response>"),
@@ -153,7 +176,11 @@ fn apply_lightweight_clearing_then_summarize_against_the_real_model() {
     let mut history: Vec<HistoryMessage> = Vec::new();
     for i in 0..12 {
         history.push(HistoryMessage {
-            chat: ChatMessage::tool_result(format!("call-{i}"), "Bash", format!("output number {i}")),
+            chat: ChatMessage::tool_result(
+                format!("call-{i}"),
+                "Bash",
+                format!("output number {i}"),
+            ),
             content_type: "tool_result".to_string(),
             sequence: i,
         });
@@ -182,7 +209,9 @@ fn apply_lightweight_clearing_then_summarize_against_the_real_model() {
         "Summarize the conversation so far concisely, preserving key facts, decisions, and unresolved tasks. Respond with only the summary text, nothing else.",
     )];
     messages.extend(to_summarize.iter().map(|m| m.chat.clone()));
-    let rendered = engine.render_chat_prompt(&messages).expect("render should succeed");
+    let rendered = engine
+        .render_chat_prompt(&messages)
+        .expect("render should succeed");
     let summary = engine
         .generate(&rendered, 256, false, |_| {}, || false)
         .expect("summarization generate should succeed");
@@ -194,5 +223,8 @@ fn apply_lightweight_clearing_then_summarize_against_the_real_model() {
     // but exercised here alongside the real-model assertions for a single
     // combined smoke-test run).
     let settings = ContextSettings::from_raw(&Default::default());
-    assert_eq!(settings.warn_threshold_pct, ContextSettings::DEFAULT_WARN_THRESHOLD_PCT);
+    assert_eq!(
+        settings.warn_threshold_pct,
+        ContextSettings::DEFAULT_WARN_THRESHOLD_PCT
+    );
 }

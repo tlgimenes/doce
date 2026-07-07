@@ -19,7 +19,9 @@ pub mod limits;
 pub mod offload;
 
 use crate::inference::{ChatMessage, InferenceEngine, MessageContent};
-use crate::storage::conversations::{load_history_annotated, persist_context_notice, HistoryMessage};
+use crate::storage::conversations::{
+    load_history_annotated, persist_context_notice, HistoryMessage,
+};
 use limits::{
     PROTECTED_RECENT_MESSAGES, SUMMARIZATION_PROMPT, SUMMARY_MAX_TOKENS, TOOL_CLEARED_PLACEHOLDER,
     TOOL_KEEP_N,
@@ -79,9 +81,14 @@ impl ContextSettings {
                 .filter(|v| *v > 0.0 && *v <= 1.0)
                 .unwrap_or(default)
         };
-        let warn_threshold_pct = parse_pct(Self::KEY_WARN_THRESHOLD_PCT, Self::DEFAULT_WARN_THRESHOLD_PCT);
-        let compact_threshold_pct_raw =
-            parse_pct(Self::KEY_COMPACT_THRESHOLD_PCT, Self::DEFAULT_COMPACT_THRESHOLD_PCT);
+        let warn_threshold_pct = parse_pct(
+            Self::KEY_WARN_THRESHOLD_PCT,
+            Self::DEFAULT_WARN_THRESHOLD_PCT,
+        );
+        let compact_threshold_pct_raw = parse_pct(
+            Self::KEY_COMPACT_THRESHOLD_PCT,
+            Self::DEFAULT_COMPACT_THRESHOLD_PCT,
+        );
         let hard_limit_pct_raw = parse_pct(Self::KEY_HARD_LIMIT_PCT, Self::DEFAULT_HARD_LIMIT_PCT);
         let tool_output_offload_chars = raw
             .get(Self::KEY_TOOL_OUTPUT_OFFLOAD_CHARS)
@@ -158,9 +165,11 @@ async fn load_history_via_conn(
 ) -> Result<Vec<HistoryMessage>, String> {
     let conversation_id = conversation_id.to_string();
     let skills_dir = skills_dir.to_path_buf();
-    conn.call(move |conn: &mut Connection| load_history_annotated(conn, &conversation_id, &skills_dir))
-        .await
-        .map_err(|e| e.to_string())
+    conn.call(move |conn: &mut Connection| {
+        load_history_annotated(conn, &conversation_id, &skills_dir)
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 async fn persist_notice(
@@ -170,9 +179,11 @@ async fn persist_notice(
 ) -> Result<(), String> {
     let conversation_id = conversation_id.to_string();
     let now = crate::commands::models::now_ms();
-    conn.call(move |conn: &mut Connection| persist_context_notice(conn, &conversation_id, now, &notice_json))
-        .await
-        .map_err(|e| e.to_string())
+    conn.call(move |conn: &mut Connection| {
+        persist_context_notice(conn, &conversation_id, now, &notice_json)
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// Renders `history` (prefixed with `system_prompt`) through the model's own
@@ -188,7 +199,9 @@ async fn usage_from_history(
     let mut messages = vec![ChatMessage::system(system_prompt)];
     messages.extend(history.iter().map(|m| m.chat.clone()));
 
-    let rendered = engine.render_chat_prompt(&messages).map_err(|e| e.to_string())?;
+    let rendered = engine
+        .render_chat_prompt(&messages)
+        .map_err(|e| e.to_string())?;
     let tokens_used = engine.count_tokens(&rendered).map_err(|e| e.to_string())? as u32;
     let token_budget = engine.context_window();
     let state = classify_state(tokens_used, token_budget, settings);
@@ -216,7 +229,7 @@ pub async fn compute_usage(
     let mut history = load_history_via_conn(conn, conversation_id, skills_dir).await?;
     // Tier 1 is a pure, idempotent, load-time transform (see
     // apply_lightweight_clearing's own doc comment) -- applying it here too
-    // (not just inside maybe_compact/compact_in_memory) is what makes this
+    // (not just inside maybe_compact) is what makes this
     // function actually report "what the effective prompt looks like right
     // now" instead of a raw, pre-tier-1 count that silently disagrees with
     // what compaction already achieved. Without this, get_context_usage and
@@ -273,7 +286,9 @@ pub async fn summarize_and_persist(
     let mut messages = vec![ChatMessage::system(SUMMARIZATION_PROMPT)];
     messages.extend(to_summarize.iter().map(|m| m.chat.clone()));
 
-    let rendered = engine.render_chat_prompt(&messages).map_err(|e| e.to_string())?;
+    let rendered = engine
+        .render_chat_prompt(&messages)
+        .map_err(|e| e.to_string())?;
     let summary = engine
         .generate(&rendered, SUMMARY_MAX_TOKENS, false, |_| {}, || false)
         .map_err(|e| e.to_string())?;
@@ -313,10 +328,16 @@ pub async fn maybe_compact(
 ) -> Result<ContextUsage, String> {
     let settings = ContextSettings::load(conn).await?;
     let mut history = load_history_via_conn(conn, conversation_id, skills_dir).await?;
-    let mut usage = usage_from_history(engine, conversation_id, &history, system_prompt, &settings).await?;
+    let mut usage =
+        usage_from_history(engine, conversation_id, &history, system_prompt, &settings).await?;
 
-    let over_compact_threshold =
-        |u: &ContextUsage| exceeds(u.tokens_used, u.token_budget, settings.compact_threshold_pct);
+    let over_compact_threshold = |u: &ContextUsage| {
+        exceeds(
+            u.tokens_used,
+            u.token_budget,
+            settings.compact_threshold_pct,
+        )
+    };
 
     if !force && !over_compact_threshold(&usage) {
         return Ok(usage);
@@ -335,19 +356,27 @@ pub async fn maybe_compact(
         })
         .to_string();
         persist_notice(conn, conversation_id, notice_json).await?;
-        usage = usage_from_history(engine, conversation_id, &history, system_prompt, &settings).await?;
+        usage =
+            usage_from_history(engine, conversation_id, &history, system_prompt, &settings).await?;
     }
 
     if over_compact_threshold(&usage) {
-        let summarized =
-            summarize_and_persist(conn, engine, conversation_id, &history, PROTECTED_RECENT_MESSAGES).await?;
+        let summarized = summarize_and_persist(
+            conn,
+            engine,
+            conversation_id,
+            &history,
+            PROTECTED_RECENT_MESSAGES,
+        )
+        .await?;
         if summarized.is_some() {
             changed = true;
             // summarize_and_persist just persisted a new context_notice row
             // that changes load_history_annotated's splice point -- reload
             // rather than trying to reconstruct the spliced view in memory.
             history = load_history_via_conn(conn, conversation_id, skills_dir).await?;
-            usage = usage_from_history(engine, conversation_id, &history, system_prompt, &settings).await?;
+            usage = usage_from_history(engine, conversation_id, &history, system_prompt, &settings)
+                .await?;
         }
     }
 
@@ -358,16 +387,45 @@ pub async fn maybe_compact(
     Ok(usage)
 }
 
-async fn usage_from_chat_messages(
+/// The mid-agent-loop counterpart to `maybe_compact`'s *replacement*:
+/// called before *every* turn inside `agent::run_loop`, not just once
+/// before the loop starts. Without this, a single agent turn that makes
+/// several tool calls can blow past the model's context window with
+/// nothing to stop it until the *next* top-level message — which is
+/// exactly what let a raw `NoKvCacheSlot` llama.cpp decode error reach the
+/// user instead of a graceful fit (found via real use, not speculatively).
+///
+/// Superseded the old tier-1/tier-2 `compact_in_memory` (placeholder-clear
+/// then maybe-summarize, both making a judgment about what's worth
+/// keeping): this is purely mechanical — `fit_to_budget`'s own doc comment
+/// explains why judgment belongs to the outer loop's own goal/plan/
+/// observations state instead. No persisted notice, no summarization
+/// `generate()` call, no DB dependency at all — engine + messages in,
+/// fitted messages out — which is also what makes this callable directly
+/// from the real-model agent benchmark (`tests/agent_benchmark.rs`)
+/// instead of the benchmark reimplementing its own version of this step.
+pub fn fit_turn_to_budget(
+    engine: &InferenceEngine,
+    messages: &[ChatMessage],
+) -> Result<Vec<ChatMessage>, String> {
+    engine
+        .fit_to_context(messages, 1, limits::AGENT_TURN_MAX_OUTPUT_TOKENS)
+        .map_err(|e| e.to_string())
+}
+
+/// `ContextUsage` for an already-fully-assembled message list (system
+/// prompt included as the first element, e.g. `fit_turn_to_budget`'s own
+/// output) — unlike `usage_from_chat_messages`/`usage_from_history`, does
+/// not prepend a second system message, since this one's already there.
+pub fn usage_from_fitted_messages(
     engine: &InferenceEngine,
     conversation_id: &str,
     messages: &[ChatMessage],
-    system_prompt: &str,
     settings: &ContextSettings,
 ) -> Result<ContextUsage, String> {
-    let mut full = vec![ChatMessage::system(system_prompt)];
-    full.extend(messages.iter().cloned());
-    let rendered = engine.render_chat_prompt(&full).map_err(|e| e.to_string())?;
+    let rendered = engine
+        .render_chat_prompt(messages)
+        .map_err(|e| e.to_string())?;
     let tokens_used = engine.count_tokens(&rendered).map_err(|e| e.to_string())? as u32;
     let token_budget = engine.context_window();
     let state = classify_state(tokens_used, token_budget, settings);
@@ -379,120 +437,51 @@ async fn usage_from_chat_messages(
     })
 }
 
-/// Tier 1, in-memory variant of `apply_lightweight_clearing` — same
-/// keep-the-most-recent-`keep_n` algorithm, but matches directly on
-/// `MessageContent::ToolResult` instead of a persisted `content_type`
-/// (which a real in-memory tool result, live in `agent::run_loop`'s own
-/// growing `Vec<ChatMessage>`, doesn't have until the turn finishes and
-/// `commands::agent` writes its DB row) — no string-prefix guessing
-/// needed now that this is a real, structured variant.
-fn apply_lightweight_clearing_in_memory(messages: &mut [ChatMessage], keep_n: usize) -> usize {
-    let tool_indices: Vec<usize> = messages
-        .iter()
-        .enumerate()
-        .filter(|(_, m)| matches!(m.content, MessageContent::ToolResult { .. }))
-        .map(|(i, _)| i)
-        .collect();
-
-    if tool_indices.len() <= keep_n {
-        return 0;
-    }
-
-    let to_clear = &tool_indices[..tool_indices.len() - keep_n];
-    for &i in to_clear {
-        messages[i].content = MessageContent::Text(TOOL_CLEARED_PLACEHOLDER.to_string());
-    }
-    to_clear.len()
-}
-
-/// The mid-agent-loop counterpart to `maybe_compact`: called before *every*
-/// turn inside `agent::run_loop`, not just once before the loop starts.
-/// Without this, a single agent turn that makes several tool calls can
-/// blow past the model's context window with nothing to stop it until the
-/// *next* top-level message — which is exactly what let a raw
-/// `NoKvCacheSlot` llama.cpp decode error reach the user instead of a
-/// graceful compaction (found via real use, not speculatively). Mutates
-/// `messages` in place — tier 1's placeholder swap, and tier 2's splice of
-/// a persisted summary in place of the non-protected prefix — mirroring
-/// `maybe_compact`'s two tiers, adapted to `agent::run_loop`'s own
-/// `Vec<ChatMessage>` (which has no persisted `content_type` to key
-/// tier 1's classifier off of, hence `apply_lightweight_clearing_in_memory`
-/// above).
+/// Purely mechanical, judgment-free context fit: given each message's
+/// already-known token cost, keeps `pinned_prefix` messages unconditionally
+/// (the system prompt, always first), then greedily keeps as many of the
+/// *most recent* remaining messages as fit within `budget`, working
+/// backward from the newest. No placeholder-clearing, no summarization
+/// call, no persisted notice — this layer makes no judgment about what's
+/// worth remembering; that call belongs to the outer loop's own
+/// goal/plan/observations state (derived from the full persisted history
+/// via retrieval), not here.
 ///
-/// Deliberately simpler than `maybe_compact` in one respect: every
-/// over-threshold turn re-runs both tiers against whatever `messages`
-/// looks like *right now* (there is no way to persist a "already
-/// compacted" marker back into `agent::run_loop`'s own growing history,
-/// since it clones `messages` into this closure fresh on every turn) —
-/// safe and correct (each render is independently brought under budget
-/// before `generate()` is ever called on it), at the cost of a
-/// long, tool-heavy single turn potentially producing more than one
-/// `context_notice` row. Preventing the crash matters more than that
-/// cosmetic edge case.
-pub async fn compact_in_memory(
-    conn: &tokio_rusqlite::Connection,
-    engine: &InferenceEngine,
-    conversation_id: &str,
-    messages: &mut Vec<ChatMessage>,
-    system_prompt: &str,
-) -> Result<ContextUsage, String> {
-    let settings = ContextSettings::load(conn).await?;
-    let mut usage =
-        usage_from_chat_messages(engine, conversation_id, messages, system_prompt, &settings).await?;
+/// A single message costing more than what's left of the budget is
+/// *skipped*, not treated as a stopping point — an oversized message
+/// (e.g. a tool result that should have been offloaded but wasn't) must
+/// not cost every older message its place too, including ones that would
+/// easily have fit; found via real-model testing, where an oversized
+/// tool result being the *most recent* message otherwise dropped the
+/// user's own task out of the prompt entirely.
+pub fn fit_to_budget(
+    messages: &[ChatMessage],
+    token_costs: &[u32],
+    budget: u32,
+    pinned_prefix: usize,
+) -> Vec<ChatMessage> {
+    debug_assert_eq!(messages.len(), token_costs.len());
+    let pinned = pinned_prefix.min(messages.len());
+    let pinned_tokens: u32 = token_costs[..pinned].iter().sum();
+    let mut remaining_budget = budget.saturating_sub(pinned_tokens);
 
-    let over_compact_threshold =
-        |u: &ContextUsage| exceeds(u.tokens_used, u.token_budget, settings.compact_threshold_pct);
-
-    if !over_compact_threshold(&usage) {
-        return Ok(usage);
-    }
-
-    let mut changed = false;
-
-    let cleared_count = apply_lightweight_clearing_in_memory(messages, TOOL_KEEP_N);
-    if cleared_count > 0 {
-        changed = true;
-        let plural = if cleared_count == 1 { "" } else { "s" };
-        let notice_json = serde_json::json!({
-            "kind": "cleared",
-            "clearedCount": cleared_count,
-            "notice": format!("{cleared_count} old tool result{plural} cleared to save space"),
-        })
-        .to_string();
-        persist_notice(conn, conversation_id, notice_json).await?;
-        usage =
-            usage_from_chat_messages(engine, conversation_id, messages, system_prompt, &settings).await?;
-    }
-
-    if over_compact_threshold(&usage) && messages.len() > PROTECTED_RECENT_MESSAGES {
-        let split = messages.len() - PROTECTED_RECENT_MESSAGES;
-        let mut summarize_prompt = vec![ChatMessage::system(SUMMARIZATION_PROMPT)];
-        summarize_prompt.extend(messages[..split].iter().cloned());
-        if let Ok(rendered) = engine.render_chat_prompt(&summarize_prompt) {
-            if let Ok(summary) = engine.generate(&rendered, SUMMARY_MAX_TOKENS, false, |_| {}, || false) {
-                let notice_json = serde_json::json!({
-                    "kind": "summarized",
-                    "summary": summary,
-                    "notice": "Conversation condensed to save space",
-                })
-                .to_string();
-                persist_notice(conn, conversation_id, notice_json).await?;
-
-                let mut spliced = vec![ChatMessage::system(summary)];
-                spliced.extend(messages[split..].iter().cloned());
-                *messages = spliced;
-                changed = true;
-                usage = usage_from_chat_messages(engine, conversation_id, messages, system_prompt, &settings)
-                    .await?;
-            }
+    let mut keep = vec![false; messages.len() - pinned];
+    for (i, &cost) in token_costs[pinned..].iter().enumerate().rev() {
+        if cost <= remaining_budget {
+            remaining_budget -= cost;
+            keep[i] = true;
         }
     }
 
-    if changed {
-        usage.state = "justCompacted".to_string();
-    }
-
-    Ok(usage)
+    let mut result = messages[..pinned].to_vec();
+    result.extend(
+        messages[pinned..]
+            .iter()
+            .zip(keep.iter())
+            .filter(|(_, &k)| k)
+            .map(|(m, _)| m.clone()),
+    );
+    result
 }
 
 #[cfg(test)]
@@ -565,64 +554,12 @@ mod tests {
         }
     }
 
-    // --- apply_lightweight_clearing_in_memory (mid-agent-loop tier 1) ---
-
-    fn tool_result_message(i: i64) -> ChatMessage {
-        ChatMessage::tool_result(format!("call-{i}"), "Bash", format!("result {i}"))
-    }
-
-    #[test]
-    fn in_memory_no_tool_results_clears_nothing() {
-        let mut messages = vec![ChatMessage::user("hi"), ChatMessage::assistant("hello")];
-        assert_eq!(apply_lightweight_clearing_in_memory(&mut messages, TOOL_KEEP_N), 0);
-        assert_eq!(messages[0].text(), "hi");
-    }
-
-    #[test]
-    fn in_memory_keep_n_plus_three_tool_results_clears_the_oldest_three() {
-        let mut messages: Vec<ChatMessage> =
-            (0..(TOOL_KEEP_N as i64 + 3)).map(tool_result_message).collect();
-
-        let cleared = apply_lightweight_clearing_in_memory(&mut messages, TOOL_KEEP_N);
-        assert_eq!(cleared, 3);
-
-        for message in &messages[0..3] {
-            assert_eq!(message.text(), TOOL_CLEARED_PLACEHOLDER);
-        }
-        for (i, message) in messages.iter().enumerate().skip(3) {
-            assert_eq!(message.text(), format!("<tool_response>result {i}</tool_response>"));
-        }
-    }
-
-    #[test]
-    fn in_memory_assistant_messages_are_never_mistaken_for_tool_results() {
-        // A plain assistant reply happens to start with normal prose that
-        // used to look like the old "Tool result for " string marker --
-        // now structurally impossible to misclassify, since only
-        // ChatMessage::tool_result ever produces a MessageContent::ToolResult
-        // and ChatMessage::assistant never does, regardless of its text.
-        // Kept as a regression guard against reintroducing string-based
-        // classification.
-        let mut messages = vec![
-            ChatMessage::assistant("Tool result for you: I'm not actually a tool result"),
-            tool_result_message(0),
-            tool_result_message(1),
-            tool_result_message(2),
-            tool_result_message(3),
-            tool_result_message(4),
-        ];
-        let cleared = apply_lightweight_clearing_in_memory(&mut messages, TOOL_KEEP_N);
-        assert_eq!(
-            cleared,
-            5 - TOOL_KEEP_N,
-            "only the 5 real ToolResult messages count toward clearing"
-        );
-        assert_eq!(
-            messages[0].text(),
-            "Tool result for you: I'm not actually a tool result",
-            "an assistant Text message is never cleared, regardless of its text"
-        );
-    }
+    // apply_lightweight_clearing_in_memory/compact_in_memory's own former
+    // unit tests lived here -- both were removed in favor of
+    // fit_turn_to_budget/fit_to_budget (see fit_to_budget's own tests
+    // below; fit_turn_to_budget itself needs a real InferenceEngine, so
+    // per this file's own testability note at the top, it's exercised by
+    // the real-model agent benchmark instead, not a unit test here).
 
     // --- ContextSettings::from_raw ---
 
@@ -630,9 +567,18 @@ mod tests {
     fn missing_settings_fall_back_to_defaults() {
         let raw = std::collections::HashMap::new();
         let settings = ContextSettings::from_raw(&raw);
-        assert_eq!(settings.warn_threshold_pct, ContextSettings::DEFAULT_WARN_THRESHOLD_PCT);
-        assert_eq!(settings.compact_threshold_pct, ContextSettings::DEFAULT_COMPACT_THRESHOLD_PCT);
-        assert_eq!(settings.hard_limit_pct, ContextSettings::DEFAULT_HARD_LIMIT_PCT);
+        assert_eq!(
+            settings.warn_threshold_pct,
+            ContextSettings::DEFAULT_WARN_THRESHOLD_PCT
+        );
+        assert_eq!(
+            settings.compact_threshold_pct,
+            ContextSettings::DEFAULT_COMPACT_THRESHOLD_PCT
+        );
+        assert_eq!(
+            settings.hard_limit_pct,
+            ContextSettings::DEFAULT_HARD_LIMIT_PCT
+        );
         assert_eq!(
             settings.tool_output_offload_chars,
             ContextSettings::DEFAULT_TOOL_OUTPUT_OFFLOAD_CHARS
@@ -642,10 +588,19 @@ mod tests {
     #[test]
     fn unparseable_settings_fall_back_to_defaults() {
         let mut raw = std::collections::HashMap::new();
-        raw.insert(ContextSettings::KEY_WARN_THRESHOLD_PCT.to_string(), "not a number".to_string());
-        raw.insert(ContextSettings::KEY_TOOL_OUTPUT_OFFLOAD_CHARS.to_string(), "-5".to_string());
+        raw.insert(
+            ContextSettings::KEY_WARN_THRESHOLD_PCT.to_string(),
+            "not a number".to_string(),
+        );
+        raw.insert(
+            ContextSettings::KEY_TOOL_OUTPUT_OFFLOAD_CHARS.to_string(),
+            "-5".to_string(),
+        );
         let settings = ContextSettings::from_raw(&raw);
-        assert_eq!(settings.warn_threshold_pct, ContextSettings::DEFAULT_WARN_THRESHOLD_PCT);
+        assert_eq!(
+            settings.warn_threshold_pct,
+            ContextSettings::DEFAULT_WARN_THRESHOLD_PCT
+        );
         assert_eq!(
             settings.tool_output_offload_chars,
             ContextSettings::DEFAULT_TOOL_OUTPUT_OFFLOAD_CHARS
@@ -655,22 +610,49 @@ mod tests {
     #[test]
     fn out_of_order_thresholds_are_clamped_up() {
         let mut raw = std::collections::HashMap::new();
-        raw.insert(ContextSettings::KEY_WARN_THRESHOLD_PCT.to_string(), "0.9".to_string());
-        raw.insert(ContextSettings::KEY_COMPACT_THRESHOLD_PCT.to_string(), "0.5".to_string());
-        raw.insert(ContextSettings::KEY_HARD_LIMIT_PCT.to_string(), "0.6".to_string());
+        raw.insert(
+            ContextSettings::KEY_WARN_THRESHOLD_PCT.to_string(),
+            "0.9".to_string(),
+        );
+        raw.insert(
+            ContextSettings::KEY_COMPACT_THRESHOLD_PCT.to_string(),
+            "0.5".to_string(),
+        );
+        raw.insert(
+            ContextSettings::KEY_HARD_LIMIT_PCT.to_string(),
+            "0.6".to_string(),
+        );
         let settings = ContextSettings::from_raw(&raw);
         assert_eq!(settings.warn_threshold_pct, 0.9);
-        assert_eq!(settings.compact_threshold_pct, 0.9, "compact must be clamped up to at least warn");
-        assert_eq!(settings.hard_limit_pct, 0.9, "hard limit must be clamped up to at least compact");
+        assert_eq!(
+            settings.compact_threshold_pct, 0.9,
+            "compact must be clamped up to at least warn"
+        );
+        assert_eq!(
+            settings.hard_limit_pct, 0.9,
+            "hard limit must be clamped up to at least compact"
+        );
     }
 
     #[test]
     fn valid_settings_pass_through_unchanged() {
         let mut raw = std::collections::HashMap::new();
-        raw.insert(ContextSettings::KEY_WARN_THRESHOLD_PCT.to_string(), "0.4".to_string());
-        raw.insert(ContextSettings::KEY_COMPACT_THRESHOLD_PCT.to_string(), "0.6".to_string());
-        raw.insert(ContextSettings::KEY_HARD_LIMIT_PCT.to_string(), "0.8".to_string());
-        raw.insert(ContextSettings::KEY_TOOL_OUTPUT_OFFLOAD_CHARS.to_string(), "1500".to_string());
+        raw.insert(
+            ContextSettings::KEY_WARN_THRESHOLD_PCT.to_string(),
+            "0.4".to_string(),
+        );
+        raw.insert(
+            ContextSettings::KEY_COMPACT_THRESHOLD_PCT.to_string(),
+            "0.6".to_string(),
+        );
+        raw.insert(
+            ContextSettings::KEY_HARD_LIMIT_PCT.to_string(),
+            "0.8".to_string(),
+        );
+        raw.insert(
+            ContextSettings::KEY_TOOL_OUTPUT_OFFLOAD_CHARS.to_string(),
+            "1500".to_string(),
+        );
         let settings = ContextSettings::from_raw(&raw);
         assert_eq!(settings.warn_threshold_pct, 0.4);
         assert_eq!(settings.compact_threshold_pct, 0.6);
@@ -691,5 +673,85 @@ mod tests {
         let settings = ContextSettings::from_raw(&std::collections::HashMap::new());
         let warn_at = (settings.warn_threshold_pct * 2048.0).ceil() as u32;
         assert_eq!(classify_state(warn_at, 2048, &settings), "warning");
+    }
+
+    // --- fit_to_budget ---
+
+    fn text_messages(n: usize) -> Vec<ChatMessage> {
+        (0..n).map(|i| ChatMessage::user(format!("m{i}"))).collect()
+    }
+
+    #[test]
+    fn everything_fits_when_under_budget() {
+        let messages = text_messages(5);
+        let costs = vec![10u32; 5];
+        let result = fit_to_budget(&messages, &costs, 1000, 1);
+        assert_eq!(result.len(), 5);
+        for (i, m) in result.iter().enumerate() {
+            assert_eq!(m.text(), format!("m{i}"));
+        }
+    }
+
+    #[test]
+    fn drops_the_oldest_non_pinned_messages_first_when_over_budget() {
+        let messages = text_messages(5);
+        let costs = vec![10u32; 5]; // pinned(1)=10, remaining 4 cost 10 each
+                                    // budget 10 (pinned) + 25 leaves room for exactly 2 of the 4 remaining
+        let result = fit_to_budget(&messages, &costs, 35, 1);
+        assert_eq!(
+            result.iter().map(|m| m.text()).collect::<Vec<_>>(),
+            vec!["m0", "m3", "m4"],
+            "keeps the pinned prefix plus the most recent messages that fit, dropping the oldest of the rest"
+        );
+    }
+
+    #[test]
+    fn pinned_prefix_is_always_kept_even_with_no_room_left_for_anything_else() {
+        let messages = text_messages(3);
+        let costs = vec![50u32, 10, 10];
+        let result = fit_to_budget(&messages, &costs, 50, 1);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].text(), "m0");
+    }
+
+    #[test]
+    fn a_single_message_costing_more_than_the_whole_remaining_budget_is_dropped_whole() {
+        let messages = text_messages(3);
+        let costs = vec![10u32, 1000, 5];
+        // pinned(1)=10, remaining budget=15 -- m1 costs 1000 (dropped
+        // entirely, never partially included), m2 costs 5 (fits, kept).
+        let result = fit_to_budget(&messages, &costs, 25, 1);
+        assert_eq!(
+            result.iter().map(|m| m.text()).collect::<Vec<_>>(),
+            vec!["m0", "m2"]
+        );
+    }
+
+    #[test]
+    fn an_oversized_message_is_skipped_not_treated_as_a_stopping_point() {
+        // m2 is oversized and also the OLDER of the two non-pinned
+        // messages that would fit -- m1 and m3 are both small and must
+        // both survive despite m2 sitting chronologically between them,
+        // proving the trim doesn't give up on everything once it hits one
+        // message that doesn't fit.
+        let messages = text_messages(4);
+        let costs = vec![10u32, 5, 1000, 5]; // pinned=m0(10), then m1(5), m2(1000), m3(5)
+        let result = fit_to_budget(&messages, &costs, 25, 1);
+        assert_eq!(
+            result.iter().map(|m| m.text()).collect::<Vec<_>>(),
+            vec!["m0", "m1", "m3"],
+            "an oversized message in the middle must not cost an older, smaller message its place"
+        );
+    }
+
+    #[test]
+    fn zero_pinned_prefix_trims_purely_by_recency() {
+        let messages = text_messages(4);
+        let costs = vec![10u32; 4];
+        let result = fit_to_budget(&messages, &costs, 25, 0);
+        assert_eq!(
+            result.iter().map(|m| m.text()).collect::<Vec<_>>(),
+            vec!["m2", "m3"]
+        );
     }
 }
