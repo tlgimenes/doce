@@ -115,7 +115,11 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
         value: originalStartViewTransition,
       });
     } else {
-      delete (document as TestDocument).startViewTransition;
+      Object.defineProperty(document, "startViewTransition", {
+        configurable: true,
+        writable: true,
+        value: undefined,
+      });
     }
   });
 

@@ -487,7 +487,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     const richContent: RichMessageContent = {
       segments: [
         { type: "text", text: "review this" },
-        { type: "pastedText", text: "line 1\nline 2" },
+        { type: "pastedText", id: "paste-1", text: "line 1\nline 2", lineCount: 2 },
       ],
     };
     let resolveSend!: (value: string) => void;
