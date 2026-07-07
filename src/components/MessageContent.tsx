@@ -28,22 +28,17 @@ import TaskWidget from "@/views/chat/tool-widgets/TaskWidget";
 
 interface MessageContentProps {
   message: Message;
-  // Chat.tsx's `send_message` is streamed (real queued/generating latency
-  // worth showing); Workspace.tsx's `send_agent_message` runs synchronously
-  // to completion server-side with no per-message duration captured, so it
-  // opts out rather than showing a meaningless "0s" (matches its pre-004
-  // behavior exactly).
+  // Historical message rows may include duration metadata. Workspace keeps
+  // this off by default because `send_agent_message` has no useful
+  // per-message duration for the optimistic in-progress turn.
   showTimer?: boolean;
 }
 
 /**
- * 004-tool-call-widgets (FR-013): the one place both `Chat.tsx` and
- * `Workspace.tsx` render a message's content from — a `tool_result` row
- * dispatches to its matching widget by `toolName`, everything else renders
- * exactly as it always has. Having one function, not two independently
- * maintained copies, is what actually satisfies FR-013 (SC-006) — it isn't
- * possible for the two views to drift since there's only one rendering
- * path to edit.
+ * 004-tool-call-widgets (FR-013): the single transcript renderer. A
+ * `tool_result` row dispatches to its matching widget by `toolName`, while
+ * ordinary text/rich-text/context rows render through the shared message
+ * components below.
  */
 export default function MessageContent({ message: m, showTimer = false }: MessageContentProps) {
   if (m.role === "user") {

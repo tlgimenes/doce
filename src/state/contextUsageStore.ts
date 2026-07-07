@@ -7,9 +7,8 @@ interface ContextUsageState {
 }
 
 // 010-context-window-management/US1: live per-conversation context-usage
-// state, mirroring conversationStreamStore.ts's shape/conventions. Keyed by
-// conversationId since more than one conversation's usage may be known at
-// once (e.g. after switching away and back).
+// state keyed by conversationId since more than one conversation's usage may
+// be known at once (e.g. after switching away and back).
 export const useContextUsageStore = create<ContextUsageState>((set) => ({
   usage: {},
   setUsage: (u) =>

@@ -51,19 +51,14 @@ function getServerSnapshot() {
 }
 
 /**
- * 006-chat-empty-state: restructured from a self-contained "pick a folder,
- * then chat" component into a `conversationId`-driven message view, the
- * same shape as `Chat.tsx` — folder selection now happens once, up front,
- * in `EmptyState.tsx`/`FolderPicker.tsx`.
+ * 006-chat-empty-state: message view for a selected conversation. Folder
+ * selection happens once, up front, in `EmptyState.tsx`/`FolderPicker.tsx`.
  *
- * Streaming (UI refactor): unlike `Chat.tsx`'s token-level streaming,
- * `send_agent_message`'s single promise doesn't resolve until the whole
- * (up to 200-turn) tool-use loop finishes — so instead, every tool_call/
- * tool_result/final-answer row persisted *during* that loop fires an
- * `agent-message-persisted` event, and this view just re-fetches
- * `list_messages` each time and re-renders. Simplified streaming, not
- * token deltas: the transcript grows message-by-message as the loop
- * actually progresses, rather than appearing all at once at the end.
+ * Streaming (UI refactor): `send_agent_message`'s single promise does not
+ * resolve until the whole tool-use loop finishes. During that loop, every
+ * persisted tool_call/tool_result/final-answer row fires an
+ * `agent-message-persisted` event, and this view re-fetches `list_messages`
+ * each time so the transcript grows message-by-message.
  */
 export default function Workspace({
   conversationId,

@@ -393,7 +393,7 @@ const SkillMention = Node.create<SkillMentionOptions>({
         pluginKey: skillMentionPluginKey,
         // 010-context-window-management (UI refactor): `/compact` is a
         // reserved slash *command* (triggers compaction directly, see
-        // Chat.tsx/Workspace.tsx's `isCompactCommand`), not a skill mention
+        // Workspace's `isCompactCommand`), not a skill mention
         // — both share the same "/" trigger character, so without this the
         // suggestion popup would stay active once the buffer reads exactly
         // "/compact" and its `onKeyDown` would swallow Enter (submitting

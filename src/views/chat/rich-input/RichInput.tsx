@@ -94,8 +94,7 @@ export interface RichInputProps {
    * `SkillMention` extension is only added to this instance's `extensions`
    * array when `true` (see the `useEditor()` call below for why this is
    * safe despite the editor never being recreated). `false` makes "/" fully
-   * inert — no picker, no `commands.listSkills()` call — matching
-   * `Chat.tsx`'s plain-mode composer (FR-011).
+   * inert — no picker, no `commands.listSkills()` call.
    */
   skillsEnabled: boolean;
   /**
@@ -109,8 +108,8 @@ export interface RichInputProps {
   placeholder: string;
   /**
    * `data-testid` for the editable surface itself (the contenteditable
-   * ProseMirror root), so each of the three call sites can preserve its own
-   * existing testid (`empty-state-input`/`chat-input`/`agent-input`).
+   * ProseMirror root), so each composer can preserve its existing testid
+   * (`empty-state-input`/`agent-input`).
    */
   inputTestId?: string;
   /** `data-testid` for the submit button, same purpose as `inputTestId`. */
@@ -119,7 +118,7 @@ export interface RichInputProps {
    * 010-context-window-management (UI refactor): an optional node rendered
    * immediately after the attach button — the composer-integrated context
    * usage gauge, when the caller has a real conversation to report usage
-   * for (`Chat.tsx`/`Workspace.tsx`; omitted by `EmptyState.tsx`, which has
+   * for (`Workspace.tsx`; omitted by `EmptyState.tsx`, which has
    * no conversation yet). Kept as an injected node rather than a
    * `conversationId` prop so this file stays decoupled from context-usage
    * concerns — callers own which gauge/component renders here, if any.
@@ -128,8 +127,8 @@ export interface RichInputProps {
 }
 
 /**
- * 009-rich-chat-input: the shared rich-text input that replaces the three
- * separate raw <textarea>s in EmptyState.tsx/Chat.tsx/Workspace.tsx. A
+ * 009-rich-chat-input: the shared rich-text input used by the composers in
+ * EmptyState.tsx and Workspace.tsx. A
  * plain, multi-line-aware editor with Enter-to-send/Shift+Enter-for-newline
  * (User Story 1), plus paste-collapse for large pastes (User Story 2, T023/
  * T024): a paste crossing serialize.ts's `shouldCollapsePastedText`
@@ -374,14 +373,11 @@ export default function RichInput({
       // mount. That's the deliberate choice (over always registering the
       // extension and making its "/" trigger a runtime no-op when disabled):
       // `skillsEnabled` is effectively static per mounted `RichInput`
-      // instance in this app (`EmptyState`/`Workspace` always pass `true`,
-      // `Chat` always passes `false` — none of the three call sites flips
-      // it after mounting), so there is no real prop-change case to handle,
-      // and omitting the extension entirely when disabled is strictly
-      // stronger than a runtime no-op: `commands.listSkills()` (FR-011's
-      // "no picker, no request") is *structurally* unreachable rather than
-      // reachable-but-gated, and `/` in `Chat.tsx`'s composer never even
-      // registers a suggestion plugin to intercept it.
+      // instance in this app (`EmptyState` and `Workspace` pass `true`), so
+      // there is no real prop-change case to handle. Omitting the extension
+      // entirely when disabled is stronger than a runtime no-op:
+      // `commands.listSkills()` is structurally unreachable when skills are
+      // disabled.
       ...(skillsEnabled ? [SkillMention] : []),
     ],
     editorProps: {

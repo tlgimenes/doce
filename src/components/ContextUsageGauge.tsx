@@ -22,7 +22,7 @@ const stateStrokeClasses: Record<ContextState, string> = {
  * lives right next to the composer's paperclip button, replacing the
  * earlier slim bar + "Compact now" button. Display-only — hovering shows
  * the exact percentage in a tooltip; compaction itself is triggered by
- * typing `/compact` in the composer (see Chat.tsx/Workspace.tsx), mirroring
+ * typing `/compact` in the workspace composer, mirroring
  * Claude Code's slash-command convention rather than overloading this
  * small glanceable indicator as a click target too.
  */

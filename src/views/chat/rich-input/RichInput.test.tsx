@@ -5,11 +5,10 @@ import RichInput from "./RichInput";
 
 /**
  * 009-rich-chat-input, User Story 1 (T004): the shared rich-text input that
- * replaces the three raw <textarea>s in EmptyState.tsx/Chat.tsx/
- * Workspace.tsx. Tier-2 jsdom component tests per research.md's Testing
- * strategy — structural/rendering correctness only, driven via
- * userEvent.type()/userEvent.keyboard() on an empty/focused editor. No
- * pixel-geometry assertions.
+ * is used by EmptyState.tsx and Workspace.tsx. Tier-2 jsdom component tests
+ * per research.md's Testing strategy — structural/rendering correctness
+ * only, driven via userEvent.type()/userEvent.keyboard() on an empty/focused
+ * editor. No pixel-geometry assertions.
  */
 describe("RichInput (009-rich-chat-input, US1)", () => {
   it("renders with the given placeholder", () => {
