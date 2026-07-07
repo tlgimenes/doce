@@ -4,6 +4,7 @@ import { CaretDownIcon } from "@phosphor-icons/react";
 import { commands, type Conversation, type RichMessageContent } from "@/lib/ipc";
 import FolderPicker from "@/views/shared/FolderPicker";
 import RichInput from "@/views/chat/rich-input/RichInput";
+import type { PendingInitialTurn } from "@/views/workspace/pendingInitialTurn";
 
 export interface FolderTarget {
   kind: "home" | "recent" | "browsed";
@@ -13,10 +14,13 @@ export interface FolderTarget {
 
 interface EmptyStateProps {
   // Reports the full Conversation (not just its id) so App.tsx can route by
-  // its workspaceId without a second lookup — every conversation created
-  // here always has one set (FR-004), matching what onSelect already
-  // reports for conversations picked from the sidebar.
-  onConversationCreated: (conversation: Conversation) => void;
+  // its workspaceId without a second lookup. The pending initial turn is
+  // handed to Workspace so the view can switch before the full agent loop
+  // resolves.
+  onConversationCreated: (
+    conversation: Conversation,
+    pendingInitialTurn: PendingInitialTurn,
+  ) => void;
 }
 
 const toDisplayFolderLabel = (path: string, homePath: string | null) => {
@@ -35,9 +39,9 @@ const toDisplayFolderLabel = (path: string, homePath: string | null) => {
  * conversation created here is always workspace-scoped and tool-enabled
  * (FR-004) — "Home" is itself a folder selection, not an opt-out
  * (confirmed via interview, see spec.md's Assumptions). Submitting runs
- * the existing-command sequence from contracts/conversation-creation.md:
- * open_workspace -> create_conversation -> send_agent_message, as one
- * action (FR-003).
+ * the initial command sequence from contracts/conversation-creation.md:
+ * open_workspace -> create_conversation, then hands off the first turn
+ * for Workspace to send.
  */
 export default function EmptyState({ onConversationCreated }: EmptyStateProps) {
   const [target, setTarget] = useState<FolderTarget | null>(null);
@@ -64,12 +68,11 @@ export default function EmptyState({ onConversationCreated }: EmptyStateProps) {
     try {
       const workspace = await commands.openWorkspace(target.path);
       const conversation = await commands.createConversation(workspace.id);
-      await commands.sendAgentMessage(
-        conversation.id,
+      onConversationCreated(conversation, {
+        conversationId: conversation.id,
         content,
-        richContent ? JSON.stringify(richContent) : undefined,
-      );
-      onConversationCreated(conversation);
+        richContent,
+      });
     } catch (e) {
       setError(String(e));
     } finally {
@@ -82,7 +85,10 @@ export default function EmptyState({ onConversationCreated }: EmptyStateProps) {
       className="flex h-dvh flex-col items-center justify-center gap-4 bg-background text-foreground"
       data-testid="empty-state"
     >
-      <div className="relative w-full max-w-xl space-y-3">
+      <div
+        className="relative w-full max-w-xl space-y-3 [view-transition-name:chat-composer]"
+        data-testid="empty-state-composer"
+      >
         {/* 008-shared-design-system exemption: a compact inline text+caret
             trigger, not a standard button shape — the shared Button
             component's variants don't have a natural fit for this, and the

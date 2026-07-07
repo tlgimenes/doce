@@ -31,7 +31,7 @@ describe("EmptyState (006-chat-empty-state)", () => {
     });
   });
 
-  it("US1: submitting with the Home target untouched creates a workspace-scoped conversation with the typed text as its first turn (FR-003/SC-001)", async () => {
+  it("US1: submitting with the Home target untouched creates a workspace-scoped conversation and hands off the first turn without waiting for the agent", async () => {
     vi.mocked(commands.openWorkspace).mockResolvedValue({
       id: "ws-home",
       path: "/Users/tester",
@@ -47,7 +47,7 @@ describe("EmptyState (006-chat-empty-state)", () => {
       updatedAt: 1,
       status: "done",
     });
-    vi.mocked(commands.sendAgentMessage).mockResolvedValue("Sure, on it.");
+    vi.mocked(commands.sendAgentMessage).mockReturnValue(new Promise(() => {}));
     const onConversationCreated = vi.fn();
 
     render(<EmptyState onConversationCreated={onConversationCreated} />);
@@ -61,27 +61,26 @@ describe("EmptyState (006-chat-empty-state)", () => {
     await waitFor(() =>
       expect(onConversationCreated).toHaveBeenCalledWith(
         expect.objectContaining({ id: "conv-1", workspaceId: "ws-home" }),
+        expect.objectContaining({
+          conversationId: "conv-1",
+          content: "fix the login bug",
+          richContent: undefined,
+        }),
       ),
     );
 
     expect(commands.openWorkspace).toHaveBeenCalledWith("/Users/tester");
     expect(commands.createConversation).toHaveBeenCalledWith("ws-home");
-    expect(commands.sendAgentMessage).toHaveBeenCalledWith(
-      "conv-1",
-      "fix the login bug",
-      undefined,
-    );
+    expect(commands.sendAgentMessage).not.toHaveBeenCalled();
 
-    // Order matters: workspace, then conversation, then the first message —
-    // never out of order (contracts/conversation-creation.md's Sequence).
     const openOrder = vi.mocked(commands.openWorkspace).mock.invocationCallOrder[0];
     const createOrder = vi.mocked(commands.createConversation).mock.invocationCallOrder[0];
-    const sendOrder = vi.mocked(commands.sendAgentMessage).mock.invocationCallOrder[0];
+    const handoffOrder = onConversationCreated.mock.invocationCallOrder[0];
     expect(openOrder).toBeLessThan(createOrder);
-    expect(createOrder).toBeLessThan(sendOrder);
+    expect(createOrder).toBeLessThan(handoffOrder);
   });
 
-  it("009-rich-chat-input regression: a message containing a chip forwards richContent to sendAgentMessage, not just the flat text", async () => {
+  it("009-rich-chat-input regression: a message containing a chip forwards richContent through the pending initial turn", async () => {
     vi.mocked(commands.openWorkspace).mockResolvedValue({
       id: "ws-home",
       path: "/Users/tester",
@@ -97,9 +96,9 @@ describe("EmptyState (006-chat-empty-state)", () => {
       updatedAt: 1,
       status: "done",
     });
-    vi.mocked(commands.sendAgentMessage).mockResolvedValue("ok");
+    const onConversationCreated = vi.fn();
 
-    render(<EmptyState onConversationCreated={vi.fn()} />);
+    render(<EmptyState onConversationCreated={onConversationCreated} />);
     await waitFor(() =>
       expect(screen.getByTestId("folder-target-selector")).toHaveTextContent("Home"),
     );
@@ -111,15 +110,23 @@ describe("EmptyState (006-chat-empty-state)", () => {
 
     await userEvent.click(screen.getByTestId("empty-state-submit"));
 
-    await waitFor(() => expect(commands.sendAgentMessage).toHaveBeenCalled());
-    const [, , richContentArg] = vi.mocked(commands.sendAgentMessage).mock.calls[0];
-    expect(richContentArg).toBeDefined();
-    const parsed = JSON.parse(richContentArg as string);
+    await waitFor(() => expect(onConversationCreated).toHaveBeenCalled());
+    const [, pendingTurn] = onConversationCreated.mock.calls[0];
+    expect(pendingTurn.richContent).toBeDefined();
     expect(
-      parsed.segments.some(
+      pendingTurn.richContent.segments.some(
         (s: { type: string; text?: string }) => s.type === "pastedText" && s.text === pastedBlock,
       ),
     ).toBe(true);
+    expect(commands.sendAgentMessage).not.toHaveBeenCalled();
+  });
+
+  it("marks the empty-state composer as the chat composer view-transition target", async () => {
+    render(<EmptyState onConversationCreated={vi.fn()} />);
+
+    expect(await screen.findByTestId("empty-state-composer")).toHaveClass(
+      "[view-transition-name:chat-composer]",
+    );
   });
 
   it("submitting empty or whitespace-only text does nothing", async () => {
