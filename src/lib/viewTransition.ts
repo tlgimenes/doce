@@ -17,7 +17,8 @@ export function runViewTransition(update: () => void) {
       didUpdate = true;
       flushSync(update);
     });
-  } catch {
+  } catch (error) {
     if (!didUpdate) update();
+    else throw error;
   }
 }

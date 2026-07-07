@@ -65,4 +65,29 @@ describe("runViewTransition", () => {
 
     expect(update).toHaveBeenCalledTimes(1);
   });
+
+  it("propagates update errors thrown during a supported transition", () => {
+    const updateError = new Error("update failed");
+    const update = vi.fn(() => {
+      throw updateError;
+    });
+    const startViewTransition = vi.fn((callback: () => void) => {
+      callback();
+      return {};
+    });
+    Object.defineProperty(document, "startViewTransition", {
+      configurable: true,
+      value: startViewTransition,
+    });
+
+    let thrownError: unknown;
+    try {
+      runViewTransition(update);
+    } catch (error) {
+      thrownError = error;
+    }
+
+    expect(thrownError).toBe(updateError);
+    expect(update).toHaveBeenCalledTimes(1);
+  });
 });
