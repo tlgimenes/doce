@@ -520,6 +520,54 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     expect(screen.queryByText("stale first workspace")).not.toBeInTheDocument();
   });
 
+  it("resets pending send state when switching conversations before the old send settles", async () => {
+    vi.mocked(commands.listMessages)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          id: "m2",
+          conversationId: "conv-2",
+          role: "user",
+          contentType: "text",
+          content: "second workspace",
+          toolName: null,
+          createdAt: 2,
+          durationMs: null,
+          tokenCount: null,
+        },
+      ]);
+    let resolveSend!: (value: string) => void;
+    vi.mocked(commands.sendAgentMessage).mockReturnValue(
+      new Promise((resolve) => {
+        resolveSend = resolve;
+      }),
+    );
+
+    const { rerender } = render(<Workspace conversationId="conv-1" />);
+    await screen.findByTestId("agent-input");
+
+    await userEvent.type(screen.getByTestId("agent-input"), "first workspace task");
+    await userEvent.click(screen.getByTestId("agent-send"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("agent-thinking")).toBeInTheDocument();
+      expect(screen.getByTestId("agent-input")).toHaveAttribute("contenteditable", "false");
+    });
+
+    rerender(<Workspace conversationId="conv-2" />);
+    await screen.findByText("second workspace");
+
+    expect(screen.getByTestId("agent-input")).toHaveAttribute("contenteditable", "true");
+    expect(screen.queryByText("first workspace task")).not.toBeInTheDocument();
+
+    resolveSend("old conversation done");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(screen.getByTestId("agent-input")).toHaveAttribute("contenteditable", "true");
+    expect(screen.getByText("second workspace")).toBeInTheDocument();
+    expect(screen.queryByText("first workspace task")).not.toBeInTheDocument();
+  });
+
   it("shows an error instead of hanging if sending fails", async () => {
     vi.mocked(commands.sendAgentMessage).mockRejectedValue(new Error("inference crashed"));
 

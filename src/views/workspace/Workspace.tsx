@@ -52,7 +52,9 @@ export default function Workspace({
     let cancelled = false;
 
     setMessages([]);
+    setThinking(false);
     setError(null);
+    dispatchedInitialTurnRef.current = null;
     commands.listMessages(conversationId).then((loadedMessages) => {
       if (cancelled || currentConversationIdRef.current !== conversationId) return;
 
