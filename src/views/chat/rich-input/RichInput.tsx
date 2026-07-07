@@ -79,9 +79,9 @@ function getFilesFromClipboard(clipboardData: DataTransfer | null): File[] {
 
 export interface RichInputProps {
   /**
-   * Mirrors the two-parameter shape the sendAgentMessage/sendMessage IPC
-   * commands take (contracts/rich-chat-input.md), so each composing surface
-   * can forward these straight into its own existing command call.
+   * Mirrors the two-parameter shape the workspace send path accepts
+   * (contracts/rich-chat-input.md), so each composing surface can forward
+   * these straight into its own submit handler.
    * `richContent` is `undefined` whenever the doc is plain text (the common
    * case has zero storage impact — data-model.md), and populated (via
    * serialize.ts's `richMessageContentFromDoc`) once the doc contains at

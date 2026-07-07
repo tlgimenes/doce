@@ -127,7 +127,7 @@ describe("RichInput (009-rich-chat-input, US3 — skillsEnabled gating)", () => 
     // A second, ordinary Enter (no picker open now) submits — and the
     // skill segment produced by richMessageContentFromDoc (serialize.ts)
     // actually reaches onSubmit's richContent, exactly as it would for the
-    // real sendAgentMessage/sendMessage IPC call this wires into.
+    // real workspace send path this wires into.
     await user.keyboard("{Enter}");
 
     expect(onSubmit).toHaveBeenCalledTimes(1);

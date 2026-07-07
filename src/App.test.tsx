@@ -31,18 +31,12 @@ vi.mock("@/lib/ipc", () => ({
     openWorkspace: vi.fn(),
     sendAgentMessage: vi.fn(),
     listMessages: vi.fn(),
-    sendMessage: vi.fn(),
-    cancelGeneration: vi.fn(),
     listMcpServers: vi.fn(),
     listSkills: vi.fn(),
     getContextUsage: vi.fn(),
     compactConversation: vi.fn(),
   },
   events: {
-    onAssistantToken: vi.fn(),
-    onAssistantMessageComplete: vi.fn(),
-    onAssistantMessageError: vi.fn(),
-    onGenerationQueueUpdate: vi.fn(),
     onContextUsageUpdate: vi.fn(),
     onAgentMessagePersisted: vi.fn(),
   },
@@ -101,10 +95,6 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     // getContextUsage call is expected to fail and swallow the error,
     // leaving the indicator simply unrendered.
     vi.mocked(commands.getContextUsage).mockRejectedValue(new Error("No model loaded"));
-    vi.mocked(events.onAssistantToken).mockResolvedValue(() => {});
-    vi.mocked(events.onAssistantMessageComplete).mockResolvedValue(() => {});
-    vi.mocked(events.onAssistantMessageError).mockResolvedValue(() => {});
-    vi.mocked(events.onGenerationQueueUpdate).mockResolvedValue(() => {});
     vi.mocked(events.onContextUsageUpdate).mockResolvedValue(() => {});
     vi.mocked(events.onAgentMessagePersisted).mockResolvedValue(() => {});
   });
