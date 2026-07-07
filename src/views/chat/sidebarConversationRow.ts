@@ -29,10 +29,7 @@ export function formatConversationRelativeTime(updatedAt: number, now = Date.now
   return `${Math.floor(elapsed / YEAR_MS)}y`;
 }
 
-export function formatWorkspacePathLabel(
-  path: string | null | undefined,
-  homePath: string | null,
-) {
+export function formatWorkspacePathLabel(path: string | null | undefined, homePath: string | null) {
   if (!path) return "Home";
 
   const normalizedPath = normalizePath(path);
@@ -52,10 +49,11 @@ export function getConversationWorkspaceLabel(
   workspacesById: WorkspaceLookup,
   homePath: string | null,
 ) {
-  if (!workspaceId || !homePath) return "Home";
+  if (!workspaceId) return "Home";
 
   const workspace = workspacesById.get(workspaceId);
   if (!workspace) return "Home";
+  if (homePath === null) return "Home";
 
   return formatWorkspacePathLabel(workspace.path, homePath);
 }

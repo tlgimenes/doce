@@ -16,6 +16,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
     ),
     (5, include_str!("migrations/0005_message_token_count.sql")),
     (6, include_str!("migrations/0006_tool_call_id.sql")),
+    (
+        7,
+        include_str!("migrations/0007_conversation_title_trigram_fts.sql"),
+    ),
 ];
 
 pub fn apply_pending(conn: &mut Connection) -> rusqlite::Result<()> {
@@ -224,6 +228,39 @@ mod tests {
         assert_eq!(
             matched_rowid, rowid_before,
             "pre-migration content must still be found via messages_fts, at its original rowid"
+        );
+    }
+
+    #[test]
+    fn existing_conversation_titles_are_backfilled_into_trigram_index() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_up_to(&mut conn, 6);
+        insert_conversation(&conn, "c1");
+        conn.execute(
+            "UPDATE conversations SET title = 'database migration plan' WHERE id = 'c1'",
+            [],
+        )
+        .unwrap();
+
+        apply_pending(&mut conn).unwrap();
+
+        let rowid: i64 = conn
+            .query_row(
+                "SELECT rowid FROM conversations WHERE id = 'c1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let matched_rowid: i64 = conn
+            .query_row(
+                "SELECT rowid FROM conversations_title_trigram WHERE conversations_title_trigram MATCH 'migrat'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            matched_rowid, rowid,
+            "pre-0007 titles must be backfilled into the trigram FTS index"
         );
     }
 }

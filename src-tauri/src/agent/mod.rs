@@ -16,6 +16,7 @@
 //! answers in plain text, same as before.
 
 pub mod dispatch;
+pub mod plan;
 pub mod rich_content;
 pub mod subagent;
 pub mod tools;

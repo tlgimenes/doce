@@ -1,10 +1,10 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { commands, type SearchResult } from "@/lib/ipc";
+import { commands, type Conversation, type SearchResult } from "@/lib/ipc";
 
 interface SearchPanelProps {
   onSelect: (conversationId: string) => void;
-  onClose: () => void;
+  recentConversations?: Conversation[];
 }
 
 /**
@@ -29,9 +29,22 @@ function highlightExcerpt(excerpt: string) {
 }
 
 /** User Story 6: FTS5-backed search across titles and message content. */
-export default function SearchPanel({ onSelect, onClose }: SearchPanelProps) {
+export default function SearchPanel({ onSelect, recentConversations = [] }: SearchPanelProps) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
+  const recentResults = useMemo(
+    () =>
+      [...recentConversations]
+        .sort((a, b) => b.updatedAt - a.updatedAt)
+        .slice(0, 10)
+        .map((conversation) => ({
+          conversationId: conversation.id,
+          title: conversation.title,
+          excerpt: "Recent conversation",
+          rank: 0,
+        })),
+    [recentConversations],
+  );
 
   const runSearch = async (value: string) => {
     setQuery(value);
@@ -43,9 +56,14 @@ export default function SearchPanel({ onSelect, onClose }: SearchPanelProps) {
     setResults(found);
   };
 
+  const visibleResults = query.trim() ? results : recentResults;
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-background p-4" data-testid="search-panel">
-      <div className="mb-3 flex gap-2">
+    <div
+      className="flex h-[28rem] max-h-[70vh] min-h-0 w-full flex-col bg-background p-4"
+      data-testid="search-panel"
+    >
+      <div className="mb-3 flex">
         <input
           autoFocus
           className="flex-1 rounded-md border border-border bg-card px-3 py-2"
@@ -54,12 +72,9 @@ export default function SearchPanel({ onSelect, onClose }: SearchPanelProps) {
           onChange={(e) => runSearch(e.target.value)}
           data-testid="search-input"
         />
-        <Button variant="secondary" size="sm" className="py-2" onClick={onClose}>
-          Close
-        </Button>
       </div>
       <div className="flex-1 space-y-2 overflow-y-auto">
-        {results.map((r) => (
+        {visibleResults.map((r) => (
           <Button
             key={r.conversationId}
             variant="secondary"

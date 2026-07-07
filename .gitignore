@@ -41,3 +41,6 @@ tests/e2e/screenshots/
 tests/e2e/logs/
 /logs/
 src/lib/bindings.ts
+
+# Local brainstorming companion output
+.superpowers/

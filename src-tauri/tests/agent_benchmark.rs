@@ -28,6 +28,11 @@
 //! progress as a task runs long across many small, independent units of
 //! work -- the exact failure mode motivating the redesign this benchmark
 //! exists to validate.
+//!
+//! `_planned` variants (`tier1_planned_...`, `tier4_planned_...`) run the
+//! same task through `run_planned_benchmark_task`'s two-stage loop
+//! (`PlanningBackend`) instead of a single flat `run_loop` call, and are
+//! directly comparable against their flat counterparts.
 
 use doce_lib::agent::{dispatch, run_loop, AgentBackend, AgentContext, AgentError, SYSTEM_PROMPT};
 use doce_lib::context;
@@ -75,6 +80,11 @@ struct BenchBackend<'a> {
     cwd: &'a Path,
     threshold: u32,
     turns: u32,
+    /// Every tool call + result this step actually made, in order -- the
+    /// raw evidence `agent::plan::check_in` judges a step's completion
+    /// against, instead of trusting the step's own final "Done" text (the
+    /// exact thing tier 4 showed is not reliable on its own).
+    trace: Vec<String>,
 }
 
 impl AgentBackend for BenchBackend<'_> {
@@ -107,7 +117,23 @@ impl AgentBackend for BenchBackend<'_> {
     }
 
     async fn execute_tool(&mut self, _tool_call_id: String, call: doce_lib::agent::ToolCall) -> String {
-        dispatch::execute(&call, Some(self.cwd)).model_text
+        let result = dispatch::execute(&call, Some(self.cwd)).model_text;
+        // Printed for interactive runs, and recorded in `self.trace` as
+        // the evidence a plan check-in judges completion against -- the
+        // thing worth knowing when a run scores 0 despite claiming full
+        // success is which step the actual work diverged at, not just
+        // that it did.
+        let args_preview: String = call.arguments.to_string().chars().take(200).collect();
+        let result_preview: String = result.chars().take(200).collect();
+        println!(
+            "  turn {} tool={} args={args_preview} -> {result_preview:?}",
+            self.turns, call.name
+        );
+        self.trace.push(format!(
+            "tool={} args={args_preview} -> {result_preview}",
+            call.name
+        ));
+        result
     }
 }
 
@@ -139,6 +165,7 @@ async fn run_benchmark_task(
         cwd,
         threshold,
         turns: 0,
+        trace: Vec::new(),
     };
 
     let result = run_loop(&context, initial_messages, &mut backend).await;
@@ -146,6 +173,227 @@ async fn run_benchmark_task(
     BenchmarkRun {
         result,
         turns_taken: backend.turns,
+        elapsed: start.elapsed(),
+    }
+}
+
+/// `AgentBackend` for the outer "planning" loop
+/// (`agent::plan::PLANNING_SYSTEM_PROMPT`): maintains `plan` via ordinary
+/// tool calls (`CreatePlan`/`AddStep`/`MarkStepDone`) instead of a bespoke
+/// one-shot structured-JSON call, delegates a step's actual work to a
+/// nested `run_loop` via `RunStep` -- the same recursive-tool-call pattern
+/// `commands::agent`'s real `Task` tool already uses to delegate to a
+/// subagent -- and can independently verify a step's claimed result with
+/// read-only tools (`Read`/`Grep`/`Glob`) rather than only ever trusting
+/// secondhand evidence.
+struct PlanningBackend<'a> {
+    engine: &'a InferenceEngine,
+    cwd: &'a Path,
+    threshold: u32,
+    turns: u32,
+    /// Turns spent inside `RunStep`-delegated executions, tracked
+    /// separately from `turns` (the outer loop's own) so a run's total
+    /// cost is reportable even though they're two different `run_loop`
+    /// invocations with two different turn budgets.
+    step_turns: u32,
+    max_step_turns: u32,
+    plan: doce_lib::agent::plan::Plan,
+}
+
+impl AgentBackend for PlanningBackend<'_> {
+    fn measure(&mut self, messages: &[ChatMessage]) -> u32 {
+        self.engine
+            .render_chat_prompt(messages)
+            .and_then(|r| self.engine.count_tokens(&r).map(|n| n as u32))
+            .unwrap_or(u32::MAX)
+    }
+
+    fn threshold(&self) -> u32 {
+        self.threshold
+    }
+
+    fn compact(&mut self, messages: &[ChatMessage]) -> Vec<ChatMessage> {
+        context::fit_turn_to_budget(self.engine, messages).unwrap_or_else(|_| messages.to_vec())
+    }
+
+    async fn generate(&mut self, messages: Vec<ChatMessage>) -> String {
+        self.turns += 1;
+        let rendered = self
+            .engine
+            .render_chat_prompt(&messages)
+            .expect("chat template should render");
+        self.engine
+            .generate(&rendered, 256, true, |_| {}, || false)
+            .unwrap_or_else(|e| format!("Error: generation failed: {e}"))
+    }
+
+    async fn execute_tool(&mut self, _tool_call_id: String, call: doce_lib::agent::ToolCall) -> String {
+        let result = match call.name.as_str() {
+            "CreatePlan" => {
+                let goal = call
+                    .arguments
+                    .get("goal")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let steps: Vec<doce_lib::agent::plan::PlanStep> = call
+                    .arguments
+                    .get("steps")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|s| s.as_str())
+                            .map(|d| doce_lib::agent::plan::PlanStep {
+                                description: d.to_string(),
+                                done: false,
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let step_count = steps.len();
+                self.plan = doce_lib::agent::plan::Plan { goal, steps };
+                format!("Plan created with {step_count} steps.")
+            }
+            "AddStep" => {
+                let description = call
+                    .arguments
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                self.plan.steps.push(doce_lib::agent::plan::PlanStep {
+                    description,
+                    done: false,
+                });
+                format!("Step added. Plan now has {} steps.", self.plan.steps.len())
+            }
+            "MarkStepDone" => {
+                let idx = call
+                    .arguments
+                    .get("step_index")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as usize);
+                match idx.and_then(|i| self.plan.steps.get_mut(i)) {
+                    Some(step) => {
+                        step.done = true;
+                        format!("Step {} marked done.", idx.unwrap())
+                    }
+                    None => format!("Error: invalid step_index {idx:?}"),
+                }
+            }
+            "RunStep" => {
+                let idx = call
+                    .arguments
+                    .get("step_index")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as usize);
+                match idx.and_then(|i| self.plan.steps.get(i).cloned()) {
+                    None => format!("Error: invalid step_index {idx:?}"),
+                    Some(step) => {
+                        let step_prompt = format!(
+                            "Overall goal: {}\n\nYour current step: {}",
+                            self.plan.goal, step.description
+                        );
+                        let step_context = AgentContext {
+                            is_subagent: false,
+                            max_turns: self.max_step_turns,
+                            cwd: Some(self.cwd.to_path_buf()),
+                        };
+                        let mut exec_backend = BenchBackend {
+                            engine: self.engine,
+                            cwd: self.cwd,
+                            threshold: self.threshold,
+                            turns: 0,
+                            trace: Vec::new(),
+                        };
+                        let initial_messages = vec![
+                            ChatMessage::system(SYSTEM_PROMPT),
+                            ChatMessage::user(step_prompt),
+                        ];
+                        let step_result = run_loop(&step_context, initial_messages, &mut exec_backend).await;
+                        self.step_turns += exec_backend.turns;
+                        match step_result {
+                            Ok(text) => format!(
+                                "Tool activity during this step (ground truth):\n{}\n\nStep's own closing summary (may be unreliable -- verify independently if unsure): {text}",
+                                exec_backend.trace.join("\n")
+                            ),
+                            Err(e) => format!(
+                                "Tool activity during this step (ground truth):\n{}\n\nStep did not finish within its turn budget ({e})",
+                                exec_backend.trace.join("\n")
+                            ),
+                        }
+                    }
+                }
+            }
+            "Read" | "Grep" | "Glob" => dispatch::execute(&call, Some(self.cwd)).model_text,
+            "AskUserQuestion" => {
+                "Error: no interactive user is available in this benchmark run -- proceed using your own best judgment".to_string()
+            }
+            other => format!("Error: unknown tool '{other}'"),
+        };
+        let args_preview: String = call.arguments.to_string().chars().take(200).collect();
+        let result_preview: String = result.chars().take(300).collect();
+        println!(
+            "  [planning] turn {} tool={} args={args_preview} -> {result_preview:?}",
+            self.turns, call.name
+        );
+        result
+    }
+}
+
+fn report_plan(name: &str, plan: &doce_lib::agent::plan::Plan) {
+    println!("[{name}] final plan (goal: {:?}):", plan.goal);
+    for (i, step) in plan.steps.iter().enumerate() {
+        println!("  {i}. [{}] {}", if step.done { "x" } else { " " }, step.description);
+    }
+}
+
+/// Runs `task` through the two-stage plan loop: an outer `run_loop`
+/// (`PlanningBackend`) maintains the plan via real tool calls and
+/// delegates each step's actual work to a nested `run_loop` via `RunStep`
+/// -- the same recursive-tool-call pattern `Task` already uses for
+/// subagents, not bespoke orchestration. `turns_taken` on the returned
+/// `BenchmarkRun` is the combined total (outer planning turns + every
+/// delegated step's own turns).
+async fn run_planned_benchmark_task(
+    engine: &InferenceEngine,
+    task: &str,
+    cwd: &Path,
+    max_step_turns: u32,
+    max_plan_turns: u32,
+) -> BenchmarkRun {
+    use doce_lib::agent::plan::PLANNING_SYSTEM_PROMPT;
+
+    let context = AgentContext {
+        is_subagent: false,
+        max_turns: max_plan_turns,
+        cwd: Some(cwd.to_path_buf()),
+    };
+    let initial_messages = vec![
+        ChatMessage::system(PLANNING_SYSTEM_PROMPT),
+        ChatMessage::user(task),
+    ];
+    let start = Instant::now();
+
+    let threshold = engine
+        .context_window()
+        .saturating_sub(doce_lib::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS);
+    let mut backend = PlanningBackend {
+        engine,
+        cwd,
+        threshold,
+        turns: 0,
+        step_turns: 0,
+        max_step_turns,
+        plan: doce_lib::agent::plan::Plan::default(),
+    };
+
+    let result = run_loop(&context, initial_messages, &mut backend).await;
+    report_plan("planned", &backend.plan);
+
+    BenchmarkRun {
+        result,
+        turns_taken: backend.turns + backend.step_turns,
         elapsed: start.elapsed(),
     }
 }
@@ -170,6 +418,35 @@ async fn tier1_single_tool_call_reads_a_known_file() {
     report("tier1", &run);
 
     let answer = run.result.expect("tier 1 must always succeed");
+    assert!(
+        answer.contains("hello=world"),
+        "expected the first line's content in the answer, got: {answer:?}"
+    );
+}
+
+/// Fast smoke test for the two-stage plan loop itself (CreatePlan/RunStep
+/// tool dispatch, the nested `run_loop` recursion, prompt construction) on
+/// the smallest possible task, before trusting it on tier 4's much longer,
+/// slower run.
+#[tokio::test]
+#[ignore]
+async fn tier1_planned_single_tool_call_reads_a_known_file() {
+    let engine = InferenceEngine::load(&installed_model_path(), 4).expect("model should load");
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("config.txt"), "hello=world\nsecond=line\n").unwrap();
+
+    let run = run_planned_benchmark_task(
+        &engine,
+        "This directory has a file named config.txt. What's on its first line? \
+         Answer with just the line's content, nothing else.",
+        dir.path(),
+        10,
+        15,
+    )
+    .await;
+    report("tier1_planned", &run);
+
+    let answer = run.result.expect("planned tier 1 must always succeed");
     assert!(
         answer.contains("hello=world"),
         "expected the first line's content in the answer, got: {answer:?}"
@@ -363,6 +640,40 @@ async fn tier4_long_running_fixes_many_scattered_bugs() {
     println!("[tier4] score: {fixed}/{total} bugs correctly fixed");
     // Deliberately not hard-asserted -- this is the graded stress test
     // (see module doc). The printed score is the actual benchmark output.
+}
+
+/// Same task as `tier4_long_running_fixes_many_scattered_bugs`, run through
+/// the two-stage plan loop instead of one flat `run_loop` call --
+/// directly comparable against that test's 0/20 result (with the model
+/// confidently claiming full success despite never once removing the
+/// `// BUG:` marker) to see whether independent per-step verification
+/// (real plan tools + the ability to re-check a file itself) actually
+/// catches what a single flat run does not.
+#[tokio::test]
+#[ignore]
+async fn tier4_planned_long_running_fixes_many_scattered_bugs() {
+    let engine = InferenceEngine::load(&installed_model_path(), 4).expect("model should load");
+    let dir = tempdir().unwrap();
+    tier4_fixture(dir.path());
+
+    let task = format!(
+        "This directory contains {TIER4_BUG_COUNT} files named bug_00.txt through \
+         bug_{:02}.txt. Each one has a single bug marked by a `// BUG:` comment \
+         directly above the buggy line, describing what the line should actually \
+         do. Go through every file, fix the bug so the line matches what the \
+         comment says, then remove the `// BUG:` comment line entirely. Do this \
+         for all {TIER4_BUG_COUNT} files before giving your final answer.",
+        TIER4_BUG_COUNT - 1
+    );
+
+    // max_plan_turns generous: CreatePlan + up to 20 RunStep/MarkStepDone
+    // pairs + occasional independent Read verification + final answer.
+    let run = run_planned_benchmark_task(&engine, &task, dir.path(), 10, 60).await;
+    report("tier4_planned", &run);
+
+    let (fixed, total) = tier4_score(dir.path());
+    println!("[tier4_planned] score: {fixed}/{total} bugs correctly fixed");
+    // Deliberately not hard-asserted, same reasoning as tier 4 itself.
 }
 
 // --- Tier 5: surgical edit inside one huge file ---

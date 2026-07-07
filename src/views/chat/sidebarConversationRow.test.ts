@@ -43,6 +43,9 @@ describe("sidebarConversationRow", () => {
     expect(getConversationWorkspaceLabel(null, workspaces, "/Users/tester")).toBe("Home");
     expect(getConversationWorkspaceLabel("missing", workspaces, "/Users/tester")).toBe("Home");
     expect(getConversationWorkspaceLabel("ws-code", workspaces, null)).toBe("Home");
+    expect(getConversationWorkspaceLabel("ws-code", workspaces, "")).toBe(
+      "/Users/tester/code/doce",
+    );
     expect(getConversationWorkspaceLabel("ws-code", workspaces, "/Users/tester")).toBe(
       "~/code/doce",
     );

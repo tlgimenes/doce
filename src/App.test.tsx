@@ -26,6 +26,7 @@ vi.mock("@/lib/ipc", () => ({
     listModels: vi.fn(),
     setFocusedConversation: vi.fn(),
     listConversations: vi.fn(),
+    listWorkspaces: vi.fn(),
     createConversation: vi.fn(),
     openWorkspace: vi.fn(),
     sendAgentMessage: vi.fn(),
@@ -76,6 +77,7 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
       { id: "m", hardwareTier: "tier1", isActive: true, installed: true },
     ]);
     vi.mocked(commands.listConversations).mockResolvedValue([]);
+    vi.mocked(commands.listWorkspaces).mockResolvedValue([]);
     vi.mocked(commands.openWorkspace).mockResolvedValue({
       id: "ws-home",
       path: "/Users/tester",
@@ -286,13 +288,16 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     await waitFor(() => expect(screen.queryByTestId("shortcuts-dialog")).not.toBeInTheDocument());
   });
 
-  it("Cmd+F opens the sidebar conversation search", async () => {
+  it("Cmd+F opens conversation search in a dialog", async () => {
     render(<App />);
     await waitForReady();
 
     pressCmd("f");
 
-    await screen.findByTestId("search-panel");
+    const searchPanel = await screen.findByTestId("search-panel");
+    const dialog = searchPanel.closest("dialog");
+    expect(dialog).toBeInTheDocument();
+    expect(dialog).toHaveAttribute("open");
     expect(screen.getByTestId("search-input")).toBeInTheDocument();
   });
 
