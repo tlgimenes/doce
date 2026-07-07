@@ -46,4 +46,45 @@ describe("Tool call widgets (004-tool-call-widgets)", () => {
     const stdoutText = await (await browser.$("[data-testid='bash-stdout']")).getText();
     expect(stdoutText).toContain("DOCE_E2E_WIDGET_BASH_MARKER.txt");
   });
+
+  // Regression: found live, not speculatively. `send_agent_message` blocks
+  // on `rx.await` the moment the model calls `AskUserQuestion` (001's
+  // FR-010 pause/resume mechanic) -- and until this fix, nothing in the UI
+  // ever showed that pending question or let a user answer it, so the
+  // whole turn (and the one global inference-engine lock it holds for as
+  // long as it's blocked) hung forever with no error and no way out.
+  it("a real AskUserQuestion pauses the loop with a visible, answerable prompt, and answering it resumes and completes the turn", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "doce-widgets-question-e2e-"));
+
+    const agentInput = await startWorkspaceConversationViaComposer(dir, "Say hi in one word.");
+    await browser.waitUntil(
+      async () => (await browser.$$("[data-testid='chat-message']")).length >= 2,
+      { timeout: 30000, timeoutMsg: "first turn never completed" },
+    );
+
+    await agentInput.setValue(
+      "Use the AskUserQuestion tool right now: header 'Quick check', question " +
+        "'Which color do you prefer?', options 'Red' and 'Blue', not multi-select. " +
+        "Do not answer it yourself -- actually call the tool and wait.",
+    );
+    await (await browser.$("[data-testid='agent-send']")).click();
+
+    const widget = await browser.$("[data-testid='question-widget']");
+    await widget.waitForExist({ timeout: 60000 });
+    expect(await widget.getText()).toContain("Which color do you prefer?");
+
+    // The regression itself: the composer must refuse a new message while
+    // genuinely paused here, since typing one would just queue up stuck
+    // behind the same lock rather than doing anything.
+    expect(await agentInput.getAttribute("contenteditable")).toBe("false");
+
+    await (await widget.$("button=Red")).click();
+
+    // Answering must actually resume the loop and let the turn finish --
+    // not just flip the widget to "answered" while the backend stays
+    // blocked underneath it.
+    const answered = await browser.$("[data-testid='question-answered']");
+    await answered.waitForExist({ timeout: 60000 });
+    expect(await answered.getText()).toContain("Red");
+  });
 });

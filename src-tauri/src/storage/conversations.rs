@@ -5,9 +5,23 @@ use std::path::Path;
 
 const MAX_TITLE_LEN: usize = 60;
 
+/// One row of conversation history, still tagged with its `content_type`
+/// and `sequence` (010-context-window-management) — `load_history`'s plain
+/// `ChatMessage` discards both, which is fine for callers that only need
+/// the rendered prompt, but the compaction pipeline needs `content_type` to
+/// find tool_call/tool_result rows (tier 1) and `sequence` to order/splice
+/// against persisted `context_notice` rows (tier 2).
+#[derive(Debug, Clone)]
+pub struct HistoryMessage {
+    pub chat: ChatMessage,
+    pub content_type: String,
+    pub sequence: i64,
+}
+
 /// Builds the chat-template message history for a conversation: every
 /// non-error message so far, oldest first, role-mapped from the
-/// `messages` table's `role` column. Shared by the plain chat path
+/// `messages` table's `role` column, still tagged with `content_type`/
+/// `sequence`. Shared by the plain chat path
 /// (`commands::conversations::send_message`) and agent mode
 /// (`commands::agent::send_agent_message`) — without this, every reply
 /// was generated with no memory of earlier turns in the same
@@ -28,42 +42,160 @@ const MAX_TITLE_LEN: usize = 60;
 /// `conn.call(...)` closure with no `AppHandle` in scope — callers resolve
 /// it the same way `commands::skills::list_skills` already does
 /// (`app.path().app_data_dir()?.join("skills")`).
-pub fn load_history(
+///
+/// 010-context-window-management: a `content_type = 'context_notice'` row
+/// is never itself returned as an ordinary history entry (like `error`, it
+/// isn't real turn content) — *except* that the most recent such row whose
+/// JSON `content` has `"kind":"summarized"` marks a splice point: every row
+/// at or before its `sequence` is dropped from the result and replaced by a
+/// single synthesized system-role message carrying that row's `summary`
+/// field. This is what makes a persisted compaction pass correctly
+/// reflected on every subsequent load (data-model.md), not just for the
+/// turn it happened on. A second, later `summarized` notice supersedes the
+/// first — only the most recent one is spliced.
+pub fn load_history_annotated(
     conn: &Connection,
     conversation_id: &str,
     skills_dir: &Path,
-) -> rusqlite::Result<Vec<ChatMessage>> {
+) -> rusqlite::Result<Vec<HistoryMessage>> {
     let mut stmt = conn.prepare(
-        "SELECT role, content_type, content FROM messages WHERE conversation_id = ?1 AND content_type != 'error' ORDER BY sequence ASC",
+        "SELECT role, content_type, content, sequence, tool_name, tool_call_id, model_text FROM messages WHERE conversation_id = ?1 AND content_type != 'error' ORDER BY sequence ASC",
     )?;
     let rows = stmt
         .query_map([conversation_id], |row| {
             let role: String = row.get(0)?;
             let content_type: String = row.get(1)?;
             let content: String = row.get(2)?;
-            Ok((role, content_type, content))
+            let sequence: i64 = row.get(3)?;
+            let tool_name: Option<String> = row.get(4)?;
+            let tool_call_id: Option<String> = row.get(5)?;
+            let model_text: Option<String> = row.get(6)?;
+            Ok((role, content_type, content, sequence, tool_name, tool_call_id, model_text))
         })?
         .collect::<Result<Vec<_>, _>>()?;
 
-    Ok(rows
-        .into_iter()
-        .map(|(role, content_type, content)| {
+    // Find the most recent `context_notice` row of kind "summarized" (if
+    // any) — its sequence is the splice point, its embedded `summary` is
+    // what replaces everything at-or-before it.
+    let splice: Option<(i64, String)> = rows
+        .iter()
+        .filter(|(_, content_type, ..)| content_type == "context_notice")
+        .filter_map(|(_, _, content, sequence, ..)| {
+            let parsed: serde_json::Value = serde_json::from_str(content).ok()?;
+            if parsed.get("kind")?.as_str()? == "summarized" {
+                let summary = parsed.get("summary")?.as_str()?.to_string();
+                Some((*sequence, summary))
+            } else {
+                None
+            }
+        })
+        .max_by_key(|(sequence, _)| *sequence);
+
+    let mut result = Vec::new();
+    if let Some((splice_sequence, summary)) = &splice {
+        result.push(HistoryMessage {
+            chat: ChatMessage::system(summary.clone()),
+            content_type: "context_notice".to_string(),
+            sequence: *splice_sequence,
+        });
+    }
+
+    let splice_sequence = splice.as_ref().map(|(s, _)| *s);
+    for (role, content_type, content, sequence, tool_name, tool_call_id, model_text) in rows {
+        if content_type == "context_notice" {
+            continue;
+        }
+        if let Some(splice_sequence) = splice_sequence {
+            if sequence <= splice_sequence {
+                continue;
+            }
+        }
+
+        // 010-context-window-management (structured tool calls): a
+        // `tool_call`/`tool_result` row reconstructs into the same
+        // MessageContent::ToolUse/ToolResult variant `agent::run_loop`
+        // pushes live, rather than feeding the raw persisted JSON back to
+        // the model as if it were plain text -- a real, pre-existing bug
+        // (a reloaded conversation showed the model malformed-looking JSON
+        // blobs for its own past tool activity that it never actually
+        // produced in that shape). `tool_call_id` being `None` only
+        // happens for a row persisted before migration 0006 -- falls back
+        // to a synthetic per-row id (never reused, so still safe to treat
+        // as a real call/result pair) rather than crashing on old data.
+        let chat = if content_type == "tool_call" {
+            let id = tool_call_id.unwrap_or_else(|| format!("legacy-{sequence}"));
+            let name = tool_name.unwrap_or_default();
+            let arguments = serde_json::from_str::<serde_json::Value>(&content)
+                .ok()
+                .and_then(|v| v.get("arguments").cloned())
+                .unwrap_or(serde_json::Value::Null);
+            ChatMessage::tool_use(id, name, arguments)
+        } else if content_type == "tool_result" {
+            let id = tool_call_id.unwrap_or_else(|| format!("legacy-{sequence}"));
+            let name = tool_name.unwrap_or_default();
+            // `model_text` only exists from migration 0006 onward — an
+            // older row falls back to its raw `content` (its own prior
+            // behavior), still better than silently losing the row.
+            let text = model_text.unwrap_or(content);
+            ChatMessage::tool_result(id, name, text)
+        } else {
             let text = if content_type == "rich_text" {
                 expand_rich_text(&content, skills_dir)
             } else {
-                // Every other content_type (today: just 'text' — 'error'
-                // rows are excluded by the query above, and tool rows are
-                // never fed through load_history's role-mapping today)
-                // behaves exactly as before this feature existed: the raw
-                // column value, untouched.
+                // 'text' behaves exactly as before this feature existed:
+                // the raw column value, untouched.
                 content
             };
             match role.as_str() {
                 "assistant" => ChatMessage::assistant(text),
                 _ => ChatMessage::user(text),
             }
-        })
+        };
+        result.push(HistoryMessage {
+            chat,
+            content_type,
+            sequence,
+        });
+    }
+
+    Ok(result)
+}
+
+/// Thin wrapper over `load_history_annotated` for callers that only need
+/// the rendered prompt, not `content_type`/`sequence` — no SQL duplicated.
+pub fn load_history(
+    conn: &Connection,
+    conversation_id: &str,
+    skills_dir: &Path,
+) -> rusqlite::Result<Vec<ChatMessage>> {
+    Ok(load_history_annotated(conn, conversation_id, skills_dir)?
+        .into_iter()
+        .map(|m| m.chat)
         .collect())
+}
+
+/// Persists a `context_notice` row (010-context-window-management) —
+/// `kind_json` is the row's full JSON `content`
+/// (`{"kind":"cleared",...}`/`{"kind":"summarized",...}`, see
+/// data-model.md). Always `role='assistant'` (the `messages.role` CHECK has
+/// no `'system'` value; this matches how `error` rows are already
+/// persisted under `role='assistant'` too) and `tool_name=NULL`.
+pub fn persist_context_notice(
+    conn: &Connection,
+    conversation_id: &str,
+    now: i64,
+    kind_json: &str,
+) -> rusqlite::Result<()> {
+    let seq: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(sequence), -1) + 1 FROM messages WHERE conversation_id = ?1",
+        [conversation_id],
+        |row| row.get(0),
+    )?;
+    conn.execute(
+        "INSERT INTO messages (id, conversation_id, role, content_type, content, created_at, sequence) VALUES (?1, ?2, 'assistant', 'context_notice', ?3, ?4, ?5)",
+        rusqlite::params![uuid::Uuid::now_v7().to_string(), conversation_id, kind_json, now, seq],
+    )?;
+    Ok(())
 }
 
 /// Expands one `rich_text` row's JSON `content` into the text the model
@@ -136,6 +268,7 @@ pub fn generate_title(first_message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inference::MessageContent;
 
     #[test]
     fn short_message_used_verbatim() {
@@ -197,7 +330,7 @@ mod tests {
             "CREATE TABLE messages (
                 id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, role TEXT NOT NULL,
                 content_type TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL,
-                sequence INTEGER NOT NULL
+                sequence INTEGER NOT NULL, tool_name TEXT, tool_call_id TEXT, model_text TEXT
             );",
         )
         .unwrap();
@@ -219,6 +352,86 @@ mod tests {
         .unwrap();
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn insert_tool_message(
+        conn: &Connection,
+        conv_id: &str,
+        role: &str,
+        content_type: &str,
+        content: &str,
+        seq: i64,
+        tool_name: &str,
+        tool_call_id: &str,
+        model_text: Option<&str>,
+    ) {
+        conn.execute(
+            "INSERT INTO messages (id, conversation_id, role, content_type, content, created_at, sequence, tool_name, tool_call_id, model_text) VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7, ?8, ?9)",
+            rusqlite::params![format!("{conv_id}-{seq}"), conv_id, role, content_type, content, seq, tool_name, tool_call_id, model_text],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn reloaded_tool_call_and_result_reconstruct_as_structured_messages_not_raw_json() {
+        // Regression: this used to feed the raw persisted JSON straight
+        // back to the model as plain text on every reload after the very
+        // first turn -- a real bug found live, not speculatively. The
+        // model never actually produced that JSON shape itself; only the
+        // *first* turn (built fresh in-memory by `agent::run_loop`) ever
+        // looked right.
+        let conn = setup_conn();
+        insert_tool_message(
+            &conn,
+            "c1",
+            "assistant",
+            "tool_call",
+            r#"{"arguments":{"command":"ls ."}}"#,
+            0,
+            "Bash",
+            "call-1",
+            None,
+        );
+        insert_tool_message(
+            &conn,
+            "c1",
+            "tool",
+            "tool_result",
+            r#"{"toolName":"Bash","outcome":{"ok":true,"stdout":"a.txt\n"}}"#,
+            1,
+            "Bash",
+            "call-1",
+            Some("a.txt"),
+        );
+
+        let skills_dir = empty_skills_dir();
+        let history = load_history_annotated(&conn, "c1", skills_dir.path()).unwrap();
+        assert_eq!(history.len(), 2);
+
+        match &history[0].chat.content {
+            MessageContent::ToolUse { id, name, input } => {
+                assert_eq!(id, "call-1");
+                assert_eq!(name, "Bash");
+                assert_eq!(input, &serde_json::json!({"command": "ls ."}));
+            }
+            other => panic!("expected ToolUse, got {other:?}"),
+        }
+        match &history[1].chat.content {
+            MessageContent::ToolResult {
+                tool_use_id,
+                tool_name,
+                content,
+            } => {
+                assert_eq!(tool_use_id, "call-1");
+                assert_eq!(tool_name, "Bash");
+                assert_eq!(content, "a.txt");
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+        // The rendered text the model actually sees matches exactly what
+        // it would have seen live in the same turn, not a raw JSON dump.
+        assert_eq!(history[1].chat.text(), "<tool_response>a.txt</tool_response>");
+    }
+
     /// No test exercises a real skill directory except the two rich-text
     /// ones below, but every call site needs *some* `&Path` — an empty
     /// tempdir stands in for "no skills directory contents needed."
@@ -237,11 +450,11 @@ mod tests {
         let history = load_history(&conn, "c1", skills_dir.path()).unwrap();
         assert_eq!(history.len(), 3);
         assert_eq!(history[0].role, "user");
-        assert_eq!(history[0].content, "hi");
+        assert_eq!(history[0].text(), "hi");
         assert_eq!(history[1].role, "assistant");
-        assert_eq!(history[1].content, "hello");
+        assert_eq!(history[1].text(), "hello");
         assert_eq!(history[2].role, "user");
-        assert_eq!(history[2].content, "how are you");
+        assert_eq!(history[2].text(), "how are you");
     }
 
     #[test]
@@ -254,7 +467,7 @@ mod tests {
         let skills_dir = empty_skills_dir();
         let history = load_history(&conn, "c1", skills_dir.path()).unwrap();
         assert_eq!(history.len(), 1);
-        assert_eq!(history[0].content, "hi");
+        assert_eq!(history[0].text(), "hi");
     }
 
     #[test]
@@ -277,7 +490,7 @@ mod tests {
         let skills_dir = empty_skills_dir();
         let history = load_history(&conn, "c1", skills_dir.path()).unwrap();
         assert_eq!(history.len(), 1);
-        assert_eq!(history[0].content, "plain {not json} message");
+        assert_eq!(history[0].text(), "plain {not json} message");
     }
 
     #[test]
@@ -305,7 +518,7 @@ mod tests {
         let history = load_history(&conn, "c1", skills_dir.path()).unwrap();
         assert_eq!(history.len(), 1);
         assert_eq!(
-            history[0].content,
+            history[0].text(),
             "please use \n<skill name=\"reviewer\">\n---\nname: reviewer\ndescription: Reviews things\n---\n\nReview instructions.\n</skill>\n for this"
         );
     }
@@ -334,13 +547,13 @@ mod tests {
         let history = load_history(&conn, "c1", skills_dir.path()).unwrap();
 
         assert_eq!(history.len(), 3);
-        assert_eq!(history[0].content, "earlier message");
+        assert_eq!(history[0].text(), "earlier message");
         assert!(
-            history[1].content.starts_with("[unable to load message:"),
+            history[1].text().starts_with("[unable to load message:"),
             "expected a bracketed fallback marker, got: {:?}",
-            history[1].content
+            history[1].text()
         );
-        assert_eq!(history[2].content, "later message");
+        assert_eq!(history[2].text(), "later message");
     }
 
     #[test]
@@ -351,6 +564,129 @@ mod tests {
         let skills_dir = empty_skills_dir();
         let history = load_history(&conn, "c1", skills_dir.path()).unwrap();
         assert_eq!(history.len(), 1);
-        assert!(history[0].content.starts_with("[unable to load message:"));
+        assert!(history[0].text().starts_with("[unable to load message:"));
+    }
+
+    // --- 010-context-window-management: load_history_annotated splicing ---
+
+    #[test]
+    fn annotated_history_with_no_notices_matches_load_history_exactly() {
+        let conn = setup_conn();
+        insert_message(&conn, "c1", "user", "text", "hi", 0);
+        insert_message(&conn, "c1", "assistant", "tool_call", "{}", 1);
+        insert_message(&conn, "c1", "tool", "tool_result", "{}", 2);
+        insert_message(&conn, "c1", "assistant", "text", "hello", 3);
+
+        let skills_dir = empty_skills_dir();
+        let annotated = load_history_annotated(&conn, "c1", skills_dir.path()).unwrap();
+        assert_eq!(annotated.len(), 4);
+        assert_eq!(annotated[0].content_type, "text");
+        assert_eq!(annotated[0].sequence, 0);
+        assert_eq!(annotated[1].content_type, "tool_call");
+        assert_eq!(annotated[3].chat.text(), "hello");
+    }
+
+    #[test]
+    fn a_summarized_notice_splices_out_everything_at_or_before_it() {
+        let conn = setup_conn();
+        insert_message(&conn, "c1", "user", "text", "old message 1", 0);
+        insert_message(&conn, "c1", "assistant", "text", "old message 2", 1);
+        insert_message(
+            &conn,
+            "c1",
+            "assistant",
+            "context_notice",
+            r#"{"kind":"summarized","summary":"the gist of it","notice":"Conversation condensed to save space"}"#,
+            2,
+        );
+        insert_message(&conn, "c1", "user", "text", "new message", 3);
+
+        let skills_dir = empty_skills_dir();
+        let history = load_history_annotated(&conn, "c1", skills_dir.path()).unwrap();
+
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].chat.role, "system");
+        assert_eq!(history[0].chat.text(), "the gist of it");
+        assert_eq!(history[0].sequence, 2);
+        assert_eq!(history[1].chat.text(), "new message");
+        assert_eq!(history[1].sequence, 3);
+    }
+
+    #[test]
+    fn a_cleared_notice_is_excluded_but_does_not_splice_anything() {
+        let conn = setup_conn();
+        insert_message(&conn, "c1", "user", "text", "message 1", 0);
+        insert_message(
+            &conn,
+            "c1",
+            "assistant",
+            "context_notice",
+            r#"{"kind":"cleared","clearedCount":2,"notice":"2 old tool results cleared to save space"}"#,
+            1,
+        );
+        insert_message(&conn, "c1", "user", "text", "message 2", 2);
+
+        let skills_dir = empty_skills_dir();
+        let history = load_history_annotated(&conn, "c1", skills_dir.path()).unwrap();
+
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].chat.text(), "message 1");
+        assert_eq!(history[1].chat.text(), "message 2");
+    }
+
+    #[test]
+    fn only_the_most_recent_summarized_notice_is_spliced() {
+        let conn = setup_conn();
+        insert_message(&conn, "c1", "user", "text", "ancient message", 0);
+        insert_message(
+            &conn,
+            "c1",
+            "assistant",
+            "context_notice",
+            r#"{"kind":"summarized","summary":"first summary","notice":"n"}"#,
+            1,
+        );
+        insert_message(&conn, "c1", "user", "text", "middle message", 2);
+        insert_message(
+            &conn,
+            "c1",
+            "assistant",
+            "context_notice",
+            r#"{"kind":"summarized","summary":"second summary covers the first too","notice":"n"}"#,
+            3,
+        );
+        insert_message(&conn, "c1", "user", "text", "recent message", 4);
+
+        let skills_dir = empty_skills_dir();
+        let history = load_history_annotated(&conn, "c1", skills_dir.path()).unwrap();
+
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].chat.text(), "second summary covers the first too");
+        assert_eq!(history[0].sequence, 3);
+        assert_eq!(history[1].chat.text(), "recent message");
+    }
+
+    #[test]
+    fn persist_context_notice_appends_at_the_next_sequence() {
+        let conn = setup_conn();
+        insert_message(&conn, "c1", "user", "text", "hi", 0);
+
+        persist_context_notice(
+            &conn,
+            "c1",
+            1000,
+            r#"{"kind":"cleared","clearedCount":1,"notice":"n"}"#,
+        )
+        .unwrap();
+
+        let (content_type, sequence): (String, i64) = conn
+            .query_row(
+                "SELECT content_type, sequence FROM messages WHERE conversation_id = 'c1' ORDER BY sequence DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(content_type, "context_notice");
+        assert_eq!(sequence, 1);
     }
 }

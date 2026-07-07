@@ -13,6 +13,7 @@ function baseMessage(overrides: Partial<Message>): Message {
     toolName: null,
     createdAt: 1000,
     durationMs: 500,
+    tokenCount: null,
     ...overrides,
   };
 }
@@ -37,6 +38,49 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
       />,
     );
     expect(screen.getByText("0.5s")).toBeInTheDocument();
+  });
+
+  // --- 010-context-window-management (UI refactor): token meter ---
+
+  it("shows an input-token meter (↑) on a user message when tokenCount is known", () => {
+    render(
+      <MessageContent
+        message={baseMessage({ role: "user", content: "hi there", tokenCount: 42 })}
+      />,
+    );
+    expect(screen.getByTestId("token-meter")).toHaveTextContent("↑ 42 tokens");
+  });
+
+  it("shows no token meter on a user message when tokenCount is unknown yet", () => {
+    render(
+      <MessageContent
+        message={baseMessage({ role: "user", content: "hi there", tokenCount: null })}
+      />,
+    );
+    expect(screen.queryByTestId("token-meter")).not.toBeInTheDocument();
+  });
+
+  it("combines the elapsed-time chron and an output-token meter (↓) on an assistant message", () => {
+    render(
+      <MessageContent
+        message={baseMessage({ contentType: "text", content: "the answer", tokenCount: 15600 })}
+        showTimer
+      />,
+    );
+    const meter = screen.getByTestId("token-meter");
+    expect(meter).toHaveTextContent("0.5s");
+    expect(meter).toHaveTextContent("↓ 15.6k tokens");
+  });
+
+  it("shows just the token meter (no chron) on an assistant message when showTimer is false", () => {
+    render(
+      <MessageContent
+        message={baseMessage({ contentType: "text", content: "the answer", tokenCount: 100 })}
+      />,
+    );
+    const meter = screen.getByTestId("token-meter");
+    expect(meter).toHaveTextContent("↓ 100 tokens");
+    expect(meter).not.toHaveTextContent("0.5s");
   });
 
   it("renders an error message distinctly", () => {
@@ -83,5 +127,55 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
       />,
     );
     expect(screen.getByTestId("unknown-tool-widget")).toBeInTheDocument();
+  });
+
+  // --- 010-context-window-management/US2: context_notice dispatch ---
+
+  it("renders a 'cleared' notice as a small, muted inline line", () => {
+    render(
+      <MessageContent
+        message={baseMessage({
+          contentType: "context_notice",
+          content: JSON.stringify({
+            kind: "cleared",
+            clearedCount: 3,
+            notice: "3 old tool results cleared to save space",
+          }),
+        })}
+      />,
+    );
+    const notice = screen.getByTestId("context-notice");
+    expect(notice).toHaveAttribute("data-notice-kind", "cleared");
+    expect(notice).toHaveTextContent("3 old tool results cleared to save space");
+  });
+
+  it("renders a 'summarized' notice as a more visible bubble", () => {
+    render(
+      <MessageContent
+        message={baseMessage({
+          contentType: "context_notice",
+          content: JSON.stringify({
+            kind: "summarized",
+            summary: "the user asked about X, agreed on Y",
+            notice: "Conversation condensed to save space",
+          }),
+        })}
+      />,
+    );
+    const notice = screen.getByTestId("context-notice");
+    expect(notice).toHaveAttribute("data-notice-kind", "summarized");
+    expect(notice).toHaveTextContent("Conversation condensed to save space");
+  });
+
+  it("degrades to a plain-text notice on malformed context_notice content rather than crashing", () => {
+    render(
+      <MessageContent
+        message={baseMessage({
+          contentType: "context_notice",
+          content: "not valid json",
+        })}
+      />,
+    );
+    expect(screen.getByTestId("context-notice")).toHaveTextContent("not valid json");
   });
 });

@@ -1,4 +1,5 @@
 use llama_cpp_2::context::params::LlamaContextParams;
+use llama_cpp_2::json_schema_to_grammar;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
@@ -23,6 +24,23 @@ pub enum InferenceError {
 /// calls via `prefill_chunks`, not one `batch.add()` loop over every token.
 const BATCH_CAPACITY: usize = 512;
 
+/// The model's total context window, in tokens (010-context-window-management).
+/// Named and public rather than a bare literal inside `generate()` so both
+/// the budget/compaction calculations in `crate::context` and any future
+/// IPC surface can read the same value `generate()` actually decodes
+/// against, instead of each guessing at (or duplicating) the number.
+///
+/// This is the one anchor every constant in `context::limits` is sized
+/// relative to -- see that module for the rest of the context-budget
+/// knobs (tiered-compaction thresholds, tool-output offload size, etc.),
+/// gathered there specifically so they're easy to reconsider together
+/// whenever this value changes. Not a hardware limit: the model itself
+/// was trained on sequences up to 262144 tokens (`n_ctx_train` in the
+/// llama.cpp startup log) -- this is a deliberately chosen budget, raised
+/// from the original 2048 once real use showed the tiered-compaction
+/// pipeline had too little headroom to work with at that size.
+pub const CONTEXT_WINDOW_TOKENS: u32 = 8192;
+
 /// Splits `n_tokens` positions into `[start, end)` ranges of at most
 /// `batch_capacity` each, in order — the sequence of chunks `generate()`
 /// prefills the prompt in. Pure and independent of llama.cpp so the
@@ -36,36 +54,147 @@ fn prefill_chunks(n_tokens: usize, batch_capacity: usize) -> Vec<std::ops::Range
         .collect()
 }
 
+/// A tool call's or tool result's structured payload — the content-block
+/// shape frontier-lab APIs use (Anthropic's `tool_use`/`tool_result`
+/// blocks, OpenAI's `tool_calls` + `tool_call_id`), adopted here now that
+/// `generate`'s grammar-constrained decoding makes it safe to trust the
+/// model's tool-call JSON is well-formed, rather than parsing free text
+/// and hoping. Mirrors what gets persisted to the `messages` table
+/// (storage/conversations.rs) closely on purpose — reconstructing this
+/// from a DB row, or rendering it back to the flat string the model's
+/// chat template needs (`ChatMessage::text`), are both small, pure
+/// transforms rather than lossy reshaping.
+#[derive(Debug, Clone)]
+pub enum MessageContent {
+    Text(String),
+    /// The model's decision to call a tool. `id` is assigned by the
+    /// harness (`agent::run_loop`), not the model — the model only ever
+    /// decides `name`/`input`; stamping an id on the decision is the
+    /// platform's job, the same convention OpenAI/Anthropic use.
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    /// A tool's result, linked back to its call via `tool_use_id` instead
+    /// of sequence-adjacency plus a magic string prefix.
+    ToolResult {
+        tool_use_id: String,
+        tool_name: String,
+        content: String,
+    },
+}
+
 /// A single role-tagged conversation turn. Chat-tuned models like Qwen are
 /// trained on turns wrapped in special tokens (e.g. ChatML's
 /// `<|im_start|>role\n...<|im_end|>`), not on raw concatenated text — see
-/// `InferenceEngine::render_chat_prompt`, which is what actually produces
-/// those tokens from a list of these.
+/// `ChatMessage::text`/`InferenceEngine::render_chat_prompt`, which is what
+/// actually turns these into that flat per-turn string.
 #[derive(Debug, Clone)]
 pub struct ChatMessage {
     pub role: String,
-    pub content: String,
+    pub content: MessageContent,
 }
 
 impl ChatMessage {
     pub fn system(content: impl Into<String>) -> Self {
         Self {
             role: "system".to_string(),
-            content: content.into(),
+            content: MessageContent::Text(content.into()),
         }
     }
 
     pub fn user(content: impl Into<String>) -> Self {
         Self {
             role: "user".to_string(),
-            content: content.into(),
+            content: MessageContent::Text(content.into()),
         }
     }
 
     pub fn assistant(content: impl Into<String>) -> Self {
         Self {
             role: "assistant".to_string(),
-            content: content.into(),
+            content: MessageContent::Text(content.into()),
+        }
+    }
+
+    /// The model's own tool-call decision — always role `assistant`,
+    /// matching this codebase's existing persistence convention
+    /// (`commands::agent::persist_tool_call`).
+    pub fn tool_use(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        input: serde_json::Value,
+    ) -> Self {
+        Self {
+            role: "assistant".to_string(),
+            content: MessageContent::ToolUse {
+                id: id.into(),
+                name: name.into(),
+                input,
+            },
+        }
+    }
+
+    /// A tool's result fed back into the transcript — role `user`.
+    ///
+    /// This was tried as role `tool` first, on the theory that it would
+    /// hit Qwen's own chat template branch for `role == "tool"` (its real,
+    /// embedded Jinja template does have one, confirmed by reading the
+    /// GGUF's own metadata) and render as `<tool_response>...
+    /// </tool_response>` -- the format Qwen actually trained on. Verified
+    /// against the real model that this doesn't happen: llama.cpp's
+    /// template engine renders an unrecognized role generically as a bare
+    /// `<|im_start|>tool\n...` block instead, which the model was never
+    /// trained on -- worse than the plain-`user` approximation. So `role`
+    /// stays `user` (reliably handled), and `ChatMessage::text` below
+    /// wraps the content in the literal `<tool_response>` tags itself --
+    /// same text Qwen expects, produced without depending on template
+    /// branching that doesn't actually work in this runtime.
+    pub fn tool_result(
+        tool_use_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
+        Self {
+            role: "user".to_string(),
+            content: MessageContent::ToolResult {
+                tool_use_id: tool_use_id.into(),
+                tool_name: tool_name.into(),
+                content: content.into(),
+            },
+        }
+    }
+
+    /// The plain string this message renders to for the model's own
+    /// prompt — the one pure transform between the structured shape above
+    /// and what `render_chat_prompt`/llama.cpp's chat template needs (a
+    /// flat string per turn). Preserves the exact `{"tool_call": ...}`
+    /// convention the model has already been prompted for. A
+    /// `ToolResult`'s text is wrapped in the literal `<tool_response>...
+    /// </tool_response>` tags Qwen's own chat template uses (confirmed
+    /// against its real, embedded Jinja template) -- reproduced here as
+    /// plain text rather than relying on template role-branching, since
+    /// that branch doesn't actually fire correctly against this model at
+    /// runtime (see `ChatMessage::tool_result`'s doc comment).
+    pub fn text(&self) -> String {
+        match &self.content {
+            MessageContent::Text(s) => s.clone(),
+            MessageContent::ToolUse { name, input, .. } => {
+                serde_json::json!({ "tool_call": { "name": name, "arguments": input } })
+                    .to_string()
+            }
+            // No "Tool result for {tool_name}:" framing -- Qwen's own
+            // convention (per its chat template) is just the raw content
+            // inside the tags, relying on tool_call/tool_result ordering
+            // (never more than one pending at a time in this loop) to
+            // establish which tool it came from, not a repeated name in
+            // the text itself. Qwen's own template actually wraps with
+            // newlines (`\n<tool_response>\n` + content + `\n</tool_response>`)
+            // but that's not preserved here -- a single-line wrap instead.
+            MessageContent::ToolResult { content, .. } => {
+                format!("<tool_response>{content}</tool_response>")
+            }
         }
     }
 }
@@ -106,7 +235,7 @@ impl InferenceEngine {
 
         let llama_messages: Vec<LlamaChatMessage> = messages
             .iter()
-            .map(|m| LlamaChatMessage::new(m.role.clone(), m.content.clone()))
+            .map(|m| LlamaChatMessage::new(m.role.clone(), m.text()))
             .collect::<Result<_, _>>()
             .map_err(|e| InferenceError::Backend(e.to_string()))?;
 
@@ -115,21 +244,88 @@ impl InferenceEngine {
             .map_err(|e| InferenceError::Backend(e.to_string()))
     }
 
+    /// The model's configured context window, in tokens
+    /// (010-context-window-management) — currently always
+    /// `CONTEXT_WINDOW_TOKENS`, since `generate()` builds every context with
+    /// that same fixed `n_ctx`. Exposed as a method (rather than callers
+    /// reading the constant directly) so a future per-model context size
+    /// would only need to change here.
+    pub fn context_window(&self) -> u32 {
+        CONTEXT_WINDOW_TOKENS
+    }
+
+    /// Tokenizes `text` and returns its token count, without decoding —
+    /// cheap enough to call before every generation to check the prompt
+    /// against the context budget (010-context-window-management). Shares
+    /// the exact tokenization `generate()` itself uses, so a count from
+    /// this function always matches what `generate()` would actually
+    /// decode for the same string.
+    pub fn count_tokens(&self, text: &str) -> Result<usize, InferenceError> {
+        let tokens = self
+            .model
+            .str_to_token(text, AddBos::Always)
+            .map_err(|e| InferenceError::Backend(e.to_string()))?;
+        Ok(tokens.len())
+    }
+
+    /// Builds the grammar-constrained sampler that guarantees any
+    /// `{"tool_call"` the model starts producing is syntactically valid
+    /// JSON matching `{"tool_call": {"name": string, "arguments": object}}`
+    /// — lazy (`LlamaSampler::grammar_lazy`), so it only activates once the
+    /// model actually starts down that path; a plain-text final answer is
+    /// completely unconstrained the whole time. Deliberately doesn't
+    /// constrain `name` to an enum of currently-available tools —
+    /// `dispatch::execute` already handles an unrecognized tool name
+    /// gracefully as an ordinary tool-error result fed back into the loop,
+    /// so keeping this schema static avoids threading a dynamic tool list
+    /// through every `generate()` call for a marginal benefit.
+    fn tool_call_grammar_sampler(&self) -> Result<LlamaSampler, InferenceError> {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "tool_call": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string" },
+                        "arguments": { "type": "object" }
+                    },
+                    "required": ["name", "arguments"]
+                }
+            },
+            "required": ["tool_call"]
+        });
+        let grammar_str = json_schema_to_grammar(&schema.to_string())
+            .map_err(|e| InferenceError::Backend(e.to_string()))?;
+        LlamaSampler::grammar_lazy(
+            &self.model,
+            &grammar_str,
+            "root",
+            [b"{\"tool_call\"".as_slice()],
+            &[],
+        )
+        .map_err(|e| InferenceError::Backend(e.to_string()))
+    }
+
     /// Generation used for the chat path (User Story 2), the agent tool-use
     /// loop (User Story 3), and integration tests, invoking `on_token` as
     /// each token is produced so the caller can emit `assistant-token`
     /// events in real time rather than waiting for the full response.
     /// `prompt` is expected to already be chat-template-rendered (see
     /// `render_chat_prompt`) — this function just tokenizes and decodes
-    /// whatever string it's given.
+    /// whatever string it's given. `allow_tool_calls` gates the
+    /// grammar-constrained sampler above — the plain chat path and
+    /// tier-2 summarization never set it, since neither ever wants (or
+    /// should be able to produce) a `{"tool_call": ...}` response.
     pub fn generate(
         &self,
         prompt: &str,
         max_tokens: i32,
+        allow_tool_calls: bool,
         mut on_token: impl FnMut(&str),
         mut should_cancel: impl FnMut() -> bool,
     ) -> Result<String, InferenceError> {
-        let ctx_params = LlamaContextParams::default().with_n_ctx(NonZeroU32::new(2048));
+        let ctx_params =
+            LlamaContextParams::default().with_n_ctx(NonZeroU32::new(CONTEXT_WINDOW_TOKENS));
         let mut ctx = self
             .model
             .new_context(&self.backend, ctx_params)
@@ -173,13 +369,22 @@ impl InferenceEngine {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.subsec_nanos())
             .unwrap_or(0);
-        let mut sampler = LlamaSampler::chain_simple([
+        // The grammar sampler, when present, goes first in the chain —
+        // matching upstream llama.cpp's own convention of masking to
+        // grammar-legal tokens before penalty/temperature/top-k/top-p
+        // shaping ever sees the distribution.
+        let mut chain = Vec::with_capacity(6);
+        if allow_tool_calls {
+            chain.push(self.tool_call_grammar_sampler()?);
+        }
+        chain.extend([
             LlamaSampler::penalties(64, 1.1, 0.0, 0.0),
             LlamaSampler::top_k(40),
             LlamaSampler::top_p(0.9, 1),
             LlamaSampler::temp(0.7),
             LlamaSampler::dist(seed),
         ]);
+        let mut sampler = LlamaSampler::chain_simple(chain);
         let mut output = String::new();
         let mut decoder = encoding_rs::UTF_8.new_decoder();
 

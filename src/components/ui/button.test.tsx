@@ -48,6 +48,20 @@ describe("Button", () => {
     expect(screen.getByRole("button", { name: "Variant" }).className).toContain(expectedClass);
   });
 
+  it.each([
+    ["icon", "size-8"],
+    ["icon-sm", "size-6"],
+  ] as const)("applies %s icon size classes", (size, expectedClass) => {
+    render(
+      <Button size={size} aria-label={size}>
+        <span aria-hidden="true">×</span>
+      </Button>,
+    );
+    const button = screen.getByRole("button", { name: size });
+    expect(button.className).toContain(expectedClass);
+    expect(button.className).toContain("p-0");
+  });
+
   it("is reachable via Tab and shows a focus-visible ring", async () => {
     render(<Button>Focusable</Button>);
     const button = screen.getByRole("button", { name: "Focusable" });

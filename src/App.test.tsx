@@ -28,12 +28,16 @@ vi.mock("@/lib/ipc", () => ({
     cancelGeneration: vi.fn(),
     listMcpServers: vi.fn(),
     listSkills: vi.fn(),
+    getContextUsage: vi.fn(),
+    compactConversation: vi.fn(),
   },
   events: {
     onAssistantToken: vi.fn(),
     onAssistantMessageComplete: vi.fn(),
     onAssistantMessageError: vi.fn(),
     onGenerationQueueUpdate: vi.fn(),
+    onContextUsageUpdate: vi.fn(),
+    onAgentMessagePersisted: vi.fn(),
   },
 }));
 
@@ -85,10 +89,16 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     vi.mocked(commands.listMessages).mockResolvedValue([]);
     vi.mocked(commands.listMcpServers).mockResolvedValue([]);
     vi.mocked(commands.listSkills).mockResolvedValue([]);
+    // No model loaded in these unit tests — ContextUsageGauge's
+    // getContextUsage call is expected to fail and swallow the error,
+    // leaving the indicator simply unrendered.
+    vi.mocked(commands.getContextUsage).mockRejectedValue(new Error("No model loaded"));
     vi.mocked(events.onAssistantToken).mockResolvedValue(() => {});
     vi.mocked(events.onAssistantMessageComplete).mockResolvedValue(() => {});
     vi.mocked(events.onAssistantMessageError).mockResolvedValue(() => {});
     vi.mocked(events.onGenerationQueueUpdate).mockResolvedValue(() => {});
+    vi.mocked(events.onContextUsageUpdate).mockResolvedValue(() => {});
+    vi.mocked(events.onAgentMessagePersisted).mockResolvedValue(() => {});
   });
 
   it("Cmd+L focuses the composer input when no conversation is selected (US1, updated for 006)", async () => {
@@ -198,9 +208,11 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     expect(screen.getAllByTestId("shortcut-item")).toHaveLength(4);
 
     // Scoped to the dialog: the sidebar's own search button independently
-    // shows a "⌘F" hover hint, so a page-wide query would match both.
+    // shows a "⌘ + F" hover hint, so a page-wide query would match both.
     expect(within(dialog).getByText("Open conversation search")).toBeInTheDocument();
-    expect(within(dialog).getByText("⌘F")).toBeInTheDocument();
+    expect(within(dialog).getByTestId("shortcut-combo-search-conversations")).toHaveTextContent(
+      "⌘+F",
+    );
 
     pressCmd("k");
     await waitFor(() => expect(screen.queryByTestId("shortcuts-dialog")).not.toBeInTheDocument());

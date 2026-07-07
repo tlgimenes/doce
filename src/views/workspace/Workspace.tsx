@@ -1,7 +1,17 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import MessageContent from "@/components/MessageContent";
+import ContextUsageGauge from "@/components/ContextUsageGauge";
 import RichInput from "@/views/chat/rich-input/RichInput";
-import { commands, type Message, type RichMessageContent } from "@/lib/ipc";
+import AskUserQuestionWidget from "@/views/chat/tool-widgets/AskUserQuestionWidget";
+import {
+  commands,
+  events,
+  parseAskUserQuestionCallDetail,
+  type Message,
+  type RichMessageContent,
+} from "@/lib/ipc";
+import { useContextUsageStore } from "@/state/contextUsageStore";
+import { isCompactCommand } from "@/lib/compactCommand";
 
 interface WorkspaceProps {
   conversationId: string;
@@ -11,10 +21,16 @@ interface WorkspaceProps {
  * 006-chat-empty-state: restructured from a self-contained "pick a folder,
  * then chat" component into a `conversationId`-driven message view, the
  * same shape as `Chat.tsx` — folder selection now happens once, up front,
- * in `EmptyState.tsx`/`FolderPicker.tsx`. Still uses `sendAgentMessage`
- * (runs the full tool-use loop to completion before returning) rather than
- * `Chat.tsx`'s streamed `sendMessage`, so there's no Timer/stream state
- * here — just a single "thinking…" placeholder.
+ * in `EmptyState.tsx`/`FolderPicker.tsx`.
+ *
+ * Streaming (UI refactor): unlike `Chat.tsx`'s token-level streaming,
+ * `send_agent_message`'s single promise doesn't resolve until the whole
+ * (up to 200-turn) tool-use loop finishes — so instead, every tool_call/
+ * tool_result/final-answer row persisted *during* that loop fires an
+ * `agent-message-persisted` event, and this view just re-fetches
+ * `list_messages` each time and re-renders. Simplified streaming, not
+ * token deltas: the transcript grows message-by-message as the loop
+ * actually progresses, rather than appearing all at once at the end.
  */
 export default function Workspace({ conversationId }: WorkspaceProps) {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -27,12 +43,70 @@ export default function Workspace({ conversationId }: WorkspaceProps) {
     commands.listMessages(conversationId).then(setMessages);
   }, [conversationId]);
 
+  useEffect(() => {
+    let unlistenPersisted: (() => void) | undefined;
+
+    (async () => {
+      unlistenPersisted = await events.onAgentMessagePersisted((p) => {
+        if (p.conversationId !== conversationId) return;
+        commands.listMessages(conversationId).then(setMessages);
+      });
+    })();
+
+    return () => {
+      unlistenPersisted?.();
+    };
+  }, [conversationId]);
+
+  // A pending `AskUserQuestion` is derived, not separately tracked state:
+  // the backend persists the tool_call (with its questionId folded in —
+  // see handle_ask_user_question) *before* it blocks on an answer, and
+  // sequence ordering guarantees the paired tool_result can only ever land
+  // immediately after it — so "the latest message is that tool_call" is
+  // exactly "still awaiting an answer," and it self-clears the instant the
+  // tool_result becomes the latest message instead. This also means a
+  // pending question survives a reload or switching away and back: it's
+  // reconstructed from whatever `list_messages` actually returns, not from
+  // catching the live `ask-user-question` event at the moment it fires.
+  const pendingQuestion = useMemo(() => {
+    const latest = messages[messages.length - 1];
+    if (latest?.contentType === "tool_call" && latest.toolName === "AskUserQuestion") {
+      return parseAskUserQuestionCallDetail(latest.content);
+    }
+    return null;
+  }, [messages]);
+
   const send = async (content: string, richContent?: RichMessageContent) => {
+    // 010-context-window-management (UI refactor): `/compact`, typed and
+    // submitted like any other message, is intercepted here before it ever
+    // becomes a persisted agent turn — it triggers compaction directly and
+    // refreshes the transcript instead of going through send_agent_message.
+    if (!richContent && isCompactCommand(content) && !thinking) {
+      setError(null);
+      try {
+        const usage = await commands.compactConversation(conversationId);
+        useContextUsageStore.getState().setUsage(usage);
+        const refreshed = await commands.listMessages(conversationId);
+        setMessages(refreshed);
+      } catch (e) {
+        setError(String(e));
+      }
+      return;
+    }
+
     // richContent's own presence counts as "something to send" even when
     // content (the flat-text extraction) is empty — a message that's
     // entirely a chip (e.g. just a pasted-text or attachment node, no
     // additional typed text) must not be silently dropped here.
-    if ((!content.trim() && !richContent) || thinking) return;
+    //
+    // `pendingQuestion` (not just `thinking`, which is local state that
+    // resets to false on reload) also blocks a new turn: sending another
+    // message here wouldn't reach the model anyway (the previous turn's
+    // `send_agent_message` is still genuinely blocked on `rx.await`,
+    // holding the one global inference-engine lock) -- it would just
+    // persist and then hang right alongside it. Answer via the widget
+    // instead.
+    if ((!content.trim() && !richContent) || thinking || pendingQuestion) return;
     setError(null);
     setMessages((prev) => [
       ...prev,
@@ -45,32 +119,32 @@ export default function Workspace({ conversationId }: WorkspaceProps) {
         toolName: null,
         createdAt: Date.now(),
         durationMs: null,
+        // Not known until reload -- these are optimistic/synthetic
+        // messages, not the real persisted row (which does get a real
+        // token_count via a backend follow-up update).
+        tokenCount: null,
       },
     ]);
     setThinking(true);
     try {
-      const reply = await commands.sendAgentMessage(
+      // The `agent-message-persisted` event (subscribed above) is what
+      // actually keeps `messages` up to date turn-by-turn while this
+      // promise is pending -- this call is awaited for its errors and for
+      // knowing when to clear `thinking`, not for its return value, which
+      // by the time it resolves the live events have already rendered.
+      await commands.sendAgentMessage(
         conversationId,
         content,
         richContent ? JSON.stringify(richContent) : undefined,
       );
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `a-${Date.now()}`,
-          conversationId,
-          role: "assistant",
-          contentType: "text",
-          content: reply,
-          toolName: null,
-          createdAt: Date.now(),
-          durationMs: null,
-        },
-      ]);
     } catch (e) {
       setError(String(e));
     } finally {
       setThinking(false);
+      // Safety net: a real refetch regardless of event timing/ordering,
+      // so the transcript is always correct once the turn is fully done --
+      // covers both the happy path and an error partway through the loop.
+      commands.listMessages(conversationId).then(setMessages);
     }
   };
 
@@ -81,10 +155,16 @@ export default function Workspace({ conversationId }: WorkspaceProps) {
           {messages.map((m) => (
             <MessageContent key={m.id} message={m} />
           ))}
-          {thinking && (
-            <p className="text-sm text-muted-foreground" data-testid="agent-thinking">
-              Working…
-            </p>
+          {pendingQuestion ? (
+            <div className="mb-6" data-testid="chat-message" role="group" aria-label="doce replied">
+              <AskUserQuestionWidget detail={pendingQuestion} />
+            </div>
+          ) : (
+            thinking && (
+              <p className="text-sm text-muted-foreground" data-testid="agent-thinking">
+                Working…
+              </p>
+            )
           )}
           {error && (
             <div
@@ -102,10 +182,11 @@ export default function Workspace({ conversationId }: WorkspaceProps) {
             send(content, richContent);
           }}
           skillsEnabled={true}
-          disabled={thinking}
+          disabled={thinking || pendingQuestion !== null}
           placeholder="Describe a task…"
           inputTestId="agent-input"
           submitTestId="agent-send"
+          contextGauge={<ContextUsageGauge conversationId={conversationId} />}
         />
       </div>
     </div>

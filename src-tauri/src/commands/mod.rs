@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod attachments;
+pub mod context;
 pub mod conversations;
 pub mod mcp;
 pub mod models;
@@ -23,6 +24,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             conversations::send_message,
             conversations::list_conversations,
             conversations::list_messages,
+            context::get_context_usage,
+            context::compact_conversation,
             search::search_conversations,
             settings::get_settings,
             settings::update_setting,
@@ -46,6 +49,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             conversations::AssistantMessageError,
             crate::scheduler::GenerationQueueUpdate,
             agent::AskUserQuestionEvent,
+            crate::context::ContextUsage,
+            agent::AgentMessagePersisted,
         ])
         // Every timestamp field in this codebase is `i64` (Unix-epoch-ms,
         // per data-model.md's schema conventions) — specta-typescript

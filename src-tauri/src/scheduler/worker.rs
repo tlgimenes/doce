@@ -1,7 +1,9 @@
 use crate::commands::conversations::{
     ActiveGenerations, AssistantMessageComplete, AssistantMessageError, AssistantToken,
+    CHAT_SYSTEM_PROMPT,
 };
 use crate::commands::models::now_ms;
+use crate::context;
 use crate::inference::InferenceEngine;
 use crate::scheduler::{GenerationQueueUpdate, GenerationRequest, Scheduler};
 use crate::storage::DbCell;
@@ -99,6 +101,7 @@ async fn run_generation(app: &AppHandle, request: &GenerationRequest) -> Result<
         Ok(rendered) => engine.generate(
             &rendered,
             64,
+            false,
             |piece| {
                 let _ = app_emit.emit(
                     "assistant-token",
@@ -113,9 +116,15 @@ async fn run_generation(app: &AppHandle, request: &GenerationRequest) -> Result<
         ),
         Err(e) => Err(e),
     };
+    let full_text = result.map_err(|e| e.to_string())?;
+    // 010-context-window-management (UI refactor): output tokens for this
+    // reply -- computed while `guard`/`engine` are still held, before the
+    // `drop(guard)` below (this function re-acquires the lock again further
+    // down purely for the post-reply usage emission, but token counting
+    // doesn't need a second acquisition since it's already available here).
+    let token_count = engine.count_tokens(&full_text).ok().map(|n| n as i64);
     drop(guard);
 
-    let full_text = result.map_err(|e| e.to_string())?;
     let now = now_ms();
     let duration_ms = now - request.assistant_created_at;
 
@@ -131,8 +140,8 @@ async fn run_generation(app: &AppHandle, request: &GenerationRequest) -> Result<
                 |row| row.get(0),
             )?;
             conn.execute(
-                "INSERT INTO messages (id, conversation_id, role, content_type, content, created_at, sequence, duration_ms) VALUES (?1, ?2, 'assistant', 'text', ?3, ?4, ?5, ?6)",
-                rusqlite::params![assistant_message_id, conversation_id, full_text, assistant_created_at, seq, duration_ms],
+                "INSERT INTO messages (id, conversation_id, role, content_type, content, created_at, sequence, duration_ms, token_count) VALUES (?1, ?2, 'assistant', 'text', ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![assistant_message_id, conversation_id, full_text, assistant_created_at, seq, duration_ms, token_count],
             )?;
             conn.execute(
                 "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
@@ -150,8 +159,31 @@ async fn run_generation(app: &AppHandle, request: &GenerationRequest) -> Result<
             conversation_id: request.conversation_id.clone(),
             message_id: request.assistant_message_id.clone(),
             duration_ms,
+            token_count,
         },
     );
+
+    // 010-context-window-management/US1: usage after the model's own output
+    // is what actually determines whether the *next* turn will need
+    // compaction, so this is emitted here (not just after the user's own
+    // message) -- re-acquires the engine lock since the earlier one was
+    // dropped before persistence above.
+    if let Ok(skills_dir) = app.path().app_data_dir().map(|d| d.join("skills")) {
+        let guard = inference_arc.lock().await;
+        if let Some(engine) = guard.as_ref() {
+            if let Ok(usage) = context::compute_usage(
+                &conn,
+                engine,
+                &request.conversation_id,
+                &skills_dir,
+                CHAT_SYSTEM_PROMPT,
+            )
+            .await
+            {
+                let _ = app.emit("context-usage-update", usage);
+            }
+        }
+    }
 
     Ok(full_text)
 }

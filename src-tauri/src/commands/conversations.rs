@@ -15,8 +15,10 @@ use uuid::Uuid;
 /// System-role message for plain chat mode (User Story 2) — sets basic
 /// identity/behavior so the model isn't generating with an empty system
 /// turn. Agent mode uses its own, tool-focused system prompt instead
-/// (`agent::SYSTEM_PROMPT`).
-const CHAT_SYSTEM_PROMPT: &str =
+/// (`agent::SYSTEM_PROMPT`). `pub` since 010-context-window-management's
+/// `commands::context` module needs the same constant for its usage/
+/// compaction calculations.
+pub const CHAT_SYSTEM_PROMPT: &str =
     "You are doce, a helpful AI assistant running entirely locally on the user's device.";
 
 pub struct InferenceState(pub Arc<AsyncMutex<Option<InferenceEngine>>>);
@@ -62,6 +64,13 @@ pub struct Message {
     /// `persisted_at - created_at` so the chat UI's elapsed-time badge
     /// survives a reload instead of resetting to zero.
     pub duration_ms: Option<i64>,
+    /// 010-context-window-management (UI refactor): the real tokenizer's
+    /// count for this message's own text — input tokens for a user message,
+    /// output tokens for an assistant reply — computed once at persistence
+    /// time (mirrors `duration_ms`'s frozen-not-live pattern). `None` for
+    /// rows persisted before a model was ever loaded, or for content_types
+    /// this feature doesn't meter (tool_call/tool_result/error/context_notice).
+    pub token_count: Option<i64>,
 }
 
 /// FR-011 status computation, in priority order: an active/queued
@@ -168,7 +177,7 @@ pub async fn list_messages(
     let conn = db_cell.get(&app).await?;
     conn.call(move |conn: &mut Connection| -> rusqlite::Result<Vec<Message>> {
         let mut stmt = conn.prepare(
-            "SELECT id, conversation_id, role, content_type, content, tool_name, created_at, duration_ms
+            "SELECT id, conversation_id, role, content_type, content, tool_name, created_at, duration_ms, token_count
              FROM messages WHERE conversation_id = ?1 ORDER BY sequence ASC",
         )?;
         let rows = stmt
@@ -182,6 +191,7 @@ pub async fn list_messages(
                     tool_name: row.get(5)?,
                     created_at: row.get(6)?,
                     duration_ms: row.get(7)?,
+                    token_count: row.get(8)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -205,6 +215,12 @@ pub struct AssistantMessageComplete {
     pub conversation_id: String,
     pub message_id: String,
     pub duration_ms: i64,
+    /// 010-context-window-management (UI refactor): output tokens in this
+    /// reply, so the frontend's synthetic `Message` (built from this event,
+    /// not a fresh `list_messages` call) can show the same token meter a
+    /// reload would. `None` if tokenization itself failed for some reason
+    /// (never blocks completion over it).
+    pub token_count: Option<i64>,
 }
 
 /// Emitted when the worker fails a request after it's already been
@@ -276,11 +292,18 @@ fn resolve_message_content(
 /// `assistant-message-complete` / `assistant-message-error` events.
 #[tauri::command]
 #[specta::specta]
+// 010-context-window-management's `inference_state` param (needed for the
+// pre-flight `maybe_compact` call) tips this over clippy's default
+// 7-argument threshold, the same way `send_agent_message` already crosses
+// it -- every parameter here is either a framework-injected `State`/
+// `AppHandle` or a real, distinct piece of the IPC contract.
+#[allow(clippy::too_many_arguments)]
 pub async fn send_message(
     app: AppHandle,
     db_cell: State<'_, DbCell>,
     active_generations: State<'_, ActiveGenerations>,
     scheduler: State<'_, crate::scheduler::Scheduler>,
+    inference_state: State<'_, InferenceState>,
     conversation_id: String,
     content: String,
     rich_content: Option<String>,
@@ -358,28 +381,87 @@ pub async fn send_message(
     // between now and pickup), surfacing that rarer case via
     // `assistant-message-error` since nothing awaits this function's
     // result once it returns.
-    let has_model: bool = conn
-        .call(|conn: &mut Connection| -> rusqlite::Result<i64> {
+    let model_path: Option<String> = conn
+        .call(|conn: &mut Connection| -> rusqlite::Result<String> {
             conn.query_row(
-                "SELECT COUNT(*) FROM models WHERE is_active = 1",
+                "SELECT local_path FROM models WHERE is_active = 1",
                 [],
                 |row| row.get(0),
             )
         })
         .await
-        .map(|n| n > 0)
-        .unwrap_or(false);
-    if !has_model {
+        .ok();
+    let Some(model_path) = model_path else {
         return Err("no active model installed".to_string());
+    };
+
+    // 010-context-window-management/US2: loaded here (not just lazily by
+    // the scheduler worker) so the pre-flight compaction check below has an
+    // engine to count tokens/summarize with immediately, rather than only
+    // from the second message in a session onward.
+    {
+        let mut guard = inference_state.0.lock().await;
+        if guard.is_none() {
+            let path = std::path::PathBuf::from(&model_path);
+            let engine = tokio::task::spawn_blocking(move || InferenceEngine::load(&path, 4))
+                .await
+                .map_err(|e| e.to_string())?
+                .map_err(|e| e.to_string())?;
+            *guard = Some(engine);
+        }
+    }
+    let guard = inference_state.0.lock().await;
+    let engine = guard.as_ref().expect("engine loaded above");
+
+    // 010-context-window-management (UI refactor): the user message row was
+    // already persisted above (before the engine was necessarily loaded),
+    // so its token_count is filled in with a follow-up update rather than
+    // in the original INSERT -- input tokens for what the user actually
+    // typed (the flat text, not the JSON-encoded rich_content envelope).
+    if let Ok(token_count) = engine.count_tokens(&content) {
+        let user_message_id = user_message_id.clone();
+        let _ = conn
+            .call(move |conn: &mut Connection| -> rusqlite::Result<()> {
+                conn.execute(
+                    "UPDATE messages SET token_count = ?1 WHERE id = ?2",
+                    rusqlite::params![token_count as i64, user_message_id],
+                )?;
+                Ok(())
+            })
+            .await;
+    }
+
+    // 010-context-window-management/US2 (FR-005/FR-006/FR-007): compacts
+    // (clears old tool results, then summarizes if still needed) before
+    // this turn is ever queued, so the scheduler always sees an
+    // already-in-budget history rather than discovering an overflow deep
+    // inside `generate()`.
+    let usage = crate::context::maybe_compact(
+        &conn,
+        engine,
+        &conversation_id,
+        &skills_dir,
+        CHAT_SYSTEM_PROMPT,
+        false,
+    )
+    .await?;
+    let settings = crate::context::ContextSettings::load(&conn).await?;
+    // Emitted *before* the hard-limit check (not after) -- otherwise the
+    // one reading that actually caused a rejection is the one the user
+    // never sees, which is backwards for a feature about transparency.
+    let _ = app.emit("context-usage-update", usage.clone());
+    if (usage.tokens_used as f64) >= settings.hard_limit_pct * usage.token_budget as f64 {
+        return Err("This message is too large for the model's context window, even after compacting the conversation. Try a shorter message or start a new conversation.".to_string());
     }
 
     let assistant_message_id = Uuid::now_v7().to_string();
     let assistant_created_at = now_ms();
 
-    // Full history (including the user message just inserted above) so the
-    // model sees prior turns instead of generating this reply in isolation.
-    // `load_history` expands any `rich_text` row it finds (this turn's or
-    // an earlier one) via `skills_dir`, resolved once above.
+    // Full history (including the user message just inserted above, and
+    // reflecting whatever `maybe_compact` just did) so the model sees prior
+    // turns instead of generating this reply in isolation. `load_history`
+    // expands any `rich_text` row it finds (this turn's or an earlier one)
+    // via `skills_dir`, resolved once above.
     let history = conn
         .call({
             let conversation_id = conversation_id.clone();
@@ -390,6 +472,7 @@ pub async fn send_message(
         .map_err(|e| e.to_string())?;
     let mut messages = vec![ChatMessage::system(CHAT_SYSTEM_PROMPT)];
     messages.extend(history);
+    drop(guard);
 
     active_generations
         .0

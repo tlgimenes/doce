@@ -1,5 +1,7 @@
 import Dialog from "@/components/Dialog";
 import { Button } from "@/components/ui/button";
+import { KeyboardShortcut } from "@/components/ui/KeyboardShortcut";
+import { XIcon } from "@phosphor-icons/react";
 import type { Shortcut } from "@/lib/shortcuts";
 
 export interface ShortcutsDialogProps {
@@ -14,17 +16,18 @@ export interface ShortcutsDialogProps {
 export default function ShortcutsDialog({ open, onClose, shortcuts }: ShortcutsDialogProps) {
   return (
     <Dialog open={open} onClose={onClose}>
-      <div className="w-80 p-4" data-testid="shortcuts-dialog">
+      <div className="w-full p-4" data-testid="shortcuts-dialog">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-balance text-sm font-medium">Keyboard shortcuts</h2>
           <Button
             variant="ghost"
-            size="sm"
-            className="p-0 text-muted-foreground underline hover:bg-transparent"
+            size="icon-sm"
+            className="text-muted-foreground hover:bg-transparent"
             onClick={onClose}
             data-testid="close-shortcuts-dialog"
+            aria-label="Close dialog"
           >
-            Close
+            <XIcon size={16} />
           </Button>
         </div>
         <ul className="space-y-2">
@@ -35,9 +38,10 @@ export default function ShortcutsDialog({ open, onClose, shortcuts }: ShortcutsD
               data-testid="shortcut-item"
             >
               <span className="text-muted-foreground">{s.description}</span>
-              <kbd className="rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-xs">
-                {s.combo}
-              </kbd>
+              <KeyboardShortcut
+                keys={[s.metaKey ? "⌘" : "", s.key.toUpperCase()]}
+                data-testid={`shortcut-combo-${s.id}`}
+              />
             </li>
           ))}
         </ul>

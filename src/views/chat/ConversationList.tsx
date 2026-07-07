@@ -1,6 +1,7 @@
 import { forwardRef, type MouseEvent, useEffect, useImperativeHandle, useState } from "react";
 import { MagnifyingGlassIcon, GearIcon, PlusIcon } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
+import { KeyboardShortcut } from "@/components/ui/KeyboardShortcut";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { commands, type Conversation, type ConversationStatus } from "@/lib/ipc";
 import SearchPanel from "./SearchPanel";
@@ -123,9 +124,10 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
               <PlusIcon size={16} weight="bold" />
               New Agent
             </span>
-            <span className="text-xs text-sidebar-foreground/60 opacity-0 transition-opacity group-hover:opacity-100">
-              ⌘N
-            </span>
+            <KeyboardShortcut
+              keys={["⌘", "N"]}
+              className="text-xs text-sidebar-foreground/60 opacity-0 transition-opacity group-hover:opacity-100"
+            />
           </Button>
           <Button
             variant="ghost"
@@ -139,9 +141,10 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
               <MagnifyingGlassIcon size={16} />
               Search
             </span>
-            <span className="font-mono text-xs text-sidebar-foreground/60 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
-              ⌘F
-            </span>
+            <KeyboardShortcut
+              keys={["⌘", "F"]}
+              className="text-xs text-sidebar-foreground/60 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
+            />
           </Button>
           <Button
             variant="ghost"

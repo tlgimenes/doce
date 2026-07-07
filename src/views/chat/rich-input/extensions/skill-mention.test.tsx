@@ -165,6 +165,44 @@ describe("skillMention extension (009-rich-chat-input, US3)", () => {
     expect(screen.queryByTestId("skill-mention-chip")).not.toBeInTheDocument();
   });
 
+  // --- 010-context-window-management (UI refactor): `/compact` is a
+  // reserved slash command, not a skill mention — it must not keep the
+  // picker active once fully typed (which would swallow the Enter that's
+  // supposed to submit it).
+
+  it('typing "/compact" exactly closes the picker (falls back to plain Enter-to-submit behavior)', async () => {
+    vi.mocked(commands.listSkills).mockResolvedValue(SKILLS);
+    const editor = await setup();
+    const editable = screen.getByTestId("test-editor");
+    const user = userEvent.setup();
+
+    await user.click(editable);
+    await user.type(editable, "/compac");
+    // Still mid-typing the reserved word — the picker behaves normally
+    // (open, filtering, "no matching skills" for this query).
+    await screen.findByTestId("skill-mention-popup");
+
+    await user.type(editable, "t");
+    await waitFor(() => {
+      expect(screen.queryByTestId("skill-mention-popup")).not.toBeInTheDocument();
+    });
+    expect(editor.getText()).toBe("/compact");
+  });
+
+  it('typing "/compact" from scratch never opens the picker at all once complete', async () => {
+    vi.mocked(commands.listSkills).mockResolvedValue(SKILLS);
+    await setup();
+    const editable = screen.getByTestId("test-editor");
+    const user = userEvent.setup();
+
+    await user.click(editable);
+    await user.type(editable, "/compact");
+
+    // No intermediate render ever leaves the popup mounted once the full
+    // word is in place.
+    expect(screen.queryByTestId("skill-mention-popup")).not.toBeInTheDocument();
+  });
+
   it("shows a legible empty state instead of a blank popup when no skills are installed (FR-015)", async () => {
     vi.mocked(commands.listSkills).mockResolvedValue([]);
     await setup();

@@ -13,19 +13,30 @@ type QueueCb = (p: {
   position: number | null;
 }) => void;
 
-vi.mock("@/lib/ipc", () => ({
-  commands: {
-    listMessages: vi.fn(),
-    sendMessage: vi.fn(),
-    cancelGeneration: vi.fn(),
-  },
-  events: {
-    onAssistantToken: vi.fn(),
-    onAssistantMessageComplete: vi.fn(),
-    onAssistantMessageError: vi.fn(),
-    onGenerationQueueUpdate: vi.fn(),
-  },
-}));
+vi.mock("@/lib/ipc", async (importOriginal) => {
+  // Partial mock: `commands`/`events` are fully replaced, but
+  // `parseContextNoticeDetail`/`parseToolResultDetail` etc. (real, pure,
+  // side-effect-free parsing helpers `MessageContent` calls) stay real
+  // rather than needing their own mock entries here.
+  const actual = await importOriginal<typeof import("@/lib/ipc")>();
+  return {
+    ...actual,
+    commands: {
+      listMessages: vi.fn(),
+      sendMessage: vi.fn(),
+      cancelGeneration: vi.fn(),
+      getContextUsage: vi.fn(),
+      compactConversation: vi.fn(),
+    },
+    events: {
+      onAssistantToken: vi.fn(),
+      onAssistantMessageComplete: vi.fn(),
+      onAssistantMessageError: vi.fn(),
+      onGenerationQueueUpdate: vi.fn(),
+      onContextUsageUpdate: vi.fn(),
+    },
+  };
+});
 
 // Fast, deterministic coverage for the queued -> generating -> done loading
 // states — the real e2e chat spec deliberately does NOT assert on these,
@@ -39,6 +50,7 @@ describe("Chat loading states", () => {
     conversationId: string;
     messageId: string;
     durationMs: number;
+    tokenCount: number | null;
   }) => void;
   let errorCallback: ErrorCb;
   let queueCallback: QueueCb;
@@ -48,6 +60,12 @@ describe("Chat loading states", () => {
     useConversationStreamStore.setState({ streams: {} });
 
     vi.mocked(commands.listMessages).mockResolvedValue([]);
+    // No model loaded in these unit tests — ContextUsageGauge's
+    // getContextUsage call is expected to fail and swallow the error,
+    // leaving the gauge simply unrendered (its real production
+    // behavior before a model has loaded).
+    vi.mocked(commands.getContextUsage).mockRejectedValue(new Error("No model loaded"));
+    vi.mocked(events.onContextUsageUpdate).mockImplementation(async () => () => {});
     vi.mocked(events.onAssistantToken).mockImplementation(async (cb) => {
       tokenCallback = cb;
       return () => {};
@@ -101,7 +119,12 @@ describe("Chat loading states", () => {
     // Done: the placeholder is replaced by the real, final message bubble —
     // this is what the reported bug broke (bubbles stayed grouped by role
     // instead of alternating).
-    completeCallback({ conversationId: "conv-1", messageId: "assistant-msg-1", durationMs: 420 });
+    completeCallback({
+      conversationId: "conv-1",
+      messageId: "assistant-msg-1",
+      durationMs: 420,
+      tokenCount: 42,
+    });
     await waitFor(() => {
       expect(screen.queryByTestId("generation-status")).not.toBeInTheDocument();
       expect(screen.queryByTestId("assistant-stream")).not.toBeInTheDocument();
@@ -204,5 +227,59 @@ describe("Chat loading states", () => {
       expect(screen.queryByTestId("generation-status")).not.toBeInTheDocument();
       expect(screen.getByTestId("chat-error")).toHaveTextContent("inference crashed");
     });
+  });
+
+  // --- 010-context-window-management (UI refactor): /compact command ---
+
+  it("typing /compact triggers compaction directly instead of sending a normal message", async () => {
+    vi.mocked(commands.compactConversation).mockResolvedValue({
+      conversationId: "conv-1",
+      tokensUsed: 100,
+      tokenBudget: 2048,
+      state: "justCompacted",
+    });
+    vi.mocked(commands.listMessages).mockResolvedValueOnce([]).mockResolvedValueOnce([
+      {
+        id: "notice-1",
+        conversationId: "conv-1",
+        role: "assistant",
+        contentType: "context_notice",
+        content: JSON.stringify({
+          kind: "cleared",
+          clearedCount: 2,
+          notice: "2 old tool results cleared to save space",
+        }),
+        toolName: null,
+        createdAt: Date.now(),
+        durationMs: null,
+        tokenCount: null,
+      },
+    ]);
+
+    render(<Chat conversationId="conv-1" />);
+    await screen.findByTestId("chat-input");
+    await userEvent.type(screen.getByTestId("chat-input"), "/compact");
+    await userEvent.click(screen.getByTestId("chat-send"));
+
+    await waitFor(() => expect(commands.compactConversation).toHaveBeenCalledWith("conv-1"));
+    expect(commands.sendMessage).not.toHaveBeenCalled();
+    expect(await screen.findByTestId("context-notice")).toHaveTextContent(
+      "2 old tool results cleared to save space",
+    );
+  });
+
+  it("surfaces an error from /compact the same way a failed send would", async () => {
+    vi.mocked(commands.compactConversation).mockRejectedValue(
+      new Error("This conversation is too large to compact further."),
+    );
+
+    render(<Chat conversationId="conv-1" />);
+    await screen.findByTestId("chat-input");
+    await userEvent.type(screen.getByTestId("chat-input"), "/compact");
+    await userEvent.click(screen.getByTestId("chat-send"));
+
+    expect(await screen.findByTestId("chat-error")).toHaveTextContent(
+      "too large to compact further",
+    );
   });
 });

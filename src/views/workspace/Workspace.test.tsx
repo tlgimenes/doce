@@ -2,19 +2,45 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import Workspace from "./Workspace";
-import { commands } from "@/lib/ipc";
+import { commands, events } from "@/lib/ipc";
 
-vi.mock("@/lib/ipc", () => ({
-  commands: {
-    listMessages: vi.fn(),
-    sendAgentMessage: vi.fn(),
-  },
-}));
+vi.mock("@/lib/ipc", async (importOriginal) => {
+  // Partial mock: `commands`/`events` are fully replaced, but
+  // `parseContextNoticeDetail`/`parseToolResultDetail` etc. (real, pure,
+  // side-effect-free parsing helpers `MessageContent` calls) stay real
+  // rather than needing their own mock entries here.
+  const actual = await importOriginal<typeof import("@/lib/ipc")>();
+  return {
+    ...actual,
+    commands: {
+      listMessages: vi.fn(),
+      sendAgentMessage: vi.fn(),
+      getContextUsage: vi.fn(),
+      compactConversation: vi.fn(),
+      listSkills: vi.fn(),
+      answerUserQuestion: vi.fn(),
+    },
+    events: {
+      onAgentMessagePersisted: vi.fn(),
+    },
+  };
+});
 
 describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(commands.listMessages).mockResolvedValue([]);
+    // No model loaded in these unit tests — ContextUsageGauge's
+    // getContextUsage call is expected to fail and swallow the error,
+    // leaving the gauge simply unrendered.
+    vi.mocked(commands.getContextUsage).mockRejectedValue(new Error("No model loaded"));
+    vi.mocked(commands.listSkills).mockResolvedValue([]);
+    // Streaming (UI refactor): no live events fire by default in these unit
+    // tests -- each test that specifically exercises streaming updates
+    // messages by driving `listMessages`'s mock resolution/timing directly
+    // instead, since the real signal is "listMessages was called again",
+    // not the event itself.
+    vi.mocked(events.onAgentMessagePersisted).mockResolvedValue(() => {});
   });
 
   it("loads and renders a workspace-scoped conversation's existing messages", async () => {
@@ -28,6 +54,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
         toolName: null,
         createdAt: 1,
         durationMs: null,
+        tokenCount: null,
       },
       {
         id: "m2",
@@ -38,6 +65,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
         toolName: null,
         createdAt: 2,
         durationMs: 5,
+        tokenCount: null,
       },
     ]);
 
@@ -50,6 +78,38 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
   });
 
   it("sends a task and shows a thinking state until the real (non-streamed) reply returns", async () => {
+    // Streaming (UI refactor): `send()` no longer builds the final message
+    // from `sendAgentMessage`'s own return value -- it relies on the
+    // `finally` block's safety-net `listMessages` refetch (the same one
+    // `agent-message-persisted` events would normally trigger live; this
+    // test drives it directly via the mock's second resolution instead of
+    // firing a real event, since the *effect* -- a fresh transcript once
+    // the turn is done -- is what matters here, not the event plumbing
+    // itself).
+    vi.mocked(commands.listMessages).mockResolvedValueOnce([]).mockResolvedValueOnce([
+      {
+        id: "u1",
+        conversationId: "conv-1",
+        role: "user",
+        contentType: "text",
+        content: "list the files here",
+        toolName: null,
+        createdAt: 1,
+        durationMs: null,
+        tokenCount: null,
+      },
+      {
+        id: "a1",
+        conversationId: "conv-1",
+        role: "assistant",
+        contentType: "text",
+        content: "Found 3 files: a.rs, b.rs, c.rs",
+        toolName: null,
+        createdAt: 2,
+        durationMs: null,
+        tokenCount: null,
+      },
+    ]);
     let resolveAgent!: (value: string) => void;
     vi.mocked(commands.sendAgentMessage).mockReturnValue(
       new Promise((resolve) => {
@@ -76,6 +136,151 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     expect(renderedMessages).toHaveLength(2);
     expect(renderedMessages[0].textContent).toContain("list the files here");
     expect(renderedMessages[1].textContent).toContain("Found 3 files");
+  });
+
+  // --- Streaming (UI refactor): agent-message-persisted mid-turn ---
+
+  it("re-renders with a new tool_call/tool_result pair the moment an agent-message-persisted event fires, before the turn's own promise resolves", async () => {
+    let firePersisted!: (p: { conversationId: string }) => void;
+    vi.mocked(events.onAgentMessagePersisted).mockImplementation(async (cb) => {
+      firePersisted = cb;
+      return () => {};
+    });
+
+    vi.mocked(commands.listMessages)
+      .mockResolvedValueOnce([]) // initial mount
+      .mockResolvedValueOnce([
+        // what the DB looks like right after the first tool call lands,
+        // fetched in response to the live event below
+        {
+          id: "u1",
+          conversationId: "conv-1",
+          role: "user",
+          contentType: "text",
+          content: "list the files here",
+          toolName: null,
+          createdAt: 1,
+          durationMs: null,
+          tokenCount: null,
+        },
+        {
+          id: "t1",
+          conversationId: "conv-1",
+          role: "tool",
+          contentType: "tool_result",
+          content: JSON.stringify({
+            toolName: "Bash",
+            command: "ls",
+            outcome: { ok: true, exitCode: 0, stdout: "a.rs\nb.rs", stderr: "" },
+          }),
+          toolName: "Bash",
+          createdAt: 2,
+          durationMs: null,
+          tokenCount: null,
+        },
+      ]);
+
+    let resolveAgent!: (value: string) => void;
+    vi.mocked(commands.sendAgentMessage).mockReturnValue(
+      new Promise((resolve) => {
+        resolveAgent = resolve;
+      }),
+    );
+
+    render(<Workspace conversationId="conv-1" />);
+    await screen.findByTestId("agent-input");
+    await userEvent.type(screen.getByTestId("agent-input"), "list the files here");
+    await userEvent.click(screen.getByTestId("agent-send"));
+
+    await waitFor(() => expect(screen.getByTestId("agent-thinking")).toBeInTheDocument());
+
+    // The live event fires mid-turn -- the promise itself is still pending.
+    firePersisted({ conversationId: "conv-1" });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("bash-widget")).toBeInTheDocument();
+    });
+    // Still "thinking": the turn's own promise hasn't resolved yet, only a
+    // live event landed -- this is the whole point of streaming loop
+    // progress separately from the turn's final completion.
+    expect(screen.getByTestId("agent-thinking")).toBeInTheDocument();
+
+    resolveAgent("Found 2 files.");
+  });
+
+  it("ignores an agent-message-persisted event for a different conversation", async () => {
+    let firePersisted!: (p: { conversationId: string }) => void;
+    vi.mocked(events.onAgentMessagePersisted).mockImplementation(async (cb) => {
+      firePersisted = cb;
+      return () => {};
+    });
+    vi.mocked(commands.listMessages).mockResolvedValue([]);
+
+    render(<Workspace conversationId="conv-1" />);
+    await screen.findByTestId("agent-input");
+    const callsBefore = vi.mocked(commands.listMessages).mock.calls.length;
+
+    firePersisted({ conversationId: "some-other-conversation" });
+
+    // Give any (incorrect) refetch a chance to happen, then confirm it didn't.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(vi.mocked(commands.listMessages).mock.calls.length).toBe(callsBefore);
+  });
+
+  // --- Regression: a pending AskUserQuestion must be answerable, not a
+  // silent hang. Found live: send_agent_message blocks forever on
+  // `rx.await` while the model waits for an answer no UI ever showed,
+  // holding the one global inference-engine lock the whole time. ---
+
+  it("shows the pending question widget (not \"Working…\") when the latest message is an unanswered AskUserQuestion tool_call, and answering it calls answerUserQuestion", async () => {
+    vi.mocked(commands.listMessages).mockResolvedValue([
+      {
+        id: "u1",
+        conversationId: "conv-1",
+        role: "user",
+        contentType: "text",
+        content: "ask me something",
+        toolName: null,
+        createdAt: 1,
+        durationMs: null,
+        tokenCount: null,
+      },
+      {
+        id: "tc1",
+        conversationId: "conv-1",
+        role: "assistant",
+        contentType: "tool_call",
+        content: JSON.stringify({
+          arguments: {
+            header: "Quick check",
+            question: "What would you like to do?",
+            options: [{ label: "A" }, { label: "B" }],
+            multiSelect: false,
+            questionId: "q1",
+          },
+        }),
+        toolName: "AskUserQuestion",
+        createdAt: 2,
+        durationMs: null,
+        tokenCount: null,
+      },
+    ]);
+    // send_agent_message's own promise never resolves in this test -- it's
+    // genuinely still blocked server-side, exactly like the real bug.
+    vi.mocked(commands.sendAgentMessage).mockReturnValue(new Promise(() => {}));
+
+    render(<Workspace conversationId="conv-1" />);
+
+    const widget = await screen.findByTestId("question-widget");
+    expect(widget).toHaveTextContent("What would you like to do?");
+    expect(screen.queryByTestId("agent-thinking")).not.toBeInTheDocument();
+    // The composer must not accept a new message while this is pending --
+    // that's exactly how a second message ("e?") got queued up behind the
+    // same stuck lock in the real incident.
+    expect(screen.getByTestId("agent-input")).toHaveAttribute("contenteditable", "false");
+
+    await userEvent.click(screen.getByText("A"));
+    expect(commands.answerUserQuestion).toHaveBeenCalledWith("q1", ["A"]);
   });
 
   it("009-rich-chat-input regression: a message containing a chip forwards richContent to sendAgentMessage, not just the flat text", async () => {
@@ -116,6 +321,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
           toolName: null,
           createdAt: 1,
           durationMs: null,
+          tokenCount: null,
         },
       ]);
 
@@ -140,5 +346,44 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     await waitFor(() => {
       expect(screen.getByTestId("workspace-error")).toHaveTextContent("inference crashed");
     });
+  });
+
+  // --- 010-context-window-management (UI refactor): /compact command ---
+
+  it("typing /compact triggers compaction directly instead of sending a normal agent turn", async () => {
+    vi.mocked(commands.compactConversation).mockResolvedValue({
+      conversationId: "conv-1",
+      tokensUsed: 100,
+      tokenBudget: 2048,
+      state: "justCompacted",
+    });
+    vi.mocked(commands.listMessages).mockResolvedValueOnce([]).mockResolvedValueOnce([
+      {
+        id: "notice-1",
+        conversationId: "conv-1",
+        role: "assistant",
+        contentType: "context_notice",
+        content: JSON.stringify({
+          kind: "summarized",
+          summary: "the gist of it",
+          notice: "Conversation condensed to save space",
+        }),
+        toolName: null,
+        createdAt: Date.now(),
+        durationMs: null,
+        tokenCount: null,
+      },
+    ]);
+
+    render(<Workspace conversationId="conv-1" />);
+    await screen.findByTestId("agent-input");
+    await userEvent.type(screen.getByTestId("agent-input"), "/compact");
+    await userEvent.click(screen.getByTestId("agent-send"));
+
+    await waitFor(() => expect(commands.compactConversation).toHaveBeenCalledWith("conv-1"));
+    expect(commands.sendAgentMessage).not.toHaveBeenCalled();
+    expect(await screen.findByTestId("context-notice")).toHaveTextContent(
+      "Conversation condensed to save space",
+    );
   });
 });

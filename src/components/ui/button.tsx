@@ -3,7 +3,7 @@ import { Slot } from "@radix-ui/react-slot";
 import { cn } from "@/lib/cn";
 
 export type ButtonVariant = "primary" | "secondary" | "destructive" | "ghost";
-export type ButtonSize = "sm" | "md";
+export type ButtonSize = "sm" | "md" | "icon" | "icon-sm";
 
 export interface ButtonProps extends React.ComponentPropsWithoutRef<"button"> {
   variant?: ButtonVariant;
@@ -21,6 +21,8 @@ const variantClasses: Record<ButtonVariant, string> = {
 const sizeClasses: Record<ButtonSize, string> = {
   sm: "px-3 py-1 text-sm",
   md: "px-4 py-2 text-sm",
+  icon: "size-8 p-0",
+  "icon-sm": "size-6 p-0",
 };
 
 export function buttonVariants({

@@ -65,4 +65,30 @@ describe("BashWidget (004-tool-call-widgets, US2)", () => {
     expect(stdout.textContent!.length).toBeLessThan(longOutput.length);
     expect(screen.getByTestId("bash-output-truncated")).toBeInTheDocument();
   });
+
+  // --- 010-context-window-management/US3 ---
+
+  it("shows a 'View full output' affordance when the result was offloaded", () => {
+    const detail: BashDetail = {
+      toolName: "Bash",
+      command: "find / -name '*.log'",
+      timeoutMs: null,
+      outcome: { ok: true, exitCode: 0, stdout: "preview only...", stderr: "" },
+      offloadedTo: "/data/tool-outputs/conv1/call1.txt",
+    };
+    render(<BashWidget detail={detail} />);
+    expect(screen.getByTestId("view-full-output-button")).toBeInTheDocument();
+  });
+
+  it("does not show the affordance when the result was not offloaded", () => {
+    const detail: BashDetail = {
+      toolName: "Bash",
+      command: "echo hi",
+      timeoutMs: null,
+      outcome: { ok: true, exitCode: 0, stdout: "hi", stderr: "" },
+      offloadedTo: null,
+    };
+    render(<BashWidget detail={detail} />);
+    expect(screen.queryByTestId("view-full-output-button")).not.toBeInTheDocument();
+  });
 });

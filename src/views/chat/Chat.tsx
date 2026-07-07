@@ -3,9 +3,12 @@ import ReactMarkdown from "react-markdown";
 import { Button } from "@/components/ui/button";
 import Timer from "@/components/Timer";
 import MessageContent from "@/components/MessageContent";
+import ContextUsageGauge from "@/components/ContextUsageGauge";
 import RichInput from "./rich-input/RichInput";
 import { commands, events, type Message, type RichMessageContent } from "@/lib/ipc";
 import { useConversationStreamStore } from "@/state/conversationStreamStore";
+import { useContextUsageStore } from "@/state/contextUsageStore";
+import { isCompactCommand } from "@/lib/compactCommand";
 
 type GenerationStatus = "queued" | "generating" | null;
 
@@ -94,6 +97,7 @@ export default function Chat({ conversationId }: ChatProps) {
             toolName: null,
             createdAt: pendingRef.current?.createdAt ?? Date.now() - p.durationMs,
             durationMs: p.durationMs,
+            tokenCount: p.tokenCount,
           },
         ]);
         useConversationStreamStore.getState().clearStream(conversationId);
@@ -118,6 +122,24 @@ export default function Chat({ conversationId }: ChatProps) {
   }, [conversationId]);
 
   const send = async (content: string, richContent?: RichMessageContent) => {
+    // 010-context-window-management (UI refactor): `/compact`, typed and
+    // submitted like any other message, is intercepted here before it ever
+    // becomes a persisted chat message — it triggers compaction directly
+    // and refreshes the transcript (a compaction notice may have been
+    // persisted) instead of going through send_message.
+    if (!richContent && isCompactCommand(content) && !pending) {
+      setError(null);
+      try {
+        const usage = await commands.compactConversation(conversationId);
+        useContextUsageStore.getState().setUsage(usage);
+        const refreshed = await commands.listMessages(conversationId);
+        setMessages(refreshed);
+      } catch (e) {
+        setError(String(e));
+      }
+      return;
+    }
+
     // Guards against a second send landing while the first reply is still
     // in flight — without this, the assistant reply's sequence number
     // (assigned server-side only once generation finishes) can land after
@@ -139,6 +161,10 @@ export default function Chat({ conversationId }: ChatProps) {
       toolName: null,
       createdAt: Date.now(),
       durationMs: null,
+      // Not known until the backend's follow-up update lands (async, not
+      // part of sendMessage's own response) -- resolved on the next reload;
+      // the token meter simply doesn't render for this bubble until then.
+      tokenCount: null,
     };
     setMessages((prev) => [...prev, optimisticUserMessage]);
 
@@ -223,6 +249,7 @@ export default function Chat({ conversationId }: ChatProps) {
           placeholder="Message doce…"
           inputTestId="chat-input"
           submitTestId="chat-send"
+          contextGauge={<ContextUsageGauge conversationId={conversationId} />}
         />
       </div>
     </div>

@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod commands;
+pub mod context;
 pub mod downloader;
 pub mod hardware;
 pub mod inference;

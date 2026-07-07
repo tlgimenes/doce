@@ -28,6 +28,22 @@ pub struct AskUserQuestionEvent {
     pub multi_select: bool,
 }
 
+/// Streaming (loop-level, not token-level) UI updates: fired every time a
+/// new row lands in `messages` for `conversation_id` during an agent turn
+/// (a tool_call, its paired tool_result, or the final answer) — the
+/// frontend's own signal to re-fetch `list_messages` and re-render, rather
+/// than waiting for `send_agent_message`'s single promise to resolve at the
+/// very end of the whole (up to 200-turn) loop. Deliberately just a
+/// conversation id, not the message itself: the frontend already owns a
+/// `list_messages` call for the initial load, and re-running that same
+/// query is simpler and more robust here than keeping a second, ad hoc
+/// message shape in sync with it.
+#[derive(Debug, Clone, Serialize, specta::Type, tauri_specta::Event)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentMessagePersisted {
+    pub conversation_id: String,
+}
+
 /// Removes `conversation_id` from `ActiveGenerations` when dropped —
 /// guarantees cleanup on every exit path (`?` early-returns included, not
 /// just the happy path) without a manual `remove` call before each one.
@@ -56,73 +72,104 @@ impl Drop for ActiveGenerationGuard<'_> {
 /// what `compute_status`'s existing "latest message is a pending
 /// AskUserQuestion tool_call" check relies on to report `requires_action`.
 async fn persist_tool_call(
+    app: Option<&AppHandle>,
     conn: &tokio_rusqlite::Connection,
     conversation_id: &str,
+    tool_call_id: &str,
     tool_name: &str,
     arguments: serde_json::Value,
 ) {
     let conversation_id = conversation_id.to_string();
+    let tool_call_id = tool_call_id.to_string();
     let tool_name = tool_name.to_string();
     let now = now_ms();
     let call_content = serde_json::json!({ "arguments": arguments }).to_string();
     let _ = conn
-        .call(move |conn: &mut Connection| -> rusqlite::Result<()> {
-            let seq: i64 = conn.query_row(
-                "SELECT COALESCE(MAX(sequence), -1) + 1 FROM messages WHERE conversation_id = ?1",
-                [&conversation_id],
-                |row| row.get(0),
-            )?;
-            conn.execute(
-                "INSERT INTO messages (id, conversation_id, role, content_type, content, tool_name, created_at, sequence) VALUES (?1, ?2, 'assistant', 'tool_call', ?3, ?4, ?5, ?6)",
-                rusqlite::params![Uuid::now_v7().to_string(), conversation_id, call_content, tool_name, now, seq],
-            )?;
-            Ok(())
+        .call({
+            let conversation_id = conversation_id.clone();
+            move |conn: &mut Connection| -> rusqlite::Result<()> {
+                let seq: i64 = conn.query_row(
+                    "SELECT COALESCE(MAX(sequence), -1) + 1 FROM messages WHERE conversation_id = ?1",
+                    [&conversation_id],
+                    |row| row.get(0),
+                )?;
+                conn.execute(
+                    "INSERT INTO messages (id, conversation_id, role, content_type, content, tool_name, created_at, sequence, tool_call_id) VALUES (?1, ?2, 'assistant', 'tool_call', ?3, ?4, ?5, ?6, ?7)",
+                    rusqlite::params![Uuid::now_v7().to_string(), conversation_id, call_content, tool_name, now, seq, tool_call_id],
+                )?;
+                Ok(())
+            }
         })
         .await;
+    if let Some(app) = app {
+        let _ = app.emit("agent-message-persisted", AgentMessagePersisted { conversation_id });
+    }
 }
 
 /// The `tool_result` counterpart to `persist_tool_call` (role `tool`, the
 /// schema's dedicated role for exactly this, previously unused) — `detail`
 /// is a tool-shaped, self-sufficient payload a widget renders from without
 /// needing its paired `tool_call` row (data-model.md's row-shape table).
+/// `tool_call_id` links this row back to its `tool_call` row directly
+/// (migration 0006) instead of relying on sequence-adjacency. `model_text`
+/// is the plain, model-facing text for this result (post-offload-
+/// truncation if applicable) — what reconstructing this row's in-memory
+/// `ChatMessage::tool_result` on a later reload should actually use,
+/// distinct from `detail`'s richer, widget-rendering-oriented shape.
 async fn persist_tool_result(
+    app: Option<&AppHandle>,
     conn: &tokio_rusqlite::Connection,
     conversation_id: &str,
+    tool_call_id: &str,
     tool_name: &str,
+    model_text: &str,
     detail: serde_json::Value,
 ) {
     let conversation_id = conversation_id.to_string();
+    let tool_call_id = tool_call_id.to_string();
     let tool_name = tool_name.to_string();
+    let model_text = model_text.to_string();
     let now = now_ms();
     let content = detail.to_string();
     let _ = conn
-        .call(move |conn: &mut Connection| -> rusqlite::Result<()> {
-            let seq: i64 = conn.query_row(
-                "SELECT COALESCE(MAX(sequence), -1) + 1 FROM messages WHERE conversation_id = ?1",
-                [&conversation_id],
-                |row| row.get(0),
-            )?;
-            conn.execute(
-                "INSERT INTO messages (id, conversation_id, role, content_type, content, tool_name, created_at, sequence) VALUES (?1, ?2, 'tool', 'tool_result', ?3, ?4, ?5, ?6)",
-                rusqlite::params![Uuid::now_v7().to_string(), conversation_id, content, tool_name, now, seq],
-            )?;
-            Ok(())
+        .call({
+            let conversation_id = conversation_id.clone();
+            move |conn: &mut Connection| -> rusqlite::Result<()> {
+                let seq: i64 = conn.query_row(
+                    "SELECT COALESCE(MAX(sequence), -1) + 1 FROM messages WHERE conversation_id = ?1",
+                    [&conversation_id],
+                    |row| row.get(0),
+                )?;
+                conn.execute(
+                    "INSERT INTO messages (id, conversation_id, role, content_type, content, tool_name, created_at, sequence, tool_call_id, model_text) VALUES (?1, ?2, 'tool', 'tool_result', ?3, ?4, ?5, ?6, ?7, ?8)",
+                    rusqlite::params![Uuid::now_v7().to_string(), conversation_id, content, tool_name, now, seq, tool_call_id, model_text],
+                )?;
+                Ok(())
+            }
         })
         .await;
+    if let Some(app) = app {
+        let _ = app.emit("agent-message-persisted", AgentMessagePersisted { conversation_id });
+    }
 }
 
 /// Convenience wrapper for the six tools whose call and result are always
 /// known together (everything but `AskUserQuestion`) — both land at
-/// adjacent sequence numbers, one right after the other.
+/// adjacent sequence numbers, one right after the other, sharing the same
+/// `tool_call_id`.
+#[allow(clippy::too_many_arguments)]
 async fn persist_tool_call_and_result(
+    app: Option<&AppHandle>,
     conn: &tokio_rusqlite::Connection,
     conversation_id: &str,
+    tool_call_id: &str,
     tool_name: &str,
     arguments: serde_json::Value,
+    model_text: &str,
     detail: serde_json::Value,
 ) {
-    persist_tool_call(conn, conversation_id, tool_name, arguments).await;
-    persist_tool_result(conn, conversation_id, tool_name, detail).await;
+    persist_tool_call(app, conn, conversation_id, tool_call_id, tool_name, arguments).await;
+    persist_tool_result(app, conn, conversation_id, tool_call_id, tool_name, model_text, detail).await;
 }
 
 fn parse_question_options(call: &ToolCall) -> Vec<QuestionOption> {
@@ -155,11 +202,17 @@ fn parse_question_options(call: &ToolCall) -> Vec<QuestionOption> {
 /// injected closure rather than a direct `app.emit()` call, so this whole
 /// function is testable without a live Tauri app — matching
 /// `PendingQuestions`' own deliberately Tauri-agnostic design), and awaits
-/// the answer before persisting the `tool_result`.
+/// the answer before persisting the `tool_result`. `tool_call_id` (assigned
+/// by `agent::run_loop`, not generated here) doubles as the question's own
+/// `questionId` — there was never a real reason these were two separate
+/// concepts; unifying them is what the structured-tool-call redesign is
+/// about.
 async fn handle_ask_user_question(
+    app: Option<&AppHandle>,
     conn: &tokio_rusqlite::Connection,
     pending: &PendingQuestions,
     conversation_id: &str,
+    tool_call_id: &str,
     call: &ToolCall,
     emit_question: impl FnOnce(AskUserQuestionEvent),
 ) -> String {
@@ -182,20 +235,34 @@ async fn handle_ask_user_question(
         .unwrap_or(false);
     let options = parse_question_options(call);
 
+    let rx = pending.register(tool_call_id.to_string());
+
+    // The id is folded into the persisted tool_call's own arguments (not
+    // just handed to the live `ask-user-question` event) so the frontend
+    // can recover and re-render the pending prompt purely from
+    // `list_messages` -- e.g. after switching away from this conversation
+    // and back, or reopening the app -- while this call is still
+    // genuinely blocked below on `rx.await`. Without this, the only way to
+    // ever answer (and unblock the loop, which is holding the engine lock
+    // for as long as this awaits) is to have had a UI mounted at the
+    // exact moment the event fired.
+    let mut arguments_with_id = call.arguments.clone();
+    if let serde_json::Value::Object(ref mut map) = arguments_with_id {
+        map.insert("questionId".to_string(), serde_json::json!(tool_call_id));
+    }
     persist_tool_call(
+        app,
         conn,
         conversation_id,
+        tool_call_id,
         "AskUserQuestion",
-        call.arguments.clone(),
+        arguments_with_id,
     )
     .await;
 
-    let question_id = Uuid::now_v7().to_string();
-    let rx = pending.register(question_id.clone());
-
     emit_question(AskUserQuestionEvent {
         conversation_id: conversation_id.to_string(),
-        question_id: question_id.clone(),
+        question_id: tool_call_id.to_string(),
         header: header.clone(),
         question: question.clone(),
         options: options.clone(),
@@ -203,14 +270,18 @@ async fn handle_ask_user_question(
     });
 
     let answer = rx.await.unwrap_or_default();
+    let model_text = format!("User answered: {}", answer.join(", "));
 
     persist_tool_result(
+        app,
         conn,
         conversation_id,
+        tool_call_id,
         "AskUserQuestion",
+        &model_text,
         serde_json::json!({
             "toolName": "AskUserQuestion",
-            "questionId": question_id,
+            "questionId": tool_call_id,
             "header": header,
             "question": question,
             "options": options,
@@ -220,7 +291,7 @@ async fn handle_ask_user_question(
     )
     .await;
 
-    format!("User answered: {}", answer.join(", "))
+    model_text
 }
 
 /// Handles a single tool call for the top-level agent loop: `Task` spawns
@@ -235,7 +306,9 @@ async fn handle_ask_user_question(
 /// `dispatch::execute` for the top-level call, and onto the subagent's own
 /// `AgentContext` below — a subagent resolves relative paths against the
 /// same working directory as its parent, not a fresh, unscoped one (FR-006).
+#[allow(clippy::too_many_arguments)]
 async fn execute_top_level_tool(
+    tool_call_id: String,
     call: ToolCall,
     conn: &tokio_rusqlite::Connection,
     engine: &InferenceEngine,
@@ -245,23 +318,61 @@ async fn execute_top_level_tool(
     pending: &PendingQuestions,
 ) -> String {
     if call.name == "AskUserQuestion" {
-        return handle_ask_user_question(conn, pending, parent_conversation_id, &call, |event| {
-            let _ = app.emit("ask-user-question", event);
-        })
+        return handle_ask_user_question(
+            Some(app),
+            conn,
+            pending,
+            parent_conversation_id,
+            &tool_call_id,
+            &call,
+            |event| {
+                let _ = app.emit("ask-user-question", event);
+            },
+        )
         .await;
     }
 
     if call.name != "Task" {
         let outcome = dispatch::execute(&call, cwd);
+
+        // 010-context-window-management/US3 (FR-011/FR-012): an oversized
+        // result gets truncated to a preview + a `Read`-able pointer before
+        // it ever enters the model's context -- the persisted `detail`
+        // still carries the full outcome for the transcript UI (widgets
+        // decide for themselves whether to show a "view full output"
+        // affordance), only `model_text` (what the model actually sees) is
+        // substituted.
+        let settings = crate::context::ContextSettings::load(conn)
+            .await
+            .unwrap_or_else(|_| crate::context::ContextSettings::from_raw(&Default::default()));
+        let (model_text, offloaded_to) = match app.path().app_data_dir() {
+            Ok(app_data_dir) => crate::context::offload::offload_if_oversized(
+                &app_data_dir,
+                parent_conversation_id,
+                &tool_call_id,
+                &outcome.model_text,
+                settings.tool_output_offload_chars,
+            )
+            .unwrap_or_else(|_| (outcome.model_text.clone(), None)),
+            Err(_) => (outcome.model_text.clone(), None),
+        };
+
+        let mut detail = outcome.detail.clone();
+        detail["offloadedTo"] = serde_json::json!(offloaded_to);
+
         persist_tool_call_and_result(
+            Some(app),
             conn,
             parent_conversation_id,
+            &tool_call_id,
             &call.name,
             call.arguments.clone(),
-            outcome.detail.clone(),
+            &model_text,
+            detail,
         )
         .await;
-        return outcome.model_text;
+        emit_context_usage_update(app, conn, engine, parent_conversation_id, cwd).await;
+        return model_text;
     }
 
     let Some(prompt) = call.arguments.get("prompt").and_then(|v| v.as_str()) else {
@@ -297,12 +408,12 @@ async fn execute_top_level_tool(
         |messages| async move {
             match engine.render_chat_prompt(&messages) {
                 Ok(rendered) => engine
-                    .generate(&rendered, 256, |_piece| {}, || false)
+                    .generate(&rendered, 256, true, |_piece| {}, || false)
                     .unwrap_or_else(|e| format!("Error: inference failed: {e}")),
                 Err(e) => format!("Error: failed to render chat prompt: {e}"),
             }
         },
-        |c| {
+        |tool_call_id, c| {
             // 004-tool-call-widgets: the subagent's own tool activity
             // persists under its own conversation row — never the
             // parent's — preserving 001's existing FR-015/SC-008
@@ -312,11 +423,19 @@ async fn execute_top_level_tool(
             let subagent_id = subagent_id.clone();
             async move {
                 let outcome = dispatch::execute(&c, sub_cwd.as_deref());
+                // No live-refresh event for the subagent's own isolated
+                // transcript (`app: None`) -- it isn't rendered by any
+                // current view (FR-015 isolation), so there's no consumer
+                // to notify; only the delegation's final persist on the
+                // *parent* conversation (below) needs to signal the UI.
                 persist_tool_call_and_result(
+                    None,
                     conn,
                     &subagent_id,
+                    &tool_call_id,
                     &c.name,
                     c.arguments.clone(),
+                    &outcome.model_text,
                     outcome.detail.clone(),
                 )
                 .await;
@@ -334,6 +453,10 @@ async fn execute_top_level_tool(
     let now = now_ms();
     let sub_final_for_db = sub_final.clone();
     let subagent_id_for_db = subagent_id.clone();
+    // 010-context-window-management (UI refactor): output tokens for the
+    // subagent's own final answer -- `engine` is already in scope here
+    // (this function's own parameter), so no follow-up-update dance needed.
+    let sub_token_count = engine.count_tokens(&sub_final_for_db).ok().map(|n| n as i64);
     let _ = conn
         .call(move |conn: &mut Connection| -> rusqlite::Result<()> {
             let seq: i64 = conn.query_row(
@@ -342,8 +465,8 @@ async fn execute_top_level_tool(
                 |row| row.get(0),
             )?;
             conn.execute(
-                "INSERT INTO messages (id, conversation_id, role, content_type, content, created_at, sequence) VALUES (?1, ?2, 'assistant', 'text', ?3, ?4, ?5)",
-                rusqlite::params![Uuid::now_v7().to_string(), subagent_id_for_db, sub_final_for_db, now, seq],
+                "INSERT INTO messages (id, conversation_id, role, content_type, content, created_at, sequence, token_count) VALUES (?1, ?2, 'assistant', 'text', ?3, ?4, ?5, ?6)",
+                rusqlite::params![Uuid::now_v7().to_string(), subagent_id_for_db, sub_final_for_db, now, seq, sub_token_count],
             )?;
             Ok(())
         })
@@ -356,10 +479,13 @@ async fn execute_top_level_tool(
     // whole nested loop has finished (research.md § 2 — no live
     // mid-delegation status this pass).
     persist_tool_call_and_result(
+        Some(app),
         conn,
         parent_conversation_id,
+        &tool_call_id,
         "Task",
         serde_json::json!({ "prompt": prompt }),
+        &sub_final,
         serde_json::json!({
             "toolName": "Task",
             "prompt": prompt,
@@ -370,6 +496,36 @@ async fn execute_top_level_tool(
     .await;
 
     sub_final
+}
+
+/// 010-context-window-management/US1: recomputes and emits this
+/// conversation's context usage — called after each turn's persistence step
+/// in the agent loop (a tool_call/tool_result pair, or the final answer) so
+/// the indicator stays live through a whole agent-mode run, not just at the
+/// start. Best-effort: a failure here (e.g. no model loaded, which can't
+/// actually happen mid-loop, but `compute_usage` still returns a `Result`)
+/// is swallowed rather than aborting the loop over a UI-only concern.
+async fn emit_context_usage_update(
+    app: &AppHandle,
+    conn: &tokio_rusqlite::Connection,
+    engine: &InferenceEngine,
+    conversation_id: &str,
+    cwd: Option<&std::path::Path>,
+) {
+    let Ok(skills_dir) = app.path().app_data_dir().map(|d| d.join("skills")) else {
+        return;
+    };
+    if let Ok(usage) = crate::context::compute_usage(
+        conn,
+        engine,
+        conversation_id,
+        &skills_dir,
+        &system_message(cwd),
+    )
+    .await
+    {
+        let _ = app.emit("context-usage-update", usage);
+    }
 }
 
 /// 006-chat-empty-state (research.md § 1): tells the model what directory
@@ -534,6 +690,16 @@ pub async fn send_agent_message(
         rich_content.as_deref(),
     )
     .await?;
+    // Streaming (UI refactor): the real, DB-confirmed user turn is ready to
+    // show immediately, before the (potentially long) agent loop even
+    // starts -- lets the frontend replace its own optimistic bubble with
+    // the persisted one right away instead of waiting for the whole turn.
+    let _ = app.emit(
+        "agent-message-persisted",
+        AgentMessagePersisted {
+            conversation_id: conversation_id.clone(),
+        },
+    );
 
     // 004-tool-call-widgets: registers this conversation as in-progress for
     // the whole turn (matching the chat path's existing ActiveGenerations
@@ -603,11 +769,48 @@ pub async fn send_agent_message(
     let guard = inference.0.lock().await;
     let engine = guard.as_ref().expect("engine loaded above");
 
-    // Full history (including the user message just inserted above) so the
-    // model sees prior turns in this workspace conversation rather than
-    // generating each reply from a blank slate. 009-rich-chat-input:
-    // `load_history` needs `skills_dir` (resolved once, above) to expand
-    // any `rich_text` rows in that history.
+    // 010-context-window-management (UI refactor): same follow-up-update
+    // pattern as commands::conversations::send_message -- the user turn was
+    // already persisted above (by `persist_user_turn`, before the engine
+    // was necessarily loaded), keyed back here by conversation_id+sequence
+    // since `persist_user_turn` never returns its generated row id.
+    if let Ok(token_count) = engine.count_tokens(&model_text_for_turn) {
+        let conversation_id_for_update = conversation_id.clone();
+        let _ = conn
+            .call(move |conn: &mut Connection| -> rusqlite::Result<()> {
+                conn.execute(
+                    "UPDATE messages SET token_count = ?1 WHERE conversation_id = ?2 AND sequence = ?3",
+                    rusqlite::params![token_count as i64, conversation_id_for_update, next_seq],
+                )?;
+                Ok(())
+            })
+            .await;
+    }
+
+    // 010-context-window-management/US2 (FR-005/FR-006/FR-007): compacts
+    // before the loop's first turn -- see `emit_context_usage_update`/the
+    // per-turn `maybe_compact` calls inside the loop for why this alone
+    // isn't sufficient for agent mode (tool results can push a *later* turn
+    // over budget even when the first turn was fine).
+    let system_prompt = system_message(cwd.as_deref());
+    let usage =
+        crate::context::maybe_compact(&conn, engine, &conversation_id, &skills_dir, &system_prompt, false)
+            .await?;
+    let settings = crate::context::ContextSettings::load(&conn).await?;
+    // Emitted *before* the hard-limit check (not after) -- otherwise the
+    // one reading that actually caused a rejection is the one the user
+    // never sees, which is backwards for a feature about transparency.
+    let _ = app.emit("context-usage-update", usage.clone());
+    if (usage.tokens_used as f64) >= settings.hard_limit_pct * usage.token_budget as f64 {
+        return Err("This message is too large for the model's context window, even after compacting the conversation. Try a shorter message or start a new conversation.".to_string());
+    }
+
+    // Full history (including the user message just inserted above, and
+    // reflecting whatever `maybe_compact` just did) so the model sees prior
+    // turns in this workspace conversation rather than generating each
+    // reply from a blank slate. 009-rich-chat-input: `load_history` needs
+    // `skills_dir` (resolved once, above) to expand any `rich_text` rows in
+    // that history.
     let history = conn
         .call({
             let conversation_id = conversation_id.clone();
@@ -616,7 +819,7 @@ pub async fn send_agent_message(
         })
         .await
         .map_err(|e| e.to_string())?;
-    let mut initial_messages = vec![ChatMessage::system(system_message(cwd.as_deref()))];
+    let mut initial_messages = vec![ChatMessage::system(system_prompt.clone())];
     initial_messages.extend(history);
 
     // 009-rich-chat-input/US2: `history`'s final element is always the row
@@ -637,16 +840,62 @@ pub async fn send_agent_message(
     let result = run_loop(
         &context,
         initial_messages,
-        |messages| async move {
-            match engine.render_chat_prompt(&messages) {
-                Ok(rendered) => engine
-                    .generate(&rendered, 256, |_piece| {}, || false)
-                    .unwrap_or_else(|e| format!("Error: inference failed: {e}")),
-                Err(e) => format!("Error: failed to render chat prompt: {e}"),
+        |mut messages| {
+            let conn = conn.clone();
+            let conversation_id = conversation_id.clone();
+            let system_prompt = system_prompt.clone();
+            let app = app.clone();
+            async move {
+                // 010-context-window-management: compacts *this turn's*
+                // in-flight messages before every single generate call, not
+                // just once before the loop started (`maybe_compact` above)
+                // -- without this, a turn that makes several tool calls can
+                // blow past the model's context window with nothing to
+                // stop it until the next top-level message, which is
+                // exactly what let a raw `NoKvCacheSlot` llama.cpp decode
+                // error reach the user instead of a graceful compaction.
+                match crate::context::compact_in_memory(
+                    &conn,
+                    engine,
+                    &conversation_id,
+                    &mut messages,
+                    &system_prompt,
+                )
+                .await
+                {
+                    Ok(usage) => {
+                        let _ = app.emit("context-usage-update", usage.clone());
+                        if let Ok(settings) = crate::context::ContextSettings::load(&conn).await {
+                            if (usage.tokens_used as f64)
+                                >= settings.hard_limit_pct * usage.token_budget as f64
+                            {
+                                // Refuses to call generate() at all rather than
+                                // handing the model a prompt already measured
+                                // to be over budget -- this is what makes the
+                                // NoKvCacheSlot decode error structurally
+                                // unreachable, instead of just less likely.
+                                return "Error: This task grew too large for the model's context window mid-run, even after compacting. Try a narrower request or start a new conversation.".to_string();
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        // Best-effort, same spirit as emit_context_usage_update
+                        // elsewhere in this file: a transient usage-computation
+                        // failure (e.g. a DB hiccup) shouldn't block generation.
+                    }
+                }
+
+                match engine.render_chat_prompt(&messages) {
+                    Ok(rendered) => engine
+                        .generate(&rendered, 256, true, |_piece| {}, || false)
+                        .unwrap_or_else(|e| format!("Error: inference failed: {e}")),
+                    Err(e) => format!("Error: failed to render chat prompt: {e}"),
+                }
             }
         },
-        |call| {
+        |tool_call_id, call| {
             execute_top_level_tool(
+                tool_call_id,
                 call,
                 &conn,
                 engine,
@@ -666,25 +915,63 @@ pub async fn send_agent_message(
     };
 
     let now = now_ms();
-    conn.call({
-        let conversation_id = conversation_id.clone();
-        let final_text = final_text.clone();
-        move |conn: &mut Connection| -> rusqlite::Result<()> {
-            let seq: i64 = conn.query_row(
-                "SELECT COALESCE(MAX(sequence), -1) + 1 FROM messages WHERE conversation_id = ?1",
-                [&conversation_id],
-                |row| row.get(0),
-            )?;
-            conn.execute(
-                "INSERT INTO messages (id, conversation_id, role, content_type, content, created_at, sequence) VALUES (?1, ?2, 'assistant', 'text', ?3, ?4, ?5)",
-                rusqlite::params![Uuid::now_v7().to_string(), conversation_id, final_text, now, seq],
-            )?;
-            conn.execute("UPDATE conversations SET updated_at = ?1 WHERE id = ?2", rusqlite::params![now, conversation_id])?;
-            Ok(())
+    let final_seq: i64 = conn
+        .call({
+            let conversation_id = conversation_id.clone();
+            let final_text = final_text.clone();
+            move |conn: &mut Connection| -> rusqlite::Result<i64> {
+                let seq: i64 = conn.query_row(
+                    "SELECT COALESCE(MAX(sequence), -1) + 1 FROM messages WHERE conversation_id = ?1",
+                    [&conversation_id],
+                    |row| row.get(0),
+                )?;
+                conn.execute(
+                    "INSERT INTO messages (id, conversation_id, role, content_type, content, created_at, sequence) VALUES (?1, ?2, 'assistant', 'text', ?3, ?4, ?5)",
+                    rusqlite::params![Uuid::now_v7().to_string(), conversation_id, final_text, now, seq],
+                )?;
+                conn.execute("UPDATE conversations SET updated_at = ?1 WHERE id = ?2", rusqlite::params![now, conversation_id])?;
+                Ok(seq)
+            }
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Streaming (UI refactor): the final answer is the last item Loop 1
+    // ever appends -- signal it the same way every tool_call/tool_result
+    // did throughout the turn, so the frontend's live view converges on
+    // the real persisted text rather than relying solely on this
+    // function's own return value.
+    let _ = app.emit(
+        "agent-message-persisted",
+        AgentMessagePersisted {
+            conversation_id: conversation_id.clone(),
+        },
+    );
+
+    // 010-context-window-management/US1: re-acquires the engine (the
+    // earlier `guard` was dropped before this final persistence) so the
+    // indicator reflects usage including the assistant's own final answer,
+    // not just the state as of the last tool call. Also fills in this final
+    // answer's own output token_count (UI refactor), same follow-up-update
+    // pattern used elsewhere in this file.
+    {
+        let guard = inference.0.lock().await;
+        if let Some(engine) = guard.as_ref() {
+            if let Ok(token_count) = engine.count_tokens(&final_text) {
+                let conversation_id_for_update = conversation_id.clone();
+                let _ = conn
+                    .call(move |conn: &mut Connection| -> rusqlite::Result<()> {
+                        conn.execute(
+                            "UPDATE messages SET token_count = ?1 WHERE conversation_id = ?2 AND sequence = ?3",
+                            rusqlite::params![token_count as i64, conversation_id_for_update, final_seq],
+                        )?;
+                        Ok(())
+                    })
+                    .await;
+            }
+            emit_context_usage_update(&app, &conn, engine, &conversation_id, cwd.as_deref()).await;
         }
-    })
-    .await
-    .map_err(|e| e.to_string())?;
+    }
 
     Ok(final_text)
 }
@@ -898,7 +1185,7 @@ mod tests {
         let conn_bg = conn.clone();
         let emitted_bg = emitted.clone();
         let handle = tokio::spawn(async move {
-            handle_ask_user_question(&conn_bg, &pending_bg, "c1", &call, |event| {
+            handle_ask_user_question(None, &conn_bg, &pending_bg, "c1", "q1", &call, |event| {
                 *emitted_bg.lock().unwrap() = Some(event);
             })
             .await
@@ -993,12 +1280,16 @@ mod tests {
         seed_conversation(&conn, "sub").await;
 
         // What the subagent's own nested dispatch does for its own tool
-        // calls (mirrors execute_top_level_tool's `|c| { ... }` closure).
+        // calls (mirrors execute_top_level_tool's `|tool_call_id, c| { ...
+        // }` closure).
         persist_tool_call_and_result(
+            None,
             &conn,
             "sub",
+            "call1",
             "Read",
             serde_json::json!({"file_path": "/tmp/notes.txt"}),
+            "hi",
             serde_json::json!({"toolName": "Read", "filePath": "/tmp/notes.txt", "outcome": {"ok": true, "content": "hi", "truncated": false}}),
         )
         .await;
@@ -1006,10 +1297,13 @@ mod tests {
         // What execute_top_level_tool persists on the PARENT once the
         // delegation itself completes (FR-010).
         persist_tool_call_and_result(
+            None,
             &conn,
             "parent",
+            "call2",
             "Task",
             serde_json::json!({"prompt": "go read the file"}),
+            "the file says hi",
             serde_json::json!({
                 "toolName": "Task", "prompt": "go read the file",
                 "subagentConversationId": "sub", "state": "complete",

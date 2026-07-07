@@ -2,20 +2,18 @@
 //! FR-016), wired to real inference + real tools via
 //! `commands::agent::send_agent_message`. The loop's control flow (turn
 //! counting, tool dispatch, subagent-nesting rejection, response parsing)
-//! is real and tested; two known simplifications are called out where
-//! they live (`commands/agent.rs`'s doc comment): no live per-turn
-//! streaming yet, and agent turns bypass the scheduler queue.
+//! is real and tested; a known simplification is called out where it
+//! lives (`commands/agent.rs`'s doc comment): agent turns bypass the
+//! scheduler queue.
 //!
-//! GBNF grammar-constrained generation (FR-014, for models without native
-//! tool calling) is NOT implemented in this pass — a real, correct
-//! integration with llama-cpp-2's grammar-constrained sampler is
-//! substantial additional work on its own, and is called out here rather
-//! than silently left as a TODO. The loop currently relies on prompting
-//! (`SYSTEM_PROMPT` below) + parsing a JSON tool-call convention out of
-//! the model's plain-text output (see `parse_response`), falling back to
-//! treating unparseable output as a final plain-text answer — meaning a
-//! model that ignores or garbles the convention just never calls tools,
-//! rather than crashing the loop.
+//! Tool calls are prompted for (`SYSTEM_PROMPT` below) *and*
+//! grammar-constrained at generation time
+//! (`InferenceEngine::generate`'s `allow_tool_calls`, a lazy GBNF grammar
+//! that only activates once the model starts emitting `{"tool_call"`) —
+//! the model's JSON is guaranteed syntactically valid once that happens,
+//! so `parse_response` below trusts it rather than defending against
+//! malformed output. A model that never starts down that path at all just
+//! answers in plain text, same as before.
 
 pub mod dispatch;
 pub mod rich_content;
@@ -201,6 +199,11 @@ impl AgentContext {
 /// real inference engine / tool dispatch specifically so this control flow
 /// — the part with real correctness requirements (turn counting, nesting
 /// rejection) — is unit-testable without a loaded model or a filesystem.
+/// `execute_tool` receives the freshly-assigned `tool_call_id` alongside
+/// the call itself — generated here (not by the model, which only ever
+/// decides `name`/`arguments`), the same convention OpenAI/Anthropic use,
+/// so `commands::agent`'s persistence layer can store the same id on both
+/// the `tool_call` and `tool_result` rows it writes for this call.
 pub async fn run_loop<F, Fut, G, GFut>(
     context: &AgentContext,
     initial_messages: Vec<ChatMessage>,
@@ -210,7 +213,7 @@ pub async fn run_loop<F, Fut, G, GFut>(
 where
     F: FnMut(Vec<ChatMessage>) -> Fut,
     Fut: Future<Output = String>,
-    G: FnMut(ToolCall) -> GFut,
+    G: FnMut(String, ToolCall) -> GFut,
     GFut: Future<Output = String>,
 {
     let mut messages = initial_messages;
@@ -220,8 +223,14 @@ where
         match parse_response(&response) {
             LoopStep::Done(text) => return Ok(text),
             LoopStep::ToolCall(call) => {
+                let tool_call_id = uuid::Uuid::now_v7().to_string();
                 let tool_name = call.name.clone();
-                messages.push(ChatMessage::assistant(response));
+                let arguments = call.arguments.clone();
+                messages.push(ChatMessage::tool_use(
+                    tool_call_id.clone(),
+                    tool_name.clone(),
+                    arguments,
+                ));
                 let result = if call.name == "Task" && context.is_subagent {
                     // FR-016: one-level nesting — a subagent cannot itself
                     // spawn a further subagent. Fed back as an ordinary
@@ -230,11 +239,9 @@ where
                     "Error: subagents cannot spawn further subagents (one-level nesting limit)"
                         .to_string()
                 } else {
-                    execute_tool(call).await
+                    execute_tool(tool_call_id.clone(), call).await
                 };
-                messages.push(ChatMessage::user(format!(
-                    "Tool result for {tool_name}: {result}"
-                )));
+                messages.push(ChatMessage::tool_result(tool_call_id, tool_name, result));
             }
         }
     }
@@ -339,7 +346,7 @@ mod tests {
                 call_count += 1;
                 async move { r }
             },
-            |call| async move {
+            |_tool_call_id, call| async move {
                 assert_eq!(call.name, "Read");
                 "hello".to_string()
             },
@@ -362,7 +369,7 @@ mod tests {
             &context,
             vec![ChatMessage::user("start")],
             |_messages| async { r#"{"tool_call": {"name": "Read", "arguments": {}}}"#.to_string() },
-            |_call| async { "ok".to_string() },
+            |_tool_call_id, _call| async { "ok".to_string() },
         )
         .await;
 
@@ -391,7 +398,7 @@ mod tests {
                 };
                 async move { response }
             },
-            move |_call| {
+            move |_tool_call_id, _call| {
                 // A real subagent-nesting rejection never reaches here —
                 // `run_loop` intercepts `Task` calls under `is_subagent`
                 // before calling `execute_tool` at all.
@@ -425,7 +432,7 @@ mod tests {
                 };
                 async move { response }
             },
-            |call| async move {
+            |_tool_call_id, call| async move {
                 assert_eq!(call.name, "Task");
                 "subagent result: 42".to_string()
             },

@@ -38,11 +38,11 @@ describe("ShortcutsDialog", () => {
     const rows = screen.getAllByTestId("shortcut-item");
     expect(rows).toHaveLength(3);
     expect(screen.getByText("Focus the message input")).toBeInTheDocument();
-    expect(screen.getByText("⌘L")).toBeInTheDocument();
+    expect(screen.getByTestId("shortcut-combo-focus-input")).toHaveTextContent("⌘+L");
     expect(screen.getByText("Start a new conversation")).toBeInTheDocument();
-    expect(screen.getByText("⌘N")).toBeInTheDocument();
+    expect(screen.getByTestId("shortcut-combo-new-conversation")).toHaveTextContent("⌘+N");
     expect(screen.getByText("Show keyboard shortcuts")).toBeInTheDocument();
-    expect(screen.getByText("⌘K")).toBeInTheDocument();
+    expect(screen.getByTestId("shortcut-combo-show-shortcuts")).toHaveTextContent("⌘+K");
   });
 
   it("calling the close button invokes onClose", async () => {

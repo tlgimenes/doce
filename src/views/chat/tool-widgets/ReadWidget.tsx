@@ -1,4 +1,5 @@
 import type { ReadDetail } from "@/lib/ipc";
+import ViewFullOutput from "./ViewFullOutput";
 
 interface ReadWidgetProps {
   detail: ReadDetail;
@@ -30,6 +31,7 @@ export default function ReadWidget({ detail }: ReadWidgetProps) {
           Output truncated
         </p>
       )}
+      {detail.offloadedTo && <ViewFullOutput path={detail.offloadedTo} />}
     </div>
   );
 }

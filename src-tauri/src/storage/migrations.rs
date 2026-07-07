@@ -10,6 +10,12 @@ const MIGRATIONS: &[(i64, &str)] = &[
         3,
         include_str!("migrations/0003_rich_text_content_type.sql"),
     ),
+    (
+        4,
+        include_str!("migrations/0004_context_notice_content_type.sql"),
+    ),
+    (5, include_str!("migrations/0005_message_token_count.sql")),
+    (6, include_str!("migrations/0006_tool_call_id.sql")),
 ];
 
 pub fn apply_pending(conn: &mut Connection) -> rusqlite::Result<()> {
@@ -154,6 +160,70 @@ mod tests {
         assert_eq!(
             matched_rowid, rowid,
             "a post-migration insert must still be synced into messages_fts"
+        );
+    }
+
+    /// 010-context-window-management: 'context_notice' must satisfy
+    /// `content_type`'s CHECK constraint post-0004 — red until that
+    /// migration exists, same style as 0003's own analogous test above.
+    #[test]
+    fn context_notice_content_type_is_accepted_after_migration() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_pending(&mut conn).unwrap();
+        insert_conversation(&conn, "c1");
+
+        let result = conn.execute(
+            "INSERT INTO messages (id, conversation_id, role, content_type, content, created_at, sequence) VALUES ('m1', 'c1', 'assistant', 'context_notice', '{\"kind\":\"cleared\",\"clearedCount\":1,\"notice\":\"n\"}', 0, 0)",
+            [],
+        );
+
+        assert!(
+            result.is_ok(),
+            "expected 'context_notice' to satisfy messages.content_type's CHECK constraint, got {result:?}"
+        );
+    }
+
+    /// Same rowid/FTS-survival proof as `existing_row_keeps_its_rowid_and_fts_entry_across_the_rebuild`,
+    /// specifically across the 0004 rebuild (applying up to 0003 first).
+    #[test]
+    fn existing_row_keeps_its_rowid_and_fts_entry_across_the_0004_rebuild() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_up_to(&mut conn, 3);
+        insert_conversation(&conn, "c1");
+        conn.execute(
+            "INSERT INTO messages (id, conversation_id, role, content_type, content, created_at, sequence) VALUES ('m1', 'c1', 'user', 'text', 'a searchable snowdrift of text', 0, 0)",
+            [],
+        )
+        .unwrap();
+
+        let rowid_before: i64 = conn
+            .query_row("SELECT rowid FROM messages WHERE id = 'm1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+
+        apply_pending(&mut conn).unwrap();
+
+        let rowid_after: i64 = conn
+            .query_row("SELECT rowid FROM messages WHERE id = 'm1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            rowid_before, rowid_after,
+            "rowid must survive the 0004 table rebuild"
+        );
+
+        let matched_rowid: i64 = conn
+            .query_row(
+                "SELECT rowid FROM messages_fts WHERE messages_fts MATCH 'snowdrift'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            matched_rowid, rowid_before,
+            "pre-migration content must still be found via messages_fts, at its original rowid"
         );
     }
 }

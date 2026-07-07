@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { EditorContent, useEditor, useEditorState, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { Placeholder } from "@tiptap/extension-placeholder";
@@ -115,6 +115,16 @@ export interface RichInputProps {
   inputTestId?: string;
   /** `data-testid` for the submit button, same purpose as `inputTestId`. */
   submitTestId?: string;
+  /**
+   * 010-context-window-management (UI refactor): an optional node rendered
+   * immediately after the attach button — the composer-integrated context
+   * usage gauge, when the caller has a real conversation to report usage
+   * for (`Chat.tsx`/`Workspace.tsx`; omitted by `EmptyState.tsx`, which has
+   * no conversation yet). Kept as an injected node rather than a
+   * `conversationId` prop so this file stays decoupled from context-usage
+   * concerns — callers own which gauge/component renders here, if any.
+   */
+  contextGauge?: ReactNode;
 }
 
 /**
@@ -154,6 +164,7 @@ export default function RichInput({
   placeholder,
   inputTestId,
   submitTestId,
+  contextGauge,
 }: RichInputProps) {
   const onSubmitRef = useRef(onSubmit);
   const placeholderRef = useRef(placeholder);
@@ -476,21 +487,24 @@ export default function RichInput({
           )}
         />
         <div className="flex items-center justify-between">
-          {/* T047: the file-picker button (paperclip, matching this
-              codebase's existing icon-button styling — same shape as the
-              submit button below, `variant="ghost"` since this is a
-              secondary action). */}
-          <Button
-            type="button"
-            variant="ghost"
-            className="h-8 w-8 shrink-0 rounded-full p-0"
-            onClick={() => void pickAttachment()}
-            disabled={disabled}
-            aria-label="Attach a file"
-            data-testid="rich-input-attach"
-          >
-            <PaperclipIcon size={16} />
-          </Button>
+          <div className="flex items-center gap-1">
+            {/* T047: the file-picker button (paperclip, matching this
+                codebase's existing icon-button styling — same shape as the
+                submit button below, `variant="ghost"` since this is a
+                secondary action). */}
+            <Button
+              type="button"
+              variant="ghost"
+              className="h-8 w-8 shrink-0 rounded-full p-0"
+              onClick={() => void pickAttachment()}
+              disabled={disabled}
+              aria-label="Attach a file"
+              data-testid="rich-input-attach"
+            >
+              <PaperclipIcon size={16} />
+            </Button>
+            {contextGauge}
+          </div>
           <Button
             type="button"
             variant="primary"

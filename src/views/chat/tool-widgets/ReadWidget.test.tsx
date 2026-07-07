@@ -40,4 +40,32 @@ describe("ReadWidget (004-tool-call-widgets, US4)", () => {
     render(<ReadWidget detail={detail} />);
     expect(screen.getByText(/No such file or directory/)).toBeInTheDocument();
   });
+
+  // --- 010-context-window-management/US3 ---
+
+  it("shows a 'View full output' affordance when the result was offloaded", () => {
+    const detail: ReadDetail = {
+      toolName: "Read",
+      filePath: "/tmp/huge.txt",
+      offset: null,
+      limit: null,
+      outcome: { ok: true, content: "preview only...", truncated: true },
+      offloadedTo: "/data/tool-outputs/conv1/call1.txt",
+    };
+    render(<ReadWidget detail={detail} />);
+    expect(screen.getByTestId("view-full-output-button")).toBeInTheDocument();
+  });
+
+  it("does not show the affordance when the result was not offloaded", () => {
+    const detail: ReadDetail = {
+      toolName: "Read",
+      filePath: "/tmp/notes.txt",
+      offset: null,
+      limit: null,
+      outcome: { ok: true, content: "hello world", truncated: false },
+      offloadedTo: null,
+    };
+    render(<ReadWidget detail={detail} />);
+    expect(screen.queryByTestId("view-full-output-button")).not.toBeInTheDocument();
+  });
 });

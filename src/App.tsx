@@ -9,6 +9,7 @@ import ShortcutsDialog from "@/views/shortcuts/ShortcutsDialog";
 import { commands, type Conversation } from "@/lib/ipc";
 import { buildShortcuts } from "@/lib/shortcuts";
 import { wireConversationStreamEvents } from "@/state/conversationStreamStore";
+import { wireContextUsageEvents } from "@/state/contextUsageStore";
 import { withTimeout } from "@/lib/withTimeout";
 
 // A real Tauri invoke() call has no built-in timeout: if the IPC bridge
@@ -60,6 +61,7 @@ export default function App() {
 
   useEffect(() => {
     wireConversationStreamEvents();
+    wireContextUsageEvents();
     let cancelled = false;
     checkReadyWithRetries().then((isReady) => {
       if (!cancelled) setReady(isReady);

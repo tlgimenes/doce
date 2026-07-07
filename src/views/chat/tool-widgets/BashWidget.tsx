@@ -1,4 +1,5 @@
 import type { BashDetail } from "@/lib/ipc";
+import ViewFullOutput from "./ViewFullOutput";
 
 interface BashWidgetProps {
   detail: BashDetail;
@@ -86,6 +87,7 @@ export default function BashWidget({ detail }: BashWidgetProps) {
           Output truncated
         </p>
       )}
+      {detail.offloadedTo && <ViewFullOutput path={detail.offloadedTo} />}
     </div>
   );
 }

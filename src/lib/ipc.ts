@@ -40,11 +40,15 @@ export interface Message {
   id: string;
   conversationId: string;
   role: "user" | "assistant" | "tool";
-  contentType: "text" | "tool_call" | "tool_result" | "error" | "rich_text";
+  contentType: "text" | "tool_call" | "tool_result" | "error" | "rich_text" | "context_notice";
   content: string;
   toolName: string | null;
   createdAt: number;
   durationMs: number | null;
+  /** 010-context-window-management (UI refactor): input tokens for a user
+   * message, output tokens for an assistant reply — real tokenizer count,
+   * frozen at persistence time (mirrors durationMs). */
+  tokenCount: number | null;
 }
 
 // 004-tool-call-widgets: a `tool_result` message's `content` (JSON string)
@@ -64,6 +68,10 @@ export interface ReadDetail {
   offset: number | null;
   limit: number | null;
   outcome: ReadOutcome;
+  /** 010-context-window-management/US3: set when this result was large
+   * enough to be offloaded to disk — the model saw only a preview, but the
+   * full content is still readable from this path. */
+  offloadedTo?: string | null;
 }
 
 export type WriteOutcome = { ok: true } | { ok: false; error: string };
@@ -96,6 +104,10 @@ export interface BashDetail {
   command: string | null;
   timeoutMs: number | null;
   outcome: BashOutcome;
+  /** 010-context-window-management/US3: set when this result was large
+   * enough to be offloaded to disk — the model saw only a preview, but the
+   * full stdout/stderr is still readable from this path. */
+  offloadedTo?: string | null;
 }
 
 export interface GlobDetail {
@@ -195,6 +207,35 @@ export function parseToolResultDetail(
       arguments: null,
       outcome: { ok: false, text: content },
     };
+  }
+}
+
+/** Parses a still-*pending* `AskUserQuestion` tool_call row's `content`
+ * (shape `{"arguments": {header, question, options, multiSelect,
+ * questionId}}` -- `persist_tool_call`'s generic wrapper around whatever
+ * arguments a tool call carries) into the same `AskUserQuestionDetail`
+ * shape the *answered* widget already renders from, with `answer: null`.
+ * Returns `null` on any parse failure or missing `questionId` (an older
+ * tool_call row from before this field existed, or plain corruption)
+ * rather than throwing -- there is simply nothing answerable to show. */
+export function parseAskUserQuestionCallDetail(content: string): AskUserQuestionDetail | null {
+  try {
+    const parsed = JSON.parse(content) as { arguments?: Record<string, unknown> };
+    const args = parsed?.arguments;
+    if (!args || typeof args.questionId !== "string" || typeof args.question !== "string") {
+      return null;
+    }
+    return {
+      toolName: "AskUserQuestion",
+      questionId: args.questionId,
+      header: typeof args.header === "string" ? args.header : "",
+      question: args.question,
+      options: Array.isArray(args.options) ? (args.options as QuestionOption[]) : [],
+      multiSelect: args.multiSelect === true,
+      answer: null,
+    };
+  } catch {
+    return null;
   }
 }
 
@@ -301,6 +342,36 @@ export interface AttachedFile {
   name: string;
 }
 
+// 010-context-window-management — mirrors src-tauri/src/context/mod.rs's
+// `ContextUsage`/`ContextState` and data-model.md's `ContextNoticeDetail`.
+export type ContextState = "normal" | "warning" | "justCompacted";
+
+export interface ContextUsage {
+  conversationId: string;
+  tokensUsed: number;
+  tokenBudget: number;
+  state: ContextState;
+}
+
+export type ContextNoticeDetail =
+  | { kind: "cleared"; clearedCount: number; notice: string }
+  | { kind: "summarized"; summary: string; notice: string };
+
+/** Parses a `context_notice` message's `content`, degrading to a plain-text
+ * notice on any parse failure rather than throwing (mirrors
+ * `parseToolResultDetail`'s degrade-gracefully convention). */
+export function parseContextNoticeDetail(content: string): ContextNoticeDetail {
+  try {
+    const parsed = JSON.parse(content) as { kind?: unknown };
+    if (parsed.kind === "cleared" || parsed.kind === "summarized") {
+      return parsed as ContextNoticeDetail;
+    }
+  } catch {
+    // fall through to the degraded shape below
+  }
+  return { kind: "cleared", clearedCount: 0, notice: content };
+}
+
 export const commands = {
   getHardwareProfile: () => invoke<HardwareProfile>("get_hardware_profile"),
   startModelInstall: (modelId?: string) =>
@@ -343,6 +414,10 @@ export const commands = {
     invoke<McpToolInfo[]>("list_mcp_server_tools", { serverId }),
   listSkills: () => invoke<SkillSummary[]>("list_skills"),
   readAttachedFile: (path: string) => invoke<AttachedFile>("read_attached_file", { path }),
+  getContextUsage: (conversationId: string) =>
+    invoke<ContextUsage>("get_context_usage", { conversationId }),
+  compactConversation: (conversationId: string) =>
+    invoke<ContextUsage>("compact_conversation", { conversationId }),
 };
 
 export interface ModelInstallProgressPayload {
@@ -362,6 +437,7 @@ export interface AssistantMessageCompletePayload {
   conversationId: string;
   messageId: string;
   durationMs: number;
+  tokenCount: number | null;
 }
 
 export interface AssistantMessageErrorPayload {
@@ -390,6 +466,15 @@ export interface AskUserQuestionEventPayload {
   multiSelect: boolean;
 }
 
+/** Streaming (loop-level, not token-level): fired every time a new row is
+ * persisted for `conversationId` during an agent turn — a tool_call, its
+ * paired tool_result, or the final answer — so the frontend can re-fetch
+ * `list_messages` and re-render as the loop progresses, instead of waiting
+ * for `send_agent_message`'s single promise to resolve at the very end. */
+export interface AgentMessagePersistedPayload {
+  conversationId: string;
+}
+
 export const events = {
   onModelInstallProgress: (cb: (p: ModelInstallProgressPayload) => void): Promise<UnlistenFn> =>
     listen<ModelInstallProgressPayload>("model-install-progress", (e) => cb(e.payload)),
@@ -405,4 +490,10 @@ export const events = {
     listen<AssistantMessageErrorPayload>("assistant-message-error", (e) => cb(e.payload)),
   onGenerationQueueUpdate: (cb: (p: GenerationQueueUpdatePayload) => void): Promise<UnlistenFn> =>
     listen<GenerationQueueUpdatePayload>("generation-queue-update", (e) => cb(e.payload)),
+  onContextUsageUpdate: (cb: (p: ContextUsage) => void): Promise<UnlistenFn> =>
+    listen<ContextUsage>("context-usage-update", (e) => cb(e.payload)),
+  onAgentMessagePersisted: (
+    cb: (p: AgentMessagePersistedPayload) => void,
+  ): Promise<UnlistenFn> =>
+    listen<AgentMessagePersistedPayload>("agent-message-persisted", (e) => cb(e.payload)),
 };
