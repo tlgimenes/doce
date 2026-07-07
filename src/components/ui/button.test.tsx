@@ -62,12 +62,12 @@ describe("Button", () => {
     expect(button.className).toContain("p-0");
   });
 
-  it("is reachable via Tab and shows a focus-visible ring", async () => {
+  it("is reachable via Tab and relies on the app-global focus outline", async () => {
     render(<Button>Focusable</Button>);
     const button = screen.getByRole("button", { name: "Focusable" });
     await userEvent.tab();
     expect(button).toHaveFocus();
-    expect(button.className).toMatch(/focus-visible:ring/);
+    expect(button.className).not.toMatch(/focus-visible:(outline-none|ring)/);
   });
 
   it("activates via Enter and Space when focused", async () => {

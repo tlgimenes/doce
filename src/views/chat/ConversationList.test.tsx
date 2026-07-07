@@ -119,4 +119,28 @@ describe("ConversationList", () => {
 
     expect(onNewConversation).toHaveBeenCalledTimes(1);
   });
+
+  it("keeps the window drag affordance as a fixed row above normal and search states", async () => {
+    vi.mocked(commands.listConversations).mockResolvedValue([]);
+
+    render(
+      <ConversationList
+        activeId={null}
+        onSelect={vi.fn()}
+        onNewConversation={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />,
+    );
+
+    const sidebar = await screen.findByTestId("conversation-list");
+    const affordance = screen.getByTestId("sidebar-window-affordance");
+    expect(sidebar.firstElementChild).toBe(affordance);
+    expect(affordance).toHaveClass("h-10", "shrink-0");
+    expect(screen.getByTestId("sidebar-actions")).not.toHaveClass("mt-8");
+
+    await userEvent.click(screen.getByTestId("open-search"));
+
+    expect(screen.getByTestId("search-panel")).toBeInTheDocument();
+    expect(sidebar.firstElementChild).toBe(affordance);
+  });
 });

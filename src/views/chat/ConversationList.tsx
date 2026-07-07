@@ -92,12 +92,12 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
         data-testid="conversation-list"
       >
         <div
-          className="absolute left-0 right-0 top-0 h-10 select-none"
+          className="-mx-2 h-10 shrink-0 select-none"
           data-tauri-drag-region
-          data-testid="sidebar-drag-region"
+          data-testid="sidebar-window-affordance"
           onMouseDown={startDrag}
         />
-        {searching && (
+        {searching ? (
           <SearchPanel
             onClose={() => setSearching(false)}
             onSelect={(id) => {
@@ -110,77 +110,80 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
               setSearching(false);
             }}
           />
+        ) : (
+          <>
+            <div className="mb-3 flex flex-col gap-0.5" data-testid="sidebar-actions">
+              <Button
+                variant="ghost"
+                size="sm"
+                className={`${SIDEBAR_ACTION_BUTTON} group justify-between`}
+                onClick={createNew}
+                data-testid="new-conversation"
+                aria-label="New agent"
+              >
+                <span className="flex items-center gap-1">
+                  <PlusIcon size={16} weight="bold" />
+                  New Agent
+                </span>
+                <KeyboardShortcut
+                  keys={["⌘", "N"]}
+                  className="text-xs text-sidebar-foreground/60 opacity-0 transition-opacity group-hover:opacity-100"
+                />
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className={`${SIDEBAR_ACTION_BUTTON} group justify-between`}
+                onClick={openSearch}
+                data-testid="open-search"
+                aria-label="Search conversations"
+              >
+                <span className="flex items-center gap-1">
+                  <MagnifyingGlassIcon size={16} />
+                  Search
+                </span>
+                <KeyboardShortcut
+                  keys={["⌘", "F"]}
+                  className="text-xs text-sidebar-foreground/60 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
+                />
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className={SIDEBAR_ACTION_BUTTON}
+                onClick={onOpenSettings}
+                data-testid="open-settings"
+                aria-label="Settings"
+              >
+                <GearIcon size={16} />
+                Settings
+              </Button>
+            </div>
+            <div className="flex-1 space-y-1 overflow-y-auto">
+              {conversations.map((c) => (
+                <Button
+                  key={c.id}
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onSelect(c)}
+                  data-testid="conversation-item"
+                  data-conversation-id={c.id}
+                  className={`w-full justify-start gap-2 py-2 text-left ${
+                    c.id === activeId ? "bg-background" : "bg-background/40 hover:bg-background/70"
+                  }`}
+                >
+                  <span
+                    className={`size-2 shrink-0 rounded-full ${STATUS_COLOR[c.status]}`}
+                    title={STATUS_LABEL[c.status]}
+                    data-testid="conversation-status-dot"
+                    data-status={c.status}
+                  />
+                  <span className="truncate">{c.title}</span>
+                </Button>
+              ))}
+            </div>
+          </>
         )}
-        <div className="mb-3 mt-8 flex flex-col gap-0.5">
-          <Button
-            variant="ghost"
-            size="sm"
-            className={`${SIDEBAR_ACTION_BUTTON} group justify-between`}
-            onClick={createNew}
-            data-testid="new-conversation"
-            aria-label="New agent"
-          >
-            <span className="flex items-center gap-1">
-              <PlusIcon size={16} weight="bold" />
-              New Agent
-            </span>
-            <KeyboardShortcut
-              keys={["⌘", "N"]}
-              className="text-xs text-sidebar-foreground/60 opacity-0 transition-opacity group-hover:opacity-100"
-            />
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className={`${SIDEBAR_ACTION_BUTTON} group justify-between`}
-            onClick={openSearch}
-            data-testid="open-search"
-            aria-label="Search conversations"
-          >
-            <span className="flex items-center gap-1">
-              <MagnifyingGlassIcon size={16} />
-              Search
-            </span>
-            <KeyboardShortcut
-              keys={["⌘", "F"]}
-              className="text-xs text-sidebar-foreground/60 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
-            />
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className={SIDEBAR_ACTION_BUTTON}
-            onClick={onOpenSettings}
-            data-testid="open-settings"
-            aria-label="Settings"
-          >
-            <GearIcon size={16} />
-            Settings
-          </Button>
-        </div>
-        <div className="flex-1 space-y-1 overflow-y-auto">
-          {conversations.map((c) => (
-            <Button
-              key={c.id}
-              variant="ghost"
-              size="sm"
-              onClick={() => onSelect(c)}
-              data-testid="conversation-item"
-              data-conversation-id={c.id}
-              className={`w-full justify-start gap-2 py-2 text-left ${
-                c.id === activeId ? "bg-background" : "bg-background/40 hover:bg-background/70"
-              }`}
-            >
-              <span
-                className={`size-2 shrink-0 rounded-full ${STATUS_COLOR[c.status]}`}
-                title={STATUS_LABEL[c.status]}
-                data-testid="conversation-status-dot"
-                data-status={c.status}
-              />
-              <span className="truncate">{c.title}</span>
-            </Button>
-          ))}
-        </div>
       </div>
     );
   },
