@@ -87,30 +87,32 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     // firing a real event, since the *effect* -- a fresh transcript once
     // the turn is done -- is what matters here, not the event plumbing
     // itself).
-    vi.mocked(commands.listMessages).mockResolvedValueOnce([]).mockResolvedValueOnce([
-      {
-        id: "u1",
-        conversationId: "conv-1",
-        role: "user",
-        contentType: "text",
-        content: "list the files here",
-        toolName: null,
-        createdAt: 1,
-        durationMs: null,
-        tokenCount: null,
-      },
-      {
-        id: "a1",
-        conversationId: "conv-1",
-        role: "assistant",
-        contentType: "text",
-        content: "Found 3 files: a.rs, b.rs, c.rs",
-        toolName: null,
-        createdAt: 2,
-        durationMs: null,
-        tokenCount: null,
-      },
-    ]);
+    vi.mocked(commands.listMessages)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          id: "u1",
+          conversationId: "conv-1",
+          role: "user",
+          contentType: "text",
+          content: "list the files here",
+          toolName: null,
+          createdAt: 1,
+          durationMs: null,
+          tokenCount: null,
+        },
+        {
+          id: "a1",
+          conversationId: "conv-1",
+          role: "assistant",
+          contentType: "text",
+          content: "Found 3 files: a.rs, b.rs, c.rs",
+          toolName: null,
+          createdAt: 2,
+          durationMs: null,
+          tokenCount: null,
+        },
+      ]);
     let resolveAgent!: (value: string) => void;
     vi.mocked(commands.sendAgentMessage).mockReturnValue(
       new Promise((resolve) => {
@@ -236,7 +238,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
   // `rx.await` while the model waits for an answer no UI ever showed,
   // holding the one global inference-engine lock the whole time. ---
 
-  it("shows the pending question widget (not \"Working…\") when the latest message is an unanswered AskUserQuestion tool_call, and answering it calls answerUserQuestion", async () => {
+  it('shows the pending question widget (not "Working…") when the latest message is an unanswered AskUserQuestion tool_call, and answering it calls answerUserQuestion', async () => {
     vi.mocked(commands.listMessages).mockResolvedValue([
       {
         id: "u1",
@@ -567,8 +569,12 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
   });
 
   it("ignores stale listMessages results from a previous conversation", async () => {
-    let resolveConv1Messages!: (messages: Awaited<ReturnType<typeof commands.listMessages>>) => void;
-    let resolveConv2Messages!: (messages: Awaited<ReturnType<typeof commands.listMessages>>) => void;
+    let resolveConv1Messages!: (
+      messages: Awaited<ReturnType<typeof commands.listMessages>>,
+    ) => void;
+    let resolveConv2Messages!: (
+      messages: Awaited<ReturnType<typeof commands.listMessages>>,
+    ) => void;
     vi.mocked(commands.listMessages)
       .mockReturnValueOnce(
         new Promise((resolve) => {
@@ -872,23 +878,25 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
       tokenBudget: 2048,
       state: "justCompacted",
     });
-    vi.mocked(commands.listMessages).mockResolvedValueOnce([]).mockResolvedValueOnce([
-      {
-        id: "notice-1",
-        conversationId: "conv-1",
-        role: "assistant",
-        contentType: "context_notice",
-        content: JSON.stringify({
-          kind: "summarized",
-          summary: "the gist of it",
-          notice: "Conversation condensed to save space",
-        }),
-        toolName: null,
-        createdAt: Date.now(),
-        durationMs: null,
-        tokenCount: null,
-      },
-    ]);
+    vi.mocked(commands.listMessages)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          id: "notice-1",
+          conversationId: "conv-1",
+          role: "assistant",
+          contentType: "context_notice",
+          content: JSON.stringify({
+            kind: "summarized",
+            summary: "the gist of it",
+            notice: "Conversation condensed to save space",
+          }),
+          toolName: null,
+          createdAt: Date.now(),
+          durationMs: null,
+          tokenCount: null,
+        },
+      ]);
 
     render(<Workspace conversationId="conv-1" />);
     await screen.findByTestId("agent-input");

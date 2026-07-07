@@ -128,10 +128,7 @@ export default function App() {
     commands.setFocusedConversation(activeConversation?.id ?? null);
   }, [activeConversation]);
 
-  const activateConversation = (
-    conversation: Conversation,
-    initialTurn?: PendingInitialTurn,
-  ) => {
+  const activateConversation = (conversation: Conversation, initialTurn?: PendingInitialTurn) => {
     runViewTransition(() => {
       setShowSettings(false);
       setPendingInitialTurn(initialTurn ?? null);

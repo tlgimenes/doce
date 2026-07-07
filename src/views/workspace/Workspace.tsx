@@ -93,10 +93,7 @@ export default function Workspace({
     commands.listMessages(conversationId).then((loadedMessages) => {
       if (cancelled || currentConversationIdRef.current !== conversationId) return;
 
-      if (
-        loadedMessages.length === 0 &&
-        dispatchedInitialTurnRef.current === conversationId
-      ) {
+      if (loadedMessages.length === 0 && dispatchedInitialTurnRef.current === conversationId) {
         setMessages((prev) => (prev.length > 0 ? prev : loadedMessages));
         return;
       }
@@ -151,99 +148,102 @@ export default function Workspace({
   }, [messages]);
   const showThinking = thinking || sendInFlight;
 
-  const send = useCallback((content: string, richContent?: RichMessageContent): boolean => {
-    // 010-context-window-management (UI refactor): `/compact`, typed and
-    // submitted like any other message, is intercepted here before it ever
-    // becomes a persisted agent turn — it triggers compaction directly and
-    // refreshes the transcript instead of going through send_agent_message.
-    if (!richContent && isCompactCommand(content) && !sendInFlight) {
+  const send = useCallback(
+    (content: string, richContent?: RichMessageContent): boolean => {
+      // 010-context-window-management (UI refactor): `/compact`, typed and
+      // submitted like any other message, is intercepted here before it ever
+      // becomes a persisted agent turn — it triggers compaction directly and
+      // refreshes the transcript instead of going through send_agent_message.
+      if (!richContent && isCompactCommand(content) && !sendInFlight) {
+        void (async () => {
+          setError(null);
+          try {
+            const usage = await commands.compactConversation(conversationId);
+            if (currentConversationIdRef.current !== conversationId) return;
+
+            useContextUsageStore.getState().setUsage(usage);
+            const refreshed = await commands.listMessages(conversationId);
+            if (currentConversationIdRef.current !== conversationId) return;
+
+            setMessages(refreshed);
+          } catch (e) {
+            if (currentConversationIdRef.current === conversationId) {
+              setError(String(e));
+            }
+          }
+        })();
+        return false;
+      }
+
+      // richContent's own presence counts as "something to send" even when
+      // content (the flat-text extraction) is empty — a message that's
+      // entirely a chip (e.g. just a pasted-text or attachment node, no
+      // additional typed text) must not be silently dropped here.
+      //
+      // `pendingQuestion` (not just `thinking`, which is local state that
+      // resets to false on reload) also blocks a new turn: sending another
+      // message here wouldn't reach the model anyway (the previous turn's
+      // `send_agent_message` is still genuinely blocked on `rx.await`,
+      // holding the one global inference-engine lock) -- it would just
+      // persist and then hang right alongside it. Answer via the widget
+      // instead.
+      if ((!content.trim() && !richContent) || sendInFlight || pendingQuestion) return false;
+      if (!markSendInFlight(conversationId)) return false;
+
+      setError(null);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `u-${Date.now()}`,
+          conversationId,
+          role: "user",
+          contentType: richContent ? "rich_text" : "text",
+          content: richContent ? JSON.stringify(richContent) : content,
+          toolName: null,
+          createdAt: Date.now(),
+          durationMs: null,
+          // Not known until reload -- these are optimistic/synthetic
+          // messages, not the real persisted row (which does get a real
+          // token_count via a backend follow-up update).
+          tokenCount: null,
+        },
+      ]);
+      setThinking(true);
       void (async () => {
-        setError(null);
         try {
-          const usage = await commands.compactConversation(conversationId);
-          if (currentConversationIdRef.current !== conversationId) return;
-
-          useContextUsageStore.getState().setUsage(usage);
-          const refreshed = await commands.listMessages(conversationId);
-          if (currentConversationIdRef.current !== conversationId) return;
-
-          setMessages(refreshed);
+          // The `agent-message-persisted` event (subscribed above) is what
+          // actually keeps `messages` up to date turn-by-turn while this
+          // promise is pending -- this call is awaited for its errors and for
+          // knowing when to clear `thinking`, not for its return value, which
+          // by the time it resolves the live events have already rendered.
+          await commands.sendAgentMessage(
+            conversationId,
+            content,
+            richContent ? JSON.stringify(richContent) : undefined,
+          );
         } catch (e) {
           if (currentConversationIdRef.current === conversationId) {
             setError(String(e));
           }
+        } finally {
+          clearSendInFlight(conversationId);
+          if (currentConversationIdRef.current !== conversationId) return;
+
+          setThinking(false);
+          dispatchedInitialTurnRef.current = null;
+          // Safety net: a real refetch regardless of event timing/ordering,
+          // so the transcript is always correct once the turn is fully done --
+          // covers both the happy path and an error partway through the loop.
+          commands.listMessages(conversationId).then((loadedMessages) => {
+            if (currentConversationIdRef.current !== conversationId) return;
+            setMessages(loadedMessages);
+          });
         }
       })();
-      return false;
-    }
-
-    // richContent's own presence counts as "something to send" even when
-    // content (the flat-text extraction) is empty — a message that's
-    // entirely a chip (e.g. just a pasted-text or attachment node, no
-    // additional typed text) must not be silently dropped here.
-    //
-    // `pendingQuestion` (not just `thinking`, which is local state that
-    // resets to false on reload) also blocks a new turn: sending another
-    // message here wouldn't reach the model anyway (the previous turn's
-    // `send_agent_message` is still genuinely blocked on `rx.await`,
-    // holding the one global inference-engine lock) -- it would just
-    // persist and then hang right alongside it. Answer via the widget
-    // instead.
-    if ((!content.trim() && !richContent) || sendInFlight || pendingQuestion) return false;
-    if (!markSendInFlight(conversationId)) return false;
-
-    setError(null);
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: `u-${Date.now()}`,
-        conversationId,
-        role: "user",
-        contentType: richContent ? "rich_text" : "text",
-        content: richContent ? JSON.stringify(richContent) : content,
-        toolName: null,
-        createdAt: Date.now(),
-        durationMs: null,
-        // Not known until reload -- these are optimistic/synthetic
-        // messages, not the real persisted row (which does get a real
-        // token_count via a backend follow-up update).
-        tokenCount: null,
-      },
-    ]);
-    setThinking(true);
-    void (async () => {
-      try {
-        // The `agent-message-persisted` event (subscribed above) is what
-        // actually keeps `messages` up to date turn-by-turn while this
-        // promise is pending -- this call is awaited for its errors and for
-        // knowing when to clear `thinking`, not for its return value, which
-        // by the time it resolves the live events have already rendered.
-        await commands.sendAgentMessage(
-          conversationId,
-          content,
-          richContent ? JSON.stringify(richContent) : undefined,
-        );
-      } catch (e) {
-        if (currentConversationIdRef.current === conversationId) {
-          setError(String(e));
-        }
-      } finally {
-        clearSendInFlight(conversationId);
-        if (currentConversationIdRef.current !== conversationId) return;
-
-        setThinking(false);
-        dispatchedInitialTurnRef.current = null;
-        // Safety net: a real refetch regardless of event timing/ordering,
-        // so the transcript is always correct once the turn is fully done --
-        // covers both the happy path and an error partway through the loop.
-        commands.listMessages(conversationId).then((loadedMessages) => {
-          if (currentConversationIdRef.current !== conversationId) return;
-          setMessages(loadedMessages);
-        });
-      }
-    })();
-    return true;
-  }, [conversationId, pendingQuestion, sendInFlight]);
+      return true;
+    },
+    [conversationId, pendingQuestion, sendInFlight],
+  );
 
   useEffect(() => {
     if (!pendingInitialTurn) return;
