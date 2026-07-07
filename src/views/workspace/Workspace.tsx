@@ -227,17 +227,17 @@ export default function Workspace({
           }
         } finally {
           clearSendInFlight(conversationId);
-          if (currentConversationIdRef.current !== conversationId) return;
-
-          setThinking(false);
-          dispatchedInitialTurnRef.current = null;
-          // Safety net: a real refetch regardless of event timing/ordering,
-          // so the transcript is always correct once the turn is fully done --
-          // covers both the happy path and an error partway through the loop.
-          commands.listMessages(conversationId).then((loadedMessages) => {
-            if (currentConversationIdRef.current !== conversationId) return;
-            setMessages(loadedMessages);
-          });
+          if (currentConversationIdRef.current === conversationId) {
+            setThinking(false);
+            dispatchedInitialTurnRef.current = null;
+            // Safety net: a real refetch regardless of event timing/ordering,
+            // so the transcript is always correct once the turn is fully done --
+            // covers both the happy path and an error partway through the loop.
+            commands.listMessages(conversationId).then((loadedMessages) => {
+              if (currentConversationIdRef.current !== conversationId) return;
+              setMessages(loadedMessages);
+            });
+          }
         }
       })();
       return true;
