@@ -413,6 +413,74 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     });
   });
 
+  it("leaves a pending initial turn unconsumed until an existing in-flight send for the same conversation clears", async () => {
+    let resolveFirstSend!: (value: string) => void;
+    let resolvePendingSend!: (value: string) => void;
+    vi.mocked(commands.sendAgentMessage)
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveFirstSend = resolve;
+        }),
+      )
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolvePendingSend = resolve;
+        }),
+      );
+    const onConsumed = vi.fn();
+    const pendingInitialTurn = { conversationId: "conv-1", content: "pending followup" };
+
+    const { rerender } = render(<Workspace conversationId="conv-1" />);
+    await screen.findByTestId("agent-input");
+
+    await userEvent.type(screen.getByTestId("agent-input"), "first task");
+    await userEvent.click(screen.getByTestId("agent-send"));
+    await waitFor(() => {
+      expect(commands.sendAgentMessage).toHaveBeenCalledWith("conv-1", "first task", undefined);
+      expect(screen.getByTestId("agent-thinking")).toBeInTheDocument();
+    });
+
+    rerender(
+      <Workspace
+        key="conv-1-remount"
+        conversationId="conv-1"
+        pendingInitialTurn={pendingInitialTurn}
+        onPendingInitialTurnConsumed={onConsumed}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("agent-thinking")).toBeInTheDocument();
+    });
+    expect(commands.sendAgentMessage).toHaveBeenCalledTimes(1);
+    expect(onConsumed).not.toHaveBeenCalled();
+
+    resolveFirstSend("first done");
+    rerender(
+      <Workspace
+        key="conv-1-remount"
+        conversationId="conv-1"
+        pendingInitialTurn={pendingInitialTurn}
+        onPendingInitialTurnConsumed={onConsumed}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(commands.sendAgentMessage).toHaveBeenCalledTimes(2);
+      expect(commands.sendAgentMessage).toHaveBeenLastCalledWith(
+        "conv-1",
+        "pending followup",
+        undefined,
+      );
+      expect(onConsumed).toHaveBeenCalledWith("conv-1");
+    });
+
+    resolvePendingSend("pending done");
+    await waitFor(() => {
+      expect(screen.getByTestId("agent-input")).toHaveAttribute("contenteditable", "true");
+    });
+  });
+
   it("forwards rich content from a pending initial turn as a JSON string", async () => {
     const richContent: RichMessageContent = {
       segments: [
