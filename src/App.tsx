@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Onboarding from "@/views/onboarding/Onboarding";
-import Chat from "@/views/chat/Chat";
 import ConversationList, { type ConversationListHandle } from "@/views/chat/ConversationList";
 import EmptyState from "@/views/chat/EmptyState";
 import Workspace from "@/views/workspace/Workspace";
@@ -8,7 +7,6 @@ import Settings from "@/views/settings/Settings";
 import ShortcutsDialog from "@/views/shortcuts/ShortcutsDialog";
 import { commands, type Conversation } from "@/lib/ipc";
 import { buildShortcuts } from "@/lib/shortcuts";
-import { wireConversationStreamEvents } from "@/state/conversationStreamStore";
 import { wireContextUsageEvents } from "@/state/contextUsageStore";
 import { withTimeout } from "@/lib/withTimeout";
 import { runViewTransition } from "@/lib/viewTransition";
@@ -50,12 +48,6 @@ export async function checkReadyWithRetries(): Promise<boolean> {
 
 export default function App() {
   const [ready, setReady] = useState<boolean | null>(null);
-  // 006-chat-empty-state: the active conversation's own `workspaceId` (not a
-  // separate `agentMode` flag) decides which view renders — a flag
-  // disconnected from the actually-selected conversation was already a
-  // latent bug source (research.md § 4), and every new conversation is now
-  // always workspace-scoped, which would have made that disconnect far more
-  // visible.
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const [pendingInitialTurn, setPendingInitialTurn] = useState<PendingInitialTurn | null>(null);
   const [showSettings, setShowSettings] = useState(false);
@@ -63,7 +55,6 @@ export default function App() {
   const conversationListRef = useRef<ConversationListHandle>(null);
 
   useEffect(() => {
-    wireConversationStreamEvents();
     wireContextUsageEvents();
     let cancelled = false;
     checkReadyWithRetries().then((isReady) => {
@@ -86,11 +77,9 @@ export default function App() {
           // the composer is showing (there's no bare, input-less placeholder
           // anymore) — Cmd+L focuses that too, consistent with its whole
           // point ("jump straight into typing" from anywhere).
-          const selector = !activeConversation
-            ? '[data-testid="empty-state-input"]'
-            : activeConversation.workspaceId != null
-              ? '[data-testid="agent-input"]'
-              : '[data-testid="chat-input"]';
+          const selector = activeConversation
+            ? '[data-testid="agent-input"]'
+            : '[data-testid="empty-state-input"]';
           document.querySelector<HTMLElement>(selector)?.focus();
         },
         newConversation: () => {
@@ -160,24 +149,20 @@ export default function App() {
         {showSettings ? (
           <Settings onClose={() => setShowSettings(false)} />
         ) : activeConversation ? (
-          activeConversation.workspaceId != null ? (
-            <Workspace
-              key={activeConversation.id}
-              conversationId={activeConversation.id}
-              pendingInitialTurn={
-                pendingInitialTurn?.conversationId === activeConversation.id
-                  ? pendingInitialTurn
-                  : null
-              }
-              onPendingInitialTurnConsumed={(conversationId) =>
-                setPendingInitialTurn((prev) =>
-                  prev?.conversationId === conversationId ? null : prev,
-                )
-              }
-            />
-          ) : (
-            <Chat key={activeConversation.id} conversationId={activeConversation.id} />
-          )
+          <Workspace
+            key={activeConversation.id}
+            conversationId={activeConversation.id}
+            pendingInitialTurn={
+              pendingInitialTurn?.conversationId === activeConversation.id
+                ? pendingInitialTurn
+                : null
+            }
+            onPendingInitialTurnConsumed={(conversationId) =>
+              setPendingInitialTurn((prev) =>
+                prev?.conversationId === conversationId ? null : prev,
+              )
+            }
+          />
         ) : (
           <EmptyState onConversationCreated={activateConversation} />
         )}

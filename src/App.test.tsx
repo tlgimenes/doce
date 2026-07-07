@@ -12,8 +12,8 @@ const originalStartViewTransition = (document as TestDocument).startViewTransiti
 
 // Covers 005-keyboard-shortcuts: the app's first global (not input-scoped)
 // keyboard shortcuts, exercised against the real App component with every
-// child view's IPC surface mocked (matching Chat.test.tsx/ConversationList.
-// test.tsx/Workspace.test.tsx/Settings.test.tsx's existing mock shapes).
+// child view's IPC surface mocked (matching ConversationList.test.tsx,
+// Workspace.test.tsx, and Settings.test.tsx's existing mock shapes).
 //
 // 006-chat-empty-state changed what landing on "no conversation selected"
 // means: it's always the EmptyState composer now (never a bare,
@@ -186,7 +186,7 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     expect(document.activeElement).toBe(emptyStateInput);
   });
 
-  it("Cmd+L focuses the plain chat input for a pre-existing, non-workspace conversation (US1, FR-012 regression guard)", async () => {
+  it("renders Workspace and focuses the agent input for any selected conversation", async () => {
     vi.mocked(commands.listConversations).mockResolvedValue([
       {
         id: "legacy-1",
@@ -202,15 +202,15 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     await waitForReady();
 
     await userEvent.click(await screen.findByText("Before 006"));
-    const chatInput = await screen.findByTestId("chat-input");
+    const agentInput = await screen.findByTestId("agent-input");
 
     document.body.focus();
-    expect(document.activeElement).not.toBe(chatInput);
+    expect(document.activeElement).not.toBe(agentInput);
     pressCmd("l");
-    expect(document.activeElement).toBe(chatInput);
+    expect(document.activeElement).toBe(agentInput);
   });
 
-  it("Cmd+L focuses the agent task input for a workspace-scoped conversation, not the chat input (US1)", async () => {
+  it("Cmd+L focuses the agent task input after creating a conversation", async () => {
     render(<App />);
     await waitForReady();
 
@@ -229,7 +229,6 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     await screen.findByTestId("settings-view");
 
     expect(() => pressCmd("l")).not.toThrow();
-    expect(screen.queryByTestId("chat-input")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agent-input")).not.toBeInTheDocument();
     expect(screen.queryByTestId("empty-state-input")).not.toBeInTheDocument();
   });
