@@ -4,6 +4,12 @@ import userEvent from "@testing-library/user-event";
 import App, { checkReadyWithRetries } from "./App";
 import { commands, events } from "@/lib/ipc";
 
+type TestDocument = Document & {
+  startViewTransition?: (callback: () => void) => unknown;
+};
+
+const originalStartViewTransition = (document as TestDocument).startViewTransition;
+
 // Covers 005-keyboard-shortcuts: the app's first global (not input-scoped)
 // keyboard shortcuts, exercised against the real App component with every
 // child view's IPC surface mocked (matching Chat.test.tsx/ConversationList.
@@ -99,6 +105,64 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     vi.mocked(events.onGenerationQueueUpdate).mockResolvedValue(() => {});
     vi.mocked(events.onContextUsageUpdate).mockResolvedValue(() => {});
     vi.mocked(events.onAgentMessagePersisted).mockResolvedValue(() => {});
+  });
+
+  afterEach(() => {
+    if (originalStartViewTransition) {
+      Object.defineProperty(document, "startViewTransition", {
+        configurable: true,
+        writable: true,
+        value: originalStartViewTransition,
+      });
+    } else {
+      delete (document as TestDocument).startViewTransition;
+    }
+  });
+
+  it("routes into Workspace immediately after conversation creation while the agent send is still pending", async () => {
+    vi.mocked(commands.sendAgentMessage).mockReturnValue(new Promise(() => {}));
+    vi.mocked(commands.listMessages).mockReturnValue(new Promise(() => {}));
+
+    render(<App />);
+    await waitForReady();
+
+    await userEvent.type(screen.getByTestId("empty-state-input"), "first task");
+    await userEvent.click(screen.getByTestId("empty-state-submit"));
+
+    expect(await screen.findByTestId("agent-input")).toBeInTheDocument();
+    expect(await screen.findByText("first task")).toBeInTheDocument();
+    expect(await screen.findByTestId("agent-thinking")).toBeInTheDocument();
+    expect(commands.sendAgentMessage).toHaveBeenCalledWith("new-conv", "first task", undefined);
+  });
+
+  it("starts a view transition when conversation creation is supported by the document", async () => {
+    const startViewTransition = vi.fn((callback: () => void) => {
+      callback();
+      return {};
+    });
+    Object.defineProperty(document, "startViewTransition", {
+      configurable: true,
+      writable: true,
+      value: startViewTransition,
+    });
+
+    render(<App />);
+    await waitForReady();
+
+    await userEvent.type(screen.getByTestId("empty-state-input"), "first task");
+    await userEvent.click(screen.getByTestId("empty-state-submit"));
+
+    await screen.findByTestId("agent-input");
+    expect(startViewTransition).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks the main content pane as the chat-surface view transition target", async () => {
+    render(<App />);
+    await waitForReady();
+
+    expect(screen.getByTestId("app-content-pane")).toHaveClass(
+      "[view-transition-name:chat-surface]",
+    );
   });
 
   it("Cmd+L focuses the composer input when no conversation is selected (US1, updated for 006)", async () => {

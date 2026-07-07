@@ -11,6 +11,8 @@ import { buildShortcuts } from "@/lib/shortcuts";
 import { wireConversationStreamEvents } from "@/state/conversationStreamStore";
 import { wireContextUsageEvents } from "@/state/contextUsageStore";
 import { withTimeout } from "@/lib/withTimeout";
+import { runViewTransition } from "@/lib/viewTransition";
+import type { PendingInitialTurn } from "@/views/workspace/pendingInitialTurn";
 
 // A real Tauri invoke() call has no built-in timeout: if the IPC bridge
 // isn't ready yet, drops the message, or the backend is stuck, the
@@ -55,6 +57,7 @@ export default function App() {
   // always workspace-scoped, which would have made that disconnect far more
   // visible.
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
+  const [pendingInitialTurn, setPendingInitialTurn] = useState<PendingInitialTurn | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [showShortcutsDialog, setShowShortcutsDialog] = useState(false);
   const conversationListRef = useRef<ConversationListHandle>(null);
@@ -125,6 +128,17 @@ export default function App() {
     commands.setFocusedConversation(activeConversation?.id ?? null);
   }, [activeConversation]);
 
+  const activateConversation = (
+    conversation: Conversation,
+    initialTurn?: PendingInitialTurn,
+  ) => {
+    runViewTransition(() => {
+      setShowSettings(false);
+      setPendingInitialTurn(initialTurn ?? null);
+      setActiveConversation(conversation);
+    });
+  };
+
   if (ready === null) return null;
   if (!ready) return <Onboarding onReady={() => setReady(true)} />;
 
@@ -135,27 +149,40 @@ export default function App() {
         activeId={activeConversation?.id ?? null}
         onSelect={(conversation) => {
           setShowSettings(false);
+          setPendingInitialTurn(null);
           setActiveConversation(conversation);
         }}
         onNewConversation={() => {
           setShowSettings(false);
+          setPendingInitialTurn(null);
           setActiveConversation(null);
         }}
         onOpenSettings={() => setShowSettings(true)}
       />
-      <div className="flex-1">
+      <div className="flex-1 [view-transition-name:chat-surface]" data-testid="app-content-pane">
         {showSettings ? (
           <Settings onClose={() => setShowSettings(false)} />
         ) : activeConversation ? (
           activeConversation.workspaceId != null ? (
-            <Workspace key={activeConversation.id} conversationId={activeConversation.id} />
+            <Workspace
+              key={activeConversation.id}
+              conversationId={activeConversation.id}
+              pendingInitialTurn={
+                pendingInitialTurn?.conversationId === activeConversation.id
+                  ? pendingInitialTurn
+                  : null
+              }
+              onPendingInitialTurnConsumed={(conversationId) =>
+                setPendingInitialTurn((prev) =>
+                  prev?.conversationId === conversationId ? null : prev,
+                )
+              }
+            />
           ) : (
             <Chat key={activeConversation.id} conversationId={activeConversation.id} />
           )
         ) : (
-          <EmptyState
-            onConversationCreated={(conversation) => setActiveConversation(conversation)}
-          />
+          <EmptyState onConversationCreated={activateConversation} />
         )}
       </div>
       <ShortcutsDialog
