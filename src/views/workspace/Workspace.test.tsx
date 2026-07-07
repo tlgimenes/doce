@@ -352,6 +352,44 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     expect(onConsumed).toHaveBeenCalledTimes(1);
   });
 
+  it("preserves the optimistic pending initial turn after the parent clears the consumed prop", async () => {
+    let resolveInitialMessages!: (messages: []) => void;
+    vi.mocked(commands.listMessages).mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveInitialMessages = resolve;
+      }),
+    );
+    vi.mocked(commands.sendAgentMessage).mockReturnValue(new Promise(() => {}));
+    const onConsumed = vi.fn();
+    const pendingInitialTurn = { conversationId: "conv-1", content: "first task" };
+
+    const { rerender } = render(
+      <Workspace
+        conversationId="conv-1"
+        pendingInitialTurn={pendingInitialTurn}
+        onPendingInitialTurnConsumed={onConsumed}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("first task")).toBeInTheDocument();
+      expect(onConsumed).toHaveBeenCalledWith("conv-1");
+    });
+
+    rerender(
+      <Workspace
+        conversationId="conv-1"
+        pendingInitialTurn={null}
+        onPendingInitialTurnConsumed={onConsumed}
+      />,
+    );
+    resolveInitialMessages([]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(screen.getByText("first task")).toBeInTheDocument();
+    expect(screen.getByTestId("agent-thinking")).toBeInTheDocument();
+  });
+
   it("forwards rich content from a pending initial turn as a JSON string", async () => {
     const richContent: RichMessageContent = {
       segments: [
@@ -425,6 +463,61 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
       expect(commands.listMessages).toHaveBeenCalledWith("conv-2");
       expect(screen.getByText("second workspace")).toBeInTheDocument();
     });
+  });
+
+  it("ignores stale listMessages results from a previous conversation", async () => {
+    let resolveConv1Messages!: (messages: Awaited<ReturnType<typeof commands.listMessages>>) => void;
+    let resolveConv2Messages!: (messages: Awaited<ReturnType<typeof commands.listMessages>>) => void;
+    vi.mocked(commands.listMessages)
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveConv1Messages = resolve;
+        }),
+      )
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveConv2Messages = resolve;
+        }),
+      );
+
+    const { rerender } = render(<Workspace conversationId="conv-1" />);
+    await waitFor(() => expect(commands.listMessages).toHaveBeenCalledWith("conv-1"));
+
+    rerender(<Workspace conversationId="conv-2" />);
+    await waitFor(() => expect(commands.listMessages).toHaveBeenCalledWith("conv-2"));
+
+    resolveConv2Messages([
+      {
+        id: "m2",
+        conversationId: "conv-2",
+        role: "user",
+        contentType: "text",
+        content: "second workspace",
+        toolName: null,
+        createdAt: 2,
+        durationMs: null,
+        tokenCount: null,
+      },
+    ]);
+    await screen.findByText("second workspace");
+
+    resolveConv1Messages([
+      {
+        id: "m1",
+        conversationId: "conv-1",
+        role: "user",
+        contentType: "text",
+        content: "stale first workspace",
+        toolName: null,
+        createdAt: 1,
+        durationMs: null,
+        tokenCount: null,
+      },
+    ]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(screen.getByText("second workspace")).toBeInTheDocument();
+    expect(screen.queryByText("stale first workspace")).not.toBeInTheDocument();
   });
 
   it("shows an error instead of hanging if sending fails", async () => {

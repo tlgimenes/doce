@@ -43,17 +43,22 @@ export default function Workspace({
   const [messages, setMessages] = useState<Message[]>([]);
   const [thinking, setThinking] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const pendingInitialTurnRef = useRef<PendingInitialTurn | null>(pendingInitialTurn);
-  pendingInitialTurnRef.current = pendingInitialTurn;
+  const currentConversationIdRef = useRef(conversationId);
+  currentConversationIdRef.current = conversationId;
   const consumedInitialTurnRef = useRef<string | null>(null);
+  const dispatchedInitialTurnRef = useRef<string | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
+
     setMessages([]);
     setError(null);
     commands.listMessages(conversationId).then((loadedMessages) => {
+      if (cancelled || currentConversationIdRef.current !== conversationId) return;
+
       if (
         loadedMessages.length === 0 &&
-        pendingInitialTurnRef.current?.conversationId === conversationId
+        dispatchedInitialTurnRef.current === conversationId
       ) {
         setMessages((prev) => (prev.length > 0 ? prev : loadedMessages));
         return;
@@ -61,19 +66,31 @@ export default function Workspace({
 
       setMessages(loadedMessages);
     });
+
+    return () => {
+      cancelled = true;
+    };
   }, [conversationId]);
 
   useEffect(() => {
+    let cancelled = false;
     let unlistenPersisted: (() => void) | undefined;
 
     (async () => {
       unlistenPersisted = await events.onAgentMessagePersisted((p) => {
         if (p.conversationId !== conversationId) return;
-        commands.listMessages(conversationId).then(setMessages);
+        commands.listMessages(conversationId).then((loadedMessages) => {
+          if (cancelled || currentConversationIdRef.current !== conversationId) return;
+          setMessages(loadedMessages);
+        });
       });
+      if (cancelled) {
+        unlistenPersisted();
+      }
     })();
 
     return () => {
+      cancelled = true;
       unlistenPersisted?.();
     };
   }, [conversationId]);
@@ -158,13 +175,21 @@ export default function Workspace({
         richContent ? JSON.stringify(richContent) : undefined,
       );
     } catch (e) {
-      setError(String(e));
+      if (currentConversationIdRef.current === conversationId) {
+        setError(String(e));
+      }
     } finally {
+      if (currentConversationIdRef.current !== conversationId) return;
+
       setThinking(false);
+      dispatchedInitialTurnRef.current = null;
       // Safety net: a real refetch regardless of event timing/ordering,
       // so the transcript is always correct once the turn is fully done --
       // covers both the happy path and an error partway through the loop.
-      commands.listMessages(conversationId).then(setMessages);
+      commands.listMessages(conversationId).then((loadedMessages) => {
+        if (currentConversationIdRef.current !== conversationId) return;
+        setMessages(loadedMessages);
+      });
     }
   }, [conversationId, pendingQuestion, thinking]);
 
@@ -174,6 +199,7 @@ export default function Workspace({
     if (consumedInitialTurnRef.current === conversationId) return;
 
     consumedInitialTurnRef.current = conversationId;
+    dispatchedInitialTurnRef.current = conversationId;
     void send(pendingInitialTurn.content, pendingInitialTurn.richContent);
     onPendingInitialTurnConsumed?.(conversationId);
   }, [conversationId, onPendingInitialTurnConsumed, pendingInitialTurn, send]);
