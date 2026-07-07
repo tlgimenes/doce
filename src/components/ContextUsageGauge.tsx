@@ -82,7 +82,10 @@ export default function ContextUsageGauge({ conversationId }: ContextUsageGaugeP
           strokeLinecap="round"
           strokeDasharray={CIRCUMFERENCE}
           strokeDashoffset={dashOffset}
-          className={cn("stroke-current transition-[stroke-dashoffset]", stateStrokeClasses[usage.state])}
+          className={cn(
+            "stroke-current transition-[stroke-dashoffset]",
+            stateStrokeClasses[usage.state],
+          )}
         />
       </svg>
       <div
