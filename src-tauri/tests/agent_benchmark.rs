@@ -317,3 +317,89 @@ async fn tier4_long_running_fixes_many_scattered_bugs() {
     // Deliberately not hard-asserted -- this is the graded stress test
     // (see module doc). The printed score is the actual benchmark output.
 }
+
+// --- Tier 5: surgical edit inside one huge file ---
+//
+// Distinct failure mode from tier 4's "many small files": here there's only
+// one file, but it's big enough (~3000 lines, well over what fits in an 8K
+// context read in full) that a naive "Read the whole thing, then Write the
+// whole thing back" approach either doesn't fit the budget or risks
+// silently corrupting/dropping unrelated content on the way back out.
+// Passing requires finding the one target line (via Grep or an offset-
+// limited Read) and editing it surgically, leaving every other line
+// untouched.
+
+const TIER5_LINE_COUNT: usize = 3000;
+const TIER5_TARGET_LINE: usize = 1500;
+
+fn tier5_fixture(dir: &Path) -> Vec<String> {
+    let mut lines = Vec::with_capacity(TIER5_LINE_COUNT);
+    for i in 0..TIER5_LINE_COUNT {
+        if i == TIER5_TARGET_LINE {
+            lines.push("TARGET: the answer is wrong".to_string());
+        } else {
+            lines.push(format!("line {i:04}: filler content for padding purposes"));
+        }
+    }
+    std::fs::write(dir.join("big.txt"), lines.join("\n") + "\n").unwrap();
+    lines
+}
+
+/// Verifies the target line was fixed exactly and every other line is
+/// byte-identical to the original -- a partial credit score isn't
+/// meaningful here (there's exactly one thing to get right), but silent
+/// corruption of unrelated lines is a distinct, separately-worth-knowing
+/// failure from just "didn't find the target."
+fn tier5_check(dir: &Path, original: &[String]) -> Result<(), String> {
+    let content = std::fs::read_to_string(dir.join("big.txt")).map_err(|e| e.to_string())?;
+    let lines: Vec<&str> = content.lines().collect();
+
+    if lines.len() != original.len() {
+        return Err(format!(
+            "line count changed: expected {}, got {}",
+            original.len(),
+            lines.len()
+        ));
+    }
+    if lines[TIER5_TARGET_LINE] != "TARGET: the answer is correct" {
+        return Err(format!(
+            "target line not fixed as expected, got: {:?}",
+            lines[TIER5_TARGET_LINE]
+        ));
+    }
+    for (i, (got, want)) in lines.iter().zip(original.iter()).enumerate() {
+        if i == TIER5_TARGET_LINE {
+            continue;
+        }
+        if got != want {
+            return Err(format!("unrelated line {i} was altered: expected {want:?}, got {got:?}"));
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore]
+async fn tier5_surgical_edit_in_one_huge_file() {
+    let engine = InferenceEngine::load(&installed_model_path(), 4).expect("model should load");
+    let dir = tempdir().unwrap();
+    let original = tier5_fixture(dir.path());
+
+    let run = run_benchmark_task(
+        &engine,
+        "The file big.txt in this directory has exactly one line containing the \
+         word TARGET, somewhere among 3000 lines. Find that line and change it so \
+         it reads exactly: TARGET: the answer is correct -- leave every other \
+         line in the file completely unchanged.",
+        dir.path(),
+        AgentContext::top_level().max_turns,
+    )
+    .await;
+    report("tier5", &run);
+
+    match tier5_check(dir.path(), &original) {
+        Ok(()) => println!("[tier5] check: PASS -- target fixed, rest of file untouched"),
+        Err(e) => println!("[tier5] check: FAIL -- {e}"),
+    }
+    // Not hard-asserted, same reasoning as tiers 3-4.
+}
