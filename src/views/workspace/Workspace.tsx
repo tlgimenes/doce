@@ -14,6 +14,19 @@ import { useContextUsageStore } from "@/state/contextUsageStore";
 import { isCompactCommand } from "@/lib/compactCommand";
 import type { PendingInitialTurn } from "@/views/workspace/pendingInitialTurn";
 
+const AUTOSCROLL_BOTTOM_THRESHOLD_PX = 48;
+
+function isNearScrollBottom(element: HTMLElement): boolean {
+  return (
+    element.scrollHeight - element.scrollTop - element.clientHeight <=
+    AUTOSCROLL_BOTTOM_THRESHOLD_PX
+  );
+}
+
+function scrollElementToBottom(element: HTMLElement) {
+  element.scrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
+}
+
 interface WorkspaceProps {
   conversationId: string;
   pendingInitialTurn?: PendingInitialTurn | null;
@@ -68,6 +81,8 @@ export default function Workspace({
   const [messages, setMessages] = useState<Message[]>([]);
   const [thinking, setThinking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const autoscrollPinnedRef = useRef(true);
   const currentConversationIdRef = useRef(conversationId);
   currentConversationIdRef.current = conversationId;
   const consumedInitialTurnRef = useRef<string | null>(null);
@@ -142,6 +157,34 @@ export default function Workspace({
     return null;
   }, [messages]);
   const showThinking = thinking || sendInFlight;
+
+  const scrollToTranscriptBottom = useCallback(() => {
+    const element = scrollContainerRef.current;
+    if (!element) return;
+    if (!autoscrollPinnedRef.current) return;
+    scrollElementToBottom(element);
+  }, []);
+
+  const scheduleScrollToTranscriptBottom = useCallback(() => {
+    const frame = window.requestAnimationFrame(scrollToTranscriptBottom);
+    return () => window.cancelAnimationFrame(frame);
+  }, [scrollToTranscriptBottom]);
+
+  const updateAutoscrollPinned = useCallback(() => {
+    const element = scrollContainerRef.current;
+    if (!element) return;
+    autoscrollPinnedRef.current = isNearScrollBottom(element);
+  }, []);
+
+  useEffect(() => {
+    autoscrollPinnedRef.current = true;
+    return scheduleScrollToTranscriptBottom();
+  }, [conversationId, scheduleScrollToTranscriptBottom]);
+
+  useEffect(() => {
+    if (!autoscrollPinnedRef.current) return;
+    return scheduleScrollToTranscriptBottom();
+  }, [messages, pendingQuestion, scheduleScrollToTranscriptBottom, showThinking]);
 
   const send = useCallback(
     (content: string, richContent?: RichMessageContent): boolean => {
@@ -255,7 +298,12 @@ export default function Workspace({
 
   return (
     <div className="flex h-dvh flex-col bg-background text-foreground">
-      <div className="flex-1 overflow-y-auto p-4">
+      <div
+        ref={scrollContainerRef}
+        className="flex-1 overflow-y-auto p-4"
+        data-testid="workspace-scroll-container"
+        onScroll={updateAutoscrollPinned}
+      >
         <div className="mx-auto max-w-3xl">
           {messages.map((m) => (
             <MessageContent key={m.id} message={m} />

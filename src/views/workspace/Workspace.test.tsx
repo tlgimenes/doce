@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { act, render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import Workspace from "./Workspace";
 import { commands, events } from "@/lib/ipc";
@@ -26,6 +26,82 @@ vi.mock("@/lib/ipc", async (importOriginal) => {
     },
   };
 });
+
+function messageFixture(id: string, content: string, createdAt = 1) {
+  return {
+    id,
+    conversationId: "conv-1",
+    role: "user" as const,
+    contentType: "text" as const,
+    content,
+    toolName: null,
+    createdAt,
+    durationMs: null,
+    tokenCount: null,
+  };
+}
+
+function setScrollMetrics(
+  element: HTMLElement,
+  metrics: { scrollHeight: number; clientHeight: number; scrollTop: number },
+) {
+  let currentScrollTop = metrics.scrollTop;
+  Object.defineProperty(element, "scrollHeight", {
+    configurable: true,
+    value: metrics.scrollHeight,
+  });
+  Object.defineProperty(element, "clientHeight", {
+    configurable: true,
+    value: metrics.clientHeight,
+  });
+  Object.defineProperty(element, "scrollTop", {
+    configurable: true,
+    get: () => currentScrollTop,
+    set: (value: number) => {
+      currentScrollTop = value;
+    },
+  });
+}
+
+async function flushAnimationFrame() {
+  await act(async () => {
+    await new Promise<void>((resolve) => {
+      window.requestAnimationFrame(() => resolve());
+    });
+  });
+}
+
+function installAnimationFrameQueue() {
+  let nextHandle = 1;
+  const callbacks = new Map<number, FrameRequestCallback>();
+  const requestAnimationFrame = vi
+    .spyOn(window, "requestAnimationFrame")
+    .mockImplementation((callback) => {
+      const handle = nextHandle;
+      nextHandle += 1;
+      callbacks.set(handle, callback);
+      return handle;
+    });
+  const cancelAnimationFrame = vi
+    .spyOn(window, "cancelAnimationFrame")
+    .mockImplementation((handle) => {
+      callbacks.delete(handle);
+    });
+
+  return {
+    async flush() {
+      const queuedCallbacks = Array.from(callbacks.values());
+      callbacks.clear();
+      await act(async () => {
+        queuedCallbacks.forEach((callback) => callback(performance.now()));
+      });
+    },
+    restore() {
+      requestAnimationFrame.mockRestore();
+      cancelAnimationFrame.mockRestore();
+    },
+  };
+}
 
 describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", () => {
   beforeEach(() => {
@@ -867,6 +943,169 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     await waitFor(() => {
       expect(screen.getByTestId("workspace-error")).toHaveTextContent("inference crashed");
     });
+  });
+
+  it("starts pinned and scrolls to the bottom after messages render", async () => {
+    let resolveMessages!: (messages: Awaited<ReturnType<typeof commands.listMessages>>) => void;
+    vi.mocked(commands.listMessages).mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveMessages = resolve;
+      }),
+    );
+
+    render(<Workspace conversationId="conv-1" />);
+    const scrollContainer = await screen.findByTestId("workspace-scroll-container");
+    setScrollMetrics(scrollContainer, { scrollHeight: 1000, clientHeight: 300, scrollTop: 0 });
+
+    resolveMessages([messageFixture("m1", "first message")]);
+
+    await screen.findByText("first message");
+    await waitFor(() => expect(scrollContainer.scrollTop).toBe(700));
+  });
+
+  it("keeps following new messages while pinned near the bottom", async () => {
+    let firePersisted!: (p: { conversationId: string }) => void;
+    vi.mocked(events.onAgentMessagePersisted).mockImplementation(async (cb) => {
+      firePersisted = cb;
+      return () => {};
+    });
+    vi.mocked(commands.listMessages)
+      .mockResolvedValueOnce([messageFixture("m1", "first message")])
+      .mockResolvedValueOnce([
+        messageFixture("m1", "first message"),
+        messageFixture("m2", "second message", 2),
+      ]);
+
+    render(<Workspace conversationId="conv-1" />);
+    const scrollContainer = await screen.findByTestId("workspace-scroll-container");
+    setScrollMetrics(scrollContainer, { scrollHeight: 1000, clientHeight: 300, scrollTop: 690 });
+    fireEvent.scroll(scrollContainer);
+
+    await screen.findByText("first message");
+    setScrollMetrics(scrollContainer, { scrollHeight: 1400, clientHeight: 300, scrollTop: 690 });
+    firePersisted({ conversationId: "conv-1" });
+
+    await screen.findByText("second message");
+    await waitFor(() => expect(scrollContainer.scrollTop).toBe(1100));
+  });
+
+  it("does not autoscroll new messages after the user scrolls up", async () => {
+    let firePersisted!: (p: { conversationId: string }) => void;
+    vi.mocked(events.onAgentMessagePersisted).mockImplementation(async (cb) => {
+      firePersisted = cb;
+      return () => {};
+    });
+    vi.mocked(commands.listMessages)
+      .mockResolvedValueOnce([messageFixture("m1", "first message")])
+      .mockResolvedValueOnce([
+        messageFixture("m1", "first message"),
+        messageFixture("m2", "second message", 2),
+      ]);
+
+    render(<Workspace conversationId="conv-1" />);
+    const scrollContainer = await screen.findByTestId("workspace-scroll-container");
+    await screen.findByText("first message");
+
+    setScrollMetrics(scrollContainer, { scrollHeight: 1000, clientHeight: 300, scrollTop: 200 });
+    fireEvent.scroll(scrollContainer);
+    setScrollMetrics(scrollContainer, { scrollHeight: 1400, clientHeight: 300, scrollTop: 200 });
+
+    firePersisted({ conversationId: "conv-1" });
+
+    await screen.findByText("second message");
+    await flushAnimationFrame();
+    expect(scrollContainer.scrollTop).toBe(200);
+  });
+
+  it("does not run a scheduled autoscroll after the user scrolls up before the animation frame", async () => {
+    const animationFrame = installAnimationFrameQueue();
+    try {
+      let firePersisted!: (p: { conversationId: string }) => void;
+      vi.mocked(events.onAgentMessagePersisted).mockImplementation(async (cb) => {
+        firePersisted = cb;
+        return () => {};
+      });
+      vi.mocked(commands.listMessages)
+        .mockResolvedValueOnce([messageFixture("m1", "first message")])
+        .mockResolvedValueOnce([
+          messageFixture("m1", "first message"),
+          messageFixture("m2", "second message", 2),
+        ]);
+
+      render(<Workspace conversationId="conv-1" />);
+      const scrollContainer = await screen.findByTestId("workspace-scroll-container");
+      await screen.findByText("first message");
+
+      setScrollMetrics(scrollContainer, { scrollHeight: 1000, clientHeight: 300, scrollTop: 700 });
+      await animationFrame.flush();
+      setScrollMetrics(scrollContainer, { scrollHeight: 1000, clientHeight: 300, scrollTop: 690 });
+      fireEvent.scroll(scrollContainer);
+
+      setScrollMetrics(scrollContainer, { scrollHeight: 1400, clientHeight: 300, scrollTop: 690 });
+      firePersisted({ conversationId: "conv-1" });
+      await screen.findByText("second message");
+
+      setScrollMetrics(scrollContainer, { scrollHeight: 1400, clientHeight: 300, scrollTop: 200 });
+      fireEvent.scroll(scrollContainer);
+      await animationFrame.flush();
+
+      expect(scrollContainer.scrollTop).toBe(200);
+    } finally {
+      animationFrame.restore();
+    }
+  });
+
+  it("resumes autoscroll after the user scrolls back near the bottom", async () => {
+    let firePersisted!: (p: { conversationId: string }) => void;
+    vi.mocked(events.onAgentMessagePersisted).mockImplementation(async (cb) => {
+      firePersisted = cb;
+      return () => {};
+    });
+    vi.mocked(commands.listMessages)
+      .mockResolvedValueOnce([messageFixture("m1", "first message")])
+      .mockResolvedValueOnce([
+        messageFixture("m1", "first message"),
+        messageFixture("m2", "second message", 2),
+      ]);
+
+    render(<Workspace conversationId="conv-1" />);
+    const scrollContainer = await screen.findByTestId("workspace-scroll-container");
+    await screen.findByText("first message");
+
+    setScrollMetrics(scrollContainer, { scrollHeight: 1000, clientHeight: 300, scrollTop: 200 });
+    fireEvent.scroll(scrollContainer);
+    setScrollMetrics(scrollContainer, { scrollHeight: 1000, clientHeight: 300, scrollTop: 680 });
+    fireEvent.scroll(scrollContainer);
+    setScrollMetrics(scrollContainer, { scrollHeight: 1400, clientHeight: 300, scrollTop: 680 });
+
+    firePersisted({ conversationId: "conv-1" });
+
+    await screen.findByText("second message");
+    await waitFor(() => expect(scrollContainer.scrollTop).toBe(1100));
+  });
+
+  it("resets autoscroll pinning when switching conversations", async () => {
+    vi.mocked(commands.listMessages)
+      .mockResolvedValueOnce([messageFixture("m1", "first workspace")])
+      .mockResolvedValueOnce([
+        {
+          ...messageFixture("m2", "second workspace"),
+          conversationId: "conv-2",
+        },
+      ]);
+
+    const { rerender } = render(<Workspace conversationId="conv-1" />);
+    const scrollContainer = await screen.findByTestId("workspace-scroll-container");
+    await screen.findByText("first workspace");
+
+    setScrollMetrics(scrollContainer, { scrollHeight: 1000, clientHeight: 300, scrollTop: 200 });
+    fireEvent.scroll(scrollContainer);
+
+    rerender(<Workspace conversationId="conv-2" />);
+    setScrollMetrics(scrollContainer, { scrollHeight: 900, clientHeight: 300, scrollTop: 0 });
+
+    await screen.findByText("second workspace");
+    await waitFor(() => expect(scrollContainer.scrollTop).toBe(600));
   });
 
   // --- 010-context-window-management (UI refactor): /compact command ---
