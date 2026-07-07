@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import MessageContent from "@/components/MessageContent";
 import ContextUsageGauge from "@/components/ContextUsageGauge";
 import RichInput from "@/views/chat/rich-input/RichInput";
@@ -18,6 +18,36 @@ interface WorkspaceProps {
   conversationId: string;
   pendingInitialTurn?: PendingInitialTurn | null;
   onPendingInitialTurnConsumed?: (conversationId: string) => void;
+}
+
+const conversationsWithSendInFlight = new Set<string>();
+const sendInFlightListeners = new Set<() => void>();
+
+function notifySendInFlightListeners() {
+  sendInFlightListeners.forEach((listener) => listener());
+}
+
+function subscribeToSendInFlight(listener: () => void) {
+  sendInFlightListeners.add(listener);
+  return () => {
+    sendInFlightListeners.delete(listener);
+  };
+}
+
+function markSendInFlight(conversationId: string): boolean {
+  if (conversationsWithSendInFlight.has(conversationId)) return false;
+  conversationsWithSendInFlight.add(conversationId);
+  notifySendInFlightListeners();
+  return true;
+}
+
+function clearSendInFlight(conversationId: string) {
+  if (!conversationsWithSendInFlight.delete(conversationId)) return;
+  notifySendInFlightListeners();
+}
+
+function getServerSnapshot() {
+  return false;
 }
 
 /**
@@ -47,6 +77,11 @@ export default function Workspace({
   currentConversationIdRef.current = conversationId;
   const consumedInitialTurnRef = useRef<string | null>(null);
   const dispatchedInitialTurnRef = useRef<string | null>(null);
+  const sendInFlight = useSyncExternalStore(
+    subscribeToSendInFlight,
+    () => conversationsWithSendInFlight.has(conversationId),
+    getServerSnapshot,
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -114,21 +149,28 @@ export default function Workspace({
     }
     return null;
   }, [messages]);
+  const showThinking = thinking || sendInFlight;
 
   const send = useCallback(async (content: string, richContent?: RichMessageContent) => {
     // 010-context-window-management (UI refactor): `/compact`, typed and
     // submitted like any other message, is intercepted here before it ever
     // becomes a persisted agent turn — it triggers compaction directly and
     // refreshes the transcript instead of going through send_agent_message.
-    if (!richContent && isCompactCommand(content) && !thinking) {
+    if (!richContent && isCompactCommand(content) && !sendInFlight) {
       setError(null);
       try {
         const usage = await commands.compactConversation(conversationId);
+        if (currentConversationIdRef.current !== conversationId) return;
+
         useContextUsageStore.getState().setUsage(usage);
         const refreshed = await commands.listMessages(conversationId);
+        if (currentConversationIdRef.current !== conversationId) return;
+
         setMessages(refreshed);
       } catch (e) {
-        setError(String(e));
+        if (currentConversationIdRef.current === conversationId) {
+          setError(String(e));
+        }
       }
       return;
     }
@@ -145,7 +187,9 @@ export default function Workspace({
     // holding the one global inference-engine lock) -- it would just
     // persist and then hang right alongside it. Answer via the widget
     // instead.
-    if ((!content.trim() && !richContent) || thinking || pendingQuestion) return;
+    if ((!content.trim() && !richContent) || sendInFlight || pendingQuestion) return;
+    if (!markSendInFlight(conversationId)) return;
+
     setError(null);
     setMessages((prev) => [
       ...prev,
@@ -181,6 +225,7 @@ export default function Workspace({
         setError(String(e));
       }
     } finally {
+      clearSendInFlight(conversationId);
       if (currentConversationIdRef.current !== conversationId) return;
 
       setThinking(false);
@@ -193,7 +238,7 @@ export default function Workspace({
         setMessages(loadedMessages);
       });
     }
-  }, [conversationId, pendingQuestion, thinking]);
+  }, [conversationId, pendingQuestion, sendInFlight]);
 
   useEffect(() => {
     if (!pendingInitialTurn) return;
@@ -218,7 +263,7 @@ export default function Workspace({
               <AskUserQuestionWidget detail={pendingQuestion} />
             </div>
           ) : (
-            thinking && (
+            showThinking && (
               <p className="text-sm text-muted-foreground" data-testid="agent-thinking">
                 Working…
               </p>
@@ -243,7 +288,7 @@ export default function Workspace({
             send(content, richContent);
           }}
           skillsEnabled={true}
-          disabled={thinking || pendingQuestion !== null}
+          disabled={sendInFlight || pendingQuestion !== null}
           placeholder="Describe a task…"
           inputTestId="agent-input"
           submitTestId="agent-send"
