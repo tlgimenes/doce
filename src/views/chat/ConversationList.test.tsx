@@ -14,6 +14,7 @@ vi.mock("@/lib/ipc", () => ({
   commands: {
     listConversations: vi.fn(),
     listWorkspaces: vi.fn(),
+    archiveConversation: vi.fn(),
   },
 }));
 
@@ -201,6 +202,96 @@ describe("ConversationList", () => {
 
     await userEvent.click(screen.getByText("Second chat"));
     expect(first).toHaveClass("font-medium", "text-sidebar-foreground/55");
+  });
+
+  it("keeps the selected conversation highlighted with the sidebar hover background", async () => {
+    vi.mocked(commands.listConversations).mockResolvedValue([
+      {
+        id: "selected",
+        workspaceId: null,
+        title: "Selected thread",
+        createdAt: 1,
+        updatedAt: 1,
+        lastSeenAt: 1,
+        status: "done",
+      },
+    ]);
+
+    render(
+      <ConversationList
+        activeId="selected"
+        onSelect={vi.fn()}
+        onNewConversation={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />,
+    );
+
+    const row = await screen.findByTestId("conversation-item");
+    expect(row).toHaveClass("bg-sidebar-foreground/8", "hover:bg-sidebar-foreground/8");
+    expect(row).not.toHaveClass("bg-transparent");
+  });
+
+  it("archives a conversation from the hover trash button without selecting it", async () => {
+    const conversation = {
+      id: "archive-me",
+      workspaceId: null,
+      title: "Archive me",
+      createdAt: 1,
+      updatedAt: 3,
+      lastSeenAt: 3,
+      status: "done" as const,
+    };
+    vi.mocked(commands.listConversations).mockResolvedValue([conversation]);
+    vi.mocked(commands.archiveConversation).mockResolvedValue();
+    const onSelect = vi.fn();
+
+    render(
+      <ConversationList
+        activeId={null}
+        onSelect={onSelect}
+        onNewConversation={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />,
+    );
+
+    const row = await screen.findByTestId("conversation-item");
+    await userEvent.hover(row);
+    const archiveButton = screen.getByLabelText("Archive Archive me");
+    expect(archiveButton).toHaveClass("bg-transparent", "size-6");
+    expect(archiveButton.querySelector("svg")).toBeInTheDocument();
+
+    await userEvent.click(archiveButton);
+
+    expect(commands.archiveConversation).toHaveBeenCalledWith("archive-me");
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(screen.queryByText("Archive me")).not.toBeInTheDocument();
+  });
+
+  it("reveals the archive trash button only on row hover, not from selected row focus", async () => {
+    vi.mocked(commands.listConversations).mockResolvedValue([
+      {
+        id: "selected",
+        workspaceId: null,
+        title: "Selected thread",
+        createdAt: 1,
+        updatedAt: 1,
+        lastSeenAt: 1,
+        status: "done",
+      },
+    ]);
+
+    render(
+      <ConversationList
+        activeId="selected"
+        onSelect={vi.fn()}
+        onNewConversation={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />,
+    );
+
+    const archiveButton = await screen.findByLabelText("Archive Selected thread");
+    expect(archiveButton).toHaveClass("opacity-0", "group-hover:opacity-100");
+    expect(archiveButton).not.toHaveClass("group-focus-within:opacity-100");
   });
 
   it("renders each conversation as title/time plus path/work-state rows", async () => {

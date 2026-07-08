@@ -4,7 +4,7 @@ import MessageContent from "@/components/MessageContent";
 import ContextUsageGauge from "@/components/ContextUsageGauge";
 import { Button } from "@/components/ui/button";
 import RichInput from "@/views/chat/rich-input/RichInput";
-import AskUserQuestionWidget from "@/views/chat/tool-widgets/AskUserQuestionWidget";
+import UserAskWidget from "@/views/chat/tool-widgets/UserAskWidget";
 import BashWidget from "@/views/chat/tool-widgets/BashWidget";
 import TaskWidget from "@/views/chat/tool-widgets/TaskWidget";
 import {
@@ -412,7 +412,11 @@ export default function Workspace({
                 role="group"
                 aria-label="doce replied"
               >
-                {pendingQuestion && <AskUserQuestionWidget detail={pendingQuestion} />}
+                {pendingQuestion && (
+                  <div data-testid="question-widget">
+                    <UserAskWidget detail={pendingQuestion} />
+                  </div>
+                )}
                 {pendingToolCall.kind === "bash" && <BashWidget detail={pendingToolCall.detail} />}
                 {pendingToolCall.kind === "task" && <TaskWidget detail={pendingToolCall.detail} />}
               </div>

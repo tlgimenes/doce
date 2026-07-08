@@ -111,7 +111,9 @@ fn search_impl(conn: &Connection, query: &str) -> rusqlite::Result<Vec<SearchRes
         "SELECT c.id, c.title, snippet(conversations_fts, 0, '<mark>', '</mark>', '…', 8), bm25(conversations_fts)
          FROM conversations_fts
          JOIN conversations c ON c.rowid = conversations_fts.rowid
-         WHERE conversations_fts MATCH ?1 AND c.spawned_by_conversation_id IS NULL",
+         WHERE conversations_fts MATCH ?1
+           AND c.spawned_by_conversation_id IS NULL
+           AND c.archived_at IS NULL",
     )?;
     let title_rows = title_stmt
         .query_map([query], |row| {
@@ -139,7 +141,9 @@ fn search_impl(conn: &Connection, query: &str) -> rusqlite::Result<Vec<SearchRes
          FROM messages_fts
          JOIN messages m ON m.rowid = messages_fts.rowid
          JOIN conversations c ON c.id = m.conversation_id
-         WHERE messages_fts MATCH ?1 AND c.spawned_by_conversation_id IS NULL",
+         WHERE messages_fts MATCH ?1
+           AND c.spawned_by_conversation_id IS NULL
+           AND c.archived_at IS NULL",
     )?;
     let content_rows = content_stmt
         .query_map([query], |row| {
@@ -169,6 +173,7 @@ fn search_impl(conn: &Connection, query: &str) -> rusqlite::Result<Vec<SearchRes
              JOIN conversations c ON c.rowid = conversations_title_trigram.rowid
              WHERE conversations_title_trigram MATCH ?1
                AND c.spawned_by_conversation_id IS NULL
+               AND c.archived_at IS NULL
              ORDER BY bm25(conversations_title_trigram)
              LIMIT ?2",
         )?;
@@ -287,6 +292,30 @@ mod tests {
         assert!(
             results.is_empty(),
             "subagent content leaked into search results"
+        );
+    }
+
+    #[test]
+    fn archived_conversations_never_surface() {
+        let conn = test_connection();
+        insert_conversation(&conn, "c1", "archive target", None);
+        insert_message(&conn, "c1", 0, "hidden archived keyword");
+        conn.execute(
+            "UPDATE conversations SET archived_at = 100 WHERE id = 'c1'",
+            [],
+        )
+        .unwrap();
+
+        let title_results = search_impl(&conn, "archive").unwrap();
+        assert!(
+            title_results.is_empty(),
+            "archived title leaked into search results"
+        );
+
+        let content_results = search_impl(&conn, "keyword").unwrap();
+        assert!(
+            content_results.is_empty(),
+            "archived message content leaked into search results"
         );
     }
 

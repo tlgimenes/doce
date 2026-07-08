@@ -24,6 +24,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
         8,
         include_str!("migrations/0008_conversation_last_seen_at.sql"),
     ),
+    (
+        9,
+        include_str!("migrations/0009_conversation_archived_at.sql"),
+    ),
 ];
 
 pub fn apply_pending(conn: &mut Connection) -> rusqlite::Result<()> {
@@ -309,5 +313,26 @@ mod tests {
             )
             .unwrap();
         assert_eq!(last_seen_at, 0);
+    }
+
+    #[test]
+    fn conversation_archived_at_defaults_to_null_after_migration() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_pending(&mut conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO conversations (id, title, created_at, updated_at) VALUES ('c1', 'x', 1, 2)",
+            [],
+        )
+        .unwrap();
+
+        let archived_at: Option<i64> = conn
+            .query_row(
+                "SELECT archived_at FROM conversations WHERE id = 'c1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(archived_at, None);
     }
 }

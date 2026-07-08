@@ -1,12 +1,13 @@
 import {
   forwardRef,
+  type KeyboardEvent,
   type MouseEvent,
   useEffect,
   useImperativeHandle,
   useMemo,
   useState,
 } from "react";
-import { MagnifyingGlassIcon, GearIcon, PlusIcon } from "@phosphor-icons/react";
+import { MagnifyingGlassIcon, GearIcon, PlusIcon, TrashIcon } from "@phosphor-icons/react";
 import { homeDir } from "@tauri-apps/api/path";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import Dialog from "@/components/Dialog";
@@ -26,6 +27,7 @@ interface ConversationListProps {
   onSelect: (conversation: Conversation) => void;
   onNewConversation: () => void;
   onOpenSettings: () => void;
+  onArchive?: (conversationId: string) => void;
 }
 
 // 005-keyboard-shortcuts: exposed so Cmd+N (App.tsx) can trigger the exact
@@ -61,7 +63,10 @@ const SIDEBAR_ACTION_BUTTON =
  * a refresh off of.
  */
 const ConversationList = forwardRef<ConversationListHandle, ConversationListProps>(
-  function ConversationList({ activeId, onSelect, onNewConversation, onOpenSettings }, ref) {
+  function ConversationList(
+    { activeId, onSelect, onNewConversation, onOpenSettings, onArchive },
+    ref,
+  ) {
     const [conversations, setConversations] = useState<Conversation[]>([]);
     const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
     const [homePath, setHomePath] = useState<string | null>(null);
@@ -83,6 +88,35 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
             : conversation,
         ),
       );
+    };
+
+    const selectConversation = (conversation: Conversation) => {
+      markConversationSeenLocally(conversation.id);
+      onSelect(conversation);
+    };
+
+    const archiveConversation = (
+      event: MouseEvent<HTMLButtonElement>,
+      conversation: Conversation,
+    ) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setConversations((current) => current.filter((item) => item.id !== conversation.id));
+      onArchive?.(conversation.id);
+      commands.archiveConversation(conversation.id).catch((error) => {
+        console.error(error);
+        refresh();
+      });
+    };
+
+    const handleConversationKeyDown = (
+      event: KeyboardEvent<HTMLDivElement>,
+      conversation: Conversation,
+    ) => {
+      if (event.target !== event.currentTarget) return;
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      selectConversation(conversation);
     };
 
     useEffect(() => {
@@ -193,30 +227,16 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
             const isReadInactive = !isActive && !hasUnseenUpdates;
 
             return (
-              <Button
+              <div
                 key={c.id}
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  markConversationSeenLocally(c.id);
-                  onSelect(c);
-                }}
+                role="button"
+                tabIndex={0}
+                onClick={() => selectConversation(c)}
+                onKeyDown={(event) => handleConversationKeyDown(event, c)}
                 data-testid="conversation-item"
                 data-conversation-id={c.id}
                 className={cn(
-                  // hover:bg-sidebar-foreground/8 is unconditional (not
-                  // split per-branch) so it also overrides the Button
-                  // ghost variant's own hover:bg-muted when the item is
-                  // selected -- split per-branch, a selected item's hover
-                  // fell through to hover:bg-muted instead of staying the
-                  // same color, since only the unselected branch named a
-                  // hover override.
-                  "h-auto min-h-12 w-full items-start justify-start gap-2 rounded-lg border-0 px-2 py-2 text-left shadow-none hover:bg-sidebar-foreground/8",
-                  // Same highlight treatment the New Agent/Search/Settings
-                  // buttons use (SIDEBAR_ACTION_BUTTON's own hover) -- a
-                  // selected item shows it always, an unselected one only
-                  // on hover, so the whole sidebar reads as one consistent
-                  // highlight color instead of two different systems.
+                  "group flex h-auto min-h-12 w-full cursor-pointer items-start justify-start gap-2 rounded-lg border-0 px-2 py-2 text-left text-foreground shadow-none transition-colors hover:bg-sidebar-foreground/8 focus-visible:outline-none",
                   isActive ? "bg-sidebar-foreground/8" : "bg-transparent",
                 )}
               >
@@ -236,20 +256,30 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
                     >
                       {c.title}
                     </span>
-                    <span className="shrink-0 text-[11px] leading-4 text-sidebar-foreground/55 tabular-nums">
-                      {formatConversationRelativeTime(c.updatedAt)}
-                    </span>
                   </span>
-                  <span className="flex min-w-0 items-center gap-2">
-                    <span className="min-w-0 flex-1 truncate text-[11px] leading-4 text-sidebar-foreground/60">
-                      {getConversationWorkspaceLabel(c.workspaceId, workspacesById, homePath)}
-                    </span>
-                    <span className="shrink-0 text-[11px] leading-4 text-sidebar-foreground/60">
-                      {getConversationWorkStateLabel(c.status)}
-                    </span>
+                  <span className="min-w-0 truncate text-[11px] leading-4 text-sidebar-foreground/60">
+                    {getConversationWorkspaceLabel(c.workspaceId, workspacesById, homePath)}
                   </span>
                 </span>
-              </Button>
+                <span className="relative h-8 w-10 shrink-0 self-center">
+                  <span className="absolute right-0 top-0 text-[11px] leading-4 text-sidebar-foreground/55 tabular-nums transition-opacity group-hover:opacity-0">
+                    {formatConversationRelativeTime(c.updatedAt)}
+                  </span>
+                  <span className="absolute bottom-0 right-0 text-[11px] leading-4 text-sidebar-foreground/60 transition-opacity group-hover:opacity-0">
+                    {getConversationWorkStateLabel(c.status)}
+                  </span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    className="pointer-events-none absolute right-0 top-1/2 -translate-y-1/2 rounded-full text-sidebar-foreground/70 opacity-0 hover:bg-sidebar-foreground/10 hover:text-sidebar-foreground group-hover:pointer-events-auto group-hover:opacity-100"
+                    aria-label={`Archive ${c.title}`}
+                    onClick={(event) => archiveConversation(event, c)}
+                  >
+                    <TrashIcon size={14} />
+                  </Button>
+                </span>
+              </div>
             );
           })}
         </div>

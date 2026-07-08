@@ -159,6 +159,12 @@ export default function App() {
           setActiveConversation(null);
         }}
         onOpenSettings={() => setShowSettings(true)}
+        onArchive={(conversationId) => {
+          if (activeConversation?.id !== conversationId) return;
+          setShowSettings(false);
+          setPendingInitialTurn(null);
+          setActiveConversation(null);
+        }}
       />
       <div className="flex-1 [view-transition-name:chat-surface]" data-testid="app-content-pane">
         {showWidgetGallery ? (

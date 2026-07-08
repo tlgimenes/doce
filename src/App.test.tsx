@@ -27,6 +27,7 @@ vi.mock("@/lib/ipc", () => ({
     setFocusedConversation: vi.fn(),
     listConversations: vi.fn(),
     markConversationSeen: vi.fn(),
+    archiveConversation: vi.fn(),
     listWorkspaces: vi.fn(),
     createConversation: vi.fn(),
     openWorkspace: vi.fn(),
@@ -73,6 +74,7 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     ]);
     vi.mocked(commands.listConversations).mockResolvedValue([]);
     vi.mocked(commands.markConversationSeen).mockResolvedValue();
+    vi.mocked(commands.archiveConversation).mockResolvedValue();
     vi.mocked(commands.listWorkspaces).mockResolvedValue([]);
     vi.mocked(commands.openWorkspace).mockResolvedValue({
       id: "ws-home",
@@ -221,6 +223,30 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     await userEvent.click(await screen.findByText("Unread thread"));
 
     expect(commands.markConversationSeen).toHaveBeenCalledWith("c1");
+  });
+
+  it("returns to the empty state when the active conversation is archived", async () => {
+    const conversation = {
+      id: "c1",
+      workspaceId: null,
+      title: "Thread to archive",
+      createdAt: 1,
+      updatedAt: 1,
+      lastSeenAt: 1,
+      status: "done" as const,
+    };
+    vi.mocked(commands.listConversations).mockResolvedValue([conversation]);
+
+    render(<App />);
+
+    await userEvent.click(await screen.findByText("Thread to archive"));
+    expect(await screen.findByTestId("agent-input")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByLabelText("Archive Thread to archive"));
+
+    expect(commands.archiveConversation).toHaveBeenCalledWith("c1");
+    expect(await screen.findByTestId("empty-state-input")).toBeInTheDocument();
+    expect(screen.queryByTestId("agent-input")).not.toBeInTheDocument();
   });
 
   it("Cmd+L focuses the agent task input after creating a conversation", async () => {

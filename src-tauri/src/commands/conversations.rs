@@ -528,44 +528,55 @@ pub async fn list_conversations(
     let active = active_generations.0.lock().unwrap().clone();
     conn.call(
         move |conn: &mut Connection| -> rusqlite::Result<Vec<Conversation>> {
-            // FR-007: excludes subagent-run conversations from the default result.
-            let mut stmt = conn.prepare(
-                "SELECT id, workspace_id, title, created_at, updated_at, last_seen_at FROM conversations
-             WHERE spawned_by_conversation_id IS NULL
-             AND (?1 IS NULL OR workspace_id = ?1)
-             ORDER BY updated_at DESC",
-            )?;
-            let rows = stmt
-                .query_map([&workspace_id], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, Option<String>>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, i64>(3)?,
-                        row.get::<_, i64>(4)?,
-                        row.get::<_, i64>(5)?,
-                    ))
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
-
-            rows.into_iter()
-                .map(|(id, workspace_id, title, created_at, updated_at, last_seen_at)| {
-                    let status = compute_status(conn, &id, &active)?;
-                    Ok(Conversation {
-                        id,
-                        workspace_id,
-                        title,
-                        created_at,
-                        updated_at,
-                        last_seen_at,
-                        status,
-                    })
-                })
-                .collect()
+            list_conversations_in_conn(conn, workspace_id.as_deref(), &active)
         },
     )
     .await
     .map_err(|e| e.to_string())
+}
+
+fn list_conversations_in_conn(
+    conn: &Connection,
+    workspace_id: Option<&str>,
+    active: &HashSet<String>,
+) -> rusqlite::Result<Vec<Conversation>> {
+    // FR-007: excludes subagent-run conversations from the default result.
+    let mut stmt = conn.prepare(
+        "SELECT id, workspace_id, title, created_at, updated_at, last_seen_at FROM conversations
+         WHERE spawned_by_conversation_id IS NULL
+         AND (?1 IS NULL OR workspace_id = ?1)
+         AND archived_at IS NULL
+         ORDER BY updated_at DESC",
+    )?;
+    let rows = stmt
+        .query_map(rusqlite::params![workspace_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    rows.into_iter()
+        .map(
+            |(id, workspace_id, title, created_at, updated_at, last_seen_at)| {
+                let status = compute_status(conn, &id, active)?;
+                Ok(Conversation {
+                    id,
+                    workspace_id,
+                    title,
+                    created_at,
+                    updated_at,
+                    last_seen_at,
+                    status,
+                })
+            },
+        )
+        .collect()
 }
 
 fn mark_conversation_seen_in_conn(
@@ -576,6 +587,20 @@ fn mark_conversation_seen_in_conn(
     conn.execute(
         "UPDATE conversations
          SET last_seen_at = MAX(?1, updated_at)
+         WHERE id = ?2",
+        rusqlite::params![now, conversation_id],
+    )?;
+    Ok(())
+}
+
+fn archive_conversation_in_conn(
+    conn: &Connection,
+    conversation_id: &str,
+    now: i64,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE conversations
+         SET archived_at = ?1
          WHERE id = ?2",
         rusqlite::params![now, conversation_id],
     )?;
@@ -593,6 +618,22 @@ pub async fn mark_conversation_seen(
     let now = now_ms();
     conn.call(move |conn: &mut Connection| -> rusqlite::Result<()> {
         mark_conversation_seen_in_conn(conn, &conversation_id, now)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn archive_conversation(
+    app: AppHandle,
+    db_cell: State<'_, DbCell>,
+    conversation_id: String,
+) -> Result<(), String> {
+    let conn = db_cell.get(&app).await?;
+    let now = now_ms();
+    conn.call(move |conn: &mut Connection| -> rusqlite::Result<()> {
+        archive_conversation_in_conn(conn, &conversation_id, now)
     })
     .await
     .map_err(|e| e.to_string())
@@ -667,6 +708,36 @@ mod tests {
             )
             .unwrap();
         assert_eq!(last_seen_at, 150);
+    }
+
+    #[test]
+    fn archive_conversation_in_conn_sets_archived_at() {
+        let conn = test_connection();
+        insert_conversation(&conn, "c1");
+
+        archive_conversation_in_conn(&conn, "c1", 123).unwrap();
+
+        let archived_at: Option<i64> = conn
+            .query_row(
+                "SELECT archived_at FROM conversations WHERE id = 'c1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(archived_at, Some(123));
+    }
+
+    #[test]
+    fn list_conversations_in_conn_skips_archived_rows() {
+        let conn = test_connection();
+        insert_conversation(&conn, "visible");
+        insert_conversation(&conn, "archived");
+        archive_conversation_in_conn(&conn, "archived", 123).unwrap();
+
+        let conversations = list_conversations_in_conn(&conn, None, &HashSet::new()).unwrap();
+
+        assert_eq!(conversations.len(), 1);
+        assert_eq!(conversations[0].id, "visible");
     }
 
     #[test]
