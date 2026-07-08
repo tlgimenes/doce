@@ -83,10 +83,7 @@ export function TopbarHost({ target, className, children }: TopbarHostProps) {
   return (
     <div
       ref={ref}
-      className={cn(
-        "flex h-10 shrink-0 select-none items-center bg-transparent",
-        className,
-      )}
+      className={cn("flex h-10 shrink-0 select-none items-center bg-transparent", className)}
       data-tauri-drag-region
       data-testid={`topbar-${target}`}
       onMouseDown={startDrag}
@@ -96,13 +93,7 @@ export function TopbarHost({ target, className, children }: TopbarHostProps) {
   );
 }
 
-export function TopbarPortal({
-  target,
-  children,
-}: {
-  target: TopbarTarget;
-  children: ReactNode;
-}) {
+export function TopbarPortal({ target, children }: { target: TopbarTarget; children: ReactNode }) {
   const { hosts } = useTopbarContext();
   const host = hosts[target];
   if (!host) return null;
