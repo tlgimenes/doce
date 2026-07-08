@@ -82,14 +82,21 @@ describe("UserAskWidget", () => {
     expect(commands.answerUserQuestion).toHaveBeenCalledWith("q1", ["actually, do both"]);
   });
 
-  it("submitting a whitespace-only free text answer does not answer the question", async () => {
+  it("submitting a free-text answer that is entirely a collapsed paste chip (no text) does not answer the question", async () => {
     vi.mocked(commands.answerUserQuestion).mockResolvedValue(undefined);
     render(<UserAskWidget detail={SINGLE} />);
 
     await userEvent.click(screen.getByTestId("question-close"));
     const editable = screen.getByTestId("question-answer-input");
+    const longText = Array.from({ length: 15 }, (_, i) => `line ${i}`).join("\n");
+
     await userEvent.click(editable);
-    await userEvent.type(editable, "   {Enter}");
+    await userEvent.paste(longText);
+
+    const chip = await screen.findByTestId("pasted-text-chip");
+    expect(chip).toHaveTextContent("<pasted 15 lines>");
+
+    await userEvent.keyboard("{Enter}");
 
     expect(commands.answerUserQuestion).not.toHaveBeenCalled();
   });
