@@ -186,4 +186,15 @@ describe("UserAskWidget", () => {
 
     expect(startViewTransition).toHaveBeenCalledTimes(1);
   });
+
+  it("gives each option row a staggered entrance animation delay", () => {
+    render(<UserAskWidget detail={MULTI} />);
+
+    expect(screen.getByRole("checkbox", { name: /Option A/ })).toHaveStyle({
+      animationDelay: "0ms",
+    });
+    expect(screen.getByRole("checkbox", { name: /Option B/ })).toHaveStyle({
+      animationDelay: "18ms",
+    });
+  });
 });

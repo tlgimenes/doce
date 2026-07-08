@@ -35,6 +35,24 @@ function scrollElementToBottom(element: HTMLElement) {
   element.scrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
 }
 
+/**
+ * Whether the latest message is a still-pending, successfully-parsed
+ * AskUserQuestion tool_call -- the one condition that actually changes
+ * what the composer shows (RichInput vs UserAskWidget). Used to decide
+ * whether a refreshMessages() update is worth a view transition; every
+ * other kind of refresh (a plain new message, a pending Bash/Task call)
+ * doesn't change the composer, so wrapping those in a transition too
+ * would just make the whole chat-surface region flicker for no reason
+ * (chat-surface, App.tsx's own view-transition-named region, has
+ * unconditional fade keyframes in theme.css that play on every
+ * transition regardless of whether chat-surface's own content changed).
+ */
+function isQuestionPending(messages: Message[]): boolean {
+  const latest = messages[messages.length - 1];
+  if (latest?.contentType !== "tool_call" || latest.toolName !== "AskUserQuestion") return false;
+  return parseAskUserQuestionCallDetail(latest.content) !== null;
+}
+
 interface WorkspaceProps {
   conversationId: string;
   pendingInitialTurn?: PendingInitialTurn | null;
@@ -125,6 +143,8 @@ export default function Workspace({
   onConversationSeen,
 }: WorkspaceProps) {
   const [messages, setMessages] = useState<Message[]>([]);
+  const messagesRef = useRef<Message[]>(messages);
+  messagesRef.current = messages;
   const [thinking, setThinking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isAutoscrollPinned, setIsAutoscrollPinned] = useState(true);
@@ -148,10 +168,17 @@ export default function Workspace({
     const loadedMessages = await commands.listMessages(targetConversationId);
     if (!isMountedRef.current || currentConversationIdRef.current !== targetConversationId) return;
 
-    runViewTransition(() => {
+    const questionPendingBefore = isQuestionPending(messagesRef.current);
+    const questionPendingAfter = isQuestionPending(loadedMessages);
+    const applyUpdate = () => {
       setMessages(loadedMessages);
       onConversationSeenRef.current?.(targetConversationId);
-    });
+    };
+    if (questionPendingBefore !== questionPendingAfter) {
+      runViewTransition(applyUpdate);
+    } else {
+      applyUpdate();
+    }
   }, [conversationId]);
 
   useEffect(() => {

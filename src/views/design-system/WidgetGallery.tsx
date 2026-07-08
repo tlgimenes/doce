@@ -317,7 +317,7 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
 
         <Section
           title="AskUserQuestion"
-          description="An interactive pause/resume prompt, rendered in the composer slot while pending. Single-select answers on click; multi-select accumulates + confirms; closing it (✕) reveals a free-text fallback. Read-only once answered."
+          description="An interactive pause/resume prompt, rendered in the composer slot while pending. Picking an option selects it; pressing the send button answers -- single-select, multi-select, and free text all work the same way. Closing it (✕) reveals a free-text fallback. Read-only once answered."
         >
           <Example label="Pending, single-select">
             <UserAskWidget

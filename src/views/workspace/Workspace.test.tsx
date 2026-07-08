@@ -213,7 +213,58 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     expect(onConversationSeen).toHaveBeenCalledWith("conv-1");
   });
 
-  it("wraps the agent-message-persisted refresh in a view transition when the document supports it", async () => {
+  it("wraps the agent-message-persisted refresh in a view transition when a pending question arrives", async () => {
+    const startViewTransition = vi.fn((callback: () => void) => {
+      callback();
+      return {};
+    });
+    Object.defineProperty(document, "startViewTransition", {
+      configurable: true,
+      writable: true,
+      value: startViewTransition,
+    });
+
+    let firePersisted!: (p: { conversationId: string }) => void;
+    vi.mocked(events.onAgentMessagePersisted).mockImplementation(async (cb) => {
+      firePersisted = cb;
+      return () => {};
+    });
+    vi.mocked(commands.listMessages)
+      .mockResolvedValueOnce([messageFixture("m1", "first message")])
+      .mockResolvedValueOnce([
+        messageFixture("m1", "first message"),
+        {
+          id: "tc1",
+          conversationId: "conv-1",
+          role: "assistant",
+          contentType: "tool_call",
+          content: JSON.stringify({
+            arguments: {
+              header: "Quick check",
+              question: "What would you like to do?",
+              options: [{ label: "A" }, { label: "B" }],
+              multiSelect: false,
+              questionId: "q1",
+            },
+          }),
+          toolName: "AskUserQuestion",
+          createdAt: 2,
+          durationMs: null,
+          tokenCount: null,
+        },
+      ]);
+
+    render(<Workspace conversationId="conv-1" />);
+    await screen.findByText("first message");
+    startViewTransition.mockClear();
+
+    firePersisted({ conversationId: "conv-1" });
+    await screen.findByTestId("user-ask-widget");
+
+    expect(startViewTransition).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not start a view transition when a refresh doesn't change whether a question is pending", async () => {
     const startViewTransition = vi.fn((callback: () => void) => {
       callback();
       return {};
@@ -243,7 +294,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     firePersisted({ conversationId: "conv-1" });
     await screen.findByText("second message");
 
-    expect(startViewTransition).toHaveBeenCalledTimes(1);
+    expect(startViewTransition).not.toHaveBeenCalled();
   });
 
   it("does not reload or resubscribe when only the seen callback identity changes", async () => {

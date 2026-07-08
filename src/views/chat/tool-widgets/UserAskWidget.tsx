@@ -38,12 +38,14 @@ function OptionRow({
   selected,
   multiSelect,
   disabled,
+  index,
   onSelect,
 }: {
   option: QuestionOption;
   selected: boolean;
   multiSelect: boolean;
   disabled: boolean;
+  index: number;
   onSelect: () => void;
 }) {
   return (
@@ -53,8 +55,9 @@ function OptionRow({
       aria-checked={selected}
       disabled={disabled}
       onClick={onSelect}
+      style={{ animationDelay: `${index * 18}ms` }}
       className={cn(
-        "flex w-full items-start gap-2.5 rounded-md px-2.5 py-2 text-left text-sm transition-colors",
+        "doce-ask-option-row-enter flex w-full items-start gap-2.5 rounded-md px-2.5 py-2 text-left text-sm transition-colors",
         selected ? "bg-muted" : "hover:bg-muted",
       )}
     >
@@ -183,13 +186,14 @@ export default function UserAskWidget({ detail, initialMode = "options" }: UserA
               role={detail.multiSelect ? "group" : "radiogroup"}
               aria-labelledby={questionId}
             >
-              {detail.options.map((option) => (
+              {detail.options.map((option, index) => (
                 <OptionRow
                   key={option.label}
                   option={option}
                   selected={selected.includes(option.label)}
                   multiSelect={detail.multiSelect}
                   disabled={submitting}
+                  index={index}
                   onSelect={() => toggleOption(option.label)}
                 />
               ))}
