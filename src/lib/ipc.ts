@@ -33,6 +33,7 @@ export interface Conversation {
   title: string;
   createdAt: number;
   updatedAt: number;
+  lastSeenAt: number;
   status: ConversationStatus;
 }
 
@@ -390,6 +391,8 @@ export const commands = {
   listConversations: (workspaceId?: string) =>
     invoke<Conversation[]>("list_conversations", { workspaceId }),
   listMessages: (conversationId: string) => invoke<Message[]>("list_messages", { conversationId }),
+  markConversationSeen: (conversationId: string) =>
+    invoke<void>("mark_conversation_seen", { conversationId }),
   searchConversations: (query: string) => invoke<SearchResult[]>("search_conversations", { query }),
   // Values cross as JSON-encoded strings (see commands/settings.rs for why)
   // — parse/stringify at the call site.

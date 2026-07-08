@@ -85,6 +85,7 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
       title: "New conversation",
       createdAt: 1,
       updatedAt: 1,
+      lastSeenAt: 1,
       status: "done",
     });
     vi.mocked(commands.sendAgentMessage).mockResolvedValue("On it.");
@@ -184,6 +185,7 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
         title: "Before 006",
         createdAt: 1,
         updatedAt: 1,
+        lastSeenAt: 1,
         status: "done",
       },
     ]);

@@ -45,6 +45,7 @@ describe("EmptyState (006-chat-empty-state)", () => {
       title: "New conversation",
       createdAt: 1,
       updatedAt: 1,
+      lastSeenAt: 1,
       status: "done",
     });
     vi.mocked(commands.sendAgentMessage).mockReturnValue(new Promise(() => {}));
@@ -94,6 +95,7 @@ describe("EmptyState (006-chat-empty-state)", () => {
       title: "New conversation",
       createdAt: 1,
       updatedAt: 1,
+      lastSeenAt: 1,
       status: "done",
     });
     const onConversationCreated = vi.fn();
@@ -184,6 +186,7 @@ describe("EmptyState (006-chat-empty-state)", () => {
       title: "New conversation",
       createdAt: 1,
       updatedAt: 1,
+      lastSeenAt: 1,
       status: "done",
     });
     vi.mocked(commands.sendAgentMessage).mockResolvedValue("ok");

@@ -44,6 +44,7 @@ describe("SearchPanel", () => {
       title: `Conversation ${i}`,
       createdAt: i,
       updatedAt: i,
+      lastSeenAt: i,
       status: "done",
     }));
     const onSelect = vi.fn();

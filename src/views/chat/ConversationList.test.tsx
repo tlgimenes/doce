@@ -32,6 +32,7 @@ describe("ConversationList", () => {
         title: "First one",
         createdAt: 1,
         updatedAt: 3,
+        lastSeenAt: 3,
         status: "done",
       },
       {
@@ -40,9 +41,18 @@ describe("ConversationList", () => {
         title: "Needs input",
         createdAt: 2,
         updatedAt: 2,
+        lastSeenAt: 2,
         status: "requires_action",
       },
-      { id: "c", workspaceId: null, title: "Broke", createdAt: 3, updatedAt: 1, status: "failed" },
+      {
+        id: "c",
+        workspaceId: null,
+        title: "Broke",
+        createdAt: 3,
+        updatedAt: 1,
+        lastSeenAt: 1,
+        status: "failed",
+      },
     ]);
 
     render(
@@ -71,6 +81,7 @@ describe("ConversationList", () => {
       title: "First one",
       createdAt: 1,
       updatedAt: 3,
+      lastSeenAt: 3,
       status: "done" as const,
     };
     vi.mocked(commands.listConversations).mockResolvedValue([conversation]);
@@ -101,6 +112,7 @@ describe("ConversationList", () => {
         title: "Fix fuzzy search ranking",
         createdAt: updatedAt - 60_000,
         updatedAt,
+        lastSeenAt: updatedAt,
         status: "in_progress" as const,
       };
 
@@ -232,6 +244,7 @@ describe("ConversationList", () => {
       title: "Older task",
       createdAt: 1,
       updatedAt: 1,
+      lastSeenAt: 1,
       status: "done" as const,
     };
     const recentConversation = {
@@ -240,6 +253,7 @@ describe("ConversationList", () => {
       title: "Recent task",
       createdAt: 2,
       updatedAt: 3,
+      lastSeenAt: 3,
       status: "done" as const,
     };
     vi.mocked(commands.listConversations).mockResolvedValue([oldConversation, recentConversation]);
