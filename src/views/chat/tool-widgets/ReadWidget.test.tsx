@@ -68,4 +68,29 @@ describe("ReadWidget (004-tool-call-widgets, US4)", () => {
     render(<ReadWidget detail={detail} />);
     expect(screen.queryByTestId("view-full-output-button")).not.toBeInTheDocument();
   });
+
+  it("shows a byte/token cost badge when tokenCount is present", () => {
+    const detail: ReadDetail = {
+      toolName: "Read",
+      filePath: "/tmp/notes.txt",
+      offset: null,
+      limit: null,
+      outcome: { ok: true, content: "hello world", truncated: false },
+      tokenCount: 312,
+    };
+    render(<ReadWidget detail={detail} />);
+    expect(screen.getByTestId("read-widget")).toHaveTextContent("312 tok");
+  });
+
+  it("shows no cost badge when tokenCount is absent", () => {
+    const detail: ReadDetail = {
+      toolName: "Read",
+      filePath: "/tmp/notes.txt",
+      offset: null,
+      limit: null,
+      outcome: { ok: true, content: "hello world", truncated: false },
+    };
+    render(<ReadWidget detail={detail} />);
+    expect(screen.getByTestId("read-widget")).not.toHaveTextContent("tok");
+  });
 });
