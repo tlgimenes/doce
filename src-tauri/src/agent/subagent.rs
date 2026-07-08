@@ -44,8 +44,8 @@ pub fn spawn_subagent(
     let now = now_ms();
 
     conn.execute(
-        "INSERT INTO conversations (id, spawned_by_conversation_id, title, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-        rusqlite::params![subagent_id, parent_conversation_id, "(subagent)", now, now],
+        "INSERT INTO conversations (id, spawned_by_conversation_id, title, created_at, updated_at, last_seen_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![subagent_id, parent_conversation_id, "(subagent)", now, now, now],
     )
     .map_err(|e| SubagentError::Db(e.to_string()))?;
 
@@ -65,7 +65,7 @@ mod tests {
 
     fn insert_conversation(conn: &Connection, id: &str, spawned_by: Option<&str>) {
         conn.execute(
-            "INSERT INTO conversations (id, title, created_at, updated_at, spawned_by_conversation_id) VALUES (?1, 'x', 0, 0, ?2)",
+            "INSERT INTO conversations (id, title, created_at, updated_at, last_seen_at, spawned_by_conversation_id) VALUES (?1, 'x', 0, 0, 0, ?2)",
             rusqlite::params![id, spawned_by],
         )
         .unwrap();

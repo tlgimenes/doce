@@ -45,6 +45,7 @@ pub struct Conversation {
     pub title: String,
     pub created_at: i64,
     pub updated_at: i64,
+    pub last_seen_at: i64,
     /// Computed live, never cached (FR-011): `in_progress` | `requires_action`
     /// | `failed` | `done`.
     pub status: String,
@@ -148,8 +149,8 @@ pub async fn create_conversation(
         let title = title.clone();
         move |conn: &mut Connection| -> rusqlite::Result<()> {
             conn.execute(
-                "INSERT INTO conversations (id, workspace_id, title, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-                rusqlite::params![id, workspace_id, title, now, now],
+                "INSERT INTO conversations (id, workspace_id, title, created_at, updated_at, last_seen_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![id, workspace_id, title, now, now, now],
             )?;
             Ok(())
         }
@@ -163,6 +164,7 @@ pub async fn create_conversation(
         title,
         created_at: now,
         updated_at: now,
+        last_seen_at: now,
         status: "done".to_string(),
     })
 }
@@ -528,7 +530,7 @@ pub async fn list_conversations(
         move |conn: &mut Connection| -> rusqlite::Result<Vec<Conversation>> {
             // FR-007: excludes subagent-run conversations from the default result.
             let mut stmt = conn.prepare(
-                "SELECT id, workspace_id, title, created_at, updated_at FROM conversations
+                "SELECT id, workspace_id, title, created_at, updated_at, last_seen_at FROM conversations
              WHERE spawned_by_conversation_id IS NULL
              AND (?1 IS NULL OR workspace_id = ?1)
              ORDER BY updated_at DESC",
@@ -541,12 +543,13 @@ pub async fn list_conversations(
                         row.get::<_, String>(2)?,
                         row.get::<_, i64>(3)?,
                         row.get::<_, i64>(4)?,
+                        row.get::<_, i64>(5)?,
                     ))
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
 
             rows.into_iter()
-                .map(|(id, workspace_id, title, created_at, updated_at)| {
+                .map(|(id, workspace_id, title, created_at, updated_at, last_seen_at)| {
                     let status = compute_status(conn, &id, &active)?;
                     Ok(Conversation {
                         id,
@@ -554,12 +557,43 @@ pub async fn list_conversations(
                         title,
                         created_at,
                         updated_at,
+                        last_seen_at,
                         status,
                     })
                 })
                 .collect()
         },
     )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+fn mark_conversation_seen_in_conn(
+    conn: &Connection,
+    conversation_id: &str,
+    now: i64,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE conversations
+         SET last_seen_at = MAX(?1, updated_at)
+         WHERE id = ?2",
+        rusqlite::params![now, conversation_id],
+    )?;
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn mark_conversation_seen(
+    app: AppHandle,
+    db_cell: State<'_, DbCell>,
+    conversation_id: String,
+) -> Result<(), String> {
+    let conn = db_cell.get(&app).await?;
+    let now = now_ms();
+    conn.call(move |conn: &mut Connection| -> rusqlite::Result<()> {
+        mark_conversation_seen_in_conn(conn, &conversation_id, now)
+    })
     .await
     .map_err(|e| e.to_string())
 }
@@ -571,7 +605,7 @@ mod tests {
 
     fn insert_conversation(conn: &Connection, id: &str) {
         conn.execute(
-            "INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?1, 'x', 0, 0)",
+            "INSERT INTO conversations (id, title, created_at, updated_at, last_seen_at) VALUES (?1, 'x', 0, 0, 0)",
             [id],
         )
         .unwrap();
@@ -591,6 +625,48 @@ mod tests {
             rusqlite::params![uuid::Uuid::now_v7().to_string(), conv_id, role, content_type, content, tool_name, seq],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn mark_conversation_seen_in_conn_sets_marker_to_at_least_updated_at() {
+        let conn = test_connection();
+        conn.execute(
+            "INSERT INTO conversations (id, title, created_at, updated_at, last_seen_at) VALUES ('c1', 'x', 1, 100, 2)",
+            [],
+        )
+        .unwrap();
+
+        mark_conversation_seen_in_conn(&conn, "c1", 50).unwrap();
+
+        let last_seen_at: i64 = conn
+            .query_row(
+                "SELECT last_seen_at FROM conversations WHERE id = 'c1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(last_seen_at, 100);
+    }
+
+    #[test]
+    fn mark_conversation_seen_in_conn_uses_now_when_it_is_newer_than_updated_at() {
+        let conn = test_connection();
+        conn.execute(
+            "INSERT INTO conversations (id, title, created_at, updated_at, last_seen_at) VALUES ('c1', 'x', 1, 100, 2)",
+            [],
+        )
+        .unwrap();
+
+        mark_conversation_seen_in_conn(&conn, "c1", 150).unwrap();
+
+        let last_seen_at: i64 = conn
+            .query_row(
+                "SELECT last_seen_at FROM conversations WHERE id = 'c1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(last_seen_at, 150);
     }
 
     #[test]
