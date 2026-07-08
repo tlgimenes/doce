@@ -405,22 +405,18 @@ export default function Workspace({
             {messages.map((m) => (
               <MessageContent key={m.id} message={m} />
             ))}
-            {pendingToolCall ? (
+            {pendingToolCall && pendingToolCall.kind !== "question" ? (
               <div
                 className="mb-6"
                 data-testid="chat-message"
                 role="group"
                 aria-label="doce replied"
               >
-                {pendingQuestion && (
-                  <div data-testid="question-widget">
-                    <UserAskWidget detail={pendingQuestion} />
-                  </div>
-                )}
                 {pendingToolCall.kind === "bash" && <BashWidget detail={pendingToolCall.detail} />}
                 {pendingToolCall.kind === "task" && <TaskWidget detail={pendingToolCall.detail} />}
               </div>
             ) : (
+              !pendingToolCall &&
               showThinking && (
                 <p className="text-sm text-muted-foreground" data-testid="agent-thinking">
                   Working…
@@ -455,17 +451,21 @@ export default function Workspace({
         className="border-t border-border p-4 [view-transition-name:chat-composer]"
         data-testid="workspace-composer-shell"
       >
-        <RichInput
-          onSubmit={(content, richContent) => {
-            send(content, richContent);
-          }}
-          skillsEnabled={true}
-          disabled={sendInFlight || pendingToolCall !== null}
-          placeholder="Describe a task…"
-          inputTestId="agent-input"
-          submitTestId="agent-send"
-          contextGauge={<ContextUsageGauge conversationId={conversationId} />}
-        />
+        {pendingQuestion ? (
+          <UserAskWidget detail={pendingQuestion} />
+        ) : (
+          <RichInput
+            onSubmit={(content, richContent) => {
+              send(content, richContent);
+            }}
+            skillsEnabled={true}
+            disabled={sendInFlight || pendingToolCall !== null}
+            placeholder="Describe a task…"
+            inputTestId="agent-input"
+            submitTestId="agent-send"
+            contextGauge={<ContextUsageGauge conversationId={conversationId} />}
+          />
+        )}
       </div>
     </div>
   );

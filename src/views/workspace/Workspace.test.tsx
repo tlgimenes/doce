@@ -393,7 +393,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
   // `rx.await` while the model waits for an answer no UI ever showed,
   // holding the one global inference-engine lock the whole time. ---
 
-  it('shows the pending question widget (not "Working…") when the latest message is an unanswered AskUserQuestion tool_call, and answering it calls answerUserQuestion', async () => {
+  it('shows the pending question widget in the composer slot (not "Working…", not the normal chat input) when the latest message is an unanswered AskUserQuestion tool_call, and answering it calls answerUserQuestion', async () => {
     vi.mocked(commands.listMessages).mockResolvedValue([
       {
         id: "u1",
@@ -432,16 +432,63 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
 
     render(<Workspace conversationId="conv-1" />);
 
-    const widget = await screen.findByTestId("question-widget");
+    const widget = await screen.findByTestId("user-ask-widget");
     expect(widget).toHaveTextContent("What would you like to do?");
     expect(screen.queryByTestId("agent-thinking")).not.toBeInTheDocument();
-    // The composer must not accept a new message while this is pending --
-    // that's exactly how a second message ("e?") got queued up behind the
-    // same stuck lock in the real incident.
-    expect(screen.getByTestId("agent-input")).toHaveAttribute("contenteditable", "false");
+    // The normal composer is replaced entirely, not merely disabled -- the
+    // question widget sits in its place instead.
+    expect(screen.queryByTestId("agent-input")).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByText("A"));
     expect(commands.answerUserQuestion).toHaveBeenCalledWith("q1", ["A"]);
+  });
+
+  it("closing the pending question widget reveals a free-text composer whose submission answers the question", async () => {
+    vi.mocked(commands.listMessages).mockResolvedValue([
+      {
+        id: "u1",
+        conversationId: "conv-1",
+        role: "user",
+        contentType: "text",
+        content: "ask me something",
+        toolName: null,
+        createdAt: 1,
+        durationMs: null,
+        tokenCount: null,
+      },
+      {
+        id: "tc1",
+        conversationId: "conv-1",
+        role: "assistant",
+        contentType: "tool_call",
+        content: JSON.stringify({
+          arguments: {
+            header: "Quick check",
+            question: "What would you like to do?",
+            options: [{ label: "A" }, { label: "B" }],
+            multiSelect: false,
+            questionId: "q1",
+          },
+        }),
+        toolName: "AskUserQuestion",
+        createdAt: 2,
+        durationMs: null,
+        tokenCount: null,
+      },
+    ]);
+    vi.mocked(commands.sendAgentMessage).mockReturnValue(new Promise(() => {}));
+    vi.mocked(commands.answerUserQuestion).mockResolvedValue(undefined);
+
+    render(<Workspace conversationId="conv-1" />);
+
+    await screen.findByTestId("user-ask-widget");
+    await userEvent.click(screen.getByTestId("question-close"));
+
+    const editable = screen.getByTestId("question-answer-input");
+    await userEvent.click(editable);
+    await userEvent.type(editable, "actually, do both{Enter}");
+
+    expect(commands.answerUserQuestion).toHaveBeenCalledWith("q1", ["actually, do both"]);
   });
 
   it("shows a pending Bash widget (not \"Working…\") when the latest message is an unfinished Bash tool_call", async () => {
