@@ -88,6 +88,7 @@ export default function Workspace({
   const [isAutoscrollPinned, setIsAutoscrollPinned] = useState(true);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const autoscrollPinnedRef = useRef(true);
+  const isMountedRef = useRef(true);
   const currentConversationIdRef = useRef(conversationId);
   currentConversationIdRef.current = conversationId;
   const onConversationSeenRef = useRef(onConversationSeen);
@@ -99,6 +100,12 @@ export default function Workspace({
     () => conversationsWithSendInFlight.has(conversationId),
     getServerSnapshot,
   );
+
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -219,16 +226,20 @@ export default function Workspace({
           setError(null);
           try {
             const usage = await commands.compactConversation(conversationId);
-            if (currentConversationIdRef.current !== conversationId) return;
+            if (!isMountedRef.current || currentConversationIdRef.current !== conversationId) {
+              return;
+            }
 
             useContextUsageStore.getState().setUsage(usage);
             const refreshed = await commands.listMessages(conversationId);
-            if (currentConversationIdRef.current !== conversationId) return;
+            if (!isMountedRef.current || currentConversationIdRef.current !== conversationId) {
+              return;
+            }
 
             setMessages(refreshed);
             onConversationSeenRef.current?.(conversationId);
           } catch (e) {
-            if (currentConversationIdRef.current === conversationId) {
+            if (isMountedRef.current && currentConversationIdRef.current === conversationId) {
               setError(String(e));
             }
           }
@@ -283,11 +294,13 @@ export default function Workspace({
             richContent ? JSON.stringify(richContent) : undefined,
           );
         } catch (e) {
-          if (currentConversationIdRef.current === conversationId) {
+          if (isMountedRef.current && currentConversationIdRef.current === conversationId) {
             setError(String(e));
           }
         } finally {
           clearSendInFlight(conversationId);
+          if (!isMountedRef.current) return;
+
           if (currentConversationIdRef.current === conversationId) {
             setThinking(false);
             dispatchedInitialTurnRef.current = null;
@@ -295,7 +308,9 @@ export default function Workspace({
             // so the transcript is always correct once the turn is fully done --
             // covers both the happy path and an error partway through the loop.
             commands.listMessages(conversationId).then((loadedMessages) => {
-              if (currentConversationIdRef.current !== conversationId) return;
+              if (!isMountedRef.current || currentConversationIdRef.current !== conversationId) {
+                return;
+              }
               setMessages(loadedMessages);
               onConversationSeenRef.current?.(conversationId);
             });
