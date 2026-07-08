@@ -116,7 +116,11 @@ impl AgentBackend for BenchBackend<'_> {
             .unwrap_or_else(|e| format!("Error: generation failed: {e}"))
     }
 
-    async fn execute_tool(&mut self, _tool_call_id: String, call: doce_lib::agent::ToolCall) -> String {
+    async fn execute_tool(
+        &mut self,
+        _tool_call_id: String,
+        call: doce_lib::agent::ToolCall,
+    ) -> String {
         let result = dispatch::execute(&call, Some(self.cwd)).model_text;
         // Printed for interactive runs, and recorded in `self.trace` as
         // the evidence a plan check-in judges completion against -- the
@@ -177,30 +181,30 @@ async fn run_benchmark_task(
     }
 }
 
-/// `AgentBackend` for the outer "planning" loop
-/// (`agent::plan::PLANNING_SYSTEM_PROMPT`): maintains `plan` via ordinary
-/// tool calls (`CreatePlan`/`AddStep`/`MarkStepDone`) instead of a bespoke
-/// one-shot structured-JSON call, delegates a step's actual work to a
-/// nested `run_loop` via `RunStep` -- the same recursive-tool-call pattern
-/// `commands::agent`'s real `Task` tool already uses to delegate to a
-/// subagent -- and can independently verify a step's claimed result with
-/// read-only tools (`Read`/`Grep`/`Glob`) rather than only ever trusting
-/// secondhand evidence.
-struct PlanningBackend<'a> {
+/// `AgentBackend` for the single two-state loop (`agent::plan::LoopState`):
+/// one `run_loop` call, one continuous `messages` history, one backend
+/// whose `generate` swaps `messages[0]` for whichever system prompt
+/// matches `self.state` before every render, and whose `execute_tool`
+/// dispatches on `(state, tool name)` -- most calls just do the work,
+/// but `CreatePlan`/`ResumeExecution`/`StepDone`/`RefuseStep` also mutate
+/// `self.state` as their side effect, the transition itself surfacing as
+/// nothing more than an ordinary tool result. See `agent::plan`'s own doc
+/// comment for why this replaced an earlier two-backend/recursive-`run_loop`
+/// design.
+struct PlanExecBackend<'a> {
     engine: &'a InferenceEngine,
     cwd: &'a Path,
     threshold: u32,
     turns: u32,
-    /// Turns spent inside `RunStep`-delegated executions, tracked
-    /// separately from `turns` (the outer loop's own) so a run's total
-    /// cost is reportable even though they're two different `run_loop`
-    /// invocations with two different turn budgets.
-    step_turns: u32,
-    max_step_turns: u32,
     plan: doce_lib::agent::plan::Plan,
+    state: doce_lib::agent::plan::LoopState,
+    /// Set by `RefuseStep`, consumed (and cleared) the next time `generate`
+    /// renders the Planning system prompt -- carries the refusal reason
+    /// into that one revision turn without lingering after.
+    refusal_context: Option<String>,
 }
 
-impl AgentBackend for PlanningBackend<'_> {
+impl AgentBackend for PlanExecBackend<'_> {
     fn measure(&mut self, messages: &[ChatMessage]) -> u32 {
         self.engine
             .render_chat_prompt(messages)
@@ -216,8 +220,26 @@ impl AgentBackend for PlanningBackend<'_> {
         context::fit_turn_to_budget(self.engine, messages).unwrap_or_else(|_| messages.to_vec())
     }
 
-    async fn generate(&mut self, messages: Vec<ChatMessage>) -> String {
+    async fn generate(&mut self, mut messages: Vec<ChatMessage>) -> String {
+        use doce_lib::agent::plan::{executing_system_prompt, LoopState, PLANNING_SYSTEM_PROMPT};
+
         self.turns += 1;
+        let system_text = match self.state {
+            LoopState::Planning => match self.refusal_context.take() {
+                Some(reason) => format!(
+                    "{PLANNING_SYSTEM_PROMPT}\n\nThe previous step could not be completed. Reason given: {reason}\n\nRevise the plan accordingly (AddStep, then ResumeExecution)."
+                ),
+                None => PLANNING_SYSTEM_PROMPT.to_string(),
+            },
+            LoopState::Executing { step_index } => {
+                let step_desc = self.plan.steps[step_index].description.clone();
+                executing_system_prompt(&self.plan.goal, &step_desc)
+            }
+        };
+        if let Some(first) = messages.first_mut() {
+            *first = ChatMessage::system(system_text);
+        }
+
         let rendered = self
             .engine
             .render_chat_prompt(&messages)
@@ -227,142 +249,169 @@ impl AgentBackend for PlanningBackend<'_> {
             .unwrap_or_else(|e| format!("Error: generation failed: {e}"))
     }
 
-    async fn execute_tool(&mut self, _tool_call_id: String, call: doce_lib::agent::ToolCall) -> String {
-        let result = match call.name.as_str() {
-            "CreatePlan" => {
-                let goal = call
-                    .arguments
-                    .get("goal")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-                let steps: Vec<doce_lib::agent::plan::PlanStep> = call
-                    .arguments
-                    .get("steps")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|s| s.as_str())
-                            .map(|d| doce_lib::agent::plan::PlanStep {
-                                description: d.to_string(),
-                                done: false,
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let step_count = steps.len();
-                self.plan = doce_lib::agent::plan::Plan { goal, steps };
-                format!("Plan created with {step_count} steps.")
+    async fn execute_tool(
+        &mut self,
+        _tool_call_id: String,
+        call: doce_lib::agent::ToolCall,
+    ) -> String {
+        use doce_lib::agent::plan::{LoopState, Plan, PlanStep};
+
+        let result = match (self.state, call.name.as_str()) {
+            (LoopState::Planning, "CreatePlan") => {
+                if !self.plan.steps.is_empty() {
+                    "Error: a plan already exists -- use AddStep to extend or correct it, CreatePlan is only valid once".to_string()
+                } else {
+                    let goal = call
+                        .arguments
+                        .get("goal")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    let steps: Vec<PlanStep> = call
+                        .arguments
+                        .get("steps")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|s| s.as_str())
+                                .map(|d| PlanStep {
+                                    description: d.to_string(),
+                                    done: false,
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let step_count = steps.len();
+                    self.plan = Plan { goal, steps };
+                    format!("Plan created with {step_count} steps. Call ResumeExecution to begin.")
+                }
             }
-            "AddStep" => {
+            (LoopState::Planning, "AddStep") => {
                 let description = call
                     .arguments
                     .get("description")
                     .and_then(|v| v.as_str())
                     .unwrap_or_default()
                     .to_string();
-                self.plan.steps.push(doce_lib::agent::plan::PlanStep {
+                self.plan.steps.push(PlanStep {
                     description,
                     done: false,
                 });
                 format!("Step added. Plan now has {} steps.", self.plan.steps.len())
             }
-            "MarkStepDone" => {
-                let idx = call
-                    .arguments
-                    .get("step_index")
-                    .and_then(|v| v.as_u64())
-                    .map(|n| n as usize);
-                match idx.and_then(|i| self.plan.steps.get_mut(i)) {
-                    Some(step) => {
-                        step.done = true;
-                        format!("Step {} marked done.", idx.unwrap())
-                    }
-                    None => format!("Error: invalid step_index {idx:?}"),
+            (LoopState::Planning, "ResumeExecution") => match self.next_undone_step() {
+                Some(idx) => {
+                    self.state = LoopState::Executing { step_index: idx };
+                    format!("Resuming at step {idx}: {}", self.plan.steps[idx].description)
                 }
+                None => "Error: no undone steps -- create or add a step first".to_string(),
+            },
+            (LoopState::Planning, "Read" | "Grep" | "Glob") => {
+                dispatch::execute(&call, Some(self.cwd)).model_text
             }
-            "RunStep" => {
-                let idx = call
-                    .arguments
-                    .get("step_index")
-                    .and_then(|v| v.as_u64())
-                    .map(|n| n as usize);
-                match idx.and_then(|i| self.plan.steps.get(i).cloned()) {
-                    None => format!("Error: invalid step_index {idx:?}"),
-                    Some(step) => {
-                        let step_prompt = format!(
-                            "Overall goal: {}\n\nYour current step: {}",
-                            self.plan.goal, step.description
-                        );
-                        let step_context = AgentContext {
-                            is_subagent: false,
-                            max_turns: self.max_step_turns,
-                            cwd: Some(self.cwd.to_path_buf()),
-                        };
-                        let mut exec_backend = BenchBackend {
-                            engine: self.engine,
-                            cwd: self.cwd,
-                            threshold: self.threshold,
-                            turns: 0,
-                            trace: Vec::new(),
-                        };
-                        let initial_messages = vec![
-                            ChatMessage::system(SYSTEM_PROMPT),
-                            ChatMessage::user(step_prompt),
-                        ];
-                        let step_result = run_loop(&step_context, initial_messages, &mut exec_backend).await;
-                        self.step_turns += exec_backend.turns;
-                        match step_result {
-                            Ok(text) => format!(
-                                "Tool activity during this step (ground truth):\n{}\n\nStep's own closing summary (may be unreliable -- verify independently if unsure): {text}",
-                                exec_backend.trace.join("\n")
-                            ),
-                            Err(e) => format!(
-                                "Tool activity during this step (ground truth):\n{}\n\nStep did not finish within its turn budget ({e})",
-                                exec_backend.trace.join("\n")
-                            ),
-                        }
-                    }
-                }
-            }
-            "Read" | "Grep" | "Glob" => dispatch::execute(&call, Some(self.cwd)).model_text,
-            "AskUserQuestion" => {
+            (LoopState::Planning, "AskUserQuestion") => {
                 "Error: no interactive user is available in this benchmark run -- proceed using your own best judgment".to_string()
             }
-            other => format!("Error: unknown tool '{other}'"),
+            (LoopState::Executing { step_index }, "StepDone") => {
+                self.plan.steps[step_index].done = true;
+                match self.next_undone_step() {
+                    Some(next) => {
+                        self.state = LoopState::Executing { step_index: next };
+                        format!("Step {step_index} done. Moving to step {next}.")
+                    }
+                    None => {
+                        self.state = LoopState::Planning;
+                        format!("Step {step_index} done. All steps report done -- back to planning for final review.")
+                    }
+                }
+            }
+            (LoopState::Executing { step_index }, "RefuseStep") => {
+                let reason = call
+                    .arguments
+                    .get("reason")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("(no reason given)");
+                self.refusal_context = Some(format!(
+                    "step {step_index} (\"{}\"): {reason}",
+                    self.plan.steps[step_index].description
+                ));
+                self.state = LoopState::Planning;
+                "Step refused. Back to planning.".to_string()
+            }
+            (LoopState::Executing { .. }, "Read" | "Write" | "Edit" | "Bash" | "Grep" | "Glob") => {
+                dispatch::execute(&call, Some(self.cwd)).model_text
+            }
+            (LoopState::Executing { .. }, "Task") => {
+                // Mirrors commands::agent's real Task handling: an
+                // isolated subagent, FR-016 one-level nesting enforced by
+                // run_loop itself via is_subagent -- kept out of the
+                // shared conversation entirely, only its final answer
+                // becomes this tool_result.
+                let prompt = call
+                    .arguments
+                    .get("prompt")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let sub_context = AgentContext {
+                    is_subagent: true,
+                    max_turns: 20,
+                    cwd: Some(self.cwd.to_path_buf()),
+                };
+                let sub_messages = vec![ChatMessage::system(SYSTEM_PROMPT), ChatMessage::user(prompt)];
+                let mut sub_backend = BenchBackend {
+                    engine: self.engine,
+                    cwd: self.cwd,
+                    threshold: self.threshold,
+                    turns: 0,
+                    trace: Vec::new(),
+                };
+                let sub_result = run_loop(&sub_context, sub_messages, &mut sub_backend).await;
+                self.turns += sub_backend.turns;
+                match sub_result {
+                    Ok(text) => text,
+                    Err(e) => format!("Error: subagent did not finish ({e})"),
+                }
+            }
+            (_, other) => format!("Error: {other} is not available in the current phase"),
         };
         let args_preview: String = call.arguments.to_string().chars().take(200).collect();
         let result_preview: String = result.chars().take(300).collect();
         println!(
-            "  [planning] turn {} tool={} args={args_preview} -> {result_preview:?}",
-            self.turns, call.name
+            "  [{:?}] turn {} tool={} args={args_preview} -> {result_preview:?}",
+            self.state, self.turns, call.name
         );
         result
+    }
+}
+
+impl PlanExecBackend<'_> {
+    fn next_undone_step(&self) -> Option<usize> {
+        self.plan.steps.iter().position(|s| !s.done)
     }
 }
 
 fn report_plan(name: &str, plan: &doce_lib::agent::plan::Plan) {
     println!("[{name}] final plan (goal: {:?}):", plan.goal);
     for (i, step) in plan.steps.iter().enumerate() {
-        println!("  {i}. [{}] {}", if step.done { "x" } else { " " }, step.description);
+        println!(
+            "  {i}. [{}] {}",
+            if step.done { "x" } else { " " },
+            step.description
+        );
     }
 }
 
-/// Runs `task` through the two-stage plan loop: an outer `run_loop`
-/// (`PlanningBackend`) maintains the plan via real tool calls and
-/// delegates each step's actual work to a nested `run_loop` via `RunStep`
-/// -- the same recursive-tool-call pattern `Task` already uses for
-/// subagents, not bespoke orchestration. `turns_taken` on the returned
-/// `BenchmarkRun` is the combined total (outer planning turns + every
-/// delegated step's own turns).
+/// Runs `task` through the single two-state loop (`PlanExecBackend`) --
+/// one `run_loop` call, not two, and one continuous conversation shared by
+/// planning and every step's execution.
 async fn run_planned_benchmark_task(
     engine: &InferenceEngine,
     task: &str,
     cwd: &Path,
-    max_step_turns: u32,
     max_plan_turns: u32,
 ) -> BenchmarkRun {
-    use doce_lib::agent::plan::PLANNING_SYSTEM_PROMPT;
+    use doce_lib::agent::plan::{LoopState, Plan, PLANNING_SYSTEM_PROMPT};
 
     let context = AgentContext {
         is_subagent: false,
@@ -378,14 +427,14 @@ async fn run_planned_benchmark_task(
     let threshold = engine
         .context_window()
         .saturating_sub(doce_lib::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS);
-    let mut backend = PlanningBackend {
+    let mut backend = PlanExecBackend {
         engine,
         cwd,
         threshold,
         turns: 0,
-        step_turns: 0,
-        max_step_turns,
-        plan: doce_lib::agent::plan::Plan::default(),
+        plan: Plan::default(),
+        state: LoopState::Planning,
+        refusal_context: None,
     };
 
     let result = run_loop(&context, initial_messages, &mut backend).await;
@@ -393,7 +442,7 @@ async fn run_planned_benchmark_task(
 
     BenchmarkRun {
         result,
-        turns_taken: backend.turns + backend.step_turns,
+        turns_taken: backend.turns,
         elapsed: start.elapsed(),
     }
 }
@@ -424,10 +473,10 @@ async fn tier1_single_tool_call_reads_a_known_file() {
     );
 }
 
-/// Fast smoke test for the two-stage plan loop itself (CreatePlan/RunStep
-/// tool dispatch, the nested `run_loop` recursion, prompt construction) on
-/// the smallest possible task, before trusting it on tier 4's much longer,
-/// slower run.
+/// Fast smoke test for the single two-state loop itself (CreatePlan/
+/// ResumeExecution/StepDone state transitions, per-state prompt
+/// construction) on the smallest possible task, before trusting it on
+/// tier 4's much longer, slower run.
 #[tokio::test]
 #[ignore]
 async fn tier1_planned_single_tool_call_reads_a_known_file() {
@@ -440,7 +489,6 @@ async fn tier1_planned_single_tool_call_reads_a_known_file() {
         "This directory has a file named config.txt. What's on its first line? \
          Answer with just the line's content, nothing else.",
         dir.path(),
-        10,
         15,
     )
     .await;
@@ -666,9 +714,11 @@ async fn tier4_planned_long_running_fixes_many_scattered_bugs() {
         TIER4_BUG_COUNT - 1
     );
 
-    // max_plan_turns generous: CreatePlan + up to 20 RunStep/MarkStepDone
-    // pairs + occasional independent Read verification + final answer.
-    let run = run_planned_benchmark_task(&engine, &task, dir.path(), 10, 60).await;
+    // Generous and shared across the whole task (one budget, not a
+    // separate one per step): CreatePlan + 20 x (a few tool calls per
+    // file + StepDone) + occasional independent verification + final
+    // review, matching production's own top-level cap (200).
+    let run = run_planned_benchmark_task(&engine, &task, dir.path(), 150).await;
     report("tier4_planned", &run);
 
     let (fixed, total) = tier4_score(dir.path());
