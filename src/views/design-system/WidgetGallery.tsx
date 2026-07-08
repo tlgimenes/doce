@@ -8,6 +8,7 @@ import BashWidget from "@/views/chat/tool-widgets/BashWidget";
 import SearchResultsWidget from "@/views/chat/tool-widgets/SearchResultsWidget";
 import TaskWidget from "@/views/chat/tool-widgets/TaskWidget";
 import AskUserQuestionWidget from "@/views/chat/tool-widgets/AskUserQuestionWidget";
+import UserAskWidget from "@/views/chat/tool-widgets/UserAskWidget";
 import UnknownToolWidget from "@/views/chat/tool-widgets/UnknownToolWidget";
 
 interface WidgetGalleryProps {
@@ -316,10 +317,10 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
 
         <Section
           title="AskUserQuestion"
-          description="An interactive pause/resume prompt. Single-select answers on click; multi-select accumulates + confirms. Read-only once answered."
+          description="An interactive pause/resume prompt, rendered in the composer slot while pending. Single-select answers on click; multi-select accumulates + confirms; closing it (✕) reveals a free-text fallback. Read-only once answered."
         >
           <Example label="Pending, single-select">
-            <AskUserQuestionWidget
+            <UserAskWidget
               detail={{
                 toolName: "AskUserQuestion",
                 questionId: "design-system-preview-1",
@@ -335,7 +336,7 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
             />
           </Example>
           <Example label="Pending, multi-select">
-            <AskUserQuestionWidget
+            <UserAskWidget
               detail={{
                 toolName: "AskUserQuestion",
                 questionId: "design-system-preview-2",
@@ -347,6 +348,23 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
                   { label: "Tier 4 planned", description: "" },
                 ],
                 multiSelect: true,
+                answer: null,
+              }}
+            />
+          </Example>
+          <Example label="Pending, free-text fallback">
+            <UserAskWidget
+              initialMode="text"
+              detail={{
+                toolName: "AskUserQuestion",
+                questionId: "design-system-preview-4",
+                header: "",
+                question: "Rerun now or wait?",
+                options: [
+                  { label: "Rerun now", description: "" },
+                  { label: "Wait", description: "" },
+                ],
+                multiSelect: false,
                 answer: null,
               }}
             />
