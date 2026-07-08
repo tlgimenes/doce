@@ -72,6 +72,19 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
       commands.listWorkspaces().then(setWorkspaces).catch(console.error);
     };
 
+    const markConversationSeenLocally = (conversationId: string) => {
+      setConversations((current) =>
+        current.map((conversation) =>
+          conversation.id === conversationId
+            ? {
+                ...conversation,
+                lastSeenAt: Math.max(Date.now(), conversation.updatedAt, conversation.lastSeenAt),
+              }
+            : conversation,
+        ),
+      );
+    };
+
     useEffect(() => {
       refresh();
       const id = setInterval(refresh, 2000);
@@ -177,13 +190,17 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
           {conversations.map((c) => {
             const isActive = c.id === activeId;
             const hasUnseenUpdates = !isActive && c.updatedAt > c.lastSeenAt;
+            const isReadInactive = !isActive && !hasUnseenUpdates;
 
             return (
               <Button
                 key={c.id}
                 variant="ghost"
                 size="sm"
-                onClick={() => onSelect(c)}
+                onClick={() => {
+                  markConversationSeenLocally(c.id);
+                  onSelect(c);
+                }}
                 data-testid="conversation-item"
                 data-conversation-id={c.id}
                 className={cn(
@@ -213,8 +230,8 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
                   <span className="flex min-w-0 items-baseline gap-2">
                     <span
                       className={cn(
-                        "min-w-0 flex-1 truncate text-[13px] leading-4",
-                        hasUnseenUpdates ? "font-semibold" : "font-medium",
+                        "min-w-0 flex-1 truncate text-[13px] font-medium leading-4",
+                        isReadInactive ? "text-sidebar-foreground/55" : "text-sidebar-foreground",
                       )}
                     >
                       {c.title}
@@ -245,7 +262,10 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
               // look it up in the already-loaded list rather than changing
               // onSelect's shape just for this one caller.
               const conversation = conversations.find((c) => c.id === id);
-              if (conversation) onSelect(conversation);
+              if (conversation) {
+                markConversationSeenLocally(conversation.id);
+                onSelect(conversation);
+              }
               setSearching(false);
             }}
           />

@@ -1,4 +1,4 @@
-import { createRef } from "react";
+import { createRef, useState } from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -100,7 +100,7 @@ describe("ConversationList", () => {
     expect(onSelect).toHaveBeenCalledWith(conversation);
   });
 
-  it("renders an inactive conversation title bold when it has unseen updates", async () => {
+  it("renders an inactive unseen conversation title with normal foreground color", async () => {
     vi.mocked(commands.listConversations).mockResolvedValue([
       {
         id: "unseen",
@@ -122,10 +122,13 @@ describe("ConversationList", () => {
       />,
     );
 
-    expect(await screen.findByText("New output arrived")).toHaveClass("font-semibold");
+    expect(await screen.findByText("New output arrived")).toHaveClass(
+      "font-medium",
+      "text-sidebar-foreground",
+    );
   });
 
-  it("renders the active conversation title normal even when it has unseen updates", async () => {
+  it("renders the active conversation title with normal foreground color even when it has unseen updates", async () => {
     vi.mocked(commands.listConversations).mockResolvedValue([
       {
         id: "active",
@@ -147,7 +150,57 @@ describe("ConversationList", () => {
       />,
     );
 
-    expect(await screen.findByText("Currently open")).toHaveClass("font-medium");
+    expect(await screen.findByText("Currently open")).toHaveClass(
+      "font-medium",
+      "text-sidebar-foreground",
+    );
+  });
+
+  it("mutes a viewed conversation title after switching to another conversation", async () => {
+    const conversations = [
+      {
+        id: "first",
+        workspaceId: null,
+        title: "First unseen",
+        createdAt: 1,
+        updatedAt: 10,
+        lastSeenAt: 5,
+        status: "done" as const,
+      },
+      {
+        id: "second",
+        workspaceId: null,
+        title: "Second chat",
+        createdAt: 2,
+        updatedAt: 6,
+        lastSeenAt: 6,
+        status: "done" as const,
+      },
+    ];
+    vi.mocked(commands.listConversations).mockResolvedValue(conversations);
+
+    function ControlledConversationList() {
+      const [activeId, setActiveId] = useState<string | null>(null);
+      return (
+        <ConversationList
+          activeId={activeId}
+          onSelect={(conversation) => setActiveId(conversation.id)}
+          onNewConversation={vi.fn()}
+          onOpenSettings={vi.fn()}
+        />
+      );
+    }
+
+    render(<ControlledConversationList />);
+
+    const first = await screen.findByText("First unseen");
+    expect(first).toHaveClass("font-medium", "text-sidebar-foreground");
+
+    await userEvent.click(first);
+    expect(first).toHaveClass("font-medium", "text-sidebar-foreground");
+
+    await userEvent.click(screen.getByText("Second chat"));
+    expect(first).toHaveClass("font-medium", "text-sidebar-foreground/55");
   });
 
   it("renders each conversation as title/time plus path/work-state rows", async () => {
