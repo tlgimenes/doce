@@ -31,30 +31,60 @@ describe("UserAskWidget", () => {
     vi.clearAllMocks();
   });
 
-  it("renders clickable options and indicates single-select", () => {
+  it("renders each option as a radio row and a disabled submit button until one is picked", () => {
     render(<UserAskWidget detail={SINGLE} />);
     expect(screen.getByText("Which way should I go?")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Option A/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Option B/ })).toBeInTheDocument();
-    expect(screen.queryByTestId("question-submit")).not.toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /Option A/ })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /Option B/ })).toBeInTheDocument();
+    expect(screen.getByTestId("question-submit")).toBeDisabled();
   });
 
-  it("clicking an option in a single-select question answers immediately", async () => {
+  it("shows each option's description as visible text, not just a hover tooltip", () => {
+    render(<UserAskWidget detail={SINGLE} />);
+    expect(screen.getByText("the first way")).toBeInTheDocument();
+    expect(screen.getByText("the second way")).toBeInTheDocument();
+  });
+
+  it("options are grouped with the correct ARIA role for the select mode", () => {
+    const { unmount } = render(<UserAskWidget detail={SINGLE} />);
+    expect(screen.getByRole("radiogroup")).toBeInTheDocument();
+    unmount();
+
+    render(<UserAskWidget detail={MULTI} />);
+    expect(screen.getByRole("group")).toBeInTheDocument();
+  });
+
+  it("selecting a single-select option enables the submit button, and clicking it answers the question", async () => {
     vi.mocked(commands.answerUserQuestion).mockResolvedValue(undefined);
     render(<UserAskWidget detail={SINGLE} />);
 
-    await userEvent.click(screen.getByRole("button", { name: /Option A/ }));
+    const submitButton = screen.getByTestId("question-submit");
+    expect(submitButton).toBeDisabled();
 
+    await userEvent.click(screen.getByRole("radio", { name: /Option A/ }));
+    expect(commands.answerUserQuestion).not.toHaveBeenCalled();
+    expect(submitButton).toBeEnabled();
+
+    await userEvent.click(submitButton);
     expect(commands.answerUserQuestion).toHaveBeenCalledWith("q1", ["Option A"]);
   });
 
-  it("indicates multi-select and requires an explicit confirm before answering", async () => {
+  it("never shows a selected count for single-select", async () => {
+    render(<UserAskWidget detail={SINGLE} />);
+    await userEvent.click(screen.getByRole("radio", { name: /Option A/ }));
+    expect(screen.queryByText(/selected/)).not.toBeInTheDocument();
+  });
+
+  it("multi-select accumulates a selection, shows a live count, and requires an explicit submit", async () => {
     vi.mocked(commands.answerUserQuestion).mockResolvedValue(undefined);
     render(<UserAskWidget detail={MULTI} />);
 
-    expect(screen.getByTestId("multi-select-indicator")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: /Option A/ }));
-    await userEvent.click(screen.getByRole("button", { name: /Option B/ }));
+    expect(screen.queryByText(/selected/)).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("checkbox", { name: /Option A/ }));
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("checkbox", { name: /Option B/ }));
+    expect(screen.getByText("2 selected")).toBeInTheDocument();
     expect(commands.answerUserQuestion).not.toHaveBeenCalled();
 
     await userEvent.click(screen.getByTestId("question-submit"));
@@ -66,7 +96,7 @@ describe("UserAskWidget", () => {
 
     await userEvent.click(screen.getByTestId("question-close"));
 
-    expect(screen.queryByRole("button", { name: /Option A/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("radio", { name: /Option A/ })).not.toBeInTheDocument();
     expect(screen.getByTestId("question-answer-input")).toBeInTheDocument();
   });
 
@@ -101,13 +131,13 @@ describe("UserAskWidget", () => {
     expect(commands.answerUserQuestion).not.toHaveBeenCalled();
   });
 
-  it("'back to options' returns from the free-text input to the option buttons", async () => {
+  it("'back to options' returns from the free-text input to the option rows", async () => {
     render(<UserAskWidget detail={SINGLE} />);
 
     await userEvent.click(screen.getByTestId("question-close"));
     await userEvent.click(screen.getByTestId("question-back-to-options"));
 
-    expect(screen.getByRole("button", { name: /Option A/ })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /Option A/ })).toBeInTheDocument();
     expect(screen.queryByTestId("question-answer-input")).not.toBeInTheDocument();
   });
 
@@ -115,6 +145,6 @@ describe("UserAskWidget", () => {
     render(<UserAskWidget detail={SINGLE} initialMode="text" />);
 
     expect(screen.getByTestId("question-answer-input")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Option A/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("radio", { name: /Option A/ })).not.toBeInTheDocument();
   });
 });

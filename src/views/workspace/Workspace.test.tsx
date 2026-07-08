@@ -439,7 +439,10 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     // question widget sits in its place instead.
     expect(screen.queryByTestId("agent-input")).not.toBeInTheDocument();
 
-    await userEvent.click(screen.getByText("A"));
+    await userEvent.click(screen.getByRole("radio", { name: "A" }));
+    expect(commands.answerUserQuestion).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByTestId("question-submit"));
     expect(commands.answerUserQuestion).toHaveBeenCalledWith("q1", ["A"]);
   });
 
