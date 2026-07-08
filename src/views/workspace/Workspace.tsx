@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { ArrowDownIcon } from "@phosphor-icons/react";
 import MessageContent from "@/components/MessageContent";
 import ContextUsageGauge from "@/components/ContextUsageGauge";
+import { Button } from "@/components/ui/button";
 import RichInput from "@/views/chat/rich-input/RichInput";
 import AskUserQuestionWidget from "@/views/chat/tool-widgets/AskUserQuestionWidget";
 import {
@@ -81,6 +83,7 @@ export default function Workspace({
   const [messages, setMessages] = useState<Message[]>([]);
   const [thinking, setThinking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isAutoscrollPinned, setIsAutoscrollPinned] = useState(true);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const autoscrollPinnedRef = useRef(true);
   const currentConversationIdRef = useRef(conversationId);
@@ -158,28 +161,40 @@ export default function Workspace({
   }, [messages]);
   const showThinking = thinking || sendInFlight;
 
-  const scrollToTranscriptBottom = useCallback(() => {
+  const setAutoscrollPinned = useCallback((pinned: boolean) => {
+    autoscrollPinnedRef.current = pinned;
+    setIsAutoscrollPinned(pinned);
+  }, []);
+
+  const scrollToTranscriptBottom = useCallback((force = false) => {
     const element = scrollContainerRef.current;
     if (!element) return;
-    if (!autoscrollPinnedRef.current) return;
+    if (!force && !autoscrollPinnedRef.current) return;
     scrollElementToBottom(element);
   }, []);
 
   const scheduleScrollToTranscriptBottom = useCallback(() => {
-    const frame = window.requestAnimationFrame(scrollToTranscriptBottom);
+    const frame = window.requestAnimationFrame(() => {
+      scrollToTranscriptBottom();
+    });
     return () => window.cancelAnimationFrame(frame);
   }, [scrollToTranscriptBottom]);
 
   const updateAutoscrollPinned = useCallback(() => {
     const element = scrollContainerRef.current;
     if (!element) return;
-    autoscrollPinnedRef.current = isNearScrollBottom(element);
-  }, []);
+    setAutoscrollPinned(isNearScrollBottom(element));
+  }, [setAutoscrollPinned]);
+
+  const scrollToBottomAndPin = useCallback(() => {
+    setAutoscrollPinned(true);
+    scrollToTranscriptBottom(true);
+  }, [scrollToTranscriptBottom, setAutoscrollPinned]);
 
   useEffect(() => {
-    autoscrollPinnedRef.current = true;
+    setAutoscrollPinned(true);
     return scheduleScrollToTranscriptBottom();
-  }, [conversationId, scheduleScrollToTranscriptBottom]);
+  }, [conversationId, scheduleScrollToTranscriptBottom, setAutoscrollPinned]);
 
   useEffect(() => {
     if (!autoscrollPinnedRef.current) return;
@@ -298,36 +313,56 @@ export default function Workspace({
 
   return (
     <div className="flex h-dvh flex-col bg-background text-foreground">
-      <div
-        ref={scrollContainerRef}
-        className="flex-1 overflow-y-auto p-4"
-        data-testid="workspace-scroll-container"
-        onScroll={updateAutoscrollPinned}
-      >
-        <div className="mx-auto max-w-3xl">
-          {messages.map((m) => (
-            <MessageContent key={m.id} message={m} />
-          ))}
-          {pendingQuestion ? (
-            <div className="mb-6" data-testid="chat-message" role="group" aria-label="doce replied">
-              <AskUserQuestionWidget detail={pendingQuestion} />
-            </div>
-          ) : (
-            showThinking && (
-              <p className="text-sm text-muted-foreground" data-testid="agent-thinking">
-                Working…
-              </p>
-            )
-          )}
-          {error && (
-            <div
-              className="mb-6 rounded-lg bg-destructive/10 p-3 text-sm text-destructive"
-              data-testid="workspace-error"
-            >
-              {error}
-            </div>
-          )}
+      <div className="relative min-h-0 flex-1">
+        <div
+          ref={scrollContainerRef}
+          className="h-full overflow-y-auto p-4"
+          data-testid="workspace-scroll-container"
+          onScroll={updateAutoscrollPinned}
+        >
+          <div className="mx-auto max-w-3xl">
+            {messages.map((m) => (
+              <MessageContent key={m.id} message={m} />
+            ))}
+            {pendingQuestion ? (
+              <div
+                className="mb-6"
+                data-testid="chat-message"
+                role="group"
+                aria-label="doce replied"
+              >
+                <AskUserQuestionWidget detail={pendingQuestion} />
+              </div>
+            ) : (
+              showThinking && (
+                <p className="text-sm text-muted-foreground" data-testid="agent-thinking">
+                  Working…
+                </p>
+              )
+            )}
+            {error && (
+              <div
+                className="mb-6 rounded-lg bg-destructive/10 p-3 text-sm text-destructive"
+                data-testid="workspace-error"
+              >
+                {error}
+              </div>
+            )}
+          </div>
         </div>
+        {!isAutoscrollPinned && (
+          <Button
+            type="button"
+            variant="secondary"
+            size="icon"
+            className="absolute bottom-4 right-4 z-10 rounded-full bg-card/95 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-card/80"
+            onClick={scrollToBottomAndPin}
+            aria-label="Scroll to bottom"
+            data-testid="scroll-to-bottom"
+          >
+            <ArrowDownIcon size={16} />
+          </Button>
+        )}
       </div>
       <div
         className="border-t border-border p-4 [view-transition-name:chat-composer]"

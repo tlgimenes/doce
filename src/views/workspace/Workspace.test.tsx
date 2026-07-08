@@ -1017,6 +1017,94 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     expect(scrollContainer.scrollTop).toBe(200);
   });
 
+  it("shows the scroll-to-bottom button when autoscroll detaches and hides it near the bottom", async () => {
+    vi.mocked(commands.listMessages).mockResolvedValueOnce([messageFixture("m1", "first message")]);
+
+    render(<Workspace conversationId="conv-1" />);
+    const scrollContainer = await screen.findByTestId("workspace-scroll-container");
+    await screen.findByText("first message");
+
+    expect(screen.queryByTestId("scroll-to-bottom")).not.toBeInTheDocument();
+
+    setScrollMetrics(scrollContainer, { scrollHeight: 1000, clientHeight: 300, scrollTop: 200 });
+    fireEvent.scroll(scrollContainer);
+
+    expect(screen.getByTestId("scroll-to-bottom")).toBeInTheDocument();
+
+    setScrollMetrics(scrollContainer, { scrollHeight: 1000, clientHeight: 300, scrollTop: 680 });
+    fireEvent.scroll(scrollContainer);
+
+    expect(screen.queryByTestId("scroll-to-bottom")).not.toBeInTheDocument();
+  });
+
+  it("scrolls to bottom and hides the scroll-to-bottom button when clicked", async () => {
+    vi.mocked(commands.listMessages).mockResolvedValueOnce([messageFixture("m1", "first message")]);
+
+    render(<Workspace conversationId="conv-1" />);
+    const scrollContainer = await screen.findByTestId("workspace-scroll-container");
+    await screen.findByText("first message");
+
+    setScrollMetrics(scrollContainer, { scrollHeight: 1000, clientHeight: 300, scrollTop: 200 });
+    fireEvent.scroll(scrollContainer);
+
+    await userEvent.click(screen.getByRole("button", { name: "Scroll to bottom" }));
+
+    expect(scrollContainer.scrollTop).toBe(700);
+    expect(screen.queryByTestId("scroll-to-bottom")).not.toBeInTheDocument();
+  });
+
+  it("keeps following new messages after the scroll-to-bottom button is clicked", async () => {
+    let firePersisted!: (p: { conversationId: string }) => void;
+    vi.mocked(events.onAgentMessagePersisted).mockImplementation(async (cb) => {
+      firePersisted = cb;
+      return () => {};
+    });
+    vi.mocked(commands.listMessages)
+      .mockResolvedValueOnce([messageFixture("m1", "first message")])
+      .mockResolvedValueOnce([
+        messageFixture("m1", "first message"),
+        messageFixture("m2", "second message", 2),
+      ]);
+
+    render(<Workspace conversationId="conv-1" />);
+    const scrollContainer = await screen.findByTestId("workspace-scroll-container");
+    await screen.findByText("first message");
+
+    setScrollMetrics(scrollContainer, { scrollHeight: 1000, clientHeight: 300, scrollTop: 200 });
+    fireEvent.scroll(scrollContainer);
+    await userEvent.click(screen.getByTestId("scroll-to-bottom"));
+
+    setScrollMetrics(scrollContainer, { scrollHeight: 1400, clientHeight: 300, scrollTop: 700 });
+    firePersisted({ conversationId: "conv-1" });
+
+    await screen.findByText("second message");
+    await waitFor(() => expect(scrollContainer.scrollTop).toBe(1100));
+  });
+
+  it("hides the scroll-to-bottom button when switching conversations", async () => {
+    vi.mocked(commands.listMessages)
+      .mockResolvedValueOnce([messageFixture("m1", "first workspace")])
+      .mockResolvedValueOnce([
+        {
+          ...messageFixture("m2", "second workspace"),
+          conversationId: "conv-2",
+        },
+      ]);
+
+    const { rerender } = render(<Workspace conversationId="conv-1" />);
+    const scrollContainer = await screen.findByTestId("workspace-scroll-container");
+    await screen.findByText("first workspace");
+
+    setScrollMetrics(scrollContainer, { scrollHeight: 1000, clientHeight: 300, scrollTop: 200 });
+    fireEvent.scroll(scrollContainer);
+    expect(screen.getByTestId("scroll-to-bottom")).toBeInTheDocument();
+
+    rerender(<Workspace conversationId="conv-2" />);
+
+    expect(screen.queryByTestId("scroll-to-bottom")).not.toBeInTheDocument();
+    await screen.findByText("second workspace");
+  });
+
   it("does not run a scheduled autoscroll after the user scrolls up before the animation frame", async () => {
     const animationFrame = installAnimationFrameQueue();
     try {
