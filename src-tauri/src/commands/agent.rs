@@ -531,7 +531,34 @@ async fn execute_top_level_tool(
         .await
     {
         Ok(id) => id,
-        Err(e) => return format!("Error: failed to spawn subagent: {e}"),
+        Err(e) => {
+            // A spawn failure still needs its tool_result pairing (the
+            // tool_call above is already durably persisted by this point)
+            // -- otherwise this row is left permanently unpaired, which
+            // widgets that match tool_call/tool_result by tool_call_id
+            // would render as stuck "pending" forever. No real
+            // subagentConversationId exists in this failure case (nothing
+            // was ever spawned), so it's "" here, same "complete" state as
+            // the success path below since the delegation attempt is over
+            // either way from the parent's perspective.
+            let error_text = format!("Error: failed to spawn subagent: {e}");
+            persist_tool_result(
+                Some(app),
+                conn,
+                parent_conversation_id,
+                &tool_call_id,
+                "Task",
+                &error_text,
+                serde_json::json!({
+                    "toolName": "Task",
+                    "prompt": prompt,
+                    "subagentConversationId": "",
+                    "state": "complete",
+                }),
+            )
+            .await;
+            return error_text;
+        }
     };
 
     // 007-workspace-cwd-resolution/FR-006: inherit the parent's cwd rather
@@ -1486,6 +1513,108 @@ mod tests {
                 ("tool_result".to_string(), Some("Read".to_string())),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn task_delegation_persists_a_tool_result_when_spawn_subagent_fails_instead_of_leaving_the_tool_call_orphaned(
+    ) {
+        // Regression test for a review finding on the change above: between
+        // the early `persist_tool_call` and the final `persist_tool_result`,
+        // `execute_top_level_tool`'s `Task` branch used to `return` straight
+        // out of the `spawn_subagent` error arm, skipping `persist_tool_result`
+        // entirely -- leaving a `tool_call` row with no paired `tool_result`
+        // (widgets pair the two by `tool_call_id`, so an unpaired row renders
+        // as stuck "pending" forever). This exercises exactly what that arm
+        // now does at the persistence layer -- same reasoning as
+        // `task_delegation_persists_a_complete_status_on_the_parent_and_keeps_subagent_activity_isolated`
+        // above for why this doesn't call `execute_top_level_tool` itself
+        // (it needs a real, live `AppHandle` -- not `Option<&AppHandle>`
+        // like `handle_general_tool_call` -- which isn't constructible in a
+        // unit test) -- except the failure here is the *real*
+        // `subagent::spawn_subagent`, not a simulated one, so the trigger is
+        // genuinely deterministic rather than assumed.
+        let conn = crate::storage::test_async_connection().await;
+        // "parent" itself genuinely exists (`messages.conversation_id` has a
+        // `REFERENCES conversations(id)` FK, enforced under
+        // `test_async_connection`'s `PRAGMA foreign_keys = ON` -- an INSERT
+        // against a nonexistent conversation id would just silently no-op,
+        // since `persist_tool_call`/`persist_tool_result` swallow their
+        // `conn.call` error). `spawn_subagent` below is deliberately called
+        // against a *different*, nonexistent id purely to get the same
+        // deterministic `SubagentError::ParentNotFound` it would raise for a
+        // missing parent -- see `agent/subagent.rs`'s own
+        // `spawning_from_a_nonexistent_parent_is_a_clear_error` test for that
+        // same trigger. (`execute_top_level_tool` always passes one and the
+        // same id to both; splitting them here only isolates the two DB
+        // effects so this test doesn't need a real, live parent-deletion
+        // race to exercise the Err arm.)
+        seed_conversation(&conn, "parent").await;
+
+        // What execute_top_level_tool's Task branch persists immediately,
+        // before spawn_subagent ever runs.
+        persist_tool_call(
+            None,
+            &conn,
+            "parent",
+            "call1",
+            "Task",
+            serde_json::json!({"prompt": "go read the file"}),
+        )
+        .await;
+
+        // The real spawn_subagent call, against a parent id absent from the
+        // conversations table -- deterministically Err(ParentNotFound).
+        let spawn_result = conn
+            .call(|conn: &mut Connection| {
+                subagent::spawn_subagent(conn, "does-not-exist", "go read the file")
+            })
+            .await;
+        let e = spawn_result.expect_err("spawning from a nonexistent parent must fail");
+
+        // What the fixed Err arm now does: persist a paired tool_result
+        // (state "complete", empty subagentConversationId -- nothing was
+        // ever spawned) instead of returning without pairing the row.
+        let error_text = format!("Error: failed to spawn subagent: {e}");
+        persist_tool_result(
+            None,
+            &conn,
+            "parent",
+            "call1",
+            "Task",
+            &error_text,
+            serde_json::json!({
+                "toolName": "Task",
+                "prompt": "go read the file",
+                "subagentConversationId": "",
+                "state": "complete",
+            }),
+        )
+        .await;
+
+        let parent_messages = all_messages(&conn, "parent").await;
+        assert_eq!(
+            parent_messages,
+            vec![
+                ("tool_call".to_string(), Some("Task".to_string())),
+                ("tool_result".to_string(), Some("Task".to_string())),
+            ],
+            "the tool_call must not be left orphaned -- a tool_result has to follow it"
+        );
+
+        let (role, content_type, tool_name, content) = latest_message(&conn, "parent").await;
+        assert_eq!(role, "tool");
+        assert_eq!(content_type, "tool_result");
+        assert_eq!(tool_name.as_deref(), Some("Task"));
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed["state"], "complete");
+        assert_eq!(parsed["subagentConversationId"], "");
+        assert_eq!(parsed["prompt"], "go read the file");
+
+        // `model_text` (what the model actually sees for this tool result)
+        // must carry the error, not a generic/empty placeholder -- the same
+        // text `execute_top_level_tool`'s fixed Err arm returns to its
+        // caller.
+        assert!(error_text.contains("failed to spawn subagent"));
     }
 
     // --- Task 2: token-count annotation ---
