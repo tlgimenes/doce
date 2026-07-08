@@ -43,6 +43,21 @@ fn resolve_optional_base(cwd: Option<&Path>, given: Option<&str>) -> PathBuf {
     }
 }
 
+/// When a required argument is missing, checks whether `arguments` has any
+/// of the given near-miss key names instead and, if so, names the mistake
+/// directly rather than leaving the model to guess why a call it "should"
+/// have gotten right failed. Confirmed against the real model: it called
+/// Read with `{"file": ...}` instead of `{"file_path": ...}` six times in
+/// a row without ever self-correcting, and eventually gave up blaming "the
+/// environment" rather than its own wrong key name.
+fn wrong_key_hint(arguments: &serde_json::Value, expected: &str, common_mistakes: &[&str]) -> String {
+    common_mistakes
+        .iter()
+        .find(|candidate| arguments.get(**candidate).is_some())
+        .map(|candidate| format!(" (you passed \"{candidate}\", the correct key is \"{expected}\")"))
+        .unwrap_or_default()
+}
+
 /// Executes a parsed `ToolCall` against the real built-in tools (FR-009).
 /// `cwd` is the conversation's workspace path, if it has one
 /// (007-workspace-cwd-resolution) — used only to resolve *relative* paths
@@ -54,9 +69,10 @@ pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
     match call.name.as_str() {
         "Read" => {
             let Some(path) = call.arguments.get("file_path").and_then(|v| v.as_str()) else {
+                let hint = wrong_key_hint(&call.arguments, "file_path", &["file", "path", "filepath", "filename"]);
                 return ToolOutcome {
-                    model_text: "Error: Read requires a file_path argument".to_string(),
-                    detail: json!({"toolName": "Read", "filePath": null, "outcome": {"ok": false, "error": "missing file_path argument"}}),
+                    model_text: format!("Error: Read requires a file_path argument{hint}"),
+                    detail: json!({"toolName": "Read", "filePath": null, "outcome": {"ok": false, "error": format!("missing file_path argument{hint}")}}),
                 };
             };
             let offset = call
@@ -103,9 +119,10 @@ pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
                 call.arguments.get("file_path").and_then(|v| v.as_str()),
                 call.arguments.get("content").and_then(|v| v.as_str()),
             ) else {
+                let hint = wrong_key_hint(&call.arguments, "file_path", &["file", "path", "filepath", "filename"]);
                 return ToolOutcome {
-                    model_text: "Error: Write requires file_path and content arguments".to_string(),
-                    detail: json!({"toolName": "Write", "filePath": null, "outcome": {"ok": false, "error": "missing file_path or content argument"}}),
+                    model_text: format!("Error: Write requires file_path and content arguments{hint}"),
+                    detail: json!({"toolName": "Write", "filePath": null, "outcome": {"ok": false, "error": format!("missing file_path or content argument{hint}")}}),
                 };
             };
             let resolved = resolve_against(cwd, &PathBuf::from(path));
@@ -139,11 +156,12 @@ pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
                 call.arguments.get("old_string").and_then(|v| v.as_str()),
                 call.arguments.get("new_string").and_then(|v| v.as_str()),
             ) else {
+                let hint = wrong_key_hint(&call.arguments, "file_path", &["file", "path", "filepath", "filename"]);
                 return ToolOutcome {
-                    model_text:
-                        "Error: Edit requires file_path, old_string, and new_string arguments"
-                            .to_string(),
-                    detail: json!({"toolName": "Edit", "filePath": null, "outcome": {"ok": false, "error": "missing required argument"}}),
+                    model_text: format!(
+                        "Error: Edit requires file_path, old_string, and new_string arguments{hint}"
+                    ),
+                    detail: json!({"toolName": "Edit", "filePath": null, "outcome": {"ok": false, "error": format!("missing required argument{hint}")}}),
                 };
             };
             let replace_all = call
@@ -224,10 +242,25 @@ pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
                     let matches: Vec<String> =
                         paths.iter().map(|p| p.display().to_string()).collect();
                     ToolOutcome {
-                        model_text: if matches.is_empty() {
-                            "No files matched".to_string()
-                        } else {
+                        model_text: if !matches.is_empty() {
                             matches.join("\n")
+                        } else if pattern.contains(char::is_whitespace) {
+                            // A real glob pattern is a single wildcard
+                            // expression and never contains whitespace --
+                            // this is the exact shape of mistake seen
+                            // against the real model (a space-separated
+                            // list of literal filenames passed as
+                            // "pattern"), which silently matches nothing
+                            // and reads to the model as "these files
+                            // don't exist" rather than "I used the tool
+                            // wrong" (confirmed against the real model: it
+                            // trusted its own malformed call and gave up
+                            // on a task whose files were there all along).
+                            format!(
+                                "No files matched \"{pattern}\". This pattern contains spaces, which usually means it isn't a valid glob pattern -- glob patterns are a single wildcard expression, e.g. \"bug_*.txt\" or \"*.rs\", not a space-separated list of literal filenames."
+                            )
+                        } else {
+                            "No files matched".to_string()
                         },
                         detail: json!({
                             "toolName": "Glob", "pattern": pattern,
@@ -475,6 +508,23 @@ mod tests {
         assert!(result.model_text.contains("file_path"));
     }
 
+    #[test]
+    fn read_with_the_wrong_key_name_gets_a_hint_not_a_bare_missing_argument_error() {
+        // Confirmed against the real model: it called Read with
+        // {"file": "..."} instead of {"file_path": "..."} six times in a
+        // row without ever self-correcting, eventually blaming "the
+        // environment" rather than its own wrong key name.
+        let result = execute(
+            &call("Read", serde_json::json!({"file": "/tmp/example.txt"})),
+            None,
+        );
+        assert!(
+            result.model_text.contains("\"file\"") && result.model_text.contains("\"file_path\""),
+            "expected a hint naming both the wrong key and the correct one, got: {:?}",
+            result.model_text
+        );
+    }
+
     // --- 004-tool-call-widgets: US4 (Read/Write/Glob/Grep widgets) ---
 
     #[test]
@@ -564,6 +614,32 @@ mod tests {
         );
         assert_eq!(no_matches.detail["matches"].as_array().unwrap().len(), 0);
         assert_eq!(no_matches.model_text, "No files matched");
+    }
+
+    #[test]
+    fn glob_with_a_whitespace_containing_pattern_hints_at_the_mistake_instead_of_a_bare_no_match() {
+        // Confirmed against the real model: a space-separated list of
+        // literal filenames passed as "pattern" (not a wildcard
+        // expression) matches nothing, and a bare "No files matched" read
+        // to the model as "these files don't exist" rather than "I used
+        // the tool wrong" -- it trusted its own malformed call and gave up
+        // on a task whose files were there all along.
+        let dir = tempdir().unwrap();
+        stdfs::write(dir.path().join("bug_00.txt"), "").unwrap();
+
+        let result = execute(
+            &call(
+                "Glob",
+                serde_json::json!({"pattern": "bug_00.txt bug_01.txt", "path": dir.path().to_str().unwrap()}),
+            ),
+            None,
+        );
+        assert!(
+            result.model_text.contains("glob pattern"),
+            "expected a hint about valid glob syntax, got: {:?}",
+            result.model_text
+        );
+        assert!(result.model_text.contains("bug_*.txt") || result.model_text.contains("*.rs"));
     }
 
     #[test]
