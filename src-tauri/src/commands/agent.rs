@@ -512,6 +512,16 @@ async fn execute_top_level_tool(
     };
     let prompt = prompt.to_string();
 
+    persist_tool_call(
+        Some(app),
+        conn,
+        parent_conversation_id,
+        &tool_call_id,
+        "Task",
+        serde_json::json!({ "prompt": prompt }),
+    )
+    .await;
+
     let parent_id = parent_conversation_id.to_string();
     let prompt_for_spawn = prompt.clone();
     let subagent_id = match conn
@@ -585,13 +595,12 @@ async fn execute_top_level_tool(
     // Always "complete" here since this function only returns once the
     // whole nested loop has finished (research.md § 2 — no live
     // mid-delegation status this pass).
-    persist_tool_call_and_result(
+    persist_tool_result(
         Some(app),
         conn,
         parent_conversation_id,
         &tool_call_id,
         "Task",
-        serde_json::json!({ "prompt": prompt }),
         &sub_final,
         serde_json::json!({
             "toolName": "Task",
@@ -1424,15 +1433,24 @@ mod tests {
         )
         .await;
 
-        // What execute_top_level_tool persists on the PARENT once the
-        // delegation itself completes (FR-010).
-        persist_tool_call_and_result(
+        // What execute_top_level_tool now persists on the PARENT: the
+        // tool_call row immediately (before spawn_subagent/run_loop), the
+        // tool_result row once the delegation completes (FR-010).
+        persist_tool_call(
             None,
             &conn,
             "parent",
             "call2",
             "Task",
             serde_json::json!({"prompt": "go read the file"}),
+        )
+        .await;
+        persist_tool_result(
+            None,
+            &conn,
+            "parent",
+            "call2",
+            "Task",
             "the file says hi",
             serde_json::json!({
                 "toolName": "Task", "prompt": "go read the file",
