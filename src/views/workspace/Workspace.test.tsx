@@ -1,3 +1,4 @@
+import { StrictMode } from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { act, render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -940,6 +941,53 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     expect(onConversationSeen).not.toHaveBeenCalled();
   });
 
+  it("keeps /compact refreshes active after StrictMode effect replay", async () => {
+    vi.mocked(commands.compactConversation).mockResolvedValue({
+      conversationId: "conv-1",
+      tokensUsed: 100,
+      tokenBudget: 2048,
+      state: "justCompacted",
+    });
+
+    let listMessagesCalls = 0;
+    vi.mocked(commands.listMessages).mockImplementation(() => {
+      listMessagesCalls += 1;
+      if (listMessagesCalls <= 2) return Promise.resolve([]);
+      return Promise.resolve([
+        {
+          id: "notice-1",
+          conversationId: "conv-1",
+          role: "assistant",
+          contentType: "context_notice",
+          content: JSON.stringify({
+            kind: "summarized",
+            summary: "the gist of it",
+            notice: "StrictMode compact refresh",
+          }),
+          toolName: null,
+          createdAt: 2,
+          durationMs: null,
+          tokenCount: null,
+        },
+      ]);
+    });
+
+    render(
+      <StrictMode>
+        <Workspace conversationId="conv-1" />
+      </StrictMode>,
+    );
+    await screen.findByTestId("agent-input");
+
+    await userEvent.type(screen.getByTestId("agent-input"), "/compact");
+    await userEvent.click(screen.getByTestId("agent-send"));
+
+    await waitFor(() => expect(commands.compactConversation).toHaveBeenCalledWith("conv-1"));
+    expect(await screen.findByTestId("context-notice")).toHaveTextContent(
+      "StrictMode compact refresh",
+    );
+  });
+
   it("ignores stale /compact errors after switching conversations", async () => {
     let rejectCompact!: (error: Error) => void;
     vi.mocked(commands.compactConversation).mockReturnValue(
@@ -1098,6 +1146,45 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(onConversationSeen).not.toHaveBeenCalled();
+  });
+
+  it("runs the send safety-net refresh after StrictMode effect replay", async () => {
+    let listMessagesCalls = 0;
+    vi.mocked(commands.listMessages).mockImplementation(() => {
+      listMessagesCalls += 1;
+      if (listMessagesCalls <= 2) return Promise.resolve([]);
+      return Promise.resolve([
+        messageFixture("u1", "strict task"),
+        {
+          id: "a1",
+          conversationId: "conv-1",
+          role: "assistant",
+          contentType: "text",
+          content: "strict reply",
+          toolName: null,
+          createdAt: 2,
+          durationMs: null,
+          tokenCount: null,
+        },
+      ]);
+    });
+    vi.mocked(commands.sendAgentMessage).mockResolvedValue("ok");
+
+    render(
+      <StrictMode>
+        <Workspace conversationId="conv-1" />
+      </StrictMode>,
+    );
+    await screen.findByTestId("agent-input");
+
+    await userEvent.type(screen.getByTestId("agent-input"), "strict task");
+    await userEvent.click(screen.getByTestId("agent-send"));
+
+    await waitFor(() =>
+      expect(commands.sendAgentMessage).toHaveBeenCalledWith("conv-1", "strict task", undefined),
+    );
+    expect(await screen.findByText("strict reply")).toBeInTheDocument();
+    expect(screen.queryByTestId("agent-thinking")).not.toBeInTheDocument();
   });
 
   it("keeps the original conversation disabled across remounts while its send is still pending", async () => {

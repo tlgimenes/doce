@@ -102,6 +102,7 @@ export default function Workspace({
   );
 
   useEffect(() => {
+    isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
     };
@@ -299,9 +300,7 @@ export default function Workspace({
           }
         } finally {
           clearSendInFlight(conversationId);
-          if (!isMountedRef.current) return;
-
-          if (currentConversationIdRef.current === conversationId) {
+          if (isMountedRef.current && currentConversationIdRef.current === conversationId) {
             setThinking(false);
             dispatchedInitialTurnRef.current = null;
             // Safety net: a real refetch regardless of event timing/ordering,
