@@ -55,4 +55,15 @@ describe("AskUserQuestionWidget", () => {
     expect(screen.queryByRole("button", { name: /Option A/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Option B/ })).not.toBeInTheDocument();
   });
+
+  it("renders an interrupted notice — never a false 'You chose:' — for a healed crash-orphaned question", () => {
+    // storage::heal_interrupted_tool_calls pairs a crash-orphaned question
+    // with answer:[] + interrupted:true; "You chose: " with an empty
+    // answer reads as answered-with-nothing rather than never-answered.
+    const interrupted: AskUserQuestionDetail = { ...SINGLE, answer: [], interrupted: true };
+    render(<AskUserQuestionWidget detail={interrupted} />);
+
+    expect(screen.getByTestId("question-answered")).toHaveTextContent(/interrupted/i);
+    expect(screen.getByTestId("question-answered")).not.toHaveTextContent(/You chose/);
+  });
 });

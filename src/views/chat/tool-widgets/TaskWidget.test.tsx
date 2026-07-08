@@ -28,4 +28,20 @@ describe("TaskWidget (004-tool-call-widgets, US4)", () => {
     render(<TaskWidget detail={detail} />);
     expect(screen.getByTestId("task-status")).toHaveTextContent(/running/i);
   });
+
+  it("renders an interrupted status — never a false Complete — for a healed crash-orphaned delegation", () => {
+    // storage::heal_interrupted_tool_calls pairs a crash-orphaned Task
+    // call with state:"complete" + interrupted:true; showing a green
+    // Complete badge for work that never finished misleads the user.
+    const detail: TaskDetail = {
+      toolName: "Task",
+      prompt: "go research the codebase structure",
+      subagentConversationId: "",
+      state: "complete",
+      interrupted: true,
+    };
+    render(<TaskWidget detail={detail} />);
+    expect(screen.getByTestId("task-status")).toHaveTextContent(/interrupted/i);
+    expect(screen.getByTestId("task-status")).not.toHaveTextContent(/complete/i);
+  });
 });

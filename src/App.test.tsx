@@ -39,6 +39,7 @@ vi.mock("@/lib/ipc", () => ({
     listSkills: vi.fn(),
     getContextUsage: vi.fn(),
     compactConversation: vi.fn(),
+    isGenerationActive: vi.fn(),
   },
   events: {
     onContextUsageUpdate: vi.fn(),
@@ -97,6 +98,7 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     });
     vi.mocked(commands.sendAgentMessage).mockResolvedValue("On it.");
     vi.mocked(commands.listMessages).mockResolvedValue([]);
+    vi.mocked(commands.isGenerationActive).mockResolvedValue(false);
     vi.mocked(commands.listMcpServers).mockResolvedValue([]);
     vi.mocked(commands.listSkills).mockResolvedValue([]);
     // No model loaded in these unit tests — ContextUsageGauge's

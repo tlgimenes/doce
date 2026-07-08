@@ -27,8 +27,29 @@ pub fn run() {
         )
         .expect("failed to export typescript bindings");
 
-    #[cfg_attr(not(feature = "wdio"), allow(unused_mut))]
-    let mut app_builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
+    let mut app_builder = tauri::Builder::default();
+
+    // Registered FIRST (the plugin's own documented requirement): a second
+    // process exits immediately, focusing the existing window instead.
+    // Load-bearing for correctness, not just UX — the whole stack assumes
+    // one process per database: `ActiveGenerations`/`PendingQuestions` are
+    // in-memory, the inference engine is a per-process singleton, and
+    // `storage::heal_interrupted_tool_calls`'s premise ("a trailing
+    // unpaired tool_call means a dead process") is only true when no
+    // *other* live process can be mid-turn against the same doce.sqlite —
+    // without this guard, a second instance's startup healing would forge
+    // interrupted results for the first instance's genuinely live turns.
+    #[cfg(desktop)]
+    {
+        app_builder = app_builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            use tauri::Manager;
+            if let Some(window) = app.webview_windows().values().next() {
+                let _ = window.set_focus();
+            }
+        }));
+    }
+
+    app_builder = app_builder.plugin(tauri_plugin_dialog::init());
 
     #[cfg(feature = "wdio")]
     {

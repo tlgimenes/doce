@@ -119,6 +119,12 @@ async fn persist_tool_call(
 /// truncation if applicable) — what reconstructing this row's in-memory
 /// `ChatMessage::tool_result` on a later reload should actually use,
 /// distinct from `detail`'s richer, widget-rendering-oriented shape.
+///
+/// Idempotent per `tool_call_id`: if a result row for this call already
+/// exists (e.g. startup healing in another process paired it with an
+/// interrupted-error result while this turn was still running), the second
+/// insert is skipped — one ToolUse must never reconstruct with two
+/// ToolResults in `load_history`.
 async fn persist_tool_result(
     app: Option<&AppHandle>,
     conn: &tokio_rusqlite::Connection,
@@ -138,6 +144,14 @@ async fn persist_tool_result(
         .call({
             let conversation_id = conversation_id.clone();
             move |conn: &mut Connection| -> rusqlite::Result<()> {
+                let already_paired: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM messages WHERE conversation_id = ?1 AND tool_call_id = ?2 AND content_type = 'tool_result')",
+                    rusqlite::params![&conversation_id, &tool_call_id],
+                    |row| row.get(0),
+                )?;
+                if already_paired {
+                    return Ok(());
+                }
                 let seq: i64 = conn.query_row(
                     "SELECT COALESCE(MAX(sequence), -1) + 1 FROM messages WHERE conversation_id = ?1",
                     [&conversation_id],
@@ -437,7 +451,8 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
         // parent's transcript). No live-refresh event (`app: None`) -- it
         // isn't rendered by any current view, so there's no consumer to
         // notify.
-        let outcome = dispatch::execute(&call, self.cwd);
+        let outcome =
+            dispatch::execute_async(call.clone(), self.cwd.map(|p| p.to_path_buf())).await;
         let outcome = crate::context::annotate_with_token_count(self.engine, outcome);
         persist_tool_call_and_result(
             None,
@@ -668,7 +683,7 @@ async fn handle_general_tool_call(
     )
     .await;
 
-    let outcome = dispatch::execute(call, cwd);
+    let outcome = dispatch::execute_async(call.clone(), cwd.map(|p| p.to_path_buf())).await;
     let outcome = crate::context::annotate_with_token_count(engine, outcome);
 
     // 010-context-window-management/US3 (FR-011/FR-012): an oversized
@@ -1328,6 +1343,49 @@ mod tests {
         assert_eq!(role, "user");
         assert_eq!(content_type, "rich_text");
         assert_eq!(content, rich_json);
+    }
+
+    #[tokio::test]
+    async fn persist_tool_result_is_idempotent_per_tool_call_id() {
+        // Defense in depth against the multi-instance hazard: if another
+        // process (or startup healing) already paired this tool_call with
+        // a result, a second result for the same call must not land — one
+        // ToolUse must never reconstruct with two ToolResults in history.
+        let conn = crate::storage::test_async_connection().await;
+        seed_conversation(&conn, "c1").await;
+
+        persist_tool_result(
+            None,
+            &conn,
+            "c1",
+            "tc1",
+            "Bash",
+            "first result",
+            serde_json::json!({"toolName": "Bash"}),
+        )
+        .await;
+        persist_tool_result(
+            None,
+            &conn,
+            "c1",
+            "tc1",
+            "Bash",
+            "second result",
+            serde_json::json!({"toolName": "Bash"}),
+        )
+        .await;
+
+        let count: i64 = conn
+            .call(|conn: &mut Connection| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM messages WHERE conversation_id = 'c1' AND content_type = 'tool_result' AND tool_call_id = 'tc1'",
+                    [],
+                    |row| row.get(0),
+                )
+            })
+            .await
+            .unwrap();
+        assert_eq!(count, 1, "a tool_call_id must never gain a second result");
     }
 
     #[tokio::test]

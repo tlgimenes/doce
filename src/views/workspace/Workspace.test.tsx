@@ -27,6 +27,7 @@ vi.mock("@/lib/ipc", async (importOriginal) => {
       compactConversation: vi.fn(),
       listSkills: vi.fn(),
       answerUserQuestion: vi.fn(),
+      isGenerationActive: vi.fn(),
     },
     events: {
       onAgentMessagePersisted: vi.fn(),
@@ -114,6 +115,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(commands.listMessages).mockResolvedValue([]);
+    vi.mocked(commands.isGenerationActive).mockResolvedValue(false);
     // No model loaded in these unit tests — ContextUsageGauge's
     // getContextUsage call is expected to fail and swallow the error,
     // leaving the gauge simply unrendered.
@@ -677,6 +679,60 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     const status = await screen.findByTestId("task-status");
     expect(status).toHaveTextContent(/running/i);
     expect(screen.queryByTestId("agent-thinking")).not.toBeInTheDocument();
+  });
+
+  it("blocks the composer and shows Working… when the latest message is an unfinished tool_call with no dedicated pending widget (e.g. Grep)", async () => {
+    // Regression: only AskUserQuestion/Bash/Task counted as "in flight",
+    // so a turn stuck inside any other tool (a slow Grep, in production)
+    // left the composer enabled after a reload wiped the in-memory
+    // send-in-flight flag — letting the user queue a duplicate user
+    // message behind the still-running turn.
+    vi.mocked(commands.listMessages).mockResolvedValue([
+      {
+        id: "u1",
+        conversationId: "conv-1",
+        role: "user",
+        contentType: "text",
+        content: "find the needle",
+        toolName: null,
+        createdAt: 1,
+        durationMs: null,
+        tokenCount: null,
+      },
+      {
+        id: "tc1",
+        conversationId: "conv-1",
+        role: "assistant",
+        contentType: "tool_call",
+        content: JSON.stringify({ arguments: { pattern: "needle", path: "/tmp" } }),
+        toolName: "Grep",
+        createdAt: 2,
+        durationMs: null,
+        tokenCount: null,
+      },
+    ]);
+
+    render(<Workspace conversationId="conv-1" />);
+
+    await screen.findByTestId("agent-thinking");
+    expect(screen.getByTestId("agent-input")).toHaveAttribute("contenteditable", "false");
+  });
+
+  it("keeps the composer blocked after a reload while the backend reports the turn still active, even with no trailing tool_call (generation phase)", async () => {
+    // The trailing-tool_call signal only covers the tool-execution window.
+    // While the model is *generating* (latest row = user text or a paired
+    // tool_result — the longest phases with local inference), only the
+    // backend's ActiveGenerations knows a turn is live; a reload wipes
+    // every in-memory frontend flag.
+    vi.mocked(commands.listMessages).mockResolvedValue([
+      messageFixture("u1", "find the needle"),
+    ]);
+    vi.mocked(commands.isGenerationActive).mockResolvedValue(true);
+
+    render(<Workspace conversationId="conv-1" />);
+
+    await screen.findByTestId("agent-thinking");
+    expect(screen.getByTestId("agent-input")).toHaveAttribute("contenteditable", "false");
   });
 
   it("does not show a pending Bash widget once the tool_result has landed (latest message is the result, not the call)", async () => {

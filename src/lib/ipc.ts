@@ -126,6 +126,10 @@ export interface GlobDetail {
   pattern: string | null;
   path: string | null;
   matches: string[];
+  /** Set by storage::heal_interrupted_tool_calls on a synthetic result for
+   * a tool call orphaned by the app closing mid-run — the widget must not
+   * present the empty/complete-looking payload as a real outcome. */
+  interrupted?: boolean;
   /** Real tokenizer count of this result's model-facing text — see
    * `context::annotate_with_token_count` on the backend. Only ever set for
    * Read/Bash/Grep/Glob (the four tools whose size varies enough to make a
@@ -145,6 +149,10 @@ export interface GrepDetail {
   path: string | null;
   glob: string | null;
   matches: GrepMatch[];
+  /** Set by storage::heal_interrupted_tool_calls on a synthetic result for
+   * a tool call orphaned by the app closing mid-run — the widget must not
+   * present the empty/complete-looking payload as a real outcome. */
+  interrupted?: boolean;
   /** Real tokenizer count of this result's model-facing text — see
    * `context::annotate_with_token_count` on the backend. Only ever set for
    * Read/Bash/Grep/Glob (the four tools whose size varies enough to make a
@@ -157,6 +165,10 @@ export interface TaskDetail {
   prompt: string;
   subagentConversationId: string;
   state: "running" | "complete";
+  /** Set by storage::heal_interrupted_tool_calls on a synthetic result for
+   * a tool call orphaned by the app closing mid-run — the widget must not
+   * present the empty/complete-looking payload as a real outcome. */
+  interrupted?: boolean;
 }
 
 export interface QuestionOption {
@@ -172,6 +184,10 @@ export interface AskUserQuestionDetail {
   options: QuestionOption[];
   multiSelect: boolean;
   answer: string[] | null;
+  /** Set by storage::heal_interrupted_tool_calls on a synthetic result for
+   * a tool call orphaned by the app closing mid-run — the widget must not
+   * present the empty/complete-looking payload as a real outcome. */
+  interrupted?: boolean;
 }
 
 export interface UnknownToolDetail {
@@ -491,6 +507,8 @@ export const commands = {
     invoke<ContextUsage>("get_context_usage", { conversationId }),
   compactConversation: (conversationId: string) =>
     invoke<ContextUsage>("compact_conversation", { conversationId }),
+  isGenerationActive: (conversationId: string) =>
+    invoke<boolean>("is_generation_active", { conversationId }),
 };
 
 export interface ModelInstallProgressPayload {

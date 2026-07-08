@@ -18,7 +18,14 @@ export default function SearchResultsWidget({ detail }: SearchResultsWidgetProps
         {detail.toolName} {detail.pattern}
         {detail.tokenCount != null && <span> · {formatTokenCount(detail.tokenCount)} tok</span>}
       </p>
-      {isGrep ? (
+      {detail.interrupted ? (
+        // A healed crash-orphaned search carries matches: [] — rendering
+        // the zero-matches state would present a search that never ran as
+        // a completed empty result (a false negative).
+        <p className="text-xs text-amber-600 dark:text-amber-400" data-testid="search-interrupted">
+          Interrupted — the app closed before this search finished
+        </p>
+      ) : isGrep ? (
         detail.matches.length === 0 ? (
           <p className="text-xs text-muted-foreground" data-testid="search-no-matches">
             No matches found

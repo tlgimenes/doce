@@ -182,6 +182,133 @@ pub fn load_history(
         .collect())
 }
 
+/// What the model (and the transcript) is told about a tool call that was
+/// interrupted by the app closing — actionable ("re-run it"), not just a
+/// bare failure notice.
+const INTERRUPTED_TOOL_TEXT: &str =
+    "Error: interrupted — the app closed before this tool call finished. The tool did not run to completion; re-run it if its result is still needed.";
+
+/// Crash recovery, run once at DB open (storage::open_and_migrate): pairs
+/// every conversation whose *latest* message is a still-unpaired
+/// `tool_call` row with an interrupted-error `tool_result`. Such a row can
+/// only mean the app died (or was restarted) mid-tool — a live turn always
+/// persists the result before anything else lands, and this runs before
+/// any new turn can start. Without this, two things strand permanently:
+/// the frontend treats a trailing unpaired tool_call as "turn in flight"
+/// and keeps the composer disabled forever, and an orphaned
+/// AskUserQuestion can never be answered (PendingQuestions is in-memory,
+/// empty after restart) so its conversation reads `requires_action` with
+/// no way to act. Returns how many conversations were healed.
+pub fn heal_interrupted_tool_calls(conn: &Connection, now: i64) -> rusqlite::Result<usize> {
+    struct OrphanedToolCall {
+        conversation_id: String,
+        tool_call_id: Option<String>,
+        tool_name: Option<String>,
+        content: String,
+        sequence: i64,
+    }
+
+    let orphans: Vec<OrphanedToolCall> = conn
+        .prepare(
+            "SELECT m.conversation_id, m.tool_call_id, m.tool_name, m.content, m.sequence
+             FROM messages m
+             WHERE m.content_type = 'tool_call'
+               AND m.sequence = (SELECT MAX(sequence) FROM messages WHERE conversation_id = m.conversation_id)",
+        )?
+        .query_map([], |row| {
+            Ok(OrphanedToolCall {
+                conversation_id: row.get(0)?,
+                tool_call_id: row.get(1)?,
+                tool_name: row.get(2)?,
+                content: row.get(3)?,
+                sequence: row.get(4)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    for orphan in &orphans {
+        let arguments = serde_json::from_str::<serde_json::Value>(&orphan.content)
+            .ok()
+            .and_then(|v| v.get("arguments").cloned())
+            .unwrap_or(serde_json::Value::Null);
+        let detail = interrupted_tool_result_detail(
+            orphan.tool_name.as_deref().unwrap_or(""),
+            &arguments,
+            orphan.tool_call_id.as_deref().unwrap_or(""),
+        );
+        conn.execute(
+            "INSERT INTO messages (id, conversation_id, role, content_type, content, tool_name, created_at, sequence, tool_call_id, model_text) VALUES (?1, ?2, 'tool', 'tool_result', ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                uuid::Uuid::now_v7().to_string(),
+                orphan.conversation_id,
+                detail.to_string(),
+                orphan.tool_name,
+                now,
+                orphan.sequence + 1,
+                orphan.tool_call_id,
+                INTERRUPTED_TOOL_TEXT,
+            ],
+        )?;
+    }
+
+    Ok(orphans.len())
+}
+
+/// The interrupted `tool_result`'s widget-facing `detail`, mirroring the
+/// exact per-tool shape `agent::dispatch`'s own error arms produce (from
+/// the orphaned call's persisted arguments) — these shapes are what the
+/// existing result widgets already render in production, so a healed row
+/// needs no frontend special-casing.
+fn interrupted_tool_result_detail(
+    tool_name: &str,
+    arguments: &serde_json::Value,
+    tool_call_id: &str,
+) -> serde_json::Value {
+    let a = |key: &str| arguments.get(key).cloned().unwrap_or(serde_json::Value::Null);
+    let error = INTERRUPTED_TOOL_TEXT;
+    match tool_name {
+        "Read" => serde_json::json!({
+            "toolName": "Read", "filePath": a("file_path"), "offset": a("offset"), "limit": a("limit"), "interrupted": true,
+            "outcome": {"ok": false, "error": error},
+        }),
+        "Write" => serde_json::json!({
+            "toolName": "Write", "filePath": a("file_path"), "contentPreview": "", "byteCount": 0, "interrupted": true,
+            "outcome": {"ok": false, "error": error},
+        }),
+        "Edit" => serde_json::json!({
+            "toolName": "Edit", "filePath": a("file_path"), "oldString": a("old_string"),
+            "newString": a("new_string"), "replaceAll": a("replace_all"), "interrupted": true,
+            "outcome": {"ok": false, "error": error},
+        }),
+        "Bash" => serde_json::json!({
+            "toolName": "Bash", "command": a("command"), "timeoutMs": a("timeout"), "interrupted": true,
+            "outcome": {"ok": false, "error": error},
+        }),
+        "Glob" => serde_json::json!({
+            "toolName": "Glob", "pattern": a("pattern"), "path": a("path"), "matches": [], "interrupted": true,
+        }),
+        "Grep" => serde_json::json!({
+            "toolName": "Grep", "pattern": a("pattern"), "path": a("path"), "glob": a("glob"),
+            "matches": [], "truncated": false, "skippedOversized": 0, "interrupted": true,
+        }),
+        "Task" => serde_json::json!({
+            "toolName": "Task", "prompt": a("prompt"), "subagentConversationId": "", "state": "complete", "interrupted": true,
+        }),
+        // An empty answer is the honest representation of "never answered"
+        // — the answered-question widget renders it as such.
+        "AskUserQuestion" => serde_json::json!({
+            "toolName": "AskUserQuestion", "questionId": tool_call_id, "header": a("header"),
+            "question": a("question"),
+            "options": arguments.get("options").cloned().unwrap_or(serde_json::json!([])),
+            "multiSelect": a("multiSelect"), "answer": [], "interrupted": true,
+        }),
+        other => serde_json::json!({
+            "toolName": other, "arguments": arguments, "interrupted": true,
+            "outcome": {"ok": false, "error": error},
+        }),
+    }
+}
+
 /// Persists a `context_notice` row (010-context-window-management) —
 /// `kind_json` is the row's full JSON `content`
 /// (`{"kind":"cleared",...}`/`{"kind":"summarized",...}`, see
@@ -377,6 +504,146 @@ mod tests {
             rusqlite::params![format!("{conv_id}-{seq}"), conv_id, role, content_type, content, seq, tool_name, tool_call_id, model_text],
         )
         .unwrap();
+    }
+
+    // --- crash recovery: heal_interrupted_tool_calls ---
+
+    #[test]
+    fn heal_pairs_a_trailing_orphaned_tool_call_with_an_interrupted_error_result() {
+        let conn = setup_conn();
+        insert_message(&conn, "c1", "user", "text", "find the needle", 0);
+        insert_tool_message(
+            &conn,
+            "c1",
+            "assistant",
+            "tool_call",
+            r#"{"arguments":{"pattern":"needle","path":"/tmp"}}"#,
+            1,
+            "Grep",
+            "tc1",
+            None,
+        );
+
+        let healed = heal_interrupted_tool_calls(&conn, 42).unwrap();
+        assert_eq!(healed, 1);
+
+        let (role, content_type, tool_name, tool_call_id, model_text, content): (
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+        ) = conn
+            .query_row(
+                "SELECT role, content_type, tool_name, tool_call_id, model_text, content FROM messages WHERE conversation_id = 'c1' ORDER BY sequence DESC LIMIT 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(role, "tool");
+        assert_eq!(content_type, "tool_result");
+        assert_eq!(tool_name, "Grep");
+        assert_eq!(tool_call_id, "tc1");
+        assert!(
+            model_text.contains("interrupted"),
+            "the model must be told the tool never finished, got: {model_text:?}"
+        );
+        // The detail must be the same shape dispatch's own Grep arm
+        // produces, so the existing result widget renders it untouched.
+        let detail: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(detail["toolName"], "Grep");
+        assert_eq!(detail["pattern"], "needle");
+        assert_eq!(detail["matches"], serde_json::json!([]));
+        // The widget-visible interruption marker — without it the healed
+        // row renders as a successful empty search.
+        assert_eq!(detail["interrupted"], true);
+
+        // Model history is now a well-formed call/result pair again.
+        let skills_dir = empty_skills_dir();
+        let history = load_history(&conn, "c1", skills_dir.path()).unwrap();
+        assert_eq!(history.len(), 3);
+    }
+
+    #[test]
+    fn heal_leaves_paired_tool_calls_and_ordinary_latest_messages_alone() {
+        let conn = setup_conn();
+        // c1: completed pair — latest message is the tool_result.
+        insert_tool_message(
+            &conn,
+            "c1",
+            "assistant",
+            "tool_call",
+            r#"{"arguments":{"command":"ls"}}"#,
+            0,
+            "Bash",
+            "tc1",
+            None,
+        );
+        insert_tool_message(
+            &conn,
+            "c1",
+            "tool",
+            "tool_result",
+            r#"{"toolName":"Bash","outcome":{"ok":true}}"#,
+            1,
+            "Bash",
+            "tc1",
+            Some("ok"),
+        );
+        // c2: latest message is a plain assistant answer.
+        insert_message(&conn, "c2", "assistant", "text", "all done", 0);
+
+        let healed = heal_interrupted_tool_calls(&conn, 42).unwrap();
+        assert_eq!(healed, 0);
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 3, "no rows may be added or removed");
+    }
+
+    #[test]
+    fn heal_gives_an_orphaned_ask_user_question_an_empty_answer_result() {
+        // After a restart, PendingQuestions is empty — the persisted
+        // pending question can never be answered, so leaving it "latest"
+        // would strand the conversation in requires_action forever.
+        let conn = setup_conn();
+        insert_tool_message(
+            &conn,
+            "c1",
+            "assistant",
+            "tool_call",
+            r#"{"arguments":{"header":"Pick","question":"Which?","options":[{"label":"A","description":""}],"multiSelect":false,"questionId":"q1"}}"#,
+            0,
+            "AskUserQuestion",
+            "q1",
+            None,
+        );
+
+        assert_eq!(heal_interrupted_tool_calls(&conn, 42).unwrap(), 1);
+
+        let content: String = conn
+            .query_row(
+                "SELECT content FROM messages WHERE conversation_id = 'c1' AND content_type = 'tool_result'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let detail: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(detail["toolName"], "AskUserQuestion");
+        assert_eq!(detail["questionId"], "q1");
+        assert_eq!(detail["answer"], serde_json::json!([]));
+        assert_eq!(detail["interrupted"], true);
     }
 
     #[test]

@@ -639,6 +639,26 @@ pub async fn archive_conversation(
     .map_err(|e| e.to_string())
 }
 
+/// The reload-proof "is a turn genuinely running right now" signal, straight
+/// from `ActiveGenerations` (the same source `compute_status`'s
+/// `in_progress` uses). The frontend needs this because its own in-flight
+/// tracking is in-memory webview state: a reload wipes it, and the
+/// transcript alone can't distinguish "model is generating" (latest row is
+/// a user message or a paired tool_result) from "turn finished" — exactly
+/// the window that let a duplicate message through in production.
+#[tauri::command]
+#[specta::specta]
+pub fn is_generation_active(
+    active_generations: State<'_, ActiveGenerations>,
+    conversation_id: String,
+) -> bool {
+    active_generations
+        .0
+        .lock()
+        .unwrap()
+        .contains(&conversation_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -26,9 +26,17 @@ export default function AskUserQuestionWidget({ detail }: AskUserQuestionWidgetP
       data-testid="question-answered"
     >
       <p className="mb-1 text-muted-foreground">{detail.question}</p>
-      <p className="font-medium">
-        {isFreeText ? "You replied" : "You chose"}: {answer.join(", ")}
-      </p>
+      {detail.interrupted ? (
+        // A healed crash-orphaned question carries answer: [] — rendering
+        // "You chose: " would read as answered-with-nothing.
+        <p className="font-medium text-amber-600 dark:text-amber-400">
+          Interrupted — the app closed before this was answered
+        </p>
+      ) : (
+        <p className="font-medium">
+          {isFreeText ? "You replied" : "You chose"}: {answer.join(", ")}
+        </p>
+      )}
     </div>
   );
 }

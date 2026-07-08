@@ -154,6 +154,15 @@ export default function Workspace({
   const messagesRef = useRef<Message[]>(messages);
   messagesRef.current = messages;
   const [thinking, setThinking] = useState(false);
+  // The backend's reload-proof "a turn is genuinely running" signal
+  // (ActiveGenerations, via is_generation_active). `sendInFlight` and
+  // `thinking` are in-memory webview state a reload wipes; during the
+  // model-generation phases (latest persisted row = user text or a paired
+  // tool_result) the transcript alone looks idle, which used to re-open
+  // the duplicate-send window after a reload. Re-checked on every
+  // refreshMessages (i.e. on each agent-message-persisted event and on
+  // send completion) — the final answer's own event flips it back off.
+  const [backendTurnActive, setBackendTurnActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isAutoscrollPinned, setIsAutoscrollPinned] = useState(true);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
@@ -171,8 +180,22 @@ export default function Workspace({
     getServerSnapshot,
   );
 
+  const syncBackendTurnActive = useCallback(() => {
+    const targetConversationId = conversationId;
+    void Promise.resolve(commands.isGenerationActive(targetConversationId))
+      .then((active) => {
+        if (isMountedRef.current && currentConversationIdRef.current === targetConversationId) {
+          setBackendTurnActive(Boolean(active));
+        }
+      })
+      // Best-effort: an IPC failure leaves the last known value in place
+      // rather than breaking the composer either way.
+      .catch(() => {});
+  }, [conversationId]);
+
   const refreshMessages = useCallback(async () => {
     const targetConversationId = conversationId;
+    syncBackendTurnActive();
     const loadedMessages = await commands.listMessages(targetConversationId);
     if (!isMountedRef.current || currentConversationIdRef.current !== targetConversationId) return;
 
@@ -187,7 +210,7 @@ export default function Workspace({
     } else {
       applyUpdate();
     }
-  }, [conversationId]);
+  }, [conversationId, syncBackendTurnActive]);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -213,6 +236,8 @@ export default function Workspace({
     setMessages([]);
     setThinking(false);
     setError(null);
+    setBackendTurnActive(false);
+    syncBackendTurnActive();
     dispatchedInitialTurnRef.current = null;
     commands.listMessages(conversationId).then((loadedMessages) => {
       if (cancelled || currentConversationIdRef.current !== conversationId) return;
@@ -230,7 +255,7 @@ export default function Workspace({
     return () => {
       cancelled = true;
     };
-  }, [conversationId]);
+  }, [conversationId, syncBackendTurnActive]);
 
   useEffect(() => {
     let cancelled = false;
@@ -256,29 +281,36 @@ export default function Workspace({
   // Generalizes the same "latest message is an unpaired tool_call" signal
   // AskUserQuestion has always used (sequence ordering guarantees a
   // tool_result can only ever land immediately after its tool_call, so
-  // this is a reliable "still in flight" check for any tool) to also cover
-  // Bash/Task — the two tools slow enough for a live pending state to
-  // matter (010-context-window-management follow-up: widget cost badges +
-  // progressive rendering design doc).
+  // this is a reliable "still in flight" check for any tool). Question/
+  // Bash/Task get their dedicated pending widgets; *every other* tool —
+  // including a parse-failure of those three — falls back to
+  // `{kind: "other"}` rather than null, because null re-enables the
+  // composer: that let a turn stuck inside a slow Grep accept a duplicate
+  // user message after a reload wiped the in-memory send-in-flight flag
+  // (a real production bug — the duplicate then just queued behind the
+  // wedged turn). A conversation orphaned mid-tool by a crash can't lock
+  // up here: the backend pairs any trailing unpaired tool_call with an
+  // interrupted-error tool_result at startup
+  // (storage::heal_interrupted_tool_calls), so a trailing tool_call always
+  // means a genuinely live turn.
   const pendingToolCall = useMemo(() => {
     const latest = messages[messages.length - 1];
     if (latest?.contentType !== "tool_call") return null;
     if (latest.toolName === "AskUserQuestion") {
       const detail = parseAskUserQuestionCallDetail(latest.content);
-      return detail ? { kind: "question" as const, detail } : null;
-    }
-    if (latest.toolName === "Bash") {
+      if (detail) return { kind: "question" as const, detail };
+    } else if (latest.toolName === "Bash") {
       const detail = parsePendingBashCallDetail(latest.content);
-      return detail ? { kind: "bash" as const, detail } : null;
-    }
-    if (latest.toolName === "Task") {
+      if (detail) return { kind: "bash" as const, detail };
+    } else if (latest.toolName === "Task") {
       const detail = parsePendingTaskCallDetail(latest.content);
-      return detail ? { kind: "task" as const, detail } : null;
+      if (detail) return { kind: "task" as const, detail };
     }
-    return null;
+    return { kind: "other" as const };
   }, [messages]);
   const pendingQuestion = pendingToolCall?.kind === "question" ? pendingToolCall.detail : null;
-  const showThinking = thinking || sendInFlight;
+  const turnInFlight = sendInFlight || backendTurnActive;
+  const showThinking = thinking || turnInFlight;
 
   const setAutoscrollPinned = useCallback((pinned: boolean) => {
     autoscrollPinnedRef.current = pinned;
@@ -326,7 +358,7 @@ export default function Workspace({
       // submitted like any other message, is intercepted here before it ever
       // becomes a persisted agent turn — it triggers compaction directly and
       // refreshes the transcript instead of going through send_agent_message.
-      if (!richContent && isCompactCommand(content) && !sendInFlight) {
+      if (!richContent && isCompactCommand(content) && !turnInFlight) {
         void (async () => {
           setError(null);
           try {
@@ -360,7 +392,7 @@ export default function Workspace({
       // persist and then hang right alongside it. A pending AskUserQuestion
       // is answerable via its widget; a pending Bash/Task just has to run
       // its course.
-      if ((!content.trim() && !richContent) || sendInFlight || pendingToolCall) return false;
+      if ((!content.trim() && !richContent) || turnInFlight || pendingToolCall) return false;
       if (!markSendInFlight(conversationId)) return false;
 
       setError(null);
@@ -414,7 +446,7 @@ export default function Workspace({
       })();
       return true;
     },
-    [conversationId, pendingToolCall, refreshMessages, sendInFlight],
+    [conversationId, pendingToolCall, refreshMessages, turnInFlight],
   );
 
   useEffect(() => {
@@ -444,7 +476,7 @@ export default function Workspace({
             {messages.map((m) => (
               <MessageContent key={m.id} message={m} />
             ))}
-            {pendingToolCall && pendingToolCall.kind !== "question" ? (
+            {pendingToolCall?.kind === "bash" || pendingToolCall?.kind === "task" ? (
               <div
                 className="mb-6"
                 data-testid="chat-message"
@@ -455,8 +487,10 @@ export default function Workspace({
                 {pendingToolCall.kind === "task" && <TaskWidget detail={pendingToolCall.detail} />}
               </div>
             ) : (
-              !pendingToolCall &&
-              showThinking && (
+              // "other" shows the indicator even when `thinking`/
+              // send-in-flight were wiped by a reload — the trailing
+              // unpaired tool_call itself is the proof a turn is running.
+              (pendingToolCall?.kind === "other" || (!pendingToolCall && showThinking)) && (
                 <p className="text-sm text-muted-foreground" data-testid="agent-thinking">
                   Working…
                 </p>
@@ -498,7 +532,7 @@ export default function Workspace({
               send(content, richContent);
             }}
             skillsEnabled={true}
-            disabled={sendInFlight || pendingToolCall !== null}
+            disabled={turnInFlight || pendingToolCall !== null}
             placeholder="Describe a task…"
             inputTestId="agent-input"
             submitTestId="agent-send"

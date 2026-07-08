@@ -291,8 +291,9 @@ pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
                 resolve_optional_base(cwd, call.arguments.get("path").and_then(|v| v.as_str()));
             let glob_filter = call.arguments.get("glob").and_then(|v| v.as_str());
             match search::grep(pattern, &base, glob_filter) {
-                Ok(matches) => {
-                    let match_values: Vec<serde_json::Value> = matches
+                Ok(outcome) => {
+                    let match_values: Vec<serde_json::Value> = outcome
+                        .matches
                         .iter()
                         .map(|m| {
                             json!({
@@ -302,22 +303,42 @@ pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
                             })
                         })
                         .collect();
+                    let mut model_text = if outcome.matches.is_empty() {
+                        "No matches found".to_string()
+                    } else {
+                        outcome
+                            .matches
+                            .iter()
+                            .map(|m| format!("{}:{}:{}", m.path.display(), m.line_number, m.line))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    };
+                    // Truncation/skip disclosure: without these lines the
+                    // model can't tell "exactly N matches, complete" from
+                    // "capped, arbitrarily walk-order-selected", and a
+                    // match inside a skipped oversized file reads as a
+                    // plain (false) "No matches found".
+                    if outcome.truncated {
+                        model_text.push_str(&format!(
+                            "\n(Results capped at {} matches — narrow the pattern, path, or glob to see the rest.)",
+                            search::GREP_RESULT_CAP
+                        ));
+                    }
+                    if outcome.skipped_oversized > 0 {
+                        model_text.push_str(&format!(
+                            "\n({} file(s) larger than {}MB were skipped without being searched.)",
+                            outcome.skipped_oversized,
+                            search::GREP_MAX_FILE_LEN / (1024 * 1024)
+                        ));
+                    }
                     ToolOutcome {
-                        model_text: if matches.is_empty() {
-                            "No matches found".to_string()
-                        } else {
-                            matches
-                                .iter()
-                                .map(|m| {
-                                    format!("{}:{}:{}", m.path.display(), m.line_number, m.line)
-                                })
-                                .collect::<Vec<_>>()
-                                .join("\n")
-                        },
+                        model_text,
                         detail: json!({
                             "toolName": "Grep", "pattern": pattern,
                             "path": base.display().to_string(), "glob": glob_filter,
                             "matches": match_values,
+                            "truncated": outcome.truncated,
+                            "skippedOversized": outcome.skipped_oversized,
                         }),
                     }
                 }
@@ -340,6 +361,33 @@ pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
                 "outcome": {"ok": false, "text": format!("unknown tool '{other}'")},
             }),
         },
+    }
+}
+
+/// `execute`, moved off the async executor. Every built-in tool is
+/// synchronous, blocking work (file reads, directory walks, child
+/// processes) — running it inline in an async context wedges the entire
+/// runtime for the duration of the call, which in production froze the
+/// whole app for as long as one slow Grep took (the tool loop, and
+/// everything else sharing the runtime, lives on these threads). Owned
+/// parameters because `spawn_blocking` requires `'static`.
+pub async fn execute_async(call: ToolCall, cwd: Option<PathBuf>) -> ToolOutcome {
+    let name = call.name.clone();
+    let arguments = call.arguments.clone();
+    match tokio::task::spawn_blocking(move || execute(&call, cwd.as_deref())).await {
+        Ok(outcome) => outcome,
+        // A panic inside a tool becomes an ordinary tool-error result the
+        // model can react to, not a crashed agent turn.
+        Err(e) => {
+            let text = format!("Error: tool execution failed: {e}");
+            ToolOutcome {
+                detail: json!({
+                    "toolName": name, "arguments": arguments,
+                    "outcome": {"ok": false, "error": text},
+                }),
+                model_text: text,
+            }
+        }
     }
 }
 
@@ -499,6 +547,32 @@ mod tests {
     fn unknown_tool_returns_a_clear_error_not_a_panic() {
         let result = execute(&call("NotARealTool", serde_json::json!({})), None);
         assert!(result.model_text.contains("unknown tool"));
+    }
+
+    #[tokio::test]
+    async fn execute_async_does_not_block_the_async_executor() {
+        // #[tokio::test]'s default runtime is single-threaded: if tool
+        // execution ran synchronously on the executor thread (the exact
+        // production bug — a wedged Grep froze every other task sharing
+        // the runtime), the concurrent 50ms timer below couldn't fire
+        // until the whole `sleep 0.5` shell command finished.
+        let started = std::time::Instant::now();
+        let timer = async {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            started.elapsed()
+        };
+        let (outcome, timer_elapsed) = tokio::join!(
+            execute_async(
+                call("Bash", serde_json::json!({"command": "sleep 0.5"})),
+                None
+            ),
+            timer
+        );
+        assert_eq!(outcome.detail["outcome"]["ok"], true);
+        assert!(
+            timer_elapsed < std::time::Duration::from_millis(400),
+            "the 50ms timer only fired after {timer_elapsed:?} — tool execution starved the executor"
+        );
     }
 
     #[test]
@@ -668,6 +742,52 @@ mod tests {
         );
         assert_eq!(no_matches.detail["matches"].as_array().unwrap().len(), 0);
         assert_eq!(no_matches.model_text, "No matches found");
+    }
+
+    #[test]
+    fn us4_grep_cap_and_size_skips_are_signaled_not_silent() {
+        // Cap signal: the model must be able to tell "capped at 100" apart
+        // from "exactly 100 matches, complete".
+        let dir = tempdir().unwrap();
+        stdfs::write(dir.path().join("many.txt"), "needle here\n".repeat(150)).unwrap();
+        let capped = execute(
+            &call(
+                "Grep",
+                serde_json::json!({"pattern": "needle", "path": dir.path().to_str().unwrap()}),
+            ),
+            None,
+        );
+        assert_eq!(capped.detail["truncated"], true);
+        assert_eq!(capped.detail["matches"].as_array().unwrap().len(), 100);
+        assert!(
+            capped.model_text.contains("capped at 100"),
+            "model_text must carry the truncation signal, got: {:?}",
+            capped.model_text.lines().last()
+        );
+
+        // Size-skip signal: an oversized file whose content was never
+        // searched must not read as a bare "No matches found".
+        let dir = tempdir().unwrap();
+        stdfs::write(
+            dir.path().join("huge.txt"),
+            format!("needle\n{}", "a".repeat(10 * 1024 * 1024)),
+        )
+        .unwrap();
+        let skipped = execute(
+            &call(
+                "Grep",
+                serde_json::json!({"pattern": "needle", "path": dir.path().to_str().unwrap()}),
+            ),
+            None,
+        );
+        assert_eq!(skipped.detail["matches"].as_array().unwrap().len(), 0);
+        assert_eq!(skipped.detail["skippedOversized"], 1);
+        assert!(skipped.model_text.contains("No matches found"));
+        assert!(
+            skipped.model_text.contains("skipped"),
+            "model_text must disclose the unsearched oversized file, got: {:?}",
+            skipped.model_text
+        );
     }
 
     // --- 007-workspace-cwd-resolution ---

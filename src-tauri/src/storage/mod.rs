@@ -52,8 +52,22 @@ async fn open_and_migrate(app: &AppHandle) -> Result<Db, Box<dyn std::error::Err
 
     let conn = AsyncConnection::open(db_path.clone()).await?;
     conn.call(|conn: &mut Connection| -> rusqlite::Result<()> {
-        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
+        // busy_timeout: don't fail outright on a transient write-lock
+        // collision (e.g. WAL checkpointing) — retry for up to 5s first.
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;",
+        )?;
         migrations::apply_pending(conn)?;
+        // Crash recovery: a trailing unpaired tool_call row can only mean
+        // a previous process died mid-tool (a live turn always persists
+        // the result eventually, and no turn can be running yet — this is
+        // the first DB access of the process). Heal before any command
+        // reads, so no view ever sees a permanently-"in flight" turn.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        conversations::heal_interrupted_tool_calls(conn, now)?;
         Ok(())
     })
     .await?;

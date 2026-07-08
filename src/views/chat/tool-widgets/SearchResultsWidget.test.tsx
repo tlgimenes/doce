@@ -71,4 +71,21 @@ describe("SearchResultsWidget (004-tool-call-widgets, US4: Glob + Grep)", () => 
     render(<SearchResultsWidget detail={detail} />);
     expect(screen.getByTestId("search-widget")).not.toHaveTextContent("tok");
   });
+
+  it("renders an interrupted notice — never a false 'No matches found' — for a healed crash-orphaned Grep", () => {
+    // storage::heal_interrupted_tool_calls pairs a crash-orphaned search
+    // with matches:[] + interrupted:true; presenting that as a completed
+    // empty search is a false negative to the user.
+    const detail: GrepDetail = {
+      toolName: "Grep",
+      pattern: "needle",
+      path: "/tmp/project",
+      glob: null,
+      matches: [],
+      interrupted: true,
+    };
+    render(<SearchResultsWidget detail={detail} />);
+    expect(screen.getByTestId("search-interrupted")).toHaveTextContent(/interrupted/i);
+    expect(screen.queryByTestId("search-no-matches")).not.toBeInTheDocument();
+  });
 });
