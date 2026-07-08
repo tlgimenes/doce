@@ -100,6 +100,56 @@ describe("ConversationList", () => {
     expect(onSelect).toHaveBeenCalledWith(conversation);
   });
 
+  it("renders an inactive conversation title bold when it has unseen updates", async () => {
+    vi.mocked(commands.listConversations).mockResolvedValue([
+      {
+        id: "unseen",
+        workspaceId: null,
+        title: "New output arrived",
+        createdAt: 1,
+        updatedAt: 10,
+        lastSeenAt: 5,
+        status: "done",
+      },
+    ]);
+
+    render(
+      <ConversationList
+        activeId={null}
+        onSelect={vi.fn()}
+        onNewConversation={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("New output arrived")).toHaveClass("font-semibold");
+  });
+
+  it("renders the active conversation title normal even when it has unseen updates", async () => {
+    vi.mocked(commands.listConversations).mockResolvedValue([
+      {
+        id: "active",
+        workspaceId: null,
+        title: "Currently open",
+        createdAt: 1,
+        updatedAt: 10,
+        lastSeenAt: 5,
+        status: "done",
+      },
+    ]);
+
+    render(
+      <ConversationList
+        activeId="active"
+        onSelect={vi.fn()}
+        onNewConversation={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("Currently open")).toHaveClass("font-medium");
+  });
+
   it("renders each conversation as title/time plus path/work-state rows", async () => {
     const now = new Date("2026-01-01T12:00:00Z").getTime();
     const dateNow = vi.spyOn(Date, "now").mockReturnValue(now);

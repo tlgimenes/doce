@@ -174,45 +174,57 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
           </Button>
         </div>
         <div className="flex-1 space-y-1 overflow-y-auto">
-          {conversations.map((c) => (
-            <Button
-              key={c.id}
-              variant="ghost"
-              size="sm"
-              onClick={() => onSelect(c)}
-              data-testid="conversation-item"
-              data-conversation-id={c.id}
-              className={cn(
-                "h-auto min-h-12 w-full items-start justify-start gap-2 rounded-lg px-2 py-2 text-left",
-                c.id === activeId ? "bg-background" : "bg-background/40 hover:bg-background/70",
-              )}
-            >
-              <span
-                className={cn("mt-1.5 size-2 shrink-0 rounded-full", STATUS_COLOR[c.status])}
-                title={STATUS_LABEL[c.status]}
-                data-testid="conversation-status-dot"
-                data-status={c.status}
-              />
-              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                <span className="flex min-w-0 items-baseline gap-2">
-                  <span className="min-w-0 flex-1 truncate text-[13px] font-semibold leading-4">
-                    {c.title}
+          {conversations.map((c) => {
+            const isActive = c.id === activeId;
+            const hasUnseenUpdates = !isActive && c.updatedAt > c.lastSeenAt;
+
+            return (
+              <Button
+                key={c.id}
+                variant="ghost"
+                size="sm"
+                onClick={() => onSelect(c)}
+                data-testid="conversation-item"
+                data-conversation-id={c.id}
+                className={cn(
+                  "h-auto min-h-12 w-full items-start justify-start gap-2 rounded-lg px-2 py-2 text-left",
+                  isActive
+                    ? "bg-background"
+                    : "bg-transparent border-0 shadow-none hover:bg-background/70",
+                )}
+              >
+                <span
+                  className={cn("mt-1.5 size-2 shrink-0 rounded-full", STATUS_COLOR[c.status])}
+                  title={STATUS_LABEL[c.status]}
+                  data-testid="conversation-status-dot"
+                  data-status={c.status}
+                />
+                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                  <span className="flex min-w-0 items-baseline gap-2">
+                    <span
+                      className={cn(
+                        "min-w-0 flex-1 truncate text-[13px] leading-4",
+                        hasUnseenUpdates ? "font-semibold" : "font-medium",
+                      )}
+                    >
+                      {c.title}
+                    </span>
+                    <span className="shrink-0 text-[11px] leading-4 text-sidebar-foreground/55 tabular-nums">
+                      {formatConversationRelativeTime(c.updatedAt)}
+                    </span>
                   </span>
-                  <span className="shrink-0 text-[11px] leading-4 text-sidebar-foreground/55 tabular-nums">
-                    {formatConversationRelativeTime(c.updatedAt)}
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span className="min-w-0 flex-1 truncate text-[11px] leading-4 text-sidebar-foreground/60">
+                      {getConversationWorkspaceLabel(c.workspaceId, workspacesById, homePath)}
+                    </span>
+                    <span className="shrink-0 text-[11px] leading-4 text-sidebar-foreground/60">
+                      {getConversationWorkStateLabel(c.status)}
+                    </span>
                   </span>
                 </span>
-                <span className="flex min-w-0 items-center gap-2">
-                  <span className="min-w-0 flex-1 truncate text-[11px] leading-4 text-sidebar-foreground/60">
-                    {getConversationWorkspaceLabel(c.workspaceId, workspacesById, homePath)}
-                  </span>
-                  <span className="shrink-0 text-[11px] leading-4 text-sidebar-foreground/60">
-                    {getConversationWorkStateLabel(c.status)}
-                  </span>
-                </span>
-              </span>
-            </Button>
-          ))}
+              </Button>
+            );
+          })}
         </div>
         <Dialog open={searching} onClose={() => setSearching(false)}>
           <SearchPanel
