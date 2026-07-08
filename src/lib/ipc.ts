@@ -73,6 +73,9 @@ export interface ReadDetail {
    * enough to be offloaded to disk — the model saw only a preview, but the
    * full content is still readable from this path. */
   offloadedTo?: string | null;
+  /** Real tokenizer count of this result's content — see
+   * `context::annotate_with_token_count` on the backend. */
+  tokenCount?: number;
 }
 
 export type WriteOutcome = { ok: true } | { ok: false; error: string };
@@ -104,11 +107,18 @@ export interface BashDetail {
   toolName: "Bash";
   command: string | null;
   timeoutMs: number | null;
-  outcome: BashOutcome;
+  /** Absent while the command is still running — see BashWidget's pending
+   * branch, fed by `parsePendingBashCallDetail`. */
+  outcome?: BashOutcome;
   /** 010-context-window-management/US3: set when this result was large
    * enough to be offloaded to disk — the model saw only a preview, but the
    * full stdout/stderr is still readable from this path. */
   offloadedTo?: string | null;
+  /** Real tokenizer count of this result's model-facing text — see
+   * `context::annotate_with_token_count` on the backend. Only ever set for
+   * Read/Bash/Grep/Glob (the four tools whose size varies enough to make a
+   * cost badge worth showing). */
+  tokenCount?: number;
 }
 
 export interface GlobDetail {
@@ -116,6 +126,11 @@ export interface GlobDetail {
   pattern: string | null;
   path: string | null;
   matches: string[];
+  /** Real tokenizer count of this result's model-facing text — see
+   * `context::annotate_with_token_count` on the backend. Only ever set for
+   * Read/Bash/Grep/Glob (the four tools whose size varies enough to make a
+   * cost badge worth showing). */
+  tokenCount?: number;
 }
 
 export interface GrepMatch {
@@ -130,6 +145,11 @@ export interface GrepDetail {
   path: string | null;
   glob: string | null;
   matches: GrepMatch[];
+  /** Real tokenizer count of this result's model-facing text — see
+   * `context::annotate_with_token_count` on the backend. Only ever set for
+   * Read/Bash/Grep/Glob (the four tools whose size varies enough to make a
+   * cost badge worth showing). */
+  tokenCount?: number;
 }
 
 export interface TaskDetail {
@@ -234,6 +254,54 @@ export function parseAskUserQuestionCallDetail(content: string): AskUserQuestion
       options: Array.isArray(args.options) ? (args.options as QuestionOption[]) : [],
       multiSelect: args.multiSelect === true,
       answer: null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Parses a still-*pending* `Bash` tool_call row's `content` (shape
+ * `{"arguments": {command, timeoutMs}}`) into an outcome-less `BashDetail`
+ * — `BashWidget` treats a missing `outcome` as "still running." Returns
+ * `null` on any parse failure or missing `command`. */
+export function parsePendingBashCallDetail(content: string): BashDetail | null {
+  try {
+    const parsed = JSON.parse(content) as { arguments?: Record<string, unknown> };
+    const args = parsed?.arguments;
+    if (!args || typeof args.command !== "string") {
+      return null;
+    }
+    return {
+      toolName: "Bash",
+      command: args.command,
+      timeoutMs: typeof args.timeoutMs === "number" ? args.timeoutMs : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Parses a still-*pending* `Task` tool_call row's `content` (shape
+ * `{"arguments": {prompt}}`) into a `state: "running"` `TaskDetail` —
+ * `TaskWidget` already has a dedicated running-state render branch for
+ * this value, previously never actually produced (the backend only ever
+ * persisted `tool_result` once the subagent had already finished, so
+ * `state` was always `"complete"`). `subagentConversationId` isn't known
+ * yet at this point (the subagent hasn't been spawned) — empty string is
+ * safe since `TaskWidget` never renders it. Returns `null` on any parse
+ * failure or missing `prompt`. */
+export function parsePendingTaskCallDetail(content: string): TaskDetail | null {
+  try {
+    const parsed = JSON.parse(content) as { arguments?: Record<string, unknown> };
+    const args = parsed?.arguments;
+    if (!args || typeof args.prompt !== "string") {
+      return null;
+    }
+    return {
+      toolName: "Task",
+      prompt: args.prompt,
+      subagentConversationId: "",
+      state: "running",
     };
   } catch {
     return null;

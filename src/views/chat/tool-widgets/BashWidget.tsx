@@ -19,6 +19,29 @@ function truncatedLines(text: string): { shown: string; truncated: boolean } {
  * static, already-complete result, not an interactive terminal).
  */
 export default function BashWidget({ detail }: BashWidgetProps) {
+  // Pending branch: outcome absent means the command is still running
+  if (!detail.outcome) {
+    return (
+      <div
+        className="overflow-hidden rounded-lg border border-border"
+        data-testid="bash-widget"
+      >
+        <div
+          className="flex items-center border-b border-border px-3 py-1.5 font-mono text-xs text-muted-foreground"
+          data-testid="bash-status"
+        >
+          <span>Running…</span>
+        </div>
+        <pre
+          className="overflow-x-auto whitespace-pre-wrap break-words bg-card px-3 py-2 font-mono text-xs"
+          data-testid="bash-command"
+        >
+          $ {detail.command}
+        </pre>
+      </div>
+    );
+  }
+
   if (!detail.outcome.ok) {
     return (
       <div
