@@ -9,6 +9,7 @@ import {
   commands,
   events,
   parseAskUserQuestionCallDetail,
+  type ContextUsage,
   type Message,
   type RichMessageContent,
 } from "@/lib/ipc";
@@ -38,6 +39,14 @@ interface WorkspaceProps {
 
 const conversationsWithSendInFlight = new Set<string>();
 const sendInFlightListeners = new Set<() => void>();
+interface ConversationRefreshPayload {
+  contextUsage?: ContextUsage;
+}
+
+const conversationRefreshListeners = new Map<
+  string,
+  Set<(payload: ConversationRefreshPayload) => void>
+>();
 
 function notifySendInFlightListeners() {
   sendInFlightListeners.forEach((listener) => listener());
@@ -60,6 +69,34 @@ function markSendInFlight(conversationId: string): boolean {
 function clearSendInFlight(conversationId: string) {
   if (!conversationsWithSendInFlight.delete(conversationId)) return;
   notifySendInFlightListeners();
+}
+
+function requestConversationRefresh(
+  conversationId: string,
+  payload: ConversationRefreshPayload = {},
+) {
+  const listeners = conversationRefreshListeners.get(conversationId);
+  if (!listeners) return;
+  Array.from(listeners).forEach((listener) => listener(payload));
+}
+
+function subscribeToConversationRefresh(
+  conversationId: string,
+  listener: (payload: ConversationRefreshPayload) => void,
+) {
+  let listeners = conversationRefreshListeners.get(conversationId);
+  if (!listeners) {
+    listeners = new Set();
+    conversationRefreshListeners.set(conversationId, listeners);
+  }
+  listeners.add(listener);
+
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0) {
+      conversationRefreshListeners.delete(conversationId);
+    }
+  };
 }
 
 function getServerSnapshot() {
@@ -101,12 +138,32 @@ export default function Workspace({
     getServerSnapshot,
   );
 
+  const refreshMessages = useCallback(async () => {
+    const targetConversationId = conversationId;
+    const loadedMessages = await commands.listMessages(targetConversationId);
+    if (!isMountedRef.current || currentConversationIdRef.current !== targetConversationId) return;
+
+    setMessages(loadedMessages);
+    onConversationSeenRef.current?.(targetConversationId);
+  }, [conversationId]);
+
   useEffect(() => {
     isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
     };
   }, []);
+
+  useEffect(
+    () =>
+      subscribeToConversationRefresh(conversationId, (payload) => {
+        if (payload.contextUsage) {
+          useContextUsageStore.getState().setUsage(payload.contextUsage);
+        }
+        void refreshMessages();
+      }),
+    [conversationId, refreshMessages],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -140,11 +197,8 @@ export default function Workspace({
     (async () => {
       unlistenPersisted = await events.onAgentMessagePersisted((p) => {
         if (p.conversationId !== conversationId) return;
-        commands.listMessages(conversationId).then((loadedMessages) => {
-          if (cancelled || currentConversationIdRef.current !== conversationId) return;
-          setMessages(loadedMessages);
-          onConversationSeenRef.current?.(conversationId);
-        });
+        if (cancelled) return;
+        void refreshMessages();
       });
       if (cancelled) {
         unlistenPersisted();
@@ -228,17 +282,12 @@ export default function Workspace({
           try {
             const usage = await commands.compactConversation(conversationId);
             if (!isMountedRef.current || currentConversationIdRef.current !== conversationId) {
+              requestConversationRefresh(conversationId, { contextUsage: usage });
               return;
             }
 
             useContextUsageStore.getState().setUsage(usage);
-            const refreshed = await commands.listMessages(conversationId);
-            if (!isMountedRef.current || currentConversationIdRef.current !== conversationId) {
-              return;
-            }
-
-            setMessages(refreshed);
-            onConversationSeenRef.current?.(conversationId);
+            await refreshMessages();
           } catch (e) {
             if (isMountedRef.current && currentConversationIdRef.current === conversationId) {
               setError(String(e));
@@ -306,19 +355,15 @@ export default function Workspace({
             // Safety net: a real refetch regardless of event timing/ordering,
             // so the transcript is always correct once the turn is fully done --
             // covers both the happy path and an error partway through the loop.
-            commands.listMessages(conversationId).then((loadedMessages) => {
-              if (!isMountedRef.current || currentConversationIdRef.current !== conversationId) {
-                return;
-              }
-              setMessages(loadedMessages);
-              onConversationSeenRef.current?.(conversationId);
-            });
+            void refreshMessages();
+          } else {
+            requestConversationRefresh(conversationId);
           }
         }
       })();
       return true;
     },
-    [conversationId, pendingQuestion, sendInFlight],
+    [conversationId, pendingQuestion, refreshMessages, sendInFlight],
   );
 
   useEffect(() => {

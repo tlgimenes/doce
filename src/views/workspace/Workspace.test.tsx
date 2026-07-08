@@ -988,6 +988,89 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     );
   });
 
+  it("refreshes a /compact result after returning to the same conversation before completion", async () => {
+    let resolveCompact!: (usage: Awaited<ReturnType<typeof commands.compactConversation>>) => void;
+    let compactFinished = false;
+    const onConversationSeen = vi.fn();
+
+    vi.mocked(commands.compactConversation).mockReturnValue(
+      new Promise((resolve) => {
+        resolveCompact = resolve;
+      }),
+    );
+    vi.mocked(commands.listMessages).mockImplementation((requestedConversationId) => {
+      if (requestedConversationId === "conv-2") {
+        return Promise.resolve([
+          {
+            id: "m2",
+            conversationId: "conv-2",
+            role: "user",
+            contentType: "text",
+            content: "second workspace",
+            toolName: null,
+            createdAt: 2,
+            durationMs: null,
+            tokenCount: null,
+          },
+        ]);
+      }
+
+      if (!compactFinished) return Promise.resolve([]);
+      return Promise.resolve([
+        {
+          id: "late-compact",
+          conversationId: "conv-1",
+          role: "assistant",
+          contentType: "context_notice",
+          content: JSON.stringify({
+            kind: "summarized",
+            summary: "old summary",
+            notice: "late compact notice",
+          }),
+          toolName: null,
+          createdAt: 3,
+          durationMs: null,
+          tokenCount: null,
+        },
+      ]);
+    });
+
+    const { rerender } = render(
+      <Workspace key="conv-1" conversationId="conv-1" onConversationSeen={onConversationSeen} />,
+    );
+    await screen.findByTestId("agent-input");
+
+    await userEvent.type(screen.getByTestId("agent-input"), "/compact");
+    await userEvent.click(screen.getByTestId("agent-send"));
+    await waitFor(() => expect(commands.compactConversation).toHaveBeenCalledWith("conv-1"));
+
+    rerender(
+      <Workspace key="conv-2" conversationId="conv-2" onConversationSeen={onConversationSeen} />,
+    );
+    await screen.findByText("second workspace");
+
+    rerender(
+      <Workspace
+        key="conv-1-return"
+        conversationId="conv-1"
+        onConversationSeen={onConversationSeen}
+      />,
+    );
+    await screen.findByTestId("agent-input");
+    onConversationSeen.mockClear();
+
+    compactFinished = true;
+    resolveCompact({
+      conversationId: "conv-1",
+      tokensUsed: 100,
+      tokenBudget: 2048,
+      state: "justCompacted",
+    });
+
+    expect(await screen.findByTestId("context-notice")).toHaveTextContent("late compact notice");
+    expect(onConversationSeen).toHaveBeenCalledWith("conv-1");
+  });
+
   it("ignores stale /compact errors after switching conversations", async () => {
     let rejectCompact!: (error: Error) => void;
     vi.mocked(commands.compactConversation).mockReturnValue(
@@ -1185,6 +1268,83 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     );
     expect(await screen.findByText("strict reply")).toBeInTheDocument();
     expect(screen.queryByTestId("agent-thinking")).not.toBeInTheDocument();
+  });
+
+  it("refreshes a send safety-net result after returning to the same conversation before completion", async () => {
+    let resolveSend!: (value: string) => void;
+    let sendFinished = false;
+    const onConversationSeen = vi.fn();
+
+    vi.mocked(commands.sendAgentMessage).mockReturnValue(
+      new Promise((resolve) => {
+        resolveSend = resolve;
+      }),
+    );
+    vi.mocked(commands.listMessages).mockImplementation((requestedConversationId) => {
+      if (requestedConversationId === "conv-2") {
+        return Promise.resolve([
+          {
+            id: "m2",
+            conversationId: "conv-2",
+            role: "user",
+            contentType: "text",
+            content: "second workspace",
+            toolName: null,
+            createdAt: 2,
+            durationMs: null,
+            tokenCount: null,
+          },
+        ]);
+      }
+
+      if (!sendFinished) return Promise.resolve([]);
+      return Promise.resolve([
+        messageFixture("u1", "late task"),
+        {
+          id: "a1",
+          conversationId: "conv-1",
+          role: "assistant",
+          contentType: "text",
+          content: "late reply",
+          toolName: null,
+          createdAt: 3,
+          durationMs: null,
+          tokenCount: null,
+        },
+      ]);
+    });
+
+    const { rerender } = render(
+      <Workspace key="conv-1" conversationId="conv-1" onConversationSeen={onConversationSeen} />,
+    );
+    await screen.findByTestId("agent-input");
+
+    await userEvent.type(screen.getByTestId("agent-input"), "late task");
+    await userEvent.click(screen.getByTestId("agent-send"));
+    await waitFor(() =>
+      expect(commands.sendAgentMessage).toHaveBeenCalledWith("conv-1", "late task", undefined),
+    );
+
+    rerender(
+      <Workspace key="conv-2" conversationId="conv-2" onConversationSeen={onConversationSeen} />,
+    );
+    await screen.findByText("second workspace");
+
+    rerender(
+      <Workspace
+        key="conv-1-return"
+        conversationId="conv-1"
+        onConversationSeen={onConversationSeen}
+      />,
+    );
+    await screen.findByTestId("agent-input");
+    onConversationSeen.mockClear();
+
+    sendFinished = true;
+    resolveSend("ok");
+
+    expect(await screen.findByText("late reply")).toBeInTheDocument();
+    expect(onConversationSeen).toHaveBeenCalledWith("conv-1");
   });
 
   it("keeps the original conversation disabled across remounts while its send is still pending", async () => {
