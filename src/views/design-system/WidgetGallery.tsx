@@ -56,7 +56,7 @@ function Section({
  */
 export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
   return (
-    <div className="flex h-dvh flex-col overflow-y-auto bg-background" data-testid="widget-gallery">
+    <div className="flex h-full flex-col overflow-y-auto bg-background" data-testid="widget-gallery">
       <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-background/95 px-6 py-3 backdrop-blur">
         <div>
           <h1 className="text-base font-semibold">Widget gallery</h1>

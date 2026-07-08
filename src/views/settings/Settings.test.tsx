@@ -20,6 +20,13 @@ describe("Settings (User Story 4: MCP servers + skills)", () => {
     vi.mocked(commands.listSkills).mockResolvedValue([]);
   });
 
+  it("fills the shell content area instead of forcing viewport height", () => {
+    render(<Settings onClose={vi.fn()} />);
+
+    expect(screen.getByTestId("settings-view")).toHaveClass("h-full");
+    expect(screen.getByTestId("settings-view")).not.toHaveClass("h-dvh");
+  });
+
   it("lists discovered skills", async () => {
     vi.mocked(commands.listSkills).mockResolvedValue([
       { name: "pdf-tools", description: "Work with PDF files" },

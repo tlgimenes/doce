@@ -31,6 +31,13 @@ describe("EmptyState (006-chat-empty-state)", () => {
     });
   });
 
+  it("fills the shell content area instead of forcing viewport height", () => {
+    render(<EmptyState onConversationCreated={vi.fn()} />);
+
+    expect(screen.getByTestId("empty-state")).toHaveClass("h-full");
+    expect(screen.getByTestId("empty-state")).not.toHaveClass("h-dvh");
+  });
+
   it("US1: submitting with the Home target untouched creates a workspace-scoped conversation and hands off the first turn without waiting for the agent", async () => {
     vi.mocked(commands.openWorkspace).mockResolvedValue({
       id: "ws-home",

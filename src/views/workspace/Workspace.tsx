@@ -423,7 +423,7 @@ export default function Workspace({
   }, [conversationId, onPendingInitialTurnConsumed, pendingInitialTurn, send]);
 
   return (
-    <div className="flex h-dvh flex-col bg-background text-foreground">
+    <div className="flex h-full flex-col bg-background text-foreground">
       <div className="relative min-h-0 flex-1">
         <div
           ref={scrollContainerRef}

@@ -177,6 +177,16 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     });
   });
 
+  it("fills the shell content area instead of forcing viewport height", async () => {
+    render(<Workspace conversationId="conv-1" />);
+
+    const root = screen.getByTestId("workspace-scroll-container").parentElement?.parentElement;
+    expect(root).not.toBeNull();
+    expect(root!).toHaveClass("h-full");
+    expect(root!).not.toHaveClass("h-dvh");
+    await waitFor(() => expect(commands.listMessages).toHaveBeenCalledWith("conv-1"));
+  });
+
   it("notifies when active messages refresh so the app can mark the conversation seen", async () => {
     const onConversationSeen = vi.fn();
     vi.mocked(commands.listMessages).mockResolvedValue([

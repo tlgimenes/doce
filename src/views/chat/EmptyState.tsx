@@ -82,7 +82,7 @@ export default function EmptyState({ onConversationCreated }: EmptyStateProps) {
 
   return (
     <div
-      className="flex h-dvh flex-col items-center justify-center gap-4 bg-background text-foreground"
+      className="flex h-full flex-col items-center justify-center gap-4 bg-background text-foreground"
       data-testid="empty-state"
     >
       <div

@@ -51,7 +51,7 @@ export default function Settings({ onClose }: SettingsProps) {
 
   return (
     <div
-      className="flex h-dvh flex-col overflow-y-auto bg-background p-6 text-foreground"
+      className="flex h-full flex-col overflow-y-auto bg-background p-6 text-foreground"
       data-testid="settings-view"
     >
       <div className="mb-6 flex items-center justify-between">
