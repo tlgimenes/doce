@@ -438,6 +438,7 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
         // isn't rendered by any current view, so there's no consumer to
         // notify.
         let outcome = dispatch::execute(&call, self.cwd);
+        let outcome = crate::context::annotate_with_token_count(self.engine, outcome);
         persist_tool_call_and_result(
             None,
             self.conn,
@@ -492,42 +493,14 @@ async fn execute_top_level_tool(
     }
 
     if call.name != "Task" {
-        let outcome = dispatch::execute(&call, cwd);
-
-        // 010-context-window-management/US3 (FR-011/FR-012): an oversized
-        // result gets truncated to a preview + a `Read`-able pointer before
-        // it ever enters the model's context -- the persisted `detail`
-        // still carries the full outcome for the transcript UI (widgets
-        // decide for themselves whether to show a "view full output"
-        // affordance), only `model_text` (what the model actually sees) is
-        // substituted.
-        let settings = crate::context::ContextSettings::load(conn)
-            .await
-            .unwrap_or_else(|_| crate::context::ContextSettings::from_raw(&Default::default()));
-        let (model_text, offloaded_to) = match app.path().app_data_dir() {
-            Ok(app_data_dir) => crate::context::offload::offload_if_oversized(
-                &app_data_dir,
-                parent_conversation_id,
-                &tool_call_id,
-                &outcome.model_text,
-                settings.tool_output_offload_chars,
-            )
-            .unwrap_or_else(|_| (outcome.model_text.clone(), None)),
-            Err(_) => (outcome.model_text.clone(), None),
-        };
-
-        let mut detail = outcome.detail.clone();
-        detail["offloadedTo"] = serde_json::json!(offloaded_to);
-
-        persist_tool_call_and_result(
+        let model_text = handle_general_tool_call(
             Some(app),
             conn,
+            engine,
             parent_conversation_id,
+            cwd,
             &tool_call_id,
-            &call.name,
-            call.arguments.clone(),
-            &model_text,
-            detail,
+            &call,
         )
         .await;
         emit_context_usage_update(app, conn, engine, parent_conversation_id, cwd).await;
@@ -539,6 +512,16 @@ async fn execute_top_level_tool(
     };
     let prompt = prompt.to_string();
 
+    persist_tool_call(
+        Some(app),
+        conn,
+        parent_conversation_id,
+        &tool_call_id,
+        "Task",
+        serde_json::json!({ "prompt": prompt }),
+    )
+    .await;
+
     let parent_id = parent_conversation_id.to_string();
     let prompt_for_spawn = prompt.clone();
     let subagent_id = match conn
@@ -548,7 +531,34 @@ async fn execute_top_level_tool(
         .await
     {
         Ok(id) => id,
-        Err(e) => return format!("Error: failed to spawn subagent: {e}"),
+        Err(e) => {
+            // A spawn failure still needs its tool_result pairing (the
+            // tool_call above is already durably persisted by this point)
+            // -- otherwise this row is left permanently unpaired, which
+            // widgets that match tool_call/tool_result by tool_call_id
+            // would render as stuck "pending" forever. No real
+            // subagentConversationId exists in this failure case (nothing
+            // was ever spawned), so it's "" here, same "complete" state as
+            // the success path below since the delegation attempt is over
+            // either way from the parent's perspective.
+            let error_text = format!("Error: failed to spawn subagent: {e}");
+            persist_tool_result(
+                Some(app),
+                conn,
+                parent_conversation_id,
+                &tool_call_id,
+                "Task",
+                &error_text,
+                serde_json::json!({
+                    "toolName": "Task",
+                    "prompt": prompt,
+                    "subagentConversationId": "",
+                    "state": "complete",
+                }),
+            )
+            .await;
+            return error_text;
+        }
     };
 
     // 007-workspace-cwd-resolution/FR-006: inherit the parent's cwd rather
@@ -612,13 +622,12 @@ async fn execute_top_level_tool(
     // Always "complete" here since this function only returns once the
     // whole nested loop has finished (research.md § 2 — no live
     // mid-delegation status this pass).
-    persist_tool_call_and_result(
+    persist_tool_result(
         Some(app),
         conn,
         parent_conversation_id,
         &tool_call_id,
         "Task",
-        serde_json::json!({ "prompt": prompt }),
         &sub_final,
         serde_json::json!({
             "toolName": "Task",
@@ -630,6 +639,73 @@ async fn execute_top_level_tool(
     .await;
 
     sub_final
+}
+
+/// Handles a single non-`Task`, non-`AskUserQuestion` tool call for the
+/// top-level loop. Persists the `tool_call` row *before* executing —
+/// mirrors `handle_ask_user_question`'s existing early-persist pattern —
+/// so a slow tool (e.g. a long-running `Bash` command) is visible as "in
+/// flight" the moment it starts, not only once it's already finished.
+/// `app: Option<&AppHandle>` (not mandatory, unlike the enclosing
+/// `execute_top_level_tool`) specifically so this is unit-testable without
+/// a live Tauri app.
+async fn handle_general_tool_call(
+    app: Option<&AppHandle>,
+    conn: &tokio_rusqlite::Connection,
+    engine: &InferenceEngine,
+    parent_conversation_id: &str,
+    cwd: Option<&std::path::Path>,
+    tool_call_id: &str,
+    call: &ToolCall,
+) -> String {
+    persist_tool_call(
+        app,
+        conn,
+        parent_conversation_id,
+        tool_call_id,
+        &call.name,
+        call.arguments.clone(),
+    )
+    .await;
+
+    let outcome = dispatch::execute(call, cwd);
+    let outcome = crate::context::annotate_with_token_count(engine, outcome);
+
+    // 010-context-window-management/US3 (FR-011/FR-012): an oversized
+    // result gets truncated to a preview + a `Read`-able pointer before it
+    // ever enters the model's context -- the persisted `detail` still
+    // carries the full outcome for the transcript UI, only `model_text`
+    // (what the model actually sees) is substituted.
+    let settings = crate::context::ContextSettings::load(conn)
+        .await
+        .unwrap_or_else(|_| crate::context::ContextSettings::from_raw(&Default::default()));
+    let (model_text, offloaded_to) = match app.and_then(|a| a.path().app_data_dir().ok()) {
+        Some(app_data_dir) => crate::context::offload::offload_if_oversized(
+            &app_data_dir,
+            parent_conversation_id,
+            tool_call_id,
+            &outcome.model_text,
+            settings.tool_output_offload_chars,
+        )
+        .unwrap_or_else(|_| (outcome.model_text.clone(), None)),
+        None => (outcome.model_text.clone(), None),
+    };
+
+    let mut detail = outcome.detail.clone();
+    detail["offloadedTo"] = serde_json::json!(offloaded_to);
+
+    persist_tool_result(
+        app,
+        conn,
+        parent_conversation_id,
+        tool_call_id,
+        &call.name,
+        &model_text,
+        detail,
+    )
+    .await;
+
+    model_text
 }
 
 /// 010-context-window-management/US1: recomputes and emits this
@@ -1384,15 +1460,24 @@ mod tests {
         )
         .await;
 
-        // What execute_top_level_tool persists on the PARENT once the
-        // delegation itself completes (FR-010).
-        persist_tool_call_and_result(
+        // What execute_top_level_tool now persists on the PARENT: the
+        // tool_call row immediately (before spawn_subagent/run_loop), the
+        // tool_result row once the delegation completes (FR-010).
+        persist_tool_call(
             None,
             &conn,
             "parent",
             "call2",
             "Task",
             serde_json::json!({"prompt": "go read the file"}),
+        )
+        .await;
+        persist_tool_result(
+            None,
+            &conn,
+            "parent",
+            "call2",
+            "Task",
             "the file says hi",
             serde_json::json!({
                 "toolName": "Task", "prompt": "go read the file",
@@ -1427,6 +1512,197 @@ mod tests {
                 ("tool_call".to_string(), Some("Read".to_string())),
                 ("tool_result".to_string(), Some("Read".to_string())),
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn task_delegation_persists_a_tool_result_when_spawn_subagent_fails_instead_of_leaving_the_tool_call_orphaned(
+    ) {
+        // Regression test for a review finding on the change above: between
+        // the early `persist_tool_call` and the final `persist_tool_result`,
+        // `execute_top_level_tool`'s `Task` branch used to `return` straight
+        // out of the `spawn_subagent` error arm, skipping `persist_tool_result`
+        // entirely -- leaving a `tool_call` row with no paired `tool_result`
+        // (widgets pair the two by `tool_call_id`, so an unpaired row renders
+        // as stuck "pending" forever). This exercises exactly what that arm
+        // now does at the persistence layer -- same reasoning as
+        // `task_delegation_persists_a_complete_status_on_the_parent_and_keeps_subagent_activity_isolated`
+        // above for why this doesn't call `execute_top_level_tool` itself
+        // (it needs a real, live `AppHandle` -- not `Option<&AppHandle>`
+        // like `handle_general_tool_call` -- which isn't constructible in a
+        // unit test) -- except the failure here is the *real*
+        // `subagent::spawn_subagent`, not a simulated one, so the trigger is
+        // genuinely deterministic rather than assumed.
+        let conn = crate::storage::test_async_connection().await;
+        // "parent" itself genuinely exists (`messages.conversation_id` has a
+        // `REFERENCES conversations(id)` FK, enforced under
+        // `test_async_connection`'s `PRAGMA foreign_keys = ON` -- an INSERT
+        // against a nonexistent conversation id would just silently no-op,
+        // since `persist_tool_call`/`persist_tool_result` swallow their
+        // `conn.call` error). `spawn_subagent` below is deliberately called
+        // against a *different*, nonexistent id purely to get the same
+        // deterministic `SubagentError::ParentNotFound` it would raise for a
+        // missing parent -- see `agent/subagent.rs`'s own
+        // `spawning_from_a_nonexistent_parent_is_a_clear_error` test for that
+        // same trigger. (`execute_top_level_tool` always passes one and the
+        // same id to both; splitting them here only isolates the two DB
+        // effects so this test doesn't need a real, live parent-deletion
+        // race to exercise the Err arm.)
+        seed_conversation(&conn, "parent").await;
+
+        // What execute_top_level_tool's Task branch persists immediately,
+        // before spawn_subagent ever runs.
+        persist_tool_call(
+            None,
+            &conn,
+            "parent",
+            "call1",
+            "Task",
+            serde_json::json!({"prompt": "go read the file"}),
+        )
+        .await;
+
+        // The real spawn_subagent call, against a parent id absent from the
+        // conversations table -- deterministically Err(ParentNotFound).
+        let spawn_result = conn
+            .call(|conn: &mut Connection| {
+                subagent::spawn_subagent(conn, "does-not-exist", "go read the file")
+            })
+            .await;
+        let e = spawn_result.expect_err("spawning from a nonexistent parent must fail");
+
+        // What the fixed Err arm now does: persist a paired tool_result
+        // (state "complete", empty subagentConversationId -- nothing was
+        // ever spawned) instead of returning without pairing the row.
+        let error_text = format!("Error: failed to spawn subagent: {e}");
+        persist_tool_result(
+            None,
+            &conn,
+            "parent",
+            "call1",
+            "Task",
+            &error_text,
+            serde_json::json!({
+                "toolName": "Task",
+                "prompt": "go read the file",
+                "subagentConversationId": "",
+                "state": "complete",
+            }),
+        )
+        .await;
+
+        let parent_messages = all_messages(&conn, "parent").await;
+        assert_eq!(
+            parent_messages,
+            vec![
+                ("tool_call".to_string(), Some("Task".to_string())),
+                ("tool_result".to_string(), Some("Task".to_string())),
+            ],
+            "the tool_call must not be left orphaned -- a tool_result has to follow it"
+        );
+
+        let (role, content_type, tool_name, content) = latest_message(&conn, "parent").await;
+        assert_eq!(role, "tool");
+        assert_eq!(content_type, "tool_result");
+        assert_eq!(tool_name.as_deref(), Some("Task"));
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed["state"], "complete");
+        assert_eq!(parsed["subagentConversationId"], "");
+        assert_eq!(parsed["prompt"], "go read the file");
+
+        // `model_text` (what the model actually sees for this tool result)
+        // must carry the error, not a generic/empty placeholder -- the same
+        // text `execute_top_level_tool`'s fixed Err arm returns to its
+        // caller.
+        assert!(error_text.contains("failed to spawn subagent"));
+    }
+
+    // --- Task 2: token-count annotation ---
+
+    fn test_model_path() -> std::path::PathBuf {
+        let home = std::env::var("HOME").expect("HOME must be set");
+        std::path::PathBuf::from(home).join(
+            "Library/Application Support/app.doce.desktop/models/qwen3-4b-instruct-2507-q4_k_m.gguf",
+        )
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn subagent_backend_tool_result_carries_a_real_token_count_for_read() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_conversation(&conn, "sub").await;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("notes.txt"), "hello world").unwrap();
+
+        let engine = crate::inference::InferenceEngine::load(&test_model_path(), 4)
+            .expect("model should load");
+        let mut backend = SubagentBackend {
+            engine: &engine,
+            conn: &conn,
+            subagent_id: "sub",
+            cwd: Some(dir.path()),
+            threshold: 1024,
+        };
+        use crate::agent::AgentBackend;
+        let call = crate::agent::ToolCall {
+            name: "Read".to_string(),
+            arguments: serde_json::json!({"file_path": "notes.txt"}),
+        };
+        backend.execute_tool("call1".to_string(), call).await;
+
+        let (_, _, _, content) = latest_message(&conn, "sub").await;
+        let detail: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert!(detail["tokenCount"].as_u64().is_some());
+    }
+
+    // --- Task 3: early tool_call persist for the general top-level path ---
+
+    #[tokio::test]
+    #[ignore]
+    async fn handle_general_tool_call_persists_the_tool_call_row_before_the_tool_result_row() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_conversation(&conn, "c1").await;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("notes.txt"), "hello world").unwrap();
+
+        let engine = crate::inference::InferenceEngine::load(&test_model_path(), 4)
+            .expect("model should load");
+        let call = ToolCall {
+            name: "Read".to_string(),
+            arguments: serde_json::json!({"file_path": "notes.txt"}),
+        };
+
+        let model_text = handle_general_tool_call(
+            None,
+            &conn,
+            &engine,
+            "c1",
+            Some(dir.path()),
+            "call1",
+            &call,
+        )
+        .await;
+
+        assert!(model_text.contains("hello world"));
+
+        // `all_messages` (already defined in this test module, near
+        // `task_delegation_persists_...`) returns `Vec<(content_type,
+        // tool_name)>`, ordered by sequence — enough to confirm the
+        // tool_call row landed before the tool_result row.
+        let rows = all_messages(&conn, "c1").await;
+        assert_eq!(rows.len(), 2, "expected exactly a tool_call row and a tool_result row");
+        assert_eq!(rows[0].0, "tool_call");
+        assert_eq!(rows[1].0, "tool_result");
+
+        // `latest_message` (already defined in this test module) returns
+        // (role, content_type, tool_name, content) for the newest row —
+        // which, after the two inserts above, is the tool_result row.
+        let (_, content_type, _, content) = latest_message(&conn, "c1").await;
+        assert_eq!(content_type, "tool_result");
+        let result_detail: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert!(
+            result_detail["tokenCount"].as_u64().is_some(),
+            "Read is one of the four annotated tools"
         );
     }
 }

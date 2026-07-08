@@ -444,6 +444,113 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     expect(commands.answerUserQuestion).toHaveBeenCalledWith("q1", ["A"]);
   });
 
+  it("shows a pending Bash widget (not \"Working…\") when the latest message is an unfinished Bash tool_call", async () => {
+    vi.mocked(commands.listMessages).mockResolvedValue([
+      {
+        id: "u1",
+        conversationId: "conv-1",
+        role: "user",
+        contentType: "text",
+        content: "run the tests",
+        toolName: null,
+        createdAt: 1,
+        durationMs: null,
+        tokenCount: null,
+      },
+      {
+        id: "tc1",
+        conversationId: "conv-1",
+        role: "assistant",
+        contentType: "tool_call",
+        content: JSON.stringify({ arguments: { command: "cargo test --lib" } }),
+        toolName: "Bash",
+        createdAt: 2,
+        durationMs: null,
+        tokenCount: null,
+      },
+    ]);
+    vi.mocked(commands.sendAgentMessage).mockReturnValue(new Promise(() => {}));
+
+    render(<Workspace conversationId="conv-1" />);
+
+    const status = await screen.findByTestId("bash-status");
+    expect(status).toHaveTextContent(/running/i);
+    expect(screen.getByTestId("bash-command")).toHaveTextContent("cargo test --lib");
+    expect(screen.queryByTestId("agent-thinking")).not.toBeInTheDocument();
+  });
+
+  it("shows a pending Task widget when the latest message is an unfinished Task tool_call", async () => {
+    vi.mocked(commands.listMessages).mockResolvedValue([
+      {
+        id: "u1",
+        conversationId: "conv-1",
+        role: "user",
+        contentType: "text",
+        content: "investigate the bug",
+        toolName: null,
+        createdAt: 1,
+        durationMs: null,
+        tokenCount: null,
+      },
+      {
+        id: "tc1",
+        conversationId: "conv-1",
+        role: "assistant",
+        contentType: "tool_call",
+        content: JSON.stringify({ arguments: { prompt: "find the root cause" } }),
+        toolName: "Task",
+        createdAt: 2,
+        durationMs: null,
+        tokenCount: null,
+      },
+    ]);
+    vi.mocked(commands.sendAgentMessage).mockReturnValue(new Promise(() => {}));
+
+    render(<Workspace conversationId="conv-1" />);
+
+    const status = await screen.findByTestId("task-status");
+    expect(status).toHaveTextContent(/running/i);
+    expect(screen.queryByTestId("agent-thinking")).not.toBeInTheDocument();
+  });
+
+  it("does not show a pending Bash widget once the tool_result has landed (latest message is the result, not the call)", async () => {
+    vi.mocked(commands.listMessages).mockResolvedValue([
+      {
+        id: "tc1",
+        conversationId: "conv-1",
+        role: "assistant",
+        contentType: "tool_call",
+        content: JSON.stringify({ arguments: { command: "cargo test --lib" } }),
+        toolName: "Bash",
+        createdAt: 1,
+        durationMs: null,
+        tokenCount: null,
+      },
+      {
+        id: "tr1",
+        conversationId: "conv-1",
+        role: "tool",
+        contentType: "tool_result",
+        content: JSON.stringify({
+          toolName: "Bash",
+          command: "cargo test --lib",
+          outcome: { ok: true, exitCode: 0, stdout: "ok", stderr: "" },
+        }),
+        toolName: "Bash",
+        createdAt: 2,
+        durationMs: null,
+        tokenCount: null,
+      },
+    ]);
+
+    render(<Workspace conversationId="conv-1" />);
+
+    await screen.findByTestId("bash-widget");
+    const statuses = screen.getAllByTestId("bash-status");
+    expect(statuses).toHaveLength(1);
+    expect(statuses[0]).not.toHaveTextContent(/running/i);
+  });
+
   it("009-rich-chat-input regression: a message containing a chip forwards richContent to sendAgentMessage, not just the flat text", async () => {
     vi.mocked(commands.sendAgentMessage).mockResolvedValue("ok");
 

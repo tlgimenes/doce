@@ -19,6 +19,7 @@ pub mod limits;
 pub mod offload;
 
 use crate::inference::{ChatMessage, InferenceEngine, MessageContent};
+use crate::agent::dispatch::ToolOutcome;
 use crate::storage::conversations::{
     load_history_annotated, persist_context_notice, HistoryMessage,
 };
@@ -484,6 +485,53 @@ pub fn fit_to_budget(
     result
 }
 
+/// Names the four tool results whose size varies enough for a cost badge
+/// to be worth showing (`Write`/`Edit`/`Task`/`AskUserQuestion` are small
+/// and roughly fixed-cost, so a badge there would just be noise) — see
+/// the widget-cost-and-progressive-rendering design doc's scope decision.
+fn wants_token_count(tool_name: &str) -> bool {
+    matches!(tool_name, "Read" | "Bash" | "Grep" | "Glob")
+}
+
+/// Merges a computed token count into `detail`'s `tokenCount` field — pure
+/// JSON manipulation, split out from the token-counting itself so it's
+/// unit-testable without a loaded model.
+fn merge_token_count(mut detail: serde_json::Value, token_count: usize) -> serde_json::Value {
+    if let Some(obj) = detail.as_object_mut() {
+        obj.insert("tokenCount".to_string(), serde_json::json!(token_count));
+    }
+    detail
+}
+
+/// Annotates a tool result with its real token cost — the same tokenizer
+/// `fit_to_budget`/the context usage gauge already use, not a client-side
+/// estimate, since the whole point is that this number has to match the
+/// real budget math. Applied only to the four tool results whose size
+/// varies enough to matter (`wants_token_count`); every other tool's
+/// `detail` passes through unchanged. Called right after
+/// `dispatch::execute()` returns, before persistence, from every call site
+/// that already holds an `&InferenceEngine` for this exact reason
+/// (`context::fit_turn_to_budget`). A tokenization failure leaves `detail`
+/// unannotated rather than failing the whole tool result over a
+/// UI-only concern.
+pub fn annotate_with_token_count(engine: &InferenceEngine, outcome: ToolOutcome) -> ToolOutcome {
+    let tool_name = outcome
+        .detail
+        .get("toolName")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if !wants_token_count(tool_name) {
+        return outcome;
+    }
+    let Ok(token_count) = engine.count_tokens(&outcome.model_text) else {
+        return outcome;
+    };
+    ToolOutcome {
+        model_text: outcome.model_text,
+        detail: merge_token_count(outcome.detail, token_count),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -753,5 +801,25 @@ mod tests {
             result.iter().map(|m| m.text()).collect::<Vec<_>>(),
             vec!["m2", "m3"]
         );
+    }
+
+    #[test]
+    fn wants_token_count_is_true_only_for_the_four_size_variable_tools() {
+        assert!(wants_token_count("Read"));
+        assert!(wants_token_count("Bash"));
+        assert!(wants_token_count("Grep"));
+        assert!(wants_token_count("Glob"));
+        assert!(!wants_token_count("Write"));
+        assert!(!wants_token_count("Edit"));
+        assert!(!wants_token_count("Task"));
+        assert!(!wants_token_count("AskUserQuestion"));
+    }
+
+    #[test]
+    fn merge_token_count_inserts_the_field_into_an_object_detail() {
+        let detail = serde_json::json!({"toolName": "Read", "filePath": "/tmp/x.txt"});
+        let merged = merge_token_count(detail, 312);
+        assert_eq!(merged["tokenCount"], 312);
+        assert_eq!(merged["filePath"], "/tmp/x.txt");
     }
 }

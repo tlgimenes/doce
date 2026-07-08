@@ -5,11 +5,15 @@ import ContextUsageGauge from "@/components/ContextUsageGauge";
 import { Button } from "@/components/ui/button";
 import RichInput from "@/views/chat/rich-input/RichInput";
 import AskUserQuestionWidget from "@/views/chat/tool-widgets/AskUserQuestionWidget";
+import BashWidget from "@/views/chat/tool-widgets/BashWidget";
+import TaskWidget from "@/views/chat/tool-widgets/TaskWidget";
 import {
   commands,
   events,
   parseAskUserQuestionCallDetail,
   type ContextUsage,
+  parsePendingBashCallDetail,
+  parsePendingTaskCallDetail,
   type Message,
   type RichMessageContent,
 } from "@/lib/ipc";
@@ -211,23 +215,31 @@ export default function Workspace({
     };
   }, [conversationId]);
 
-  // A pending `AskUserQuestion` is derived, not separately tracked state:
-  // the backend persists the tool_call (with its questionId folded in —
-  // see handle_ask_user_question) *before* it blocks on an answer, and
-  // sequence ordering guarantees the paired tool_result can only ever land
-  // immediately after it — so "the latest message is that tool_call" is
-  // exactly "still awaiting an answer," and it self-clears the instant the
-  // tool_result becomes the latest message instead. This also means a
-  // pending question survives a reload or switching away and back: it's
-  // reconstructed from whatever `list_messages` actually returns, not from
-  // catching the live `ask-user-question` event at the moment it fires.
-  const pendingQuestion = useMemo(() => {
+  // Generalizes the same "latest message is an unpaired tool_call" signal
+  // AskUserQuestion has always used (sequence ordering guarantees a
+  // tool_result can only ever land immediately after its tool_call, so
+  // this is a reliable "still in flight" check for any tool) to also cover
+  // Bash/Task — the two tools slow enough for a live pending state to
+  // matter (010-context-window-management follow-up: widget cost badges +
+  // progressive rendering design doc).
+  const pendingToolCall = useMemo(() => {
     const latest = messages[messages.length - 1];
-    if (latest?.contentType === "tool_call" && latest.toolName === "AskUserQuestion") {
-      return parseAskUserQuestionCallDetail(latest.content);
+    if (latest?.contentType !== "tool_call") return null;
+    if (latest.toolName === "AskUserQuestion") {
+      const detail = parseAskUserQuestionCallDetail(latest.content);
+      return detail ? { kind: "question" as const, detail } : null;
+    }
+    if (latest.toolName === "Bash") {
+      const detail = parsePendingBashCallDetail(latest.content);
+      return detail ? { kind: "bash" as const, detail } : null;
+    }
+    if (latest.toolName === "Task") {
+      const detail = parsePendingTaskCallDetail(latest.content);
+      return detail ? { kind: "task" as const, detail } : null;
     }
     return null;
   }, [messages]);
+  const pendingQuestion = pendingToolCall?.kind === "question" ? pendingToolCall.detail : null;
   const showThinking = thinking || sendInFlight;
 
   const setAutoscrollPinned = useCallback((pinned: boolean) => {
@@ -268,7 +280,7 @@ export default function Workspace({
   useEffect(() => {
     if (!autoscrollPinnedRef.current) return;
     return scheduleScrollToTranscriptBottom();
-  }, [messages, pendingQuestion, scheduleScrollToTranscriptBottom, showThinking]);
+  }, [messages, pendingToolCall, scheduleScrollToTranscriptBottom, showThinking]);
 
   const send = useCallback(
     (content: string, richContent?: RichMessageContent): boolean => {
@@ -302,14 +314,15 @@ export default function Workspace({
       // entirely a chip (e.g. just a pasted-text or attachment node, no
       // additional typed text) must not be silently dropped here.
       //
-      // `pendingQuestion` (not just `thinking`, which is local state that
+      // `pendingToolCall` (not just `thinking`, which is local state that
       // resets to false on reload) also blocks a new turn: sending another
       // message here wouldn't reach the model anyway (the previous turn's
       // `send_agent_message` is still genuinely blocked on `rx.await`,
       // holding the one global inference-engine lock) -- it would just
-      // persist and then hang right alongside it. Answer via the widget
-      // instead.
-      if ((!content.trim() && !richContent) || sendInFlight || pendingQuestion) return false;
+      // persist and then hang right alongside it. A pending AskUserQuestion
+      // is answerable via its widget; a pending Bash/Task just has to run
+      // its course.
+      if ((!content.trim() && !richContent) || sendInFlight || pendingToolCall) return false;
       if (!markSendInFlight(conversationId)) return false;
 
       setError(null);
@@ -363,7 +376,7 @@ export default function Workspace({
       })();
       return true;
     },
-    [conversationId, pendingQuestion, refreshMessages, sendInFlight],
+    [conversationId, pendingToolCall, refreshMessages, sendInFlight],
   );
 
   useEffect(() => {
@@ -392,14 +405,16 @@ export default function Workspace({
             {messages.map((m) => (
               <MessageContent key={m.id} message={m} />
             ))}
-            {pendingQuestion ? (
+            {pendingToolCall ? (
               <div
                 className="mb-6"
                 data-testid="chat-message"
                 role="group"
                 aria-label="doce replied"
               >
-                <AskUserQuestionWidget detail={pendingQuestion} />
+                {pendingQuestion && <AskUserQuestionWidget detail={pendingQuestion} />}
+                {pendingToolCall.kind === "bash" && <BashWidget detail={pendingToolCall.detail} />}
+                {pendingToolCall.kind === "task" && <TaskWidget detail={pendingToolCall.detail} />}
               </div>
             ) : (
               showThinking && (
@@ -441,7 +456,7 @@ export default function Workspace({
             send(content, richContent);
           }}
           skillsEnabled={true}
-          disabled={sendInFlight || pendingQuestion !== null}
+          disabled={sendInFlight || pendingToolCall !== null}
           placeholder="Describe a task…"
           inputTestId="agent-input"
           submitTestId="agent-send"

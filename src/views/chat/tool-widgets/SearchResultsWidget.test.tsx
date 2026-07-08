@@ -48,4 +48,27 @@ describe("SearchResultsWidget (004-tool-call-widgets, US4: Glob + Grep)", () => 
     render(<SearchResultsWidget detail={detail} />);
     expect(screen.getByTestId("search-no-matches")).toBeInTheDocument();
   });
+
+  it("shows a token cost badge when tokenCount is present", () => {
+    const detail: GlobDetail = {
+      toolName: "Glob",
+      pattern: "*.rs",
+      path: "/tmp/project",
+      matches: ["/tmp/project/a.rs"],
+      tokenCount: 42,
+    };
+    render(<SearchResultsWidget detail={detail} />);
+    expect(screen.getByTestId("search-widget")).toHaveTextContent("42 tok");
+  });
+
+  it("shows no cost badge when tokenCount is absent", () => {
+    const detail: GlobDetail = {
+      toolName: "Glob",
+      pattern: "*.rs",
+      path: "/tmp/project",
+      matches: ["/tmp/project/a.rs"],
+    };
+    render(<SearchResultsWidget detail={detail} />);
+    expect(screen.getByTestId("search-widget")).not.toHaveTextContent("tok");
+  });
 });

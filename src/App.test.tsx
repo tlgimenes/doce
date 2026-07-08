@@ -287,7 +287,7 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
 
     pressCmd("k");
     const dialog = await screen.findByTestId("shortcuts-dialog");
-    expect(screen.getAllByTestId("shortcut-item")).toHaveLength(4);
+    expect(screen.getAllByTestId("shortcut-item")).toHaveLength(5);
 
     // Scoped to the dialog: the sidebar's own search button independently
     // shows a "⌘ + F" hover hint, so a page-wide query would match both.

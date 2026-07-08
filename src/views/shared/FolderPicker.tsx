@@ -175,7 +175,7 @@ export default function FolderPicker({ currentPath, onSelect, onDismiss }: Folde
     <div
       ref={containerRef}
       data-testid="folder-picker"
-      className="absolute -mt-1 z-10 w-72 rounded-2xl border border-border bg-card p-2 shadow-lg"
+      className="absolute -mt-1 z-10 w-72 rounded-lg border border-border bg-card p-2 shadow-lg"
     >
       <input
         ref={filterInputRef}

@@ -74,7 +74,7 @@ Available tools:
 - CreatePlan: {"goal": string, "steps": [string]} -- define the plan. Valid only once, when no plan exists yet. Step granularity matters: each step is executed with its own limited number of turns, so a step must be small enough to actually finish within that. If the task repeats similar work across multiple items (e.g. multiple files), create ONE STEP PER ITEM, never a single step like "for each file, do X" that silently bundles many items together -- that kind of step cannot finish in a bounded number of turns and will only get partway done.
 - AddStep: {"description": string} -- append a step. This is how you extend or correct the plan after the first CreatePlan call -- do not call CreatePlan again, that would discard progress already made on other steps.
 - ResumeExecution: {} -- hand off to the next step that isn't done yet. Call this right after CreatePlan to begin, and again any time you've finished adding/correcting steps and are ready to continue.
-- Read: {"file_path": string} / Grep: {"pattern": string, "path"?: string} / Glob: {"pattern": string, "path"?: string} -- read-only tools to independently verify a step's actual result yourself, instead of trusting its summary.
+- Read: {"file_path": string} / Grep: {"pattern": string, "path"?: string} / Glob: {"pattern": string, "path"?: string} -- read-only tools to independently verify a step's actual result yourself, instead of trusting its summary. Glob's pattern is a single wildcard expression, e.g. "bug_*.txt" or "*.rs" -- never a space-separated list of literal filenames, that matches nothing.
 - AskUserQuestion: {"header": string, "question": string, "options": [{"label": string, "description"?: string}], "multiSelect"?: boolean} -- ask the user directly if the request is genuinely ambiguous.
 
 You return here automatically once every step reports done, or when a step reports it could not be completed (its reason will be given to you). A step reporting done is a CLAIM, not proof -- before answering, independently verify with Read/Grep/Glob rather than trusting it. If verification shows something is genuinely still wrong, use AddStep and ResumeExecution rather than accepting the claim.
@@ -95,7 +95,7 @@ Overall goal: {goal}
 Your current step: {step_description}
 
 Available tools:
-- Read / Write / Edit / Bash / Grep / Glob -- the usual file and shell tools.
+- Read / Write / Edit / Bash / Grep / Glob -- the usual file and shell tools. Glob's pattern is a single wildcard expression, e.g. "bug_*.txt" or "*.rs" -- never a space-separated list of literal filenames, that matches nothing.
 - Task: {{"prompt": string}} -- delegate substantial, self-contained work (extensive exploration, a large search, a bulky sub-investigation) to an isolated subagent instead of doing it inline. This conversation is shared across the WHOLE task, not just this step -- everything you do here stays visible to every later step too, so keep it lean: reach for Task when a piece of work would otherwise flood this shared history with exploration detail nobody later needs, and only the outcome actually matters going forward.
 - StepDone: {{"summary": string}} -- call this once you have actually completed the step, not when you believe you're close.
 - RefuseStep: {{"reason": string}} -- call this if the step cannot be completed as described (unclear, blocked, or wrong). Explain why -- your reason is used to revise the plan.

@@ -12,6 +12,7 @@ export interface ShortcutHandlers {
   newConversation: () => void;
   openSearch: () => void;
   toggleShortcutsDialog: () => void;
+  toggleWidgetGallery: () => void;
 }
 
 // The single source of truth both the global keydown listener and the
@@ -51,6 +52,14 @@ export function buildShortcuts(handlers: ShortcutHandlers): Shortcut[] {
       key: "k",
       description: "Show keyboard shortcuts",
       action: handlers.toggleShortcutsDialog,
+    },
+    {
+      id: "show-widget-gallery",
+      combo: "⌘D",
+      metaKey: true,
+      key: "d",
+      description: "Show the widget gallery",
+      action: handlers.toggleWidgetGallery,
     },
   ];
 }

@@ -1,4 +1,6 @@
 import type { ReadDetail } from "@/lib/ipc";
+import { formatByteCount } from "@/lib/formatByteCount";
+import { formatTokenCount } from "@/lib/formatTokenCount";
 import ViewFullOutput from "./ViewFullOutput";
 
 interface ReadWidgetProps {
@@ -25,6 +27,13 @@ export default function ReadWidget({ detail }: ReadWidgetProps) {
     <div className="rounded-lg border border-border bg-card p-3 text-sm" data-testid="read-widget">
       <p className="font-mono text-xs text-muted-foreground">
         Read <span>{detail.filePath}</span>
+        {detail.tokenCount != null && (
+          <span>
+            {" "}
+            · {formatByteCount(detail.outcome.content.length)} ·{" "}
+            {formatTokenCount(detail.tokenCount)} tok
+          </span>
+        )}
       </p>
       {detail.outcome.truncated && (
         <p className="mt-1 text-xs text-muted-foreground" data-testid="read-truncated">

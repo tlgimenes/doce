@@ -44,7 +44,7 @@ export default function MessageContent({ message: m, showTimer = false }: Messag
   if (m.role === "user") {
     return (
       <div className="mb-6" data-testid="chat-message" role="group" aria-label="You said">
-        <div className="rounded-lg bg-muted p-3">
+        <div className="prose prose-sm dark:prose-invert max-w-none rounded-lg bg-muted p-3 text-foreground">
           {/* 009-rich-chat-input, US2 (T026): a rich_text user message (a
               paste-collapse chip, and eventually attachment/skill chips)
               dispatches to UserMessageContent, mirroring this file's existing

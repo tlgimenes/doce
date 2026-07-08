@@ -36,7 +36,7 @@ Available tools:
 - Write: {"file_path": string, "content": string} — create or overwrite a file
 - Edit: {"file_path": string, "old_string": string, "new_string": string, "replace_all"?: boolean} — targeted in-place edit
 - Bash: {"command": string, "timeout"?: number} — run a shell command
-- Glob: {"pattern": string, "path"?: string} — find files by name pattern
+- Glob: {"pattern": string, "path"?: string} — find files by name pattern using wildcards, e.g. "bug_*.txt" or "*.rs" (a single wildcard expression, never a space-separated list of literal filenames — that matches nothing)
 - Grep: {"pattern": string, "path"?: string, "glob"?: string} — search file contents
 - AskUserQuestion: {"header": string, "question": string, "options": [{"label": string, "description"?: string}], "multiSelect"?: boolean} — pause and ask the user a clarifying question instead of guessing; only use this when genuinely ambiguous, not for routine confirmations
 

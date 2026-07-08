@@ -91,4 +91,32 @@ describe("BashWidget (004-tool-call-widgets, US2)", () => {
     render(<BashWidget detail={detail} />);
     expect(screen.queryByTestId("view-full-output-button")).not.toBeInTheDocument();
   });
+
+  it("shows a token cost badge in the status row when tokenCount is present", () => {
+    const detail: BashDetail = {
+      toolName: "Bash",
+      command: "cargo test --lib",
+      timeoutMs: null,
+      outcome: { ok: true, exitCode: 0, stdout: "ok", stderr: "" },
+      tokenCount: 89,
+    };
+    render(<BashWidget detail={detail} />);
+    expect(screen.getByTestId("bash-status")).toHaveTextContent("89 tok");
+  });
+
+  // --- pending/running state (no outcome yet) ---
+
+  it("renders a pending state (command shown, no outcome) as Running…", () => {
+    const detail: BashDetail = {
+      toolName: "Bash",
+      command: "cargo test --test agent_benchmark tier4_planned",
+      timeoutMs: null,
+    };
+    render(<BashWidget detail={detail} />);
+    expect(screen.getByTestId("bash-status")).toHaveTextContent(/running/i);
+    expect(screen.getByTestId("bash-command")).toHaveTextContent(
+      "cargo test --test agent_benchmark tier4_planned",
+    );
+    expect(screen.queryByTestId("bash-stdout")).not.toBeInTheDocument();
+  });
 });
