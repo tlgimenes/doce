@@ -495,8 +495,6 @@ export const events = {
     listen<GenerationQueueUpdatePayload>("generation-queue-update", (e) => cb(e.payload)),
   onContextUsageUpdate: (cb: (p: ContextUsage) => void): Promise<UnlistenFn> =>
     listen<ContextUsage>("context-usage-update", (e) => cb(e.payload)),
-  onAgentMessagePersisted: (
-    cb: (p: AgentMessagePersistedPayload) => void,
-  ): Promise<UnlistenFn> =>
+  onAgentMessagePersisted: (cb: (p: AgentMessagePersistedPayload) => void): Promise<UnlistenFn> =>
     listen<AgentMessagePersistedPayload>("agent-message-persisted", (e) => cb(e.payload)),
 };
