@@ -79,9 +79,9 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
       <div className="flex flex-col gap-10 px-6 py-6">
         <Section
           title="Read"
-          description="A file-reference card, not a raw content dump. Success / truncated / offloaded / failure."
+          description="A minimal file-reference card. Standard / offloaded / failure."
         >
-          <Example label="Success">
+          <Example label="Standard read">
             <ReadWidget
               detail={{
                 toolName: "Read",
@@ -93,18 +93,7 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
               }}
             />
           </Example>
-          <Example label="Truncated">
-            <ReadWidget
-              detail={{
-                toolName: "Read",
-                filePath: "src-tauri/tests/agent_benchmark.rs",
-                offset: null,
-                limit: 2000,
-                outcome: { ok: true, content: "// ...", truncated: true },
-              }}
-            />
-          </Example>
-          <Example label="Offloaded (large file)">
+          <Example label="Offloaded read">
             <ReadWidget
               detail={{
                 toolName: "Read",
@@ -112,6 +101,7 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
                 offset: null,
                 limit: null,
                 outcome: { ok: true, content: "(truncated preview)", truncated: true },
+                tokenCount: 2048,
                 offloadedTo: "/tmp/doce/tool-outputs/c1/call-1.txt",
               }}
             />
