@@ -1029,7 +1029,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     setScrollMetrics(scrollContainer, { scrollHeight: 1000, clientHeight: 300, scrollTop: 200 });
     fireEvent.scroll(scrollContainer);
 
-    expect(screen.getByTestId("scroll-to-bottom")).toBeInTheDocument();
+    expect(screen.getByTestId("scroll-to-bottom")).toHaveClass("left-1/2", "-translate-x-1/2");
 
     setScrollMetrics(scrollContainer, { scrollHeight: 1000, clientHeight: 300, scrollTop: 680 });
     fireEvent.scroll(scrollContainer);

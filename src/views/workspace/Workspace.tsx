@@ -355,7 +355,7 @@ export default function Workspace({
             type="button"
             variant="secondary"
             size="icon"
-            className="absolute bottom-4 right-4 z-10 rounded-full bg-card/95 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-card/80"
+            className="absolute bottom-4 left-1/2 z-10 -translate-x-1/2 rounded-full bg-card/95 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-card/80"
             onClick={scrollToBottomAndPin}
             aria-label="Scroll to bottom"
             data-testid="scroll-to-bottom"

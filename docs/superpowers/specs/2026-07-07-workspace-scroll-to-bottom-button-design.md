@@ -2,7 +2,7 @@
 
 ## Goal
 
-When the user scrolls upward in the Workspace transcript and autoscroll detaches, show a small floating rounded-full arrow-down button at the bottom-right of the transcript. Clicking it scrolls to the bottom immediately and reactivates pinned autoscroll.
+When the user scrolls upward in the Workspace transcript and autoscroll detaches, show a small floating rounded-full arrow-down button at the bottom-center of the transcript. Clicking it scrolls to the bottom immediately and reactivates pinned autoscroll.
 
 ## Scope
 
@@ -10,7 +10,7 @@ In scope:
 
 - Add a floating scroll-to-bottom affordance to `src/views/workspace/Workspace.tsx`.
 - Render the button only while Workspace autoscroll is detached.
-- Place it inside the transcript area, bottom-right, visually above the composer.
+- Place it inside the transcript area, bottom-center, visually above the composer.
 - Use an arrow-down icon from the existing icon library.
 - Add focused unit tests in `src/views/workspace/Workspace.test.tsx`.
 
@@ -63,8 +63,8 @@ The button renders only when `!isAutoscrollPinned`.
 Placement:
 
 - The transcript container should become a positioning context with `relative`.
-- The button should be absolutely positioned inside the transcript area, bottom-right.
-- Use spacing that keeps it clear of transcript content and visually above the composer, for example `bottom-4 right-4`.
+- The button should be absolutely positioned inside the transcript area, bottom-center.
+- Use spacing that keeps it clear of transcript content and visually above the composer, for example `bottom-4 left-1/2 -translate-x-1/2`.
 
 Visual style:
 

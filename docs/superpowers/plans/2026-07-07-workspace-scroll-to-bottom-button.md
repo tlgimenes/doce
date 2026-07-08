@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Show a bottom-right floating arrow-down button when Workspace autoscroll detaches, and make it scroll to bottom while reactivating autoscroll.
+**Goal:** Show a bottom-center floating arrow-down button when Workspace autoscroll detaches, and make it scroll to bottom while reactivating autoscroll.
 
 **Architecture:** `Workspace` will keep the existing ref-based autoscroll source of truth and add React state only for rendering the detached affordance. A helper will update the ref and state together, while the button click will force an immediate bottom scroll and set autoscroll pinned again.
 
@@ -18,7 +18,7 @@
   - Add `isAutoscrollPinned` state for button rendering.
   - Add a helper that keeps `autoscrollPinnedRef.current` and state synchronized.
   - Add a click handler that pins and immediately scrolls to bottom.
-  - Wrap the scroll container in a relative transcript area and render the floating button bottom-right.
+  - Wrap the scroll container in a relative transcript area and render the floating button bottom-center.
 - Modify `src/views/workspace/Workspace.test.tsx`
   - Add tests for button show/hide behavior.
   - Add tests for click-to-bottom and resumed following after click.
@@ -281,7 +281,7 @@ useEffect(() => {
 }, [conversationId, scheduleScrollToTranscriptBottom, setAutoscrollPinned]);
 ```
 
-- [ ] **Step 7: Render the bottom-right floating button**
+- [ ] **Step 7: Render the bottom-center floating button**
 
 In `src/views/workspace/Workspace.tsx`, replace the current transcript container render:
 
@@ -316,7 +316,7 @@ Then, after the closing `</div>` for the scroll container and before the compose
       type="button"
       variant="secondary"
       size="icon"
-      className="absolute bottom-4 right-4 z-10 rounded-full bg-card/95 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-card/80"
+      className="absolute bottom-4 left-1/2 z-10 -translate-x-1/2 rounded-full bg-card/95 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-card/80"
       onClick={scrollToBottomAndPin}
       aria-label="Scroll to bottom"
       data-testid="scroll-to-bottom"
@@ -339,16 +339,14 @@ return (
         data-testid="workspace-scroll-container"
         onScroll={updateAutoscrollPinned}
       >
-        <div className="mx-auto max-w-3xl">
-          {/* existing message/thinking/error content */}
-        </div>
+        <div className="mx-auto max-w-3xl">{/* existing message/thinking/error content */}</div>
       </div>
       {!isAutoscrollPinned && (
         <Button
           type="button"
           variant="secondary"
           size="icon"
-          className="absolute bottom-4 right-4 z-10 rounded-full bg-card/95 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-card/80"
+          className="absolute bottom-4 left-1/2 z-10 -translate-x-1/2 rounded-full bg-card/95 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-card/80"
           onClick={scrollToBottomAndPin}
           aria-label="Scroll to bottom"
           data-testid="scroll-to-bottom"
@@ -462,4 +460,3 @@ git status --short
 ```
 
 Expected: no unstaged feature-owned files. A named stash for unrelated Rust agent-planning edits may still exist; do not pop it.
-
