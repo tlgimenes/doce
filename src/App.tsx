@@ -5,6 +5,7 @@ import EmptyState from "@/views/chat/EmptyState";
 import Workspace from "@/views/workspace/Workspace";
 import Settings from "@/views/settings/Settings";
 import ShortcutsDialog from "@/views/shortcuts/ShortcutsDialog";
+import WidgetGallery from "@/views/design-system/WidgetGallery";
 import { commands, type Conversation } from "@/lib/ipc";
 import { buildShortcuts } from "@/lib/shortcuts";
 import { wireContextUsageEvents } from "@/state/contextUsageStore";
@@ -52,6 +53,7 @@ export default function App() {
   const [pendingInitialTurn, setPendingInitialTurn] = useState<PendingInitialTurn | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [showShortcutsDialog, setShowShortcutsDialog] = useState(false);
+  const [showWidgetGallery, setShowWidgetGallery] = useState(false);
   const conversationListRef = useRef<ConversationListHandle>(null);
 
   useEffect(() => {
@@ -90,6 +92,9 @@ export default function App() {
         },
         toggleShortcutsDialog: () => {
           setShowShortcutsDialog((prev) => !prev);
+        },
+        toggleWidgetGallery: () => {
+          setShowWidgetGallery((prev) => !prev);
         },
       }),
     [activeConversation],
@@ -146,7 +151,9 @@ export default function App() {
         onOpenSettings={() => setShowSettings(true)}
       />
       <div className="flex-1 [view-transition-name:chat-surface]" data-testid="app-content-pane">
-        {showSettings ? (
+        {showWidgetGallery ? (
+          <WidgetGallery onClose={() => setShowWidgetGallery(false)} />
+        ) : showSettings ? (
           <Settings onClose={() => setShowSettings(false)} />
         ) : activeConversation ? (
           <Workspace
