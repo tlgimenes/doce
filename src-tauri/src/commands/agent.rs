@@ -438,6 +438,7 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
         // isn't rendered by any current view, so there's no consumer to
         // notify.
         let outcome = dispatch::execute(&call, self.cwd);
+        let outcome = crate::context::annotate_with_token_count(self.engine, outcome);
         persist_tool_call_and_result(
             None,
             self.conn,
@@ -1428,5 +1429,43 @@ mod tests {
                 ("tool_result".to_string(), Some("Read".to_string())),
             ]
         );
+    }
+
+    // --- Task 2: token-count annotation ---
+
+    fn test_model_path() -> std::path::PathBuf {
+        let home = std::env::var("HOME").expect("HOME must be set");
+        std::path::PathBuf::from(home).join(
+            "Library/Application Support/app.doce.desktop/models/qwen3-4b-instruct-2507-q4_k_m.gguf",
+        )
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn subagent_backend_tool_result_carries_a_real_token_count_for_read() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_conversation(&conn, "sub").await;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("notes.txt"), "hello world").unwrap();
+
+        let engine = crate::inference::InferenceEngine::load(&test_model_path(), 4)
+            .expect("model should load");
+        let mut backend = SubagentBackend {
+            engine: &engine,
+            conn: &conn,
+            subagent_id: "sub",
+            cwd: Some(dir.path()),
+            threshold: 1024,
+        };
+        use crate::agent::AgentBackend;
+        let call = crate::agent::ToolCall {
+            name: "Read".to_string(),
+            arguments: serde_json::json!({"file_path": "notes.txt"}),
+        };
+        backend.execute_tool("call1".to_string(), call).await;
+
+        let (_, _, _, content) = latest_message(&conn, "sub").await;
+        let detail: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert!(detail["tokenCount"].as_u64().is_some());
     }
 }
