@@ -2,6 +2,7 @@ import {
   forwardRef,
   type KeyboardEvent,
   type MouseEvent,
+  useCallback,
   useEffect,
   useImperativeHandle,
   useMemo,
@@ -26,6 +27,7 @@ interface ConversationListProps {
   onSelect: (conversation: Conversation) => void;
   onNewConversation: () => void;
   onOpenSettings: () => void;
+  onActiveConversationChange?: (conversation: Conversation) => void;
   onArchive?: (conversationId: string) => void;
 }
 
@@ -63,7 +65,14 @@ const SIDEBAR_ACTION_BUTTON =
  */
 const ConversationList = forwardRef<ConversationListHandle, ConversationListProps>(
   function ConversationList(
-    { activeId, onSelect, onNewConversation, onOpenSettings, onArchive },
+    {
+      activeId,
+      onSelect,
+      onNewConversation,
+      onOpenSettings,
+      onActiveConversationChange,
+      onArchive,
+    },
     ref,
   ) {
     const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -71,10 +80,10 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
     const [homePath, setHomePath] = useState<string | null>(null);
     const [searching, setSearching] = useState(false);
 
-    const refresh = () => {
+    const refresh = useCallback(() => {
       commands.listConversations().then(setConversations);
       commands.listWorkspaces().then(setWorkspaces).catch(console.error);
-    };
+    }, []);
 
     const markConversationSeenLocally = (conversationId: string) => {
       setConversations((current) =>
@@ -122,7 +131,15 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
       refresh();
       const id = setInterval(refresh, 2000);
       return () => clearInterval(id);
-    }, []);
+    }, [refresh]);
+
+    useEffect(() => {
+      if (!activeId) return;
+      const activeConversation = conversations.find((conversation) => conversation.id === activeId);
+      if (activeConversation) {
+        onActiveConversationChange?.(activeConversation);
+      }
+    }, [activeId, conversations, onActiveConversationChange]);
 
     useEffect(() => {
       homeDir()

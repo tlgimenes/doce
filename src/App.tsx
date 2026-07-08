@@ -27,6 +27,18 @@ import type { PendingInitialTurn } from "@/views/workspace/pendingInitialTurn";
 const READY_CHECK_TIMEOUT_MS = 8000;
 const READY_CHECK_ATTEMPTS = 3;
 
+function hasSameConversationData(a: Conversation, b: Conversation) {
+  return (
+    a.id === b.id &&
+    a.workspaceId === b.workspaceId &&
+    a.title === b.title &&
+    a.createdAt === b.createdAt &&
+    a.updatedAt === b.updatedAt &&
+    a.lastSeenAt === b.lastSeenAt &&
+    a.status === b.status
+  );
+}
+
 export async function checkReadyWithRetries(): Promise<boolean> {
   let lastError: unknown;
   for (let attempt = 0; attempt < READY_CHECK_ATTEMPTS; attempt++) {
@@ -132,6 +144,18 @@ export default function App() {
     );
   }, []);
 
+  const syncActiveConversation = useCallback((conversation: Conversation) => {
+    setActiveConversation((current) => {
+      if (current?.id !== conversation.id) return current;
+
+      const next = {
+        ...conversation,
+        lastSeenAt: Math.max(current.lastSeenAt, conversation.lastSeenAt),
+      };
+      return hasSameConversationData(current, next) ? current : next;
+    });
+  }, []);
+
   const activateConversation = (conversation: Conversation, initialTurn?: PendingInitialTurn) => {
     runViewTransition(() => {
       setShowSettings(false);
@@ -163,6 +187,7 @@ export default function App() {
               setActiveConversation(null);
             }}
             onOpenSettings={() => setShowSettings(true)}
+            onActiveConversationChange={syncActiveConversation}
             onArchive={(conversationId) => {
               if (activeConversation?.id !== conversationId) return;
               setShowSettings(false);
@@ -184,7 +209,7 @@ export default function App() {
             ) : activeConversation ? (
               <Workspace
                 key={activeConversation.id}
-                conversationId={activeConversation.id}
+                conversation={activeConversation}
                 pendingInitialTurn={
                   pendingInitialTurn?.conversationId === activeConversation.id
                     ? pendingInitialTurn

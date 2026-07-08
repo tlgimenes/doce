@@ -1,8 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { homeDir } from "@tauri-apps/api/path";
 import App, { checkReadyWithRetries } from "./App";
 import { commands, events } from "@/lib/ipc";
+import { useContextUsageStore } from "@/state/contextUsageStore";
 
 type TestDocument = Document & {
   startViewTransition?: (callback: () => void) => unknown;
@@ -68,6 +70,7 @@ async function createWorkspaceConversationViaComposer(text: string) {
 describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-empty-state)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    useContextUsageStore.setState({ usage: {} });
 
     vi.mocked(commands.listModels).mockResolvedValue([
       { id: "m", hardwareTier: "tier1", isActive: true, installed: true },
@@ -102,6 +105,7 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     vi.mocked(commands.getContextUsage).mockRejectedValue(new Error("No model loaded"));
     vi.mocked(events.onContextUsageUpdate).mockResolvedValue(() => {});
     vi.mocked(events.onAgentMessagePersisted).mockResolvedValue(() => {});
+    vi.mocked(homeDir).mockResolvedValue("/Users/tester");
   });
 
   afterEach(() => {
@@ -179,6 +183,97 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     expect(mainTopbar).toHaveAttribute("data-tauri-drag-region");
     expect(mainTopbar).toBeEmptyDOMElement();
     expect(screen.getByTestId("empty-state-input")).toBeInTheDocument();
+  });
+
+  it("renders active conversation metadata in the main topbar and keeps context usage out of the composer", async () => {
+    const conversation = {
+      id: "conv-topbar",
+      workspaceId: "ws-doce",
+      title: "Shared topbar polish",
+      createdAt: 1,
+      updatedAt: 1,
+      lastSeenAt: 1,
+      status: "done" as const,
+    };
+    vi.mocked(homeDir).mockResolvedValue("/Users/gimenes");
+    vi.mocked(commands.listConversations).mockResolvedValue([conversation]);
+    vi.mocked(commands.listWorkspaces).mockResolvedValue([
+      {
+        id: "ws-doce",
+        path: "/Users/gimenes/code/doce",
+        displayName: "doce",
+        createdAt: 1,
+        lastOpenedAt: 1,
+      },
+    ]);
+    vi.mocked(commands.getContextUsage).mockResolvedValue({
+      conversationId: "conv-topbar",
+      tokensUsed: 512,
+      tokenBudget: 2048,
+      state: "normal",
+    });
+
+    render(<App />);
+    await waitForReady();
+    await userEvent.click(await screen.findByText("Shared topbar polish"));
+
+    const mainTopbar = screen.getByTestId("topbar-main");
+    await within(mainTopbar).findByTestId("workspace-topbar");
+
+    expect(within(mainTopbar).getByTestId("workspace-topbar-title")).toHaveTextContent(
+      "Shared topbar polish",
+    );
+    await waitFor(() =>
+      expect(within(mainTopbar).getByTestId("workspace-topbar-path")).toHaveTextContent(
+        "~/code/doce",
+      ),
+    );
+    expect(await within(mainTopbar).findByTestId("context-usage-gauge")).toHaveAttribute(
+      "aria-label",
+      expect.stringContaining("25%"),
+    );
+    expect(
+      within(screen.getByTestId("workspace-composer-shell")).queryByTestId("context-usage-gauge"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps active conversation metadata in the main topbar synced with refreshed sidebar rows", async () => {
+    const initialConversation = {
+      id: "conv-refresh-title",
+      workspaceId: null,
+      title: "New conversation",
+      createdAt: 1,
+      updatedAt: 1,
+      lastSeenAt: 1,
+      status: "in_progress" as const,
+    };
+    const refreshedConversation = {
+      ...initialConversation,
+      title: "Generated implementation plan",
+      updatedAt: 3,
+      status: "done" as const,
+    };
+    vi.mocked(commands.listConversations)
+      .mockResolvedValueOnce([initialConversation])
+      .mockResolvedValue([refreshedConversation]);
+
+    render(<App />);
+    await waitForReady();
+    await userEvent.click(await screen.findByText("New conversation"));
+
+    const mainTopbar = screen.getByTestId("topbar-main");
+    expect(await within(mainTopbar).findByTestId("workspace-topbar-title")).toHaveTextContent(
+      "New conversation",
+    );
+
+    await waitFor(() => expect(commands.listConversations).toHaveBeenCalledTimes(2), {
+      timeout: 3000,
+    });
+    await waitFor(() =>
+      expect(within(mainTopbar).getByTestId("workspace-topbar-title")).toHaveTextContent(
+        "Generated implementation plan",
+      ),
+    );
   });
 
   it("Cmd+L focuses the composer input when no conversation is selected (US1, updated for 006)", async () => {

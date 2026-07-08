@@ -2,17 +2,18 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { ArrowDownIcon } from "@phosphor-icons/react";
 import MessageContent from "@/components/MessageContent";
 import { runViewTransition } from "@/lib/viewTransition";
-import ContextUsageGauge from "@/components/ContextUsageGauge";
 import { Button } from "@/components/ui/button";
 import RichInput from "@/views/chat/rich-input/RichInput";
 import UserAskWidget from "@/views/chat/tool-widgets/UserAskWidget";
 import BashWidget from "@/views/chat/tool-widgets/BashWidget";
+import WorkspaceTopbar from "@/views/workspace/WorkspaceTopbar";
 import TaskWidget from "@/views/chat/tool-widgets/TaskWidget";
 import {
   commands,
   events,
   parseAskUserQuestionCallDetail,
   type ContextUsage,
+  type Conversation,
   parsePendingBashCallDetail,
   parsePendingTaskCallDetail,
   type Message,
@@ -54,7 +55,8 @@ function isQuestionPending(messages: Message[]): boolean {
 }
 
 interface WorkspaceProps {
-  conversationId: string;
+  conversation?: Conversation;
+  conversationId?: string;
   pendingInitialTurn?: PendingInitialTurn | null;
   onPendingInitialTurnConsumed?: (conversationId: string) => void;
   onConversationSeen?: (conversationId: string) => void;
@@ -137,11 +139,17 @@ function getServerSnapshot() {
  * each time so the transcript grows message-by-message.
  */
 export default function Workspace({
-  conversationId,
+  conversation,
+  conversationId: conversationIdProp,
   pendingInitialTurn = null,
   onPendingInitialTurnConsumed,
   onConversationSeen,
 }: WorkspaceProps) {
+  const conversationId = conversation?.id ?? conversationIdProp;
+  if (!conversationId) {
+    throw new Error("Workspace requires either conversation or conversationId");
+  }
+
   const [messages, setMessages] = useState<Message[]>([]);
   const messagesRef = useRef<Message[]>(messages);
   messagesRef.current = messages;
@@ -424,6 +432,7 @@ export default function Workspace({
 
   return (
     <div className="flex h-full flex-col bg-background text-foreground">
+      {conversation && <WorkspaceTopbar conversation={conversation} />}
       <div className="relative min-h-0 flex-1">
         <div
           ref={scrollContainerRef}
@@ -493,7 +502,6 @@ export default function Workspace({
             placeholder="Describe a task…"
             inputTestId="agent-input"
             submitTestId="agent-send"
-            contextGauge={<ContextUsageGauge conversationId={conversationId} />}
           />
         )}
       </div>
