@@ -20,6 +20,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
         7,
         include_str!("migrations/0007_conversation_title_trigram_fts.sql"),
     ),
+    (
+        8,
+        include_str!("migrations/0008_conversation_last_seen_at.sql"),
+    ),
 ];
 
 pub fn apply_pending(conn: &mut Connection) -> rusqlite::Result<()> {
@@ -262,5 +266,48 @@ mod tests {
             matched_rowid, rowid,
             "pre-0007 titles must be backfilled into the trigram FTS index"
         );
+    }
+
+    #[test]
+    fn conversation_last_seen_at_is_backfilled_from_updated_at() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_up_to(&mut conn, 7);
+        conn.execute(
+            "INSERT INTO conversations (id, workspace_id, spawned_by_conversation_id, title, created_at, updated_at) VALUES ('c1', NULL, NULL, 'Seen test', 10, 42)",
+            [],
+        )
+        .unwrap();
+
+        apply_pending(&mut conn).unwrap();
+
+        let last_seen_at: i64 = conn
+            .query_row(
+                "SELECT last_seen_at FROM conversations WHERE id = 'c1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(last_seen_at, 42);
+    }
+
+    #[test]
+    fn conversation_last_seen_at_is_not_nullable_after_migration() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_pending(&mut conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO conversations (id, title, created_at, updated_at) VALUES ('c1', 'x', 1, 2)",
+            [],
+        )
+        .unwrap();
+
+        let last_seen_at: i64 = conn
+            .query_row(
+                "SELECT last_seen_at FROM conversations WHERE id = 'c1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(last_seen_at, 0);
     }
 }
