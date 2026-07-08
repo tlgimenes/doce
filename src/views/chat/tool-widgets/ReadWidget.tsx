@@ -23,23 +23,16 @@ export default function ReadWidget({ detail }: ReadWidgetProps) {
     );
   }
 
+  const byteCount = formatByteCount(detail.outcome.content.length);
+  const tokenCount =
+    detail.tokenCount != null ? `${formatTokenCount(detail.tokenCount)} tok` : null;
+
   return (
     <div className="rounded-lg border border-border bg-card p-3 text-sm" data-testid="read-widget">
       <p className="font-mono text-xs text-muted-foreground">
-        Read <span>{detail.filePath}</span>
-        {detail.tokenCount != null && (
-          <span>
-            {" "}
-            · {formatByteCount(detail.outcome.content.length)} ·{" "}
-            {formatTokenCount(detail.tokenCount)} tok
-          </span>
-        )}
+        Read <span>{detail.filePath}</span> · {byteCount}
+        {tokenCount != null && <> · {tokenCount}</>}
       </p>
-      {detail.outcome.truncated && (
-        <p className="mt-1 text-xs text-muted-foreground" data-testid="read-truncated">
-          Output truncated
-        </p>
-      )}
       {detail.offloadedTo && <ViewFullOutput path={detail.offloadedTo} />}
     </div>
   );
