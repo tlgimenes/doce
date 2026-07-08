@@ -165,6 +165,68 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     await waitFor(() => expect(onConversationSeen).toHaveBeenCalledWith("c1"));
   });
 
+  it("notifies when an agent-message-persisted event refreshes active messages", async () => {
+    let firePersisted!: (p: { conversationId: string }) => void;
+    vi.mocked(events.onAgentMessagePersisted).mockImplementation(async (cb) => {
+      firePersisted = cb;
+      return () => {};
+    });
+    vi.mocked(commands.listMessages)
+      .mockResolvedValueOnce([messageFixture("m1", "first message")])
+      .mockResolvedValueOnce([
+        messageFixture("m1", "first message"),
+        messageFixture("m2", "second message", 2),
+      ]);
+    const onConversationSeen = vi.fn();
+
+    render(<Workspace conversationId="conv-1" onConversationSeen={onConversationSeen} />);
+    await screen.findByText("first message");
+    await waitFor(() => expect(onConversationSeen).toHaveBeenCalledWith("conv-1"));
+    onConversationSeen.mockClear();
+
+    firePersisted({ conversationId: "conv-1" });
+
+    await screen.findByText("second message");
+    expect(onConversationSeen).toHaveBeenCalledWith("conv-1");
+  });
+
+  it("does not reload or resubscribe when only the seen callback identity changes", async () => {
+    let firePersisted!: (p: { conversationId: string }) => void;
+    const unlisten = vi.fn();
+    vi.mocked(events.onAgentMessagePersisted).mockImplementation(async (cb) => {
+      firePersisted = cb;
+      return unlisten;
+    });
+    vi.mocked(commands.listMessages)
+      .mockResolvedValueOnce([messageFixture("m1", "first message")])
+      .mockResolvedValueOnce([
+        messageFixture("m1", "first message"),
+        messageFixture("m2", "second message", 2),
+      ]);
+    const firstSeenCallback = vi.fn();
+    const secondSeenCallback = vi.fn();
+
+    const { rerender } = render(
+      <Workspace conversationId="conv-1" onConversationSeen={firstSeenCallback} />,
+    );
+    await screen.findByText("first message");
+    await waitFor(() => expect(events.onAgentMessagePersisted).toHaveBeenCalledTimes(1));
+
+    firstSeenCallback.mockClear();
+    rerender(<Workspace conversationId="conv-1" onConversationSeen={secondSeenCallback} />);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(commands.listMessages).toHaveBeenCalledTimes(1);
+    expect(events.onAgentMessagePersisted).toHaveBeenCalledTimes(1);
+    expect(unlisten).not.toHaveBeenCalled();
+
+    firePersisted({ conversationId: "conv-1" });
+
+    await screen.findByText("second message");
+    expect(firstSeenCallback).not.toHaveBeenCalled();
+    expect(secondSeenCallback).toHaveBeenCalledWith("conv-1");
+  });
+
   it("sends a task and shows a thinking state until the real (non-streamed) reply returns", async () => {
     // Streaming (UI refactor): `send()` no longer builds the final message
     // from `sendAgentMessage`'s own return value -- it relies on the
@@ -207,8 +269,12 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
       }),
     );
 
-    render(<Workspace conversationId="conv-1" />);
+    const onConversationSeen = vi.fn();
+
+    render(<Workspace conversationId="conv-1" onConversationSeen={onConversationSeen} />);
     await screen.findByTestId("agent-input");
+    await waitFor(() => expect(onConversationSeen).toHaveBeenCalledWith("conv-1"));
+    onConversationSeen.mockClear();
 
     await userEvent.type(screen.getByTestId("agent-input"), "list the files here");
     await userEvent.click(screen.getByTestId("agent-send"));
@@ -226,6 +292,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     expect(renderedMessages).toHaveLength(2);
     expect(renderedMessages[0].textContent).toContain("list the files here");
     expect(renderedMessages[1].textContent).toContain("Found 3 files");
+    expect(onConversationSeen).toHaveBeenCalledWith("conv-1");
   });
 
   // --- Streaming (UI refactor): agent-message-persisted mid-turn ---
@@ -1236,8 +1303,13 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
         },
       ]);
 
-    render(<Workspace conversationId="conv-1" />);
+    const onConversationSeen = vi.fn();
+
+    render(<Workspace conversationId="conv-1" onConversationSeen={onConversationSeen} />);
     await screen.findByTestId("agent-input");
+    await waitFor(() => expect(onConversationSeen).toHaveBeenCalledWith("conv-1"));
+    onConversationSeen.mockClear();
+
     await userEvent.type(screen.getByTestId("agent-input"), "/compact");
     await userEvent.click(screen.getByTestId("agent-send"));
 
@@ -1246,5 +1318,6 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     expect(await screen.findByTestId("context-notice")).toHaveTextContent(
       "Conversation condensed to save space",
     );
+    expect(onConversationSeen).toHaveBeenCalledWith("conv-1");
   });
 });

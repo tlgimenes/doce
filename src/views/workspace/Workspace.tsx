@@ -90,6 +90,8 @@ export default function Workspace({
   const autoscrollPinnedRef = useRef(true);
   const currentConversationIdRef = useRef(conversationId);
   currentConversationIdRef.current = conversationId;
+  const onConversationSeenRef = useRef(onConversationSeen);
+  onConversationSeenRef.current = onConversationSeen;
   const consumedInitialTurnRef = useRef<string | null>(null);
   const dispatchedInitialTurnRef = useRef<string | null>(null);
   const sendInFlight = useSyncExternalStore(
@@ -110,18 +112,18 @@ export default function Workspace({
 
       if (loadedMessages.length === 0 && dispatchedInitialTurnRef.current === conversationId) {
         setMessages((prev) => (prev.length > 0 ? prev : loadedMessages));
-        onConversationSeen?.(conversationId);
+        onConversationSeenRef.current?.(conversationId);
         return;
       }
 
       setMessages(loadedMessages);
-      onConversationSeen?.(conversationId);
+      onConversationSeenRef.current?.(conversationId);
     });
 
     return () => {
       cancelled = true;
     };
-  }, [conversationId, onConversationSeen]);
+  }, [conversationId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -133,7 +135,7 @@ export default function Workspace({
         commands.listMessages(conversationId).then((loadedMessages) => {
           if (cancelled || currentConversationIdRef.current !== conversationId) return;
           setMessages(loadedMessages);
-          onConversationSeen?.(conversationId);
+          onConversationSeenRef.current?.(conversationId);
         });
       });
       if (cancelled) {
@@ -145,7 +147,7 @@ export default function Workspace({
       cancelled = true;
       unlistenPersisted?.();
     };
-  }, [conversationId, onConversationSeen]);
+  }, [conversationId]);
 
   // A pending `AskUserQuestion` is derived, not separately tracked state:
   // the backend persists the tool_call (with its questionId folded in —
@@ -224,6 +226,7 @@ export default function Workspace({
             if (currentConversationIdRef.current !== conversationId) return;
 
             setMessages(refreshed);
+            onConversationSeenRef.current?.(conversationId);
           } catch (e) {
             if (currentConversationIdRef.current === conversationId) {
               setError(String(e));
@@ -294,6 +297,7 @@ export default function Workspace({
             commands.listMessages(conversationId).then((loadedMessages) => {
               if (currentConversationIdRef.current !== conversationId) return;
               setMessages(loadedMessages);
+              onConversationSeenRef.current?.(conversationId);
             });
           }
         }
