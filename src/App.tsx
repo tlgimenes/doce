@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Onboarding from "@/views/onboarding/Onboarding";
 import ConversationList, { type ConversationListHandle } from "@/views/chat/ConversationList";
 import EmptyState from "@/views/chat/EmptyState";
@@ -117,6 +117,15 @@ export default function App() {
     commands.setFocusedConversation(activeConversation?.id ?? null);
   }, [activeConversation]);
 
+  const markSeen = useCallback((conversationId: string) => {
+    commands.markConversationSeen(conversationId).catch(console.error);
+    setActiveConversation((current) =>
+      current?.id === conversationId
+        ? { ...current, lastSeenAt: Math.max(Date.now(), current.updatedAt) }
+        : current,
+    );
+  }, []);
+
   const activateConversation = (conversation: Conversation, initialTurn?: PendingInitialTurn) => {
     runViewTransition(() => {
       setShowSettings(false);
@@ -137,6 +146,7 @@ export default function App() {
           setShowSettings(false);
           setPendingInitialTurn(null);
           setActiveConversation(conversation);
+          markSeen(conversation.id);
         }}
         onNewConversation={() => {
           setShowSettings(false);
@@ -162,6 +172,7 @@ export default function App() {
                 prev?.conversationId === conversationId ? null : prev,
               )
             }
+            onConversationSeen={markSeen}
           />
         ) : (
           <EmptyState onConversationCreated={activateConversation} />

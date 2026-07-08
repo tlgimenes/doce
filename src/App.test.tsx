@@ -26,6 +26,7 @@ vi.mock("@/lib/ipc", () => ({
     listModels: vi.fn(),
     setFocusedConversation: vi.fn(),
     listConversations: vi.fn(),
+    markConversationSeen: vi.fn(),
     listWorkspaces: vi.fn(),
     createConversation: vi.fn(),
     openWorkspace: vi.fn(),
@@ -71,6 +72,7 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
       { id: "m", hardwareTier: "tier1", isActive: true, installed: true },
     ]);
     vi.mocked(commands.listConversations).mockResolvedValue([]);
+    vi.mocked(commands.markConversationSeen).mockResolvedValue();
     vi.mocked(commands.listWorkspaces).mockResolvedValue([]);
     vi.mocked(commands.openWorkspace).mockResolvedValue({
       id: "ws-home",
@@ -200,6 +202,25 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     expect(document.activeElement).not.toBe(agentInput);
     pressCmd("l");
     expect(document.activeElement).toBe(agentInput);
+  });
+
+  it("marks a conversation seen when the user selects it from the sidebar", async () => {
+    const conversation = {
+      id: "c1",
+      workspaceId: null,
+      title: "Unread thread",
+      createdAt: 1,
+      updatedAt: 10,
+      lastSeenAt: 5,
+      status: "done" as const,
+    };
+    vi.mocked(commands.listConversations).mockResolvedValue([conversation]);
+
+    render(<App />);
+
+    await userEvent.click(await screen.findByText("Unread thread"));
+
+    expect(commands.markConversationSeen).toHaveBeenCalledWith("c1");
   });
 
   it("Cmd+L focuses the agent task input after creating a conversation", async () => {

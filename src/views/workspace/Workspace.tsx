@@ -33,6 +33,7 @@ interface WorkspaceProps {
   conversationId: string;
   pendingInitialTurn?: PendingInitialTurn | null;
   onPendingInitialTurnConsumed?: (conversationId: string) => void;
+  onConversationSeen?: (conversationId: string) => void;
 }
 
 const conversationsWithSendInFlight = new Set<string>();
@@ -79,6 +80,7 @@ export default function Workspace({
   conversationId,
   pendingInitialTurn = null,
   onPendingInitialTurnConsumed,
+  onConversationSeen,
 }: WorkspaceProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [thinking, setThinking] = useState(false);
@@ -108,16 +110,18 @@ export default function Workspace({
 
       if (loadedMessages.length === 0 && dispatchedInitialTurnRef.current === conversationId) {
         setMessages((prev) => (prev.length > 0 ? prev : loadedMessages));
+        onConversationSeen?.(conversationId);
         return;
       }
 
       setMessages(loadedMessages);
+      onConversationSeen?.(conversationId);
     });
 
     return () => {
       cancelled = true;
     };
-  }, [conversationId]);
+  }, [conversationId, onConversationSeen]);
 
   useEffect(() => {
     let cancelled = false;
@@ -129,6 +133,7 @@ export default function Workspace({
         commands.listMessages(conversationId).then((loadedMessages) => {
           if (cancelled || currentConversationIdRef.current !== conversationId) return;
           setMessages(loadedMessages);
+          onConversationSeen?.(conversationId);
         });
       });
       if (cancelled) {
@@ -140,7 +145,7 @@ export default function Workspace({
       cancelled = true;
       unlistenPersisted?.();
     };
-  }, [conversationId]);
+  }, [conversationId, onConversationSeen]);
 
   // A pending `AskUserQuestion` is derived, not separately tracked state:
   // the backend persists the tool_call (with its questionId folded in —

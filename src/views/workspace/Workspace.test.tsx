@@ -154,6 +154,17 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     });
   });
 
+  it("notifies when active messages refresh so the app can mark the conversation seen", async () => {
+    const onConversationSeen = vi.fn();
+    vi.mocked(commands.listMessages).mockResolvedValue([
+      { ...messageFixture("m1", "hello"), conversationId: "c1" },
+    ]);
+
+    render(<Workspace conversationId="c1" onConversationSeen={onConversationSeen} />);
+
+    await waitFor(() => expect(onConversationSeen).toHaveBeenCalledWith("c1"));
+  });
+
   it("sends a task and shows a thinking state until the real (non-streamed) reply returns", async () => {
     // Streaming (UI refactor): `send()` no longer builds the final message
     // from `sendAgentMessage`'s own return value -- it relies on the
