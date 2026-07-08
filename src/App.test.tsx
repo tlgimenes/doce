@@ -166,6 +166,21 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     );
   });
 
+  it("renders shared sidebar and main topbars while the empty state keeps the main topbar blank", async () => {
+    render(<App />);
+    await waitForReady();
+
+    const sidebarTopbar = screen.getByTestId("topbar-sidebar");
+    const mainTopbar = screen.getByTestId("topbar-main");
+
+    expect(sidebarTopbar).toHaveClass("h-10", "shrink-0");
+    expect(mainTopbar).toHaveClass("h-10", "shrink-0");
+    expect(sidebarTopbar).toHaveAttribute("data-tauri-drag-region");
+    expect(mainTopbar).toHaveAttribute("data-tauri-drag-region");
+    expect(mainTopbar).toBeEmptyDOMElement();
+    expect(screen.getByTestId("empty-state-input")).toBeInTheDocument();
+  });
+
   it("Cmd+L focuses the composer input when no conversation is selected (US1, updated for 006)", async () => {
     render(<App />);
     await waitForReady();

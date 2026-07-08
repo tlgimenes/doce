@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { TopbarHost, TopbarProvider } from "@/components/Topbar";
 import Onboarding from "@/views/onboarding/Onboarding";
 import ConversationList, { type ConversationListHandle } from "@/views/chat/ConversationList";
 import EmptyState from "@/views/chat/EmptyState";
@@ -143,59 +144,70 @@ export default function App() {
   if (!ready) return <Onboarding onReady={() => setReady(true)} />;
 
   return (
-    <div className="flex h-dvh">
-      <ConversationList
-        ref={conversationListRef}
-        activeId={activeConversation?.id ?? null}
-        onSelect={(conversation) => {
-          setShowSettings(false);
-          setPendingInitialTurn(null);
-          setActiveConversation(conversation);
-          markSeen(conversation.id);
-        }}
-        onNewConversation={() => {
-          setShowSettings(false);
-          setPendingInitialTurn(null);
-          setActiveConversation(null);
-        }}
-        onOpenSettings={() => setShowSettings(true)}
-        onArchive={(conversationId) => {
-          if (activeConversation?.id !== conversationId) return;
-          setShowSettings(false);
-          setPendingInitialTurn(null);
-          setActiveConversation(null);
-        }}
-      />
-      <div className="flex-1 [view-transition-name:chat-surface]" data-testid="app-content-pane">
-        {showWidgetGallery ? (
-          <WidgetGallery onClose={() => setShowWidgetGallery(false)} />
-        ) : showSettings ? (
-          <Settings onClose={() => setShowSettings(false)} />
-        ) : activeConversation ? (
-          <Workspace
-            key={activeConversation.id}
-            conversationId={activeConversation.id}
-            pendingInitialTurn={
-              pendingInitialTurn?.conversationId === activeConversation.id
-                ? pendingInitialTurn
-                : null
-            }
-            onPendingInitialTurnConsumed={(conversationId) =>
-              setPendingInitialTurn((prev) =>
-                prev?.conversationId === conversationId ? null : prev,
-              )
-            }
-            onConversationSeen={markSeen}
+    <TopbarProvider>
+      <div className="flex h-dvh">
+        <div className="flex w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar">
+          <TopbarHost target="sidebar" className="px-2" />
+          <ConversationList
+            ref={conversationListRef}
+            activeId={activeConversation?.id ?? null}
+            onSelect={(conversation) => {
+              setShowSettings(false);
+              setPendingInitialTurn(null);
+              setActiveConversation(conversation);
+              markSeen(conversation.id);
+            }}
+            onNewConversation={() => {
+              setShowSettings(false);
+              setPendingInitialTurn(null);
+              setActiveConversation(null);
+            }}
+            onOpenSettings={() => setShowSettings(true)}
+            onArchive={(conversationId) => {
+              if (activeConversation?.id !== conversationId) return;
+              setShowSettings(false);
+              setPendingInitialTurn(null);
+              setActiveConversation(null);
+            }}
           />
-        ) : (
-          <EmptyState onConversationCreated={activateConversation} />
-        )}
+        </div>
+        <div className="flex min-w-0 flex-1 flex-col">
+          <TopbarHost target="main" className="px-4" />
+          <div
+            className="min-h-0 flex-1 [view-transition-name:chat-surface]"
+            data-testid="app-content-pane"
+          >
+            {showWidgetGallery ? (
+              <WidgetGallery onClose={() => setShowWidgetGallery(false)} />
+            ) : showSettings ? (
+              <Settings onClose={() => setShowSettings(false)} />
+            ) : activeConversation ? (
+              <Workspace
+                key={activeConversation.id}
+                conversationId={activeConversation.id}
+                pendingInitialTurn={
+                  pendingInitialTurn?.conversationId === activeConversation.id
+                    ? pendingInitialTurn
+                    : null
+                }
+                onPendingInitialTurnConsumed={(conversationId) =>
+                  setPendingInitialTurn((prev) =>
+                    prev?.conversationId === conversationId ? null : prev,
+                  )
+                }
+                onConversationSeen={markSeen}
+              />
+            ) : (
+              <EmptyState onConversationCreated={activateConversation} />
+            )}
+          </div>
+        </div>
+        <ShortcutsDialog
+          open={showShortcutsDialog}
+          onClose={() => setShowShortcutsDialog(false)}
+          shortcuts={shortcuts}
+        />
       </div>
-      <ShortcutsDialog
-        open={showShortcutsDialog}
-        onClose={() => setShowShortcutsDialog(false)}
-        shortcuts={shortcuts}
-      />
-    </div>
+    </TopbarProvider>
   );
 }

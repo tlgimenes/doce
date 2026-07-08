@@ -405,7 +405,7 @@ describe("ConversationList", () => {
     expect(onNewConversation).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps the window drag affordance and actions in place while search opens in a dialog", async () => {
+  it("renders sidebar actions at the top of the sidebar body while search opens in a dialog", async () => {
     vi.mocked(commands.listConversations).mockResolvedValue([]);
 
     render(
@@ -418,17 +418,16 @@ describe("ConversationList", () => {
     );
 
     const sidebar = await screen.findByTestId("conversation-list");
-    const affordance = screen.getByTestId("sidebar-window-affordance");
-    expect(sidebar.firstElementChild).toBe(affordance);
-    expect(affordance).toHaveClass("h-10", "shrink-0");
-    expect(screen.getByTestId("sidebar-actions")).not.toHaveClass("mt-8");
+    const actions = screen.getByTestId("sidebar-actions");
+    expect(sidebar.firstElementChild).toBe(actions);
+    expect(actions).not.toHaveClass("mt-8");
 
     await userEvent.click(screen.getByTestId("open-search"));
 
     const searchPanel = screen.getByTestId("search-panel");
     expect(searchPanel.closest("dialog")).toBeInTheDocument();
-    expect(sidebar.firstElementChild).toBe(affordance);
-    expect(screen.getByTestId("sidebar-actions")).toBeInTheDocument();
+    expect(sidebar.firstElementChild).toBe(actions);
+    expect(actions).toBeInTheDocument();
   });
 
   it("shows recent conversations in search and selects them through the full conversation path", async () => {

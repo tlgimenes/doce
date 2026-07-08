@@ -9,7 +9,6 @@ import {
 } from "react";
 import { MagnifyingGlassIcon, GearIcon, PlusIcon, TrashIcon } from "@phosphor-icons/react";
 import { homeDir } from "@tauri-apps/api/path";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import Dialog from "@/components/Dialog";
 import { Button } from "@/components/ui/button";
 import { KeyboardShortcut } from "@/components/ui/KeyboardShortcut";
@@ -152,27 +151,11 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
 
     useImperativeHandle(ref, () => ({ createNew, openSearch }));
 
-    const startDrag = async (event: MouseEvent<HTMLDivElement>) => {
-      if (event.button !== 0) return;
-      event.preventDefault();
-      await getCurrentWindow()
-        .startDragging()
-        .catch((error) => {
-          console.error("Failed to start window dragging", error);
-        });
-    };
-
     return (
       <div
-        className="relative flex h-dvh w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar px-2 pb-3 pt-0 text-sidebar-foreground"
+        className="relative flex min-h-0 flex-1 flex-col px-2 pb-3 text-sidebar-foreground"
         data-testid="conversation-list"
       >
-        <div
-          className="-mx-2 h-10 shrink-0 select-none"
-          data-tauri-drag-region
-          data-testid="sidebar-window-affordance"
-          onMouseDown={startDrag}
-        />
         <div className="mb-3 flex flex-col gap-0.5" data-testid="sidebar-actions">
           <Button
             variant="ghost"
