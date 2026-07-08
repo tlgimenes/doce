@@ -5,7 +5,7 @@ import { Placeholder } from "@tiptap/extension-placeholder";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
-import { PaperPlaneRightIcon, PaperclipIcon } from "@phosphor-icons/react";
+import { PaperPlaneRightIcon, PlusIcon } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
 import { commands, type RichMessageContent } from "@/lib/ipc";
@@ -469,7 +469,7 @@ export default function RichInput({
 
   return (
     <div className="flex flex-col gap-1">
-      <div className="flex flex-col gap-2 rounded-2xl border border-border bg-card px-3 py-2 shadow-xs transition-shadow focus-within:shadow-sm">
+      <div className="flex flex-col gap-2 rounded-lg border border-border bg-card px-3 py-2 shadow-xs transition-shadow focus-within:shadow-sm">
         <EditorContent
           editor={editor}
           className={cn(
@@ -490,14 +490,14 @@ export default function RichInput({
                 secondary action). */}
             <Button
               type="button"
-              variant="ghost"
+              variant="secondary"
               className="h-8 w-8 shrink-0 rounded-full p-0"
               onClick={() => void pickAttachment()}
               disabled={disabled}
               aria-label="Attach a file"
               data-testid="rich-input-attach"
             >
-              <PaperclipIcon size={16} />
+              <PlusIcon size={16} weight="bold" />
             </Button>
             {contextGauge}
           </div>

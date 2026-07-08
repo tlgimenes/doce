@@ -183,8 +183,20 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
               data-testid="conversation-item"
               data-conversation-id={c.id}
               className={cn(
-                "h-auto min-h-12 w-full items-start justify-start gap-2 rounded-lg px-2 py-2 text-left",
-                c.id === activeId ? "bg-background" : "bg-background/40 hover:bg-background/70",
+                // hover:bg-sidebar-foreground/8 is unconditional (not
+                // split per-branch) so it also overrides the Button
+                // ghost variant's own hover:bg-muted when the item is
+                // selected -- split per-branch, a selected item's hover
+                // fell through to hover:bg-muted instead of staying the
+                // same color, since only the unselected branch named a
+                // hover override.
+                "h-auto min-h-12 w-full items-start justify-start gap-2 rounded-lg border-0 px-2 py-2 text-left shadow-none hover:bg-sidebar-foreground/8",
+                // Same highlight treatment the New Agent/Search/Settings
+                // buttons use (SIDEBAR_ACTION_BUTTON's own hover) -- a
+                // selected item shows it always, an unselected one only
+                // on hover, so the whole sidebar reads as one consistent
+                // highlight color instead of two different systems.
+                c.id === activeId ? "bg-sidebar-foreground/8" : "bg-transparent",
               )}
             >
               <span

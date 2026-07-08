@@ -236,7 +236,7 @@ const SkillMentionPopup = forwardRef<SkillMentionPopupHandle, SkillMentionPopupP
           data-testid="skill-mention-popup"
           role="listbox"
           aria-activedescendant={filtered.length > 0 ? skillMentionItemId(activeIndex) : undefined}
-          className="z-50 max-h-64 w-72 overflow-y-auto rounded-2xl border border-border bg-card p-2 shadow-lg"
+          className="z-50 max-h-64 w-72 overflow-y-auto rounded-lg border border-border bg-card p-2 shadow-lg"
         >
           {skills === null ? null : skills.length === 0 ? (
             <p
