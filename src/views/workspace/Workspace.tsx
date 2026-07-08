@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { ArrowDownIcon } from "@phosphor-icons/react";
 import MessageContent from "@/components/MessageContent";
+import { runViewTransition } from "@/lib/viewTransition";
 import ContextUsageGauge from "@/components/ContextUsageGauge";
 import { Button } from "@/components/ui/button";
 import RichInput from "@/views/chat/rich-input/RichInput";
@@ -147,8 +148,10 @@ export default function Workspace({
     const loadedMessages = await commands.listMessages(targetConversationId);
     if (!isMountedRef.current || currentConversationIdRef.current !== targetConversationId) return;
 
-    setMessages(loadedMessages);
-    onConversationSeenRef.current?.(targetConversationId);
+    runViewTransition(() => {
+      setMessages(loadedMessages);
+      onConversationSeenRef.current?.(targetConversationId);
+    });
   }, [conversationId]);
 
   useEffect(() => {

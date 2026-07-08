@@ -1,10 +1,16 @@
 import { StrictMode } from "react";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import Workspace from "./Workspace";
 import { commands, events } from "@/lib/ipc";
 import type { RichMessageContent } from "@/lib/ipc";
+
+type TestDocument = Document & {
+  startViewTransition?: (callback: () => void) => unknown;
+};
+
+const originalStartViewTransition = (document as TestDocument).startViewTransition;
 
 vi.mock("@/lib/ipc", async (importOriginal) => {
   // Partial mock: `commands`/`events` are fully replaced, but
@@ -121,6 +127,22 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     vi.mocked(events.onAgentMessagePersisted).mockResolvedValue(() => {});
   });
 
+  afterEach(() => {
+    if (originalStartViewTransition) {
+      Object.defineProperty(document, "startViewTransition", {
+        configurable: true,
+        writable: true,
+        value: originalStartViewTransition,
+      });
+    } else {
+      Object.defineProperty(document, "startViewTransition", {
+        configurable: true,
+        writable: true,
+        value: undefined,
+      });
+    }
+  });
+
   it("loads and renders a workspace-scoped conversation's existing messages", async () => {
     vi.mocked(commands.listMessages).mockResolvedValue([
       {
@@ -189,6 +211,39 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
 
     await screen.findByText("second message");
     expect(onConversationSeen).toHaveBeenCalledWith("conv-1");
+  });
+
+  it("wraps the agent-message-persisted refresh in a view transition when the document supports it", async () => {
+    const startViewTransition = vi.fn((callback: () => void) => {
+      callback();
+      return {};
+    });
+    Object.defineProperty(document, "startViewTransition", {
+      configurable: true,
+      writable: true,
+      value: startViewTransition,
+    });
+
+    let firePersisted!: (p: { conversationId: string }) => void;
+    vi.mocked(events.onAgentMessagePersisted).mockImplementation(async (cb) => {
+      firePersisted = cb;
+      return () => {};
+    });
+    vi.mocked(commands.listMessages)
+      .mockResolvedValueOnce([messageFixture("m1", "first message")])
+      .mockResolvedValueOnce([
+        messageFixture("m1", "first message"),
+        messageFixture("m2", "second message", 2),
+      ]);
+
+    render(<Workspace conversationId="conv-1" />);
+    await screen.findByText("first message");
+    startViewTransition.mockClear();
+
+    firePersisted({ conversationId: "conv-1" });
+    await screen.findByText("second message");
+
+    expect(startViewTransition).toHaveBeenCalledTimes(1);
   });
 
   it("does not reload or resubscribe when only the seen callback identity changes", async () => {

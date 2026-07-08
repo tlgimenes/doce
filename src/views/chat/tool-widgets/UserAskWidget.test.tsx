@@ -1,9 +1,15 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import UserAskWidget from "./UserAskWidget";
 import { commands } from "@/lib/ipc";
 import type { AskUserQuestionDetail } from "@/lib/ipc";
+
+type TestDocument = Document & {
+  startViewTransition?: (callback: () => void) => unknown;
+};
+
+const originalStartViewTransition = (document as TestDocument).startViewTransition;
 
 vi.mock("@/lib/ipc", () => ({
   commands: {
@@ -29,6 +35,22 @@ const MULTI: AskUserQuestionDetail = { ...SINGLE, multiSelect: true, questionId:
 describe("UserAskWidget", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    if (originalStartViewTransition) {
+      Object.defineProperty(document, "startViewTransition", {
+        configurable: true,
+        writable: true,
+        value: originalStartViewTransition,
+      });
+    } else {
+      Object.defineProperty(document, "startViewTransition", {
+        configurable: true,
+        writable: true,
+        value: undefined,
+      });
+    }
   });
 
   it("renders each option as a radio row and a disabled submit button until one is picked", () => {
@@ -146,5 +168,22 @@ describe("UserAskWidget", () => {
 
     expect(screen.getByTestId("question-answer-input")).toBeInTheDocument();
     expect(screen.queryByRole("radio", { name: /Option A/ })).not.toBeInTheDocument();
+  });
+
+  it("starts a view transition when switching from options to free text, if supported", async () => {
+    const startViewTransition = vi.fn((callback: () => void) => {
+      callback();
+      return {};
+    });
+    Object.defineProperty(document, "startViewTransition", {
+      configurable: true,
+      writable: true,
+      value: startViewTransition,
+    });
+
+    render(<UserAskWidget detail={SINGLE} />);
+    await userEvent.click(screen.getByTestId("question-close"));
+
+    expect(startViewTransition).toHaveBeenCalledTimes(1);
   });
 });

@@ -99,6 +99,43 @@ body {
   animation-timing-function: cubic-bezier(0.2, 0, 0, 1);
 }
 
+::view-transition-group(user-ask-module) {
+  animation-duration: 180ms;
+  animation-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+::view-transition-old(user-ask-module) {
+  animation: doce-ask-module-out 120ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+::view-transition-new(user-ask-module) {
+  animation: doce-ask-module-in 180ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+@keyframes doce-ask-module-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  to {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}
+
+@keyframes doce-ask-module-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 @keyframes doce-chat-surface-out {
   from {
     opacity: 1;

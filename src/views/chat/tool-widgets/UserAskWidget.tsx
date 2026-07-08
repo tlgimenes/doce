@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
 import { commands, type AskUserQuestionDetail, type QuestionOption } from "@/lib/ipc";
 import RichInput from "@/views/chat/rich-input/RichInput";
+import { runViewTransition } from "@/lib/viewTransition";
 
 type Mode = "options" | "text";
 
@@ -101,6 +102,12 @@ function OptionRow({
  * tool_result replaces the pending tool_call as the latest message.
  * (Compare AskUserQuestionWidget, which renders the read-only "already
  * answered" state in message history and never handles a live question.)
+ *
+ * Both the composer-level mount/unmount of this whole component
+ * (Workspace.tsx) and the options<->text mode switch within it ride the
+ * app's existing view-transition language (runViewTransition,
+ * src/lib/viewTransition.ts) -- see switchMode below and the
+ * [view-transition-name:user-ask-module] wrapper.
  */
 export default function UserAskWidget({ detail, initialMode = "options" }: UserAskWidgetProps) {
   const [mode, setMode] = useState<Mode>(initialMode);
@@ -128,6 +135,10 @@ export default function UserAskWidget({ detail, initialMode = "options" }: UserA
     );
   };
 
+  const switchMode = (next: Mode) => {
+    runViewTransition(() => setMode(next));
+  };
+
   return (
     <div className="flex flex-col gap-1.5" data-testid="user-ask-widget">
       <div className="flex items-start gap-2">
@@ -145,7 +156,7 @@ export default function UserAskWidget({ detail, initialMode = "options" }: UserA
           size="icon-sm"
           className="shrink-0 text-muted-foreground hover:bg-transparent"
           disabled={submitting}
-          onClick={() => setMode(mode === "options" ? "text" : "options")}
+          onClick={() => switchMode(mode === "options" ? "text" : "options")}
           aria-label={mode === "options" ? "Close question" : "Back to options"}
           data-testid={mode === "options" ? "question-close" : "question-back-to-options"}
         >
@@ -153,53 +164,55 @@ export default function UserAskWidget({ detail, initialMode = "options" }: UserA
         </Button>
       </div>
 
-      {mode === "text" ? (
-        <RichInput
-          onSubmit={(content) => {
-            if (content.trim()) submit([content]);
-          }}
-          skillsEnabled={true}
-          disabled={submitting}
-          placeholder="Type your answer…"
-          inputTestId="question-answer-input"
-          submitTestId="question-answer-send"
-        />
-      ) : (
-        <div className="flex flex-col gap-2 rounded-lg border border-border bg-card px-3 py-2 shadow-xs transition-shadow focus-within:shadow-sm">
-          <div
-            className="flex flex-col gap-0.5"
-            role={detail.multiSelect ? "group" : "radiogroup"}
-            aria-labelledby={questionId}
-          >
-            {detail.options.map((option) => (
-              <OptionRow
-                key={option.label}
-                option={option}
-                selected={selected.includes(option.label)}
-                multiSelect={detail.multiSelect}
-                disabled={submitting}
-                onSelect={() => toggleOption(option.label)}
-              />
-            ))}
-          </div>
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-xs text-muted-foreground">
-              {detail.multiSelect && selected.length > 0 ? `${selected.length} selected` : ""}
-            </span>
-            <Button
-              type="button"
-              variant="primary"
-              className={SUBMIT_BUTTON_CLASSES}
-              disabled={selected.length === 0 || submitting}
-              onClick={() => submit(selected)}
-              aria-label="Send answer"
-              data-testid="question-submit"
+      <div className="[view-transition-name:user-ask-module]">
+        {mode === "text" ? (
+          <RichInput
+            onSubmit={(content) => {
+              if (content.trim()) submit([content]);
+            }}
+            skillsEnabled={true}
+            disabled={submitting}
+            placeholder="Type your answer…"
+            inputTestId="question-answer-input"
+            submitTestId="question-answer-send"
+          />
+        ) : (
+          <div className="flex flex-col gap-2 rounded-lg border border-border bg-card px-3 py-2 shadow-xs transition-shadow focus-within:shadow-sm">
+            <div
+              className="flex flex-col gap-0.5"
+              role={detail.multiSelect ? "group" : "radiogroup"}
+              aria-labelledby={questionId}
             >
-              <PaperPlaneRightIcon size={16} />
-            </Button>
+              {detail.options.map((option) => (
+                <OptionRow
+                  key={option.label}
+                  option={option}
+                  selected={selected.includes(option.label)}
+                  multiSelect={detail.multiSelect}
+                  disabled={submitting}
+                  onSelect={() => toggleOption(option.label)}
+                />
+              ))}
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs text-muted-foreground">
+                {detail.multiSelect && selected.length > 0 ? `${selected.length} selected` : ""}
+              </span>
+              <Button
+                type="button"
+                variant="primary"
+                className={SUBMIT_BUTTON_CLASSES}
+                disabled={selected.length === 0 || submitting}
+                onClick={() => submit(selected)}
+                aria-label="Send answer"
+                data-testid="question-submit"
+              >
+                <PaperPlaneRightIcon size={16} />
+              </Button>
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
