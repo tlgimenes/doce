@@ -82,6 +82,18 @@ describe("UserAskWidget", () => {
     expect(commands.answerUserQuestion).toHaveBeenCalledWith("q1", ["actually, do both"]);
   });
 
+  it("submitting a whitespace-only free text answer does not answer the question", async () => {
+    vi.mocked(commands.answerUserQuestion).mockResolvedValue(undefined);
+    render(<UserAskWidget detail={SINGLE} />);
+
+    await userEvent.click(screen.getByTestId("question-close"));
+    const editable = screen.getByTestId("question-answer-input");
+    await userEvent.click(editable);
+    await userEvent.type(editable, "   {Enter}");
+
+    expect(commands.answerUserQuestion).not.toHaveBeenCalled();
+  });
+
   it("'back to options' returns from the free-text input to the option buttons", async () => {
     render(<UserAskWidget detail={SINGLE} />);
 

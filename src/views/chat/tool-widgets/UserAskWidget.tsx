@@ -76,7 +76,9 @@ export default function UserAskWidget({ detail, initialMode = "options" }: UserA
           </Button>
         </div>
         <RichInput
-          onSubmit={(content) => submit([content])}
+          onSubmit={(content) => {
+            if (content.trim()) submit([content]);
+          }}
           skillsEnabled={true}
           disabled={submitting}
           placeholder="Type your answer…"
