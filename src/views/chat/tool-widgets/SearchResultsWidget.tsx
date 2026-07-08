@@ -1,4 +1,5 @@
 import type { GlobDetail, GrepDetail } from "@/lib/ipc";
+import { formatTokenCount } from "@/lib/formatTokenCount";
 
 interface SearchResultsWidgetProps {
   detail: GlobDetail | GrepDetail;
@@ -15,6 +16,7 @@ export default function SearchResultsWidget({ detail }: SearchResultsWidgetProps
     >
       <p className="mb-1 font-mono text-xs text-muted-foreground">
         {detail.toolName} {detail.pattern}
+        {detail.tokenCount != null && <span> · {formatTokenCount(detail.tokenCount)} tok</span>}
       </p>
       {isGrep ? (
         detail.matches.length === 0 ? (
