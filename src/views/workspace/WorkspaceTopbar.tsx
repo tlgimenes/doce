@@ -49,7 +49,7 @@ export default function WorkspaceTopbar({ conversation }: WorkspaceTopbarProps) 
   return (
     <TopbarPortal target="main">
       <div
-        className="flex min-w-0 flex-1 items-center justify-between gap-3"
+        className="pointer-events-none flex min-w-0 flex-1 items-center justify-between gap-3"
         data-testid="workspace-topbar"
       >
         <div className="min-w-0">
@@ -66,7 +66,7 @@ export default function WorkspaceTopbar({ conversation }: WorkspaceTopbarProps) 
             {workspaceLabel}
           </div>
         </div>
-        <div data-topbar-no-drag>
+        <div className="pointer-events-auto" data-topbar-no-drag>
           <ContextUsageGauge conversationId={conversation.id} />
         </div>
       </div>

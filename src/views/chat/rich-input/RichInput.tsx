@@ -115,6 +115,12 @@ export interface RichInputProps {
   /** `data-testid` for the submit button, same purpose as `inputTestId`. */
   submitTestId?: string;
   /**
+   * Imperative focus requests are represented as a changing value rather
+   * than a boolean so callers can request focus repeatedly while this
+   * component stays mounted.
+   */
+  autoFocusToken?: number;
+  /**
    * 010-context-window-management (UI refactor): an optional node rendered
    * immediately after the attach button — the composer-integrated context
    * usage gauge, when the caller has a real conversation to report usage
@@ -140,17 +146,20 @@ export interface RichInputProps {
  * skills), gated on `skillsEnabled` at editor-creation time — see the
  * `useEditor()` call's own comment below for why a conditional array entry
  * is correct here despite the editor never being recreated. Attachments
- * land in US4.
+ * land in US4. Focus requests are modeled as a changing `autoFocusToken`
+ * and applied through the live Tiptap editor instance, so callers do not
+ * reach into this component's DOM.
  *
  * Editor architecture (research.md's adopted mesh pattern): `useEditor()` is
  * called exactly once per instance's lifetime (@tiptap/react's `useEditor`
  * defaults to `deps = []`, confirmed against the installed version) and is
  * never recreated on re-render, even though `extensions`/`editorProps` are
- * fresh object literals every render. Every mutable prop that can change
- * after mount (`onSubmit`, `placeholder`) is stashed in a ref and mirrored
- * via its own effect, then read from the ref inside the stable
- * `handleKeyDown` callback captured once at editor-creation time. `disabled`
- * is applied imperatively via `editor.setEditable()` in its own effect,
+ * fresh object literals every render. Mutable callback/config props used
+ * by one-time editor handlers (`onSubmit`, `placeholder`) are stashed in a
+ * ref and mirrored via their own effects, then read from the ref inside
+ * the stable `handleKeyDown` callback captured once at editor-creation
+ * time. `disabled` is applied imperatively via `editor.setEditable()` in
+ * its own effect,
  * matching the contract's explicit instruction (not stashed in a ref read
  * by handleKeyDown, since nothing inside handleKeyDown needs to branch on
  * it — the submit button's own `disabled` prop and setEditable already
@@ -163,6 +172,7 @@ export default function RichInput({
   placeholder,
   inputTestId,
   submitTestId,
+  autoFocusToken,
   contextGauge,
 }: RichInputProps) {
   const onSubmitRef = useRef(onSubmit);
@@ -455,6 +465,11 @@ export default function RichInput({
   useEffect(() => {
     editor?.setEditable(!disabled);
   }, [editor, disabled]);
+
+  useEffect(() => {
+    if (autoFocusToken === undefined) return;
+    editor?.commands.focus("end");
+  }, [autoFocusToken, editor]);
 
   // useEditor() itself doesn't trigger a re-render on every keystroke
   // (shouldRerenderOnTransaction defaults to off) — this is the documented

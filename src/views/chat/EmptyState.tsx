@@ -13,6 +13,7 @@ export interface FolderTarget {
 }
 
 interface EmptyStateProps {
+  autoFocusToken?: number;
   // Reports the full Conversation (not just its id) so App.tsx can route by
   // its workspaceId without a second lookup. The pending initial turn is
   // handed to Workspace so the view can switch before the full agent loop
@@ -43,7 +44,7 @@ const toDisplayFolderLabel = (path: string, homePath: string | null) => {
  * open_workspace -> create_conversation, then hands off the first turn
  * for Workspace to send.
  */
-export default function EmptyState({ onConversationCreated }: EmptyStateProps) {
+export default function EmptyState({ autoFocusToken, onConversationCreated }: EmptyStateProps) {
   const [target, setTarget] = useState<FolderTarget | null>(null);
   const [homePath, setHomePath] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -120,6 +121,7 @@ export default function EmptyState({ onConversationCreated }: EmptyStateProps) {
           placeholder="What do you want to work on?"
           inputTestId="empty-state-input"
           submitTestId="empty-state-submit"
+          autoFocusToken={autoFocusToken}
         />
         {error && (
           <p className="text-sm text-destructive" data-testid="empty-state-error">

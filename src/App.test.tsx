@@ -178,7 +178,9 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     const mainTopbar = screen.getByTestId("topbar-main");
 
     expect(sidebarTopbar).toHaveClass("h-10", "shrink-0");
-    expect(mainTopbar).toHaveClass("h-10", "shrink-0");
+    expect(mainTopbar).toHaveClass("h-10", "shrink-0", "bg-transparent");
+    expect(mainTopbar).not.toHaveClass("bg-sidebar");
+    expect(mainTopbar).not.toHaveClass("border-b", "shadow-sm");
     expect(sidebarTopbar).toHaveAttribute("data-tauri-drag-region");
     expect(mainTopbar).toHaveAttribute("data-tauri-drag-region");
     expect(mainTopbar).toBeEmptyDOMElement();
@@ -218,6 +220,7 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     await userEvent.click(await screen.findByText("Shared topbar polish"));
 
     const mainTopbar = screen.getByTestId("topbar-main");
+    expect(mainTopbar).toHaveClass("bg-sidebar", "border-b", "border-sidebar-border", "shadow-sm");
     await within(mainTopbar).findByTestId("workspace-topbar");
 
     expect(within(mainTopbar).getByTestId("workspace-topbar-title")).toHaveTextContent(
@@ -400,7 +403,8 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
 
     pressCmd("n");
 
-    await screen.findByTestId("empty-state-input");
+    const emptyStateInput = await screen.findByTestId("empty-state-input");
+    await waitFor(() => expect(document.activeElement).toBe(emptyStateInput));
     expect(commands.createConversation).not.toHaveBeenCalled();
   });
 
@@ -413,7 +417,8 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
 
     pressCmd("n");
 
-    await screen.findByTestId("empty-state-input");
+    const emptyStateInput = await screen.findByTestId("empty-state-input");
+    await waitFor(() => expect(document.activeElement).toBe(emptyStateInput));
     expect(screen.queryByTestId("settings-view")).not.toBeInTheDocument();
   });
 

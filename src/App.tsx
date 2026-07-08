@@ -67,6 +67,7 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showShortcutsDialog, setShowShortcutsDialog] = useState(false);
   const [showWidgetGallery, setShowWidgetGallery] = useState(false);
+  const [emptyStateAutoFocusToken, setEmptyStateAutoFocusToken] = useState<number | null>(null);
   const conversationListRef = useRef<ConversationListHandle>(null);
 
   useEffect(() => {
@@ -185,6 +186,7 @@ export default function App() {
               setShowSettings(false);
               setPendingInitialTurn(null);
               setActiveConversation(null);
+              setEmptyStateAutoFocusToken((current) => (current ?? 0) + 1);
             }}
             onOpenSettings={() => setShowSettings(true)}
             onActiveConversationChange={syncActiveConversation}
@@ -197,7 +199,14 @@ export default function App() {
           />
         </div>
         <div className="flex min-w-0 flex-1 flex-col">
-          <TopbarHost target="main" className="px-4" />
+          <TopbarHost
+            target="main"
+            className={
+              !showWidgetGallery && !showSettings && activeConversation
+                ? "border-b border-sidebar-border bg-sidebar px-4 shadow-sm"
+                : "px-4"
+            }
+          />
           <div
             className="min-h-0 flex-1 [view-transition-name:chat-surface]"
             data-testid="app-content-pane"
@@ -223,7 +232,10 @@ export default function App() {
                 onConversationSeen={markSeen}
               />
             ) : (
-              <EmptyState onConversationCreated={activateConversation} />
+              <EmptyState
+                autoFocusToken={emptyStateAutoFocusToken ?? undefined}
+                onConversationCreated={activateConversation}
+              />
             )}
           </div>
         </div>

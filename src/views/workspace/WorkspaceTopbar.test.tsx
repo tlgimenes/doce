@@ -120,4 +120,15 @@ describe("WorkspaceTopbar", () => {
     expect(gauge.closest("[data-topbar-no-drag]")).not.toBeNull();
     expect(commands.getContextUsage).toHaveBeenCalledWith("conv-1");
   });
+
+  it("lets static metadata clicks fall through to the draggable topbar host", async () => {
+    renderTopbar(conversationFixture());
+
+    const topbar = await screen.findByTestId("workspace-topbar");
+    const gauge = await screen.findByTestId("context-usage-gauge");
+    const nonDragWrapper = gauge.closest("[data-topbar-no-drag]");
+
+    expect(topbar).toHaveClass("pointer-events-none");
+    expect(nonDragWrapper).toHaveClass("pointer-events-auto");
+  });
 });

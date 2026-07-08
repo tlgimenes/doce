@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import RichInput from "./RichInput";
 
@@ -50,6 +50,69 @@ describe("RichInput (009-rich-chat-input, US1)", () => {
     await userEvent.type(editable, "hello world");
 
     expect(editable).toHaveTextContent("hello world");
+  });
+
+  it("focuses the editor when autoFocusToken changes", async () => {
+    const { rerender } = render(
+      <RichInput
+        onSubmit={vi.fn()}
+        skillsEnabled={false}
+        disabled={false}
+        placeholder="p"
+        inputTestId="test-input"
+        submitTestId="test-submit"
+      />,
+    );
+
+    const editable = screen.getByTestId("test-input");
+    document.body.focus();
+    expect(document.activeElement).not.toBe(editable);
+
+    rerender(
+      <RichInput
+        onSubmit={vi.fn()}
+        skillsEnabled={false}
+        disabled={false}
+        placeholder="p"
+        inputTestId="test-input"
+        submitTestId="test-submit"
+        autoFocusToken={1}
+      />,
+    );
+
+    await waitFor(() => expect(document.activeElement).toBe(editable));
+  });
+
+  it("focuses the editor again when autoFocusToken changes repeatedly", async () => {
+    const { rerender } = render(
+      <RichInput
+        onSubmit={vi.fn()}
+        skillsEnabled={false}
+        disabled={false}
+        placeholder="p"
+        inputTestId="test-input"
+        submitTestId="test-submit"
+        autoFocusToken={1}
+      />,
+    );
+
+    const editable = screen.getByTestId("test-input");
+    document.body.focus();
+    expect(document.activeElement).not.toBe(editable);
+
+    rerender(
+      <RichInput
+        onSubmit={vi.fn()}
+        skillsEnabled={false}
+        disabled={false}
+        placeholder="p"
+        inputTestId="test-input"
+        submitTestId="test-submit"
+        autoFocusToken={2}
+      />,
+    );
+
+    await waitFor(() => expect(document.activeElement).toBe(editable));
   });
 
   it("Enter (no Shift) calls onSubmit with the typed text and clears the editor", async () => {
