@@ -13,11 +13,16 @@ The shipped `UserAskWidget` uses `flex-wrap` pill buttons for options (no shape 
 - Unified answer interaction: picking an option (single- or multi-select alike) only selects it; a submit button — styled, sized, and positioned identically to `RichInput`'s own send button — is the one way to answer, always present, disabled until at least one option is selected.
 - Motion: the composer-level arrival (`RichInput` ↔ `UserAskWidget`) and the internal mode switch (options ↔ text) both ride the app's existing view-transition language (`src/lib/viewTransition.ts`'s `runViewTransition`, already used by `App.tsx` for conversation switches); option rows get a mount-time entrance stagger.
 - No change to `AskUserQuestionWidget`'s answered rendering, the backend, or `answer_user_question`'s wire contract — `commands.answerUserQuestion(questionId, answer)` is still called with exactly the same shapes as today (`[label]` for single-select, `selected` for multi-select, `[content]` for free text), just gated behind an explicit send press instead of auto-firing on a bare option click for single-select.
-- Text-mode (the `RichInput` fallback) is visually unchanged — it already has the matching card/shadow/send-button treatment this redesign gives the options module. Only the header row's icon (✕ in options mode, back-arrow in text mode) shares one slot across both modes, which is already true of the current implementation.
+- `RichInput` itself (the text-mode fallback) is untouched — it already has the matching card/shadow/send-button treatment this redesign gives the options module, which is exactly why the fix in Section 1 is to stop double-wrapping it: text mode's own outer box is removed so `RichInput`'s single card is the only border, instead of nesting inside a second one. The header row's icon (✕ in options mode, back-arrow in text mode) already shares one slot across both modes today and keeps doing so.
 
-## Section 1: Shell & header (unchanged)
+## Section 1: Shell & header (correction from an earlier draft of this doc: this DOES change)
 
-The header row — optional eyebrow (`detail.header`) above the question text, with an `ml-auto` icon button (✕ to enter free-text mode, back-arrow to return) — is unchanged from what's already shipped. This redesign is scoped entirely to the module beneath the header.
+**This section originally claimed the shell was unchanged. That was wrong, caught while re-verifying against the actual shipped code before writing the implementation plan.** Today's shipped `UserAskWidget` wraps *everything* — the header row and the content below it — in one single bordered box (`rounded-lg border border-border bg-card p-3`, `data-testid="user-ask-widget"`), in both modes. The approved design removes that single outer box entirely: the root element becomes a plain, unboxed `flex flex-col` container with no border or background of its own. Inside it:
+
+- **Header row** — optional eyebrow (`detail.header`) above the question text, with an `ml-auto` icon button (✕ to enter free-text mode, back-arrow to return) — same content and behavior as today, but no longer inside a bordered box; it sits directly in the composer's own padding.
+- **Module** (Section 2) — the *only* bordered surface, directly beneath the header, swapping its content between the options list (options mode) or a bare `RichInput` (text mode, already unwrapped — see Section 2's closing note).
+
+`data-testid="user-ask-widget"` moves from the (removed) outer box to this new unboxed root element, so it still identifies "the whole widget" for tests, just on a plain `<div>` instead of a bordered one.
 
 ## Section 2: The options module
 
