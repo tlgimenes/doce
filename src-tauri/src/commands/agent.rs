@@ -493,42 +493,14 @@ async fn execute_top_level_tool(
     }
 
     if call.name != "Task" {
-        let outcome = dispatch::execute(&call, cwd);
-
-        // 010-context-window-management/US3 (FR-011/FR-012): an oversized
-        // result gets truncated to a preview + a `Read`-able pointer before
-        // it ever enters the model's context -- the persisted `detail`
-        // still carries the full outcome for the transcript UI (widgets
-        // decide for themselves whether to show a "view full output"
-        // affordance), only `model_text` (what the model actually sees) is
-        // substituted.
-        let settings = crate::context::ContextSettings::load(conn)
-            .await
-            .unwrap_or_else(|_| crate::context::ContextSettings::from_raw(&Default::default()));
-        let (model_text, offloaded_to) = match app.path().app_data_dir() {
-            Ok(app_data_dir) => crate::context::offload::offload_if_oversized(
-                &app_data_dir,
-                parent_conversation_id,
-                &tool_call_id,
-                &outcome.model_text,
-                settings.tool_output_offload_chars,
-            )
-            .unwrap_or_else(|_| (outcome.model_text.clone(), None)),
-            Err(_) => (outcome.model_text.clone(), None),
-        };
-
-        let mut detail = outcome.detail.clone();
-        detail["offloadedTo"] = serde_json::json!(offloaded_to);
-
-        persist_tool_call_and_result(
+        let model_text = handle_general_tool_call(
             Some(app),
             conn,
+            engine,
             parent_conversation_id,
+            cwd,
             &tool_call_id,
-            &call.name,
-            call.arguments.clone(),
-            &model_text,
-            detail,
+            &call,
         )
         .await;
         emit_context_usage_update(app, conn, engine, parent_conversation_id, cwd).await;
@@ -631,6 +603,73 @@ async fn execute_top_level_tool(
     .await;
 
     sub_final
+}
+
+/// Handles a single non-`Task`, non-`AskUserQuestion` tool call for the
+/// top-level loop. Persists the `tool_call` row *before* executing —
+/// mirrors `handle_ask_user_question`'s existing early-persist pattern —
+/// so a slow tool (e.g. a long-running `Bash` command) is visible as "in
+/// flight" the moment it starts, not only once it's already finished.
+/// `app: Option<&AppHandle>` (not mandatory, unlike the enclosing
+/// `execute_top_level_tool`) specifically so this is unit-testable without
+/// a live Tauri app.
+async fn handle_general_tool_call(
+    app: Option<&AppHandle>,
+    conn: &tokio_rusqlite::Connection,
+    engine: &InferenceEngine,
+    parent_conversation_id: &str,
+    cwd: Option<&std::path::Path>,
+    tool_call_id: &str,
+    call: &ToolCall,
+) -> String {
+    persist_tool_call(
+        app,
+        conn,
+        parent_conversation_id,
+        tool_call_id,
+        &call.name,
+        call.arguments.clone(),
+    )
+    .await;
+
+    let outcome = dispatch::execute(call, cwd);
+    let outcome = crate::context::annotate_with_token_count(engine, outcome);
+
+    // 010-context-window-management/US3 (FR-011/FR-012): an oversized
+    // result gets truncated to a preview + a `Read`-able pointer before it
+    // ever enters the model's context -- the persisted `detail` still
+    // carries the full outcome for the transcript UI, only `model_text`
+    // (what the model actually sees) is substituted.
+    let settings = crate::context::ContextSettings::load(conn)
+        .await
+        .unwrap_or_else(|_| crate::context::ContextSettings::from_raw(&Default::default()));
+    let (model_text, offloaded_to) = match app.and_then(|a| a.path().app_data_dir().ok()) {
+        Some(app_data_dir) => crate::context::offload::offload_if_oversized(
+            &app_data_dir,
+            parent_conversation_id,
+            tool_call_id,
+            &outcome.model_text,
+            settings.tool_output_offload_chars,
+        )
+        .unwrap_or_else(|_| (outcome.model_text.clone(), None)),
+        None => (outcome.model_text.clone(), None),
+    };
+
+    let mut detail = outcome.detail.clone();
+    detail["offloadedTo"] = serde_json::json!(offloaded_to);
+
+    persist_tool_result(
+        app,
+        conn,
+        parent_conversation_id,
+        tool_call_id,
+        &call.name,
+        &model_text,
+        detail,
+    )
+    .await;
+
+    model_text
 }
 
 /// 010-context-window-management/US1: recomputes and emits this
@@ -1467,5 +1506,56 @@ mod tests {
         let (_, _, _, content) = latest_message(&conn, "sub").await;
         let detail: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert!(detail["tokenCount"].as_u64().is_some());
+    }
+
+    // --- Task 3: early tool_call persist for the general top-level path ---
+
+    #[tokio::test]
+    #[ignore]
+    async fn handle_general_tool_call_persists_the_tool_call_row_before_the_tool_result_row() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_conversation(&conn, "c1").await;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("notes.txt"), "hello world").unwrap();
+
+        let engine = crate::inference::InferenceEngine::load(&test_model_path(), 4)
+            .expect("model should load");
+        let call = ToolCall {
+            name: "Read".to_string(),
+            arguments: serde_json::json!({"file_path": "notes.txt"}),
+        };
+
+        let model_text = handle_general_tool_call(
+            None,
+            &conn,
+            &engine,
+            "c1",
+            Some(dir.path()),
+            "call1",
+            &call,
+        )
+        .await;
+
+        assert!(model_text.contains("hello world"));
+
+        // `all_messages` (already defined in this test module, near
+        // `task_delegation_persists_...`) returns `Vec<(content_type,
+        // tool_name)>`, ordered by sequence — enough to confirm the
+        // tool_call row landed before the tool_result row.
+        let rows = all_messages(&conn, "c1").await;
+        assert_eq!(rows.len(), 2, "expected exactly a tool_call row and a tool_result row");
+        assert_eq!(rows[0].0, "tool_call");
+        assert_eq!(rows[1].0, "tool_result");
+
+        // `latest_message` (already defined in this test module) returns
+        // (role, content_type, tool_name, content) for the newest row —
+        // which, after the two inserts above, is the tool_result row.
+        let (_, content_type, _, content) = latest_message(&conn, "c1").await;
+        assert_eq!(content_type, "tool_result");
+        let result_detail: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert!(
+            result_detail["tokenCount"].as_u64().is_some(),
+            "Read is one of the four annotated tools"
+        );
     }
 }
