@@ -88,6 +88,7 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
                 offset: null,
                 limit: null,
                 outcome: { ok: true, content: "pub fn execute(...", truncated: false },
+                tokenCount: 312,
               }}
             />
           </Example>
@@ -194,6 +195,7 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
                 command: "cargo test --lib",
                 timeoutMs: null,
                 outcome: { ok: true, exitCode: 0, stdout: "test result: ok. 202 passed", stderr: "" },
+                tokenCount: 89,
               }}
             />
           </Example>
@@ -233,6 +235,15 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
               }}
             />
           </Example>
+          <Example label="Pending (still running)">
+            <BashWidget
+              detail={{
+                toolName: "Bash",
+                command: "cargo test --test agent_benchmark tier4_planned -- --ignored --nocapture",
+                timeoutMs: null,
+              }}
+            />
+          </Example>
         </Section>
 
         <Section
@@ -246,6 +257,7 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
                 pattern: "bug_*.txt",
                 path: ".",
                 matches: ["bug_00.txt", "bug_01.txt", "bug_02.txt"],
+                tokenCount: 24,
               }}
             />
           </Example>
@@ -265,6 +277,7 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
                   { path: "bug_00.txt", lineNumber: 1, line: "// BUG: this should compute a + b" },
                   { path: "bug_01.txt", lineNumber: 1, line: "// BUG: this should compute a + b" },
                 ],
+                tokenCount: 51,
               }}
             />
           </Example>
