@@ -69,14 +69,16 @@ describe("Tool call widgets (004-tool-call-widgets)", () => {
     );
     await (await browser.$("[data-testid='agent-send']")).click();
 
-    const widget = await browser.$("[data-testid='question-widget']");
+    const widget = await browser.$("[data-testid='user-ask-widget']");
     await widget.waitForExist({ timeout: 60000 });
     expect(await widget.getText()).toContain("Which color do you prefer?");
 
-    // The regression itself: the composer must refuse a new message while
-    // genuinely paused here, since typing one would just queue up stuck
-    // behind the same lock rather than doing anything.
-    expect(await agentInput.getAttribute("contenteditable")).toBe("false");
+    // The regression itself: the composer must be fully replaced by the
+    // question widget while genuinely paused here, not merely disabled --
+    // typing into a still-present-but-disabled input would queue a message
+    // up stuck behind the same lock rather than doing anything.
+    const composerInputWhilePending = await browser.$("[data-testid='agent-input']");
+    expect(await composerInputWhilePending.isExisting()).toBe(false);
 
     await (await widget.$("button=Red")).click();
 
