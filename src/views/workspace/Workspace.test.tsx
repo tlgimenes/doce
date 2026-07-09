@@ -72,6 +72,12 @@ function setScrollMetrics(
   });
 }
 
+function expectElementBefore(first: HTMLElement, second: HTMLElement) {
+  expect(Boolean(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(
+    true,
+  );
+}
+
 describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -393,9 +399,14 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     );
     await userEvent.click(screen.getByTestId("agent-send"));
 
-    await waitFor(() =>
-      expect(screen.getByTestId("agent-thinking")).toBeInTheDocument(),
-    );
+    const status = await screen.findByTestId("agent-thinking");
+    const composerShell = screen.getByTestId("workspace-composer-shell");
+    expect(status).toHaveTextContent("Thinking");
+    expect(status).not.toHaveTextContent("Working");
+    expect(status.closest('[data-testid="chat-message"]')).toBeNull();
+    expectElementBefore(status, composerShell);
+    expect(status).toHaveClass("border-b");
+    expect(composerShell).not.toHaveClass("border-t");
 
     resolveAgent("Found 3 files: a.rs, b.rs, c.rs");
     await waitFor(() => {
@@ -699,7 +710,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     expect(screen.queryByTestId("agent-thinking")).not.toBeInTheDocument();
   });
 
-  it("blocks the composer and shows Working… when the latest message is an unfinished tool_call with no dedicated pending widget (e.g. Grep)", async () => {
+  it("blocks the composer and shows Thinking when the latest message is an unfinished tool_call with no dedicated pending widget (e.g. Grep)", async () => {
     // Regression: only AskUserQuestion/Bash/Task counted as "in flight",
     // so a turn stuck inside any other tool (a slow Grep, in production)
     // left the composer enabled after a reload wiped the in-memory
@@ -734,7 +745,9 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
 
     render(<Workspace conversationId="conv-1" />);
 
-    await screen.findByTestId("agent-thinking");
+    expect(await screen.findByTestId("agent-thinking")).toHaveTextContent(
+      "Thinking",
+    );
     expect(screen.getByTestId("agent-input")).toHaveAttribute(
       "contenteditable",
       "false",
@@ -759,6 +772,69 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
       "contenteditable",
       "false",
     );
+  });
+
+  it("starts the streaming chron from the latest persisted user message during a backend-active reload", async () => {
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(6_000);
+    vi.mocked(commands.listMessages).mockResolvedValue([
+      messageFixture("u1", "find the needle", 4_000),
+    ]);
+    vi.mocked(commands.isGenerationActive).mockResolvedValue(true);
+
+    render(<Workspace conversationId="conv-1" />);
+
+    expect(await screen.findByTestId("agent-thinking-timer")).toHaveTextContent(
+      "2.0s",
+    );
+    nowSpy.mockRestore();
+  });
+
+  it("does not reset the streaming chron when an unpaired non-dedicated tool call appears", async () => {
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(4_000);
+    vi.mocked(commands.listMessages).mockResolvedValue([
+      {
+        id: "u1",
+        conversationId: "conv-1",
+        role: "user",
+        contentType: "text",
+        content: "find the needle",
+        toolName: null,
+        createdAt: 1_000,
+        durationMs: null,
+        tokenCount: null,
+      },
+      {
+        id: "tc1",
+        conversationId: "conv-1",
+        role: "assistant",
+        contentType: "tool_call",
+        content: JSON.stringify({
+          arguments: { pattern: "needle", path: "/tmp" },
+        }),
+        toolName: "Grep",
+        createdAt: 3_000,
+        durationMs: null,
+        tokenCount: null,
+      },
+    ]);
+
+    render(<Workspace conversationId="conv-1" />);
+
+    expect(await screen.findByTestId("agent-thinking-timer")).toHaveTextContent(
+      "3.0s",
+    );
+    nowSpy.mockRestore();
+  });
+
+  it("keeps the composer divider when the streaming status is hidden", async () => {
+    vi.mocked(commands.listMessages).mockResolvedValue([]);
+
+    render(<Workspace conversationId="conv-1" />);
+
+    expect(await screen.findByTestId("workspace-composer-shell")).toHaveClass(
+      "border-t",
+    );
+    expect(screen.queryByTestId("agent-thinking")).not.toBeInTheDocument();
   });
 
   it("does not show a pending Bash widget once the tool_result has landed (latest message is the result, not the call)", async () => {

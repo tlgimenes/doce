@@ -9,11 +9,13 @@ import {
 import { ArrowDownIcon } from "@phosphor-icons/react";
 import { StickToBottom, type StickToBottomContext } from "use-stick-to-bottom";
 import MessageContent from "@/components/MessageContent";
+import { cn } from "@/lib/cn";
 import { runViewTransition } from "@/lib/viewTransition";
 import { Button } from "@/components/ui/button";
 import RichInput from "@/views/chat/rich-input/RichInput";
 import UserAskWidget from "@/views/chat/tool-widgets/UserAskWidget";
 import BashWidget from "@/views/chat/tool-widgets/BashWidget";
+import StreamingStatus from "@/views/workspace/StreamingStatus";
 import WorkspaceTopbar from "@/views/workspace/WorkspaceTopbar";
 import TaskWidget from "@/views/chat/tool-widgets/TaskWidget";
 import {
@@ -51,6 +53,15 @@ function isQuestionPending(messages: Message[]): boolean {
   )
     return false;
   return parseAskUserQuestionCallDetail(latest.content) !== null;
+}
+
+function getLatestUserMessageCreatedAt(messages: Message[]): number | null {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i].role === "user") {
+      return messages[i].createdAt;
+    }
+  }
+  return null;
 }
 
 interface WorkspaceProps {
@@ -153,6 +164,9 @@ export default function Workspace({
   const messagesRef = useRef<Message[]>(messages);
   messagesRef.current = messages;
   const [thinking, setThinking] = useState(false);
+  const [optimisticTurnStartedAt, setOptimisticTurnStartedAt] = useState<
+    number | null
+  >(null);
   // The backend's reload-proof "a turn is genuinely running" signal
   // (ActiveGenerations, via is_generation_active). `sendInFlight` and
   // `thinking` are in-memory webview state a reload wipes; during the
@@ -239,6 +253,7 @@ export default function Workspace({
 
     setMessages([]);
     setThinking(false);
+    setOptimisticTurnStartedAt(null);
     setError(null);
     setBackendTurnActive(false);
     syncBackendTurnActive();
@@ -320,6 +335,14 @@ export default function Workspace({
     pendingToolCall?.kind === "question" ? pendingToolCall.detail : null;
   const turnInFlight = sendInFlight || backendTurnActive;
   const showThinking = thinking || turnInFlight;
+  const latestUserMessageCreatedAt = useMemo(
+    () => getLatestUserMessageCreatedAt(messages),
+    [messages],
+  );
+  const showGenericStreamingStatus =
+    pendingToolCall?.kind === "other" || (!pendingToolCall && showThinking);
+  const activeTurnStartedAt =
+    optimisticTurnStartedAt ?? latestUserMessageCreatedAt;
 
   const send = useCallback(
     (content: string, richContent?: RichMessageContent): boolean => {
@@ -373,17 +396,18 @@ export default function Workspace({
         return false;
       if (!markSendInFlight(conversationId)) return false;
 
+      const submittedAt = Date.now();
       setError(null);
       setMessages((prev) => [
         ...prev,
         {
-          id: `u-${Date.now()}`,
+          id: `u-${submittedAt}`,
           conversationId,
           role: "user",
           contentType: richContent ? "rich_text" : "text",
           content: richContent ? JSON.stringify(richContent) : content,
           toolName: null,
-          createdAt: Date.now(),
+          createdAt: submittedAt,
           durationMs: null,
           // Not known until reload -- these are optimistic/synthetic
           // messages, not the real persisted row (which does get a real
@@ -391,6 +415,7 @@ export default function Workspace({
           tokenCount: null,
         },
       ]);
+      setOptimisticTurnStartedAt(submittedAt);
       setThinking(true);
       // Sending your own message always re-engages autoscroll and snaps to
       // the bottom — the library README's own ChatBox pattern, and load-
@@ -427,6 +452,7 @@ export default function Workspace({
             currentConversationIdRef.current === conversationId
           ) {
             setThinking(false);
+            setOptimisticTurnStartedAt(null);
             dispatchedInitialTurnRef.current = null;
             // Safety net: a real refetch regardless of event timing/ordering,
             // so the transcript is always correct once the turn is fully done --
@@ -487,8 +513,8 @@ export default function Workspace({
                 {messages.map((m) => (
                   <MessageContent key={m.id} message={m} />
                 ))}
-                {pendingToolCall?.kind === "bash" ||
-                pendingToolCall?.kind === "task" ? (
+                {(pendingToolCall?.kind === "bash" ||
+                  pendingToolCall?.kind === "task") && (
                   <div
                     className="mb-6"
                     data-testid="chat-message"
@@ -502,19 +528,6 @@ export default function Workspace({
                       <TaskWidget detail={pendingToolCall.detail} />
                     )}
                   </div>
-                ) : (
-                  // "other" shows the indicator even when `thinking`/
-                  // send-in-flight were wiped by a reload — the trailing
-                  // unpaired tool_call itself is the proof a turn is running.
-                  (pendingToolCall?.kind === "other" ||
-                    (!pendingToolCall && showThinking)) && (
-                    <p
-                      className="text-sm text-muted-foreground"
-                      data-testid="agent-thinking"
-                    >
-                      Working…
-                    </p>
-                  )
                 )}
                 {error && (
                   <div
@@ -542,8 +555,14 @@ export default function Workspace({
           </>
         )}
       </StickToBottom>
+      {showGenericStreamingStatus && (
+        <StreamingStatus startedAt={activeTurnStartedAt} />
+      )}
       <div
-        className="border-t border-border p-4 [view-transition-name:chat-composer]"
+        className={cn(
+          "p-4 [view-transition-name:chat-composer]",
+          showGenericStreamingStatus ? "" : "border-t border-border",
+        )}
         data-testid="workspace-composer-shell"
       >
         {pendingQuestion ? (
