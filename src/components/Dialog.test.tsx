@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import Dialog from "./Dialog";
@@ -52,11 +53,17 @@ describe("Dialog", () => {
     expect(screen.queryByText("Hello")).not.toBeInTheDocument();
   });
 
-  it("keeps the generated dialog foundation at 8px-or-less radii", () => {
-    const source = readFileSync("src/components/ui/dialog.tsx", "utf8");
+  it("keeps generated ui radii at 8px-or-less across src/components/ui", () => {
+    const uiDir = "src/components/ui";
+    const roundedXlPattern = /\brounded(?:-[trblse]{1,2})?-xl\b|\brounded-[a-z-]*xl\b/;
 
-    expect(source).not.toContain("rounded-xl");
-    expect(source).not.toContain("rounded-b-xl");
-    expect(source).toContain("rounded-lg");
+    for (const entry of readdirSync(uiDir)) {
+      if (!entry.endsWith(".tsx") && !entry.endsWith(".ts")) {
+        continue;
+      }
+
+      const source = readFileSync(`${uiDir}/${entry}`, "utf8");
+      expect(source, entry).not.toMatch(roundedXlPattern);
+    }
   });
 });

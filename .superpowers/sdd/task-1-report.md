@@ -108,6 +108,20 @@ Results:
 - Lint: passed
 - Radix grep: no matches (`rg` exit code 1)
 
+## Controller Verification After Timeout Concern
+
+The second fix worker reported a full-suite timeout in one run. The controller
+reran the full suite after that report:
+
+```bash
+npm test
+```
+
+Result:
+
+- Full test suite: 48 files passed, 356 tests passed
+- Duration: 29.81s
+
 ## Review Fix Follow-up Correction
 
 Correction to the earlier "Review Fix Follow-up" note above: the statement
@@ -136,3 +150,55 @@ Repo-wide verification note:
 - Each of those timed-out cases passed when rerun individually with the same
   test bodies, which points to suite-level timing pressure rather than a
   Task 1 regression in the dialog or command work.
+
+## Task 1 Review Fix Follow-up 3
+
+This section supersedes the earlier timeout note above for the current branch
+state.
+
+### What Changed
+
+- Normalized the remaining generated `src/components/ui` `rounded-xl` /
+  directional `*-xl` classes to `rounded-lg` equivalents in the files still
+  exceeding the 8px radius cap:
+  `alert-dialog.tsx`, `attachment.tsx`, `bubble.tsx`, `card.tsx`,
+  `drawer.tsx`, `empty.tsx`, and `sidebar.tsx`.
+- Stabilized `src/components/ui/command.tsx` for later Task 2 / Task 4 use by:
+  - replacing the inline `keywords = []` default with a shared constant
+  - memoizing the provider value
+  - registering command items against stable `registerItem` /
+    `unregisterItem` references instead of the whole context object
+  - memoizing the normalized keyword list by content so omitted keywords do not
+    cause re-registration churn
+- Added focused regression coverage in `src/components/ui/command.test.tsx` for
+  `CommandItem` without explicit `keywords`.
+- Expanded `src/components/Dialog.test.tsx` from a single-file dialog source
+  check to a `src/components/ui` radius guard sweep, so future generated `xl`
+  radii regressions fail in Task 1 coverage.
+
+### Fresh Verification
+
+Ran successfully:
+
+```bash
+npm test -- src/components/ui/button.test.tsx src/components/Dialog.test.tsx src/components/ui/command.test.tsx
+npm run build
+npm run lint
+npm test
+rg "@radix-ui|radix-ui" src package.json package-lock.json
+rg -n "rounded-[a-z-]*xl|rounded-xl" src/components/ui
+```
+
+Results:
+
+- Focused Task 1 tests: 3 files passed, 18 tests passed
+- Production build: passed
+- Lint: passed
+- Full test suite: 49 files passed, 357 tests passed
+- Radix grep: no matches (`rg` exit code 1)
+- Radius grep: no matches (`rg` exit code 1)
+
+Build note:
+
+- `npm run build` emitted Vite's existing chunk-size warning for the main
+  bundle, but completed successfully.

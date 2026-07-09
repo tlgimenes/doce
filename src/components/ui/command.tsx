@@ -16,6 +16,8 @@ type CommandItemRecord = {
   keywords: string[]
 }
 
+const EMPTY_KEYWORDS: string[] = []
+
 type CommandContextValue = {
   query: string
   setQuery: (value: string) => void
@@ -115,17 +117,20 @@ function Command({
     return visibleCount
   }, [query, shouldFilter])
 
+  const contextValue = React.useMemo(
+    () => ({
+      query,
+      setQuery,
+      shouldFilter,
+      registerItem,
+      unregisterItem,
+      getVisibleItemCount,
+    }),
+    [getVisibleItemCount, query, registerItem, setQuery, shouldFilter, unregisterItem],
+  )
+
   return (
-    <CommandContext.Provider
-      value={{
-        query,
-        setQuery,
-        shouldFilter,
-        registerItem,
-        unregisterItem,
-        getVisibleItemCount,
-      }}
-    >
+    <CommandContext.Provider value={contextValue}>
       <div
         data-slot="command"
         className={cn(
@@ -264,7 +269,7 @@ function CommandGroup({
 function CommandItem({
   className,
   value,
-  keywords = [],
+  keywords = EMPTY_KEYWORDS,
   onSelect,
   children,
   ...props
@@ -275,22 +280,30 @@ function CommandItem({
 }) {
   const context = useCommandContext()
   const id = React.useId()
+  const registerItem = context?.registerItem
+  const unregisterItem = context?.unregisterItem
   const resolvedValue = React.useMemo(
     () => (value && value.length > 0 ? value : getNodeText(children)),
     [children, value],
   )
+  const keywordSignature = keywords.join("\u0000")
+  const resolvedKeywords = React.useMemo(
+    () => keywords.map((keyword) => keyword.trim()).filter((keyword) => keyword.length > 0),
+    [keywordSignature],
+  )
 
   React.useEffect(() => {
-    if (!context) {
+    if (!registerItem || !unregisterItem) {
       return
     }
 
-    context.registerItem({ id, value: resolvedValue, keywords })
-    return () => context.unregisterItem(id)
-  }, [context, id, keywords, resolvedValue])
+    registerItem({ id, value: resolvedValue, keywords: resolvedKeywords })
+    return () => unregisterItem(id)
+  }, [id, registerItem, resolvedKeywords, resolvedValue, unregisterItem])
 
   const visible =
-    !context?.shouldFilter || matchesQuery({ id, value: resolvedValue, keywords }, context.query)
+    !context?.shouldFilter ||
+    matchesQuery({ id, value: resolvedValue, keywords: resolvedKeywords }, context.query)
 
   if (!visible) {
     return null
