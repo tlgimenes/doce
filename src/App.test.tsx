@@ -40,10 +40,12 @@ vi.mock("@/lib/ipc", () => ({
     getContextUsage: vi.fn(),
     compactConversation: vi.fn(),
     isGenerationActive: vi.fn(),
+    getActivePlan: vi.fn(),
   },
   events: {
     onContextUsageUpdate: vi.fn(),
     onAgentMessagePersisted: vi.fn(),
+    onPlanUpdate: vi.fn(),
   },
 }));
 
@@ -107,6 +109,8 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     vi.mocked(commands.getContextUsage).mockRejectedValue(new Error("No model loaded"));
     vi.mocked(events.onContextUsageUpdate).mockResolvedValue(() => {});
     vi.mocked(events.onAgentMessagePersisted).mockResolvedValue(() => {});
+    vi.mocked(commands.getActivePlan).mockResolvedValue(null);
+    vi.mocked(events.onPlanUpdate).mockResolvedValue(() => {});
     vi.mocked(homeDir).mockResolvedValue("/Users/tester");
   });
 

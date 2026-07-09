@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import RichInput from "@/views/chat/rich-input/RichInput";
 import UserAskWidget from "@/views/chat/tool-widgets/UserAskWidget";
 import BashWidget from "@/views/chat/tool-widgets/BashWidget";
+import PlanTracker from "@/views/workspace/PlanTracker";
 import StreamingStatus from "@/views/workspace/StreamingStatus";
 import WorkspaceTopbar from "@/views/workspace/WorkspaceTopbar";
 import TaskWidget from "@/views/chat/tool-widgets/TaskWidget";
@@ -469,7 +470,7 @@ export default function Workspace({
           reset-pinning-on-switch effect. */}
       <StickToBottom
         key={conversationId}
-        className="relative min-h-0 flex-1"
+        className="@container relative min-h-0 flex-1"
         initial="instant"
         contextRef={stickToBottomContextRef}
       >
@@ -528,6 +529,7 @@ export default function Workspace({
                 <ArrowDownIcon size={16} />
               </Button>
             )}
+            <PlanTracker conversationId={conversationId} />
           </>
         )}
       </StickToBottom>

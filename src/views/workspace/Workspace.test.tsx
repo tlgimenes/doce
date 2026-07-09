@@ -1,6 +1,6 @@
 import { StrictMode } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import Workspace from "./Workspace";
 import { commands, events } from "@/lib/ipc";
@@ -28,9 +28,11 @@ vi.mock("@/lib/ipc", async (importOriginal) => {
       listSkills: vi.fn(),
       answerUserQuestion: vi.fn(),
       isGenerationActive: vi.fn(),
+      getActivePlan: vi.fn(),
     },
     events: {
       onAgentMessagePersisted: vi.fn(),
+      onPlanUpdate: vi.fn(),
     },
   };
 });
@@ -93,6 +95,8 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     // instead, since the real signal is "listMessages was called again",
     // not the event itself.
     vi.mocked(events.onAgentMessagePersisted).mockResolvedValue(() => {});
+    vi.mocked(commands.getActivePlan).mockResolvedValue(null);
+    vi.mocked(events.onPlanUpdate).mockResolvedValue(() => {});
   });
 
   afterEach(() => {
@@ -2041,5 +2045,44 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
       "Conversation condensed to save space",
     );
     expect(onConversationSeen).toHaveBeenCalledWith("conv-1");
+  });
+
+  // --- Plan tracker integration ---
+
+  it("shows the plan tracker over the transcript while a plan is active and clears it when the turn ends", async () => {
+    let firePlanUpdate!: (p: import("@/lib/ipc").PlanUpdatePayload) => void;
+    vi.mocked(events.onPlanUpdate).mockImplementation(async (cb) => {
+      firePlanUpdate = cb;
+      return () => {};
+    });
+
+    render(<Workspace conversationId="conv-1" />);
+    await screen.findByTestId("agent-input");
+    expect(screen.queryByTestId("plan-tracker")).not.toBeInTheDocument();
+
+    act(() =>
+      firePlanUpdate({
+        conversationId: "conv-1",
+        plan: {
+          goal: "Fix the bugs",
+          steps: [
+            { description: "find them", done: true },
+            { description: "fix them", done: false },
+          ],
+          currentStepIndex: 1,
+        },
+      }),
+    );
+
+    const tracker = await screen.findByTestId("plan-tracker");
+    // Inside the scroll wrapper (StickToBottom's relative container), as
+    // an overlay sibling of the scroll element — not inside the transcript.
+    expect(tracker.parentElement).toBe(
+      screen.getByTestId("workspace-scroll-container").parentElement,
+    );
+    expect(screen.getByTestId("plan-card")).toHaveTextContent("1/2");
+
+    act(() => firePlanUpdate({ conversationId: "conv-1", plan: null }));
+    await waitFor(() => expect(screen.queryByTestId("plan-tracker")).not.toBeInTheDocument());
   });
 });
