@@ -196,12 +196,7 @@ struct PlanExecBackend<'a> {
     cwd: &'a Path,
     threshold: u32,
     turns: u32,
-    plan: doce_lib::agent::plan::Plan,
-    state: doce_lib::agent::plan::LoopState,
-    /// Set by `RefuseStep`, consumed (and cleared) the next time `generate`
-    /// renders the Planning system prompt -- carries the refusal reason
-    /// into that one revision turn without lingering after.
-    refusal_context: Option<String>,
+    plan_state: doce_lib::agent::plan::PlanState,
 }
 
 impl AgentBackend for PlanExecBackend<'_> {
@@ -221,23 +216,9 @@ impl AgentBackend for PlanExecBackend<'_> {
     }
 
     async fn generate(&mut self, mut messages: Vec<ChatMessage>) -> String {
-        use doce_lib::agent::plan::{executing_system_prompt, LoopState, PLANNING_SYSTEM_PROMPT};
-
         self.turns += 1;
-        let system_text = match self.state {
-            LoopState::Planning => match self.refusal_context.take() {
-                Some(reason) => format!(
-                    "{PLANNING_SYSTEM_PROMPT}\n\nThe previous step could not be completed. Reason given: {reason}\n\nRevise the plan accordingly (AddStep, then ResumeExecution)."
-                ),
-                None => PLANNING_SYSTEM_PROMPT.to_string(),
-            },
-            LoopState::Executing { step_index } => {
-                let step_desc = self.plan.steps[step_index].description.clone();
-                executing_system_prompt(&self.plan.goal, &step_desc)
-            }
-        };
         if let Some(first) = messages.first_mut() {
-            *first = ChatMessage::system(system_text);
+            *first = ChatMessage::system(self.plan_state.system_prompt());
         }
 
         let rendered = self
@@ -254,140 +235,53 @@ impl AgentBackend for PlanExecBackend<'_> {
         _tool_call_id: String,
         call: doce_lib::agent::ToolCall,
     ) -> String {
-        use doce_lib::agent::plan::{LoopState, Plan, PlanStep};
-
-        let result = match (self.state, call.name.as_str()) {
-            (LoopState::Planning, "CreatePlan") => {
-                if !self.plan.steps.is_empty() {
-                    "Error: a plan already exists -- use AddStep to extend or correct it, CreatePlan is only valid once".to_string()
-                } else {
-                    let goal = call
-                        .arguments
-                        .get("goal")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string();
-                    let steps: Vec<PlanStep> = call
-                        .arguments
-                        .get("steps")
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|s| s.as_str())
-                                .map(|d| PlanStep {
-                                    description: d.to_string(),
-                                    done: false,
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    let step_count = steps.len();
-                    self.plan = Plan { goal, steps };
-                    format!("Plan created with {step_count} steps. Call ResumeExecution to begin.")
-                }
+        let result = if let Some(result) = self.plan_state.handle_plan_tool(&call) {
+            result
+        } else if call.name == "AskUserQuestion" {
+            "Error: no interactive user is available in this benchmark run -- proceed using your own best judgment".to_string()
+        } else if call.name == "Task" {
+            // Mirrors commands::agent's real Task handling: an isolated
+            // subagent, FR-016 one-level nesting enforced by run_loop
+            // itself via is_subagent -- kept out of the shared
+            // conversation entirely, only its final answer becomes this
+            // tool_result.
+            let prompt = call
+                .arguments
+                .get("prompt")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let sub_context = AgentContext {
+                is_subagent: true,
+                max_turns: 20,
+                cwd: Some(self.cwd.to_path_buf()),
+            };
+            let sub_messages =
+                vec![ChatMessage::system(SYSTEM_PROMPT), ChatMessage::user(prompt)];
+            let mut sub_backend = BenchBackend {
+                engine: self.engine,
+                cwd: self.cwd,
+                threshold: self.threshold,
+                turns: 0,
+                trace: Vec::new(),
+            };
+            let sub_result = run_loop(&sub_context, sub_messages, &mut sub_backend).await;
+            self.turns += sub_backend.turns;
+            match sub_result {
+                Ok(text) => text,
+                Err(e) => format!("Error: subagent did not finish ({e})"),
             }
-            (LoopState::Planning, "AddStep") => {
-                let description = call
-                    .arguments
-                    .get("description")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-                self.plan.steps.push(PlanStep {
-                    description,
-                    done: false,
-                });
-                format!("Step added. Plan now has {} steps.", self.plan.steps.len())
-            }
-            (LoopState::Planning, "ResumeExecution") => match self.next_undone_step() {
-                Some(idx) => {
-                    self.state = LoopState::Executing { step_index: idx };
-                    format!("Resuming at step {idx}: {}", self.plan.steps[idx].description)
-                }
-                None => "Error: no undone steps -- create or add a step first".to_string(),
-            },
-            (LoopState::Planning, "Read" | "Grep" | "Glob") => {
-                dispatch::execute(&call, Some(self.cwd)).model_text
-            }
-            (LoopState::Planning, "AskUserQuestion") => {
-                "Error: no interactive user is available in this benchmark run -- proceed using your own best judgment".to_string()
-            }
-            (LoopState::Executing { step_index }, "StepDone") => {
-                self.plan.steps[step_index].done = true;
-                match self.next_undone_step() {
-                    Some(next) => {
-                        self.state = LoopState::Executing { step_index: next };
-                        format!("Step {step_index} done. Moving to step {next}.")
-                    }
-                    None => {
-                        self.state = LoopState::Planning;
-                        format!("Step {step_index} done. All steps report done -- back to planning for final review.")
-                    }
-                }
-            }
-            (LoopState::Executing { step_index }, "RefuseStep") => {
-                let reason = call
-                    .arguments
-                    .get("reason")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("(no reason given)");
-                self.refusal_context = Some(format!(
-                    "step {step_index} (\"{}\"): {reason}",
-                    self.plan.steps[step_index].description
-                ));
-                self.state = LoopState::Planning;
-                "Step refused. Back to planning.".to_string()
-            }
-            (LoopState::Executing { .. }, "Read" | "Write" | "Edit" | "Bash" | "Grep" | "Glob") => {
-                dispatch::execute(&call, Some(self.cwd)).model_text
-            }
-            (LoopState::Executing { .. }, "Task") => {
-                // Mirrors commands::agent's real Task handling: an
-                // isolated subagent, FR-016 one-level nesting enforced by
-                // run_loop itself via is_subagent -- kept out of the
-                // shared conversation entirely, only its final answer
-                // becomes this tool_result.
-                let prompt = call
-                    .arguments
-                    .get("prompt")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-                let sub_context = AgentContext {
-                    is_subagent: true,
-                    max_turns: 20,
-                    cwd: Some(self.cwd.to_path_buf()),
-                };
-                let sub_messages = vec![ChatMessage::system(SYSTEM_PROMPT), ChatMessage::user(prompt)];
-                let mut sub_backend = BenchBackend {
-                    engine: self.engine,
-                    cwd: self.cwd,
-                    threshold: self.threshold,
-                    turns: 0,
-                    trace: Vec::new(),
-                };
-                let sub_result = run_loop(&sub_context, sub_messages, &mut sub_backend).await;
-                self.turns += sub_backend.turns;
-                match sub_result {
-                    Ok(text) => text,
-                    Err(e) => format!("Error: subagent did not finish ({e})"),
-                }
-            }
-            (_, other) => format!("Error: {other} is not available in the current phase"),
+        } else {
+            dispatch::execute(&call, Some(self.cwd)).model_text
         };
+
         let args_preview: String = call.arguments.to_string().chars().take(200).collect();
         let result_preview: String = result.chars().take(300).collect();
         println!(
             "  [{:?}] turn {} tool={} args={args_preview} -> {result_preview:?}",
-            self.state, self.turns, call.name
+            self.plan_state.state, self.turns, call.name
         );
         result
-    }
-}
-
-impl PlanExecBackend<'_> {
-    fn next_undone_step(&self) -> Option<usize> {
-        self.plan.steps.iter().position(|s| !s.done)
     }
 }
 
@@ -411,7 +305,7 @@ async fn run_planned_benchmark_task(
     cwd: &Path,
     max_plan_turns: u32,
 ) -> BenchmarkRun {
-    use doce_lib::agent::plan::{LoopState, Plan, PLANNING_SYSTEM_PROMPT};
+    use doce_lib::agent::plan::PLANNING_SYSTEM_PROMPT;
 
     let context = AgentContext {
         is_subagent: false,
@@ -432,13 +326,11 @@ async fn run_planned_benchmark_task(
         cwd,
         threshold,
         turns: 0,
-        plan: Plan::default(),
-        state: LoopState::Planning,
-        refusal_context: None,
+        plan_state: doce_lib::agent::plan::PlanState::default(),
     };
 
     let result = run_loop(&context, initial_messages, &mut backend).await;
-    report_plan("planned", &backend.plan);
+    report_plan("planned", &backend.plan_state.plan);
 
     BenchmarkRun {
         result,
