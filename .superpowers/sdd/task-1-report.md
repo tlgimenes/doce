@@ -107,3 +107,32 @@ Results:
 - Full test suite: 48 files passed, 356 tests passed
 - Lint: passed
 - Radix grep: no matches (`rg` exit code 1)
+
+## Review Fix Follow-up Correction
+
+Correction to the earlier "Review Fix Follow-up" note above: the statement
+that `src/components/Dialog.tsx` was restored to a native `<dialog>` wrapper
+is stale after the second review fix. Task 1 now uses the generated
+`@/components/ui/dialog` primitive behind the app-facing
+`{ open, onClose, children }` wrapper, keeps
+`data-testid="app-dialog-content"`, and closes by mapping
+`onOpenChange(false)` to `onClose()`.
+
+Additional verification for this correction:
+
+- `npm test -- src/components/ui/button.test.tsx src/components/Dialog.test.tsx`:
+  passed (17 tests)
+- `npm run build`: passed
+- `npm run lint`: passed
+- `rg "@radix-ui|radix-ui" src package.json package-lock.json`:
+  no matches (`rg` exit code 1)
+
+Repo-wide verification note:
+
+- `npm test` completed with 3 unrelated 5s timeouts in
+  `src/App.test.tsx`,
+  `src/views/chat/rich-input/RichInput.skills.test.tsx`, and
+  `src/views/chat/tool-widgets/SearchResultsWidget.test.tsx`.
+- Each of those timed-out cases passed when rerun individually with the same
+  test bodies, which points to suite-level timing pressure rather than a
+  Task 1 regression in the dialog or command work.

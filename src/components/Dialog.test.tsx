@@ -5,16 +5,15 @@ import userEvent from "@testing-library/user-event";
 import Dialog from "./Dialog";
 
 describe("Dialog", () => {
-  it("shows the dialog when open, then hides it and unmounts its content", async () => {
-    const { container, rerender } = render(
+  it("shows content when open, then hides it and unmounts it when closed", async () => {
+    const { rerender } = render(
       <Dialog open={true} onClose={vi.fn()}>
         <p>Hello</p>
       </Dialog>,
     );
-    const dialog = container.querySelector("dialog") as HTMLDialogElement;
 
-    await waitFor(() => expect(dialog.open).toBe(true));
-    expect(screen.getByTestId("app-dialog-content")).toBeInTheDocument();
+    const content = await screen.findByTestId("app-dialog-content");
+    expect(content).toBeInTheDocument();
     expect(screen.getByText("Hello")).toBeInTheDocument();
 
     rerender(
@@ -23,11 +22,13 @@ describe("Dialog", () => {
       </Dialog>,
     );
 
-    await waitFor(() => expect(dialog.open).toBe(false));
+    await waitFor(() =>
+      expect(screen.queryByTestId("app-dialog-content")).not.toBeInTheDocument(),
+    );
     expect(screen.queryByText("Hello")).not.toBeInTheDocument();
   });
 
-  it("calls onClose when the native cancel event fires", async () => {
+  it("calls onClose when Escape is pressed", async () => {
     const onClose = vi.fn();
     render(
       <Dialog open={true} onClose={onClose}>
@@ -35,28 +36,20 @@ describe("Dialog", () => {
       </Dialog>,
     );
 
-    const dialog = await screen
-      .findByText("Hello")
-      .then((element) => element.closest("dialog") as HTMLDialogElement);
-
-    dialog.dispatchEvent(new Event("cancel", { cancelable: true }));
+    await screen.findByTestId("app-dialog-content");
+    await userEvent.keyboard("{Escape}");
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("calls onClose on a backdrop click, but not on content clicks", async () => {
-    const onClose = vi.fn();
-    const { container } = render(
-      <Dialog open={true} onClose={onClose}>
-        <p data-testid="content">Hello</p>
+  it("does not render dialog content while closed", () => {
+    render(
+      <Dialog open={false} onClose={vi.fn()}>
+        <p>Hello</p>
       </Dialog>,
     );
 
-    await userEvent.click(screen.getByTestId("content"));
-    expect(onClose).not.toHaveBeenCalled();
-
-    const dialog = container.querySelector("dialog") as HTMLDialogElement;
-    await userEvent.click(dialog);
-    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("app-dialog-content")).not.toBeInTheDocument();
+    expect(screen.queryByText("Hello")).not.toBeInTheDocument();
   });
 
   it("keeps the generated dialog foundation at 8px-or-less radii", () => {

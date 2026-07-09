@@ -454,9 +454,8 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     pressCmd("f");
 
     const searchPanel = await screen.findByTestId("search-panel");
-    const dialog = searchPanel.closest("dialog");
-    expect(dialog).toBeInTheDocument();
-    expect(dialog).toHaveAttribute("open");
+    const dialogContent = searchPanel.closest('[data-testid="app-dialog-content"]');
+    expect(dialogContent).toBeInTheDocument();
     expect(screen.getByTestId("search-input")).toBeInTheDocument();
   });
 
@@ -465,8 +464,8 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     await waitForReady();
 
     pressCmd("k");
-    const dialog = await screen.findByTestId("shortcuts-dialog");
-    fireEvent(dialog.closest("dialog")!, new Event("cancel", { cancelable: true }));
+    await screen.findByTestId("shortcuts-dialog");
+    await userEvent.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByTestId("shortcuts-dialog")).not.toBeInTheDocument());
 
     pressCmd("k");

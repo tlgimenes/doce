@@ -425,7 +425,7 @@ describe("ConversationList", () => {
     await userEvent.click(screen.getByTestId("open-search"));
 
     const searchPanel = screen.getByTestId("search-panel");
-    expect(searchPanel.closest("dialog")).toBeInTheDocument();
+    expect(searchPanel.closest('[data-testid="app-dialog-content"]')).toBeInTheDocument();
     expect(sidebar.firstElementChild).toBe(actions);
     expect(actions).toBeInTheDocument();
   });

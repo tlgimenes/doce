@@ -1,45 +1,34 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useRef, type ReactNode } from "react"
+
+import { Dialog as DialogRoot, DialogContent } from "@/components/ui/dialog"
 
 export interface DialogProps {
-  open: boolean;
-  onClose: () => void;
-  children: ReactNode;
+  open: boolean
+  onClose: () => void
+  children: ReactNode
 }
 
 export default function Dialog({ open, onClose, children }: DialogProps) {
-  const ref = useRef<HTMLDialogElement>(null);
-
-  useEffect(() => {
-    const dialog = ref.current;
-    if (!dialog) return;
-
-    if (open && !dialog.open) {
-      dialog.showModal();
-      return;
-    }
-
-    if (!open && dialog.open) {
-      dialog.close();
-    }
-  }, [open]);
+  const contentRef = useRef<HTMLDivElement>(null)
 
   return (
-    <dialog
-      ref={ref}
-      onCancel={(event) => {
-        event.preventDefault();
-        onClose();
+    <DialogRoot
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) {
+          onClose()
+        }
       }}
-      onClick={(event) => {
-        if (event.target === ref.current) onClose();
-      }}
-      className="fixed left-1/2 top-1/2 z-50 w-[30rem] max-w-[90vw] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-lg border border-border bg-card p-0 text-card-foreground backdrop:bg-black/40"
     >
-      {open ? (
-        <div className="contents" data-testid="app-dialog-content">
-          {children}
-        </div>
-      ) : null}
-    </dialog>
-  );
+      <DialogContent
+        ref={contentRef}
+        initialFocus={contentRef}
+        showCloseButton={false}
+        data-testid="app-dialog-content"
+        className="w-[30rem] max-w-[90vw] overflow-hidden p-0"
+      >
+        {children}
+      </DialogContent>
+    </DialogRoot>
+  )
 }
