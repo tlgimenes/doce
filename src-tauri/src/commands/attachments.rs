@@ -1,8 +1,8 @@
-//! User Story 4 (FR-006/FR-007) — `read_attached_file`: reads a
-//! user-selected local file's bytes for the `attachment` segment
-//! (`data-model.md`). The picker/drag-drop flow on the frontend only ever
-//! yields an absolute path (`@tauri-apps/plugin-dialog`'s `open()`, or a
-//! dropped/pasted `File`'s path) — no plugin-fs dependency is installed in
+//! User Story 4 (FR-006/FR-007) — `read_attached_file`: reads local file
+//! bytes for both rich-input `attachment` segments (`data-model.md`) and
+//! chat-side Read previews. The picker/drag-drop flow yields absolute paths
+//! from user-selected files, and Read previews pass through paths already
+//! returned by the agent's Read tool. No plugin-fs dependency is installed in
 //! this project (research.md's "Native image picker" decision), so this
 //! narrowly-scoped command reads the bytes instead.
 
@@ -18,14 +18,14 @@ pub struct AttachedFile {
     pub name: String,
 }
 
-/// contracts/rich-chat-input.md's `read_attached_file`: reads the file at
-/// `path` and returns its bytes base64-encoded (no `data:` prefix — the
-/// `attachment` segment's `data` field is raw base64, matching
-/// data-model.md), its MIME type (detected from the extension, see
-/// `detect_mime_type`), and its basename. `path` is trusted the same way
-/// the existing `Read` agent tool already is (plan.md's Constitution
-/// Check) — it only ever originates from a path the user explicitly
-/// picked or dropped, never an arbitrary agent-supplied value.
+/// Reads the file at `path` and returns its bytes base64-encoded (no
+/// `data:` prefix), its MIME type (detected from the extension, see
+/// `detect_mime_type`), and its basename. Callers use this for rich-input
+/// attachments and for native previews of successful Read tool results.
+/// `path` is trusted the same way the existing `Read` agent tool already is
+/// (plan.md's Constitution Check): it originates either from a user-selected
+/// local attachment path or from a path already present in a successful Read
+/// result.
 #[tauri::command]
 #[specta::specta]
 pub fn read_attached_file(path: String) -> Result<AttachedFile, String> {
@@ -47,13 +47,10 @@ pub fn read_attached_file(path: String) -> Result<AttachedFile, String> {
     })
 }
 
-/// Simple extension-based MIME sniffing — no dedicated MIME-detection
-/// crate for this narrow need (task instructions). Covers the image
-/// extensions the file picker filters to (research.md's `Image` filter:
-/// png/jpg/jpeg/gif/webp) plus a reasonable fallback for anything else
-/// (e.g. a non-image attachment, whose `mimeType` is stored but not
-/// otherwise interpreted — FR-008 only distinguishes image vs. non-image
-/// via the segment's separate `isImage` flag).
+/// Simple extension-based MIME sniffing — no dedicated MIME-detection crate
+/// for this narrow need. Covers image/video/audio extensions used by
+/// attachments and Read previews, plus a reasonable fallback for anything
+/// else.
 fn detect_mime_type(path: &Path) -> String {
     let extension = path
         .extension()
