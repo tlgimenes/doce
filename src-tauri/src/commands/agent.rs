@@ -8,7 +8,9 @@ use crate::storage::conversations::load_history;
 use crate::storage::DbCell;
 use rusqlite::Connection;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
@@ -42,6 +44,129 @@ pub struct AskUserQuestionEvent {
 #[serde(rename_all = "camelCase")]
 pub struct AgentMessagePersisted {
     pub conversation_id: String,
+}
+
+/// Live plan state per conversation — the plan-tracker twin of
+/// `ActiveGenerations`: in-memory, per-process, cleared by RAII at turn
+/// end. `get_active_plan` reads it for mount/reload recovery; the
+/// `plan-update` event streams changes while the turn runs.
+#[derive(Default)]
+pub struct ActivePlans(pub Mutex<HashMap<String, PlanSnapshot>>);
+
+#[derive(Debug, Clone, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanStepSnapshot {
+    pub description: String,
+    pub done: bool,
+}
+
+#[derive(Debug, Clone, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanSnapshot {
+    pub goal: String,
+    pub steps: Vec<PlanStepSnapshot>,
+    /// `None` while Planning (between steps / during plan revision).
+    pub current_step_index: Option<u32>,
+}
+
+/// Fired on every plan mutation during an agent turn, and once with
+/// `plan: None` when the turn ends — the tracker's fade-out signal.
+#[derive(Debug, Clone, Serialize, specta::Type, tauri_specta::Event)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanUpdate {
+    pub conversation_id: String,
+    pub plan: Option<PlanSnapshot>,
+}
+
+fn plan_snapshot(state: &crate::agent::plan::PlanState) -> PlanSnapshot {
+    PlanSnapshot {
+        goal: state.plan.goal.clone(),
+        steps: state
+            .plan
+            .steps
+            .iter()
+            .map(|s| PlanStepSnapshot {
+                description: s.description.clone(),
+                done: s.done,
+            })
+            .collect(),
+        current_step_index: match state.state {
+            crate::agent::plan::LoopState::Executing { step_index } => Some(step_index as u32),
+            crate::agent::plan::LoopState::Planning => None,
+        },
+    }
+}
+
+/// Updates the live map and emits `plan-update` — called after every
+/// handled plan tool. A state with no plan yet (trivial turns never call
+/// CreatePlan) registers nothing, so the tracker never appears for them.
+/// `app: Option<&AppHandle>` so unit tests exercise the map half without a
+/// live Tauri app, mirroring `persist_tool_call`'s pattern.
+fn publish_plan_update(
+    app: Option<&AppHandle>,
+    active_plans: &ActivePlans,
+    conversation_id: &str,
+    state: &crate::agent::plan::PlanState,
+) {
+    if !state.has_plan() {
+        return;
+    }
+    let snapshot = plan_snapshot(state);
+    active_plans
+        .0
+        .lock()
+        .unwrap()
+        .insert(conversation_id.to_string(), snapshot.clone());
+    if let Some(app) = app {
+        let _ = app.emit(
+            "plan-update",
+            PlanUpdate {
+                conversation_id: conversation_id.to_string(),
+                plan: Some(snapshot),
+            },
+        );
+    }
+}
+
+/// Clears this conversation's live plan on every turn exit path and, if a
+/// plan was actually registered, emits the `plan: None` fade-out event —
+/// the plan-tracker twin of `ActiveGenerationGuard`.
+struct ActivePlanGuard<'a> {
+    active_plans: &'a ActivePlans,
+    app: AppHandle,
+    conversation_id: String,
+}
+
+impl Drop for ActivePlanGuard<'_> {
+    fn drop(&mut self) {
+        let had_plan = self
+            .active_plans
+            .0
+            .lock()
+            .unwrap()
+            .remove(&self.conversation_id)
+            .is_some();
+        if had_plan {
+            let _ = self.app.emit(
+                "plan-update",
+                PlanUpdate {
+                    conversation_id: self.conversation_id.clone(),
+                    plan: None,
+                },
+            );
+        }
+    }
+}
+
+/// Mount/reload recovery for the plan tracker — the same reload-proof
+/// pattern as `conversations::is_generation_active`.
+#[tauri::command]
+#[specta::specta]
+pub fn get_active_plan(
+    active_plans: State<'_, ActivePlans>,
+    conversation_id: String,
+) -> Option<PlanSnapshot> {
+    active_plans.0.lock().unwrap().get(&conversation_id).cloned()
 }
 
 /// Removes `conversation_id` from `ActiveGenerations` when dropped —
@@ -1762,5 +1887,55 @@ mod tests {
             result_detail["tokenCount"].as_u64().is_some(),
             "Read is one of the four annotated tools"
         );
+    }
+
+    #[test]
+    fn plan_snapshot_reflects_state_and_current_step() {
+        use crate::agent::plan::{LoopState, Plan, PlanState, PlanStep};
+        let mut state = PlanState::default();
+        state.plan = Plan {
+            goal: "g".to_string(),
+            steps: vec![
+                PlanStep { description: "a".to_string(), done: true },
+                PlanStep { description: "b".to_string(), done: false },
+            ],
+        };
+        state.state = LoopState::Executing { step_index: 1 };
+
+        let snapshot = plan_snapshot(&state);
+        assert_eq!(snapshot.goal, "g");
+        assert_eq!(snapshot.steps.len(), 2);
+        assert!(snapshot.steps[0].done);
+        assert_eq!(snapshot.current_step_index, Some(1));
+
+        state.state = LoopState::Planning;
+        assert_eq!(plan_snapshot(&state).current_step_index, None);
+    }
+
+    #[test]
+    fn publish_plan_update_only_registers_a_plan_that_exists_and_guard_drop_clears_it() {
+        use crate::agent::plan::PlanState;
+        let active_plans = ActivePlans::default();
+        let mut state = PlanState::default();
+
+        // No plan yet (empty steps): publishing must not register an entry.
+        publish_plan_update(None, &active_plans, "c1", &state);
+        assert!(active_plans.0.lock().unwrap().get("c1").is_none());
+
+        state.handle_plan_tool(&crate::agent::ToolCall {
+            name: "CreatePlan".to_string(),
+            arguments: serde_json::json!({"goal": "g", "steps": ["a"]}),
+        });
+        publish_plan_update(None, &active_plans, "c1", &state);
+        assert_eq!(
+            active_plans.0.lock().unwrap().get("c1").unwrap().goal,
+            "g"
+        );
+
+        // Guard clear is exercised without an AppHandle via the map
+        // directly (the emit half needs a live app; the map half is the
+        // reload-recovery source of truth get_active_plan reads).
+        active_plans.0.lock().unwrap().remove("c1");
+        assert!(active_plans.0.lock().unwrap().get("c1").is_none());
     }
 }

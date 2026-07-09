@@ -11,6 +11,7 @@ pub mod skills;
 pub mod storage;
 
 use agent::tools::ask_user::PendingQuestions;
+use commands::agent::ActivePlans;
 use commands::conversations::{ActiveGenerations, InferenceState};
 use commands::models::InFlightDownloads;
 use scheduler::Scheduler;
@@ -63,6 +64,7 @@ pub fn run() {
         .manage(InferenceState::default())
         .manage(InFlightDownloads::default())
         .manage(ActiveGenerations::default())
+        .manage(ActivePlans::default())
         .manage(PendingQuestions::default())
         .manage(DbCell::new())
         .manage(Scheduler::new())
