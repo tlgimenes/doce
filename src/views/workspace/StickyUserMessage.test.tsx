@@ -47,17 +47,19 @@ describe("StickyUserMessage", () => {
     expect(screen.getByTestId("user-message-bubble")).toHaveClass("max-h-[50vh]", "overflow-auto");
   });
 
-  it("invokes onScrollToTurn again when clicked while already focused", () => {
+  it("calls onScrollToTurn once per pointer click, including an already-focused target", async () => {
     const onScrollToTurn = vi.fn();
     render(<StickyUserMessage message={userMessage()} onScrollToTurn={onScrollToTurn} />);
 
+    const user = userEvent.setup();
     const focusTarget = screen.getByTestId("sticky-user-message-bubble");
 
-    fireEvent.focus(focusTarget);
+    await user.click(focusTarget);
     expect(onScrollToTurn).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("user-message-bubble")).toHaveClass("max-h-[50vh]", "overflow-auto");
 
     onScrollToTurn.mockClear();
-    fireEvent.click(focusTarget);
+    await user.click(focusTarget);
 
     expect(onScrollToTurn).toHaveBeenCalledTimes(1);
     expect(screen.getByTestId("user-message-bubble")).toHaveClass("max-h-[50vh]", "overflow-auto");

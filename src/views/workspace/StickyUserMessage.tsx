@@ -13,11 +13,7 @@ export default function StickyUserMessage({
   onScrollToTurn,
 }: StickyUserMessageProps): JSX.Element {
   const [expanded, setExpanded] = useState(false);
-  const mouseDownRef = useRef(false);
-
-  const expand = () => {
-    setExpanded(true);
-  };
+  const pointerOriginRef = useRef(false);
 
   const requestScroll = () => {
     onScrollToTurn?.();
@@ -26,16 +22,14 @@ export default function StickyUserMessage({
   const expandAndScrollOnFocus = (event: FocusEvent<HTMLDivElement>) => {
     if (event.target !== event.currentTarget) return;
     setExpanded(true);
+    if (pointerOriginRef.current) return;
     requestScroll();
   };
 
   const expandAndScrollOnClick = () => {
     setExpanded(true);
-    if (mouseDownRef.current) {
-      mouseDownRef.current = false;
-      return;
-    }
     requestScroll();
+    pointerOriginRef.current = false;
   };
 
   const collapseIfFocusLeft = (event: FocusEvent<HTMLDivElement>) => {
@@ -43,6 +37,7 @@ export default function StickyUserMessage({
 
     if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return;
     setExpanded(false);
+    pointerOriginRef.current = false;
   };
 
   return (
@@ -58,7 +53,7 @@ export default function StickyUserMessage({
         data-testid="sticky-user-message-bubble"
         onBlur={collapseIfFocusLeft}
         onMouseDown={() => {
-          mouseDownRef.current = true;
+          pointerOriginRef.current = true;
         }}
         onClick={expandAndScrollOnClick}
         onFocus={expandAndScrollOnFocus}

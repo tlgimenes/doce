@@ -41,3 +41,12 @@ Fix evidence
 
 - GREEN: `npx vitest run src/views/workspace/StickyUserMessage.test.tsx`
 - Relevant passing output after the fix: `Test Files 1 passed (1)` and `Tests 4 passed (4)`.
+
+Re-review fix evidence
+
+- RED: `npx vitest run src/views/workspace/StickyUserMessage.test.tsx`
+- Relevant failure before the corrected fix: `expected "vi.fn()" to be called 1 times, but got 0 times` in `calls onScrollToTurn once per pointer click, including an already-focused target`.
+- Why expected: the click path was still suppressing the callback instead of letting the pointer click invoke it exactly once.
+
+- GREEN: `npx vitest run src/views/workspace/StickyUserMessage.test.tsx`
+- Relevant passing output after the corrected fix: `Test Files 1 passed (1)` and `Tests 4 passed (4)`.
