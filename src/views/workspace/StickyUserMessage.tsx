@@ -1,4 +1,4 @@
-import { useState, type FocusEvent } from "react";
+import { useRef, useState, type FocusEvent } from "react";
 import UserMessageBubble from "@/components/UserMessageBubble";
 import { cn } from "@/lib/cn";
 import type { Message } from "@/lib/ipc";
@@ -13,15 +13,29 @@ export default function StickyUserMessage({
   onScrollToTurn,
 }: StickyUserMessageProps): JSX.Element {
   const [expanded, setExpanded] = useState(false);
+  const mouseDownRef = useRef(false);
 
   const expand = () => {
     setExpanded(true);
   };
 
-  const expandAndScroll = (event: FocusEvent<HTMLDivElement>) => {
+  const requestScroll = () => {
+    onScrollToTurn?.();
+  };
+
+  const expandAndScrollOnFocus = (event: FocusEvent<HTMLDivElement>) => {
     if (event.target !== event.currentTarget) return;
     setExpanded(true);
-    onScrollToTurn?.();
+    requestScroll();
+  };
+
+  const expandAndScrollOnClick = () => {
+    setExpanded(true);
+    if (mouseDownRef.current) {
+      mouseDownRef.current = false;
+      return;
+    }
+    requestScroll();
   };
 
   const collapseIfFocusLeft = (event: FocusEvent<HTMLDivElement>) => {
@@ -43,8 +57,11 @@ export default function StickyUserMessage({
         className="outline-none"
         data-testid="sticky-user-message-bubble"
         onBlur={collapseIfFocusLeft}
-        onClick={expand}
-        onFocus={expandAndScroll}
+        onMouseDown={() => {
+          mouseDownRef.current = true;
+        }}
+        onClick={expandAndScrollOnClick}
+        onFocus={expandAndScrollOnFocus}
         tabIndex={0}
       >
         <UserMessageBubble

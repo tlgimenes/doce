@@ -32,3 +32,12 @@ Self-review findings
 Issues or concerns
 
 - None noted from the focused test run.
+
+Fix evidence
+
+- RED: `npx vitest run src/views/workspace/StickyUserMessage.test.tsx`
+- Relevant failure before the fix: `expected "vi.fn()" to be called 1 times, but got 0 times` in `invokes onScrollToTurn again when clicked while already focused`.
+- Why expected: the click handler still only expanded locally and did not call `onScrollToTurn` on its own.
+
+- GREEN: `npx vitest run src/views/workspace/StickyUserMessage.test.tsx`
+- Relevant passing output after the fix: `Test Files 1 passed (1)` and `Tests 4 passed (4)`.

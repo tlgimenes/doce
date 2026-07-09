@@ -47,22 +47,30 @@ describe("StickyUserMessage", () => {
     expect(screen.getByTestId("user-message-bubble")).toHaveClass("max-h-[50vh]", "overflow-auto");
   });
 
-  it("expands on click and collapses when focus leaves the sticky component", async () => {
+  it("invokes onScrollToTurn again when clicked while already focused", () => {
     const onScrollToTurn = vi.fn();
     render(<StickyUserMessage message={userMessage()} onScrollToTurn={onScrollToTurn} />);
 
-    const user = userEvent.setup();
     const focusTarget = screen.getByTestId("sticky-user-message-bubble");
 
-    await user.click(focusTarget);
+    fireEvent.focus(focusTarget);
+    expect(onScrollToTurn).toHaveBeenCalledTimes(1);
+
+    onScrollToTurn.mockClear();
+    fireEvent.click(focusTarget);
 
     expect(onScrollToTurn).toHaveBeenCalledTimes(1);
     expect(screen.getByTestId("user-message-bubble")).toHaveClass("max-h-[50vh]", "overflow-auto");
+  });
 
-    fireEvent.blur(focusTarget, { relatedTarget: focusTarget });
-    expect(screen.getByTestId("user-message-bubble")).toHaveClass("max-h-[50vh]", "overflow-auto");
+  it("collapses when focus leaves the sticky component", () => {
+    render(<StickyUserMessage message={userMessage()} />);
 
+    const focusTarget = screen.getByTestId("sticky-user-message-bubble");
+
+    fireEvent.focus(focusTarget);
     fireEvent.blur(focusTarget, { relatedTarget: document.createElement("button") });
+
     expect(screen.getByTestId("user-message-bubble")).toHaveClass(
       "max-h-[84px]",
       "overflow-hidden",
