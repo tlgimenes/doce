@@ -1,71 +1,63 @@
-# Task 2 Report: Reusable user message bubble
+# Task 2: Benchmark scorer diagnostics + metrics line
 
-## What I implemented
+## Status: COMPLETED
 
-- Extracted the user-message bubble internals into `src/components/UserMessageBubble.tsx`.
-- Kept the existing transcript-row wrapper in `MessageContent` intact, including `data-testid="chat-message"`, `role="group"`, and `aria-label="You said"`.
-- Extended `MarkdownPreview` with an optional `testId` prop mapped to `data-testid`.
-- Switched the user branch in `MessageContent` to delegate bubble rendering to `UserMessageBubble`.
-- Added focused tests for the new reusable bubble and a regression assertion for the outer user row contract.
+## Changes Made
 
-## What I tested and test results
+### Modified Files
+- `src-tauri/tests/agent_benchmark.rs`
 
-- `npx vitest run src/components/UserMessageBubble.test.tsx`
-- `npx vitest run src/components/UserMessageBubble.test.tsx src/components/MessageContent.test.tsx`
+### Implementation Details
 
-Results:
+1. **Extended `tier4_score` function** (lines 571-598):
+   - Changed signature from `(usize, usize)` to `(usize, usize, Vec<String>)`
+   - Added failure tracking to capture why each file failed to be fixed
+   - Failures are categorized as:
+     - `marker still present` - when `// BUG:` comment wasn't removed
+     - `fixed line missing` - when the corrected line `let result = {a} + {b};` isn't present
+     - Combined message when both conditions fail
+   - Seeder analysis verified: `let result = {a} - {b};` format with `a = i` and `b = i + 1`, corrected to `{a} + {b}`
 
-- The focused suite passed after implementation: 2 files, 22 tests passing.
+2. **Updated first tier4 test** (`tier4_long_running_fixes_many_scattered_bugs`, lines 617-630):
+   - Destructured tier4_score return value to capture failures
+   - Added per-file failure output with `[tier4]` prefix
+   - Added machine-greppable metrics line: `[metrics] score=N/20 turns=T elapsed_s=E seed=S`
+   - Metrics use `run.turns_taken` and `run.elapsed.as_secs_f32()`
+   - Seed reads from `DOCE_GEN_SEED` environment variable with fallback to `"entropy"`
 
-## TDD Evidence
+3. **Updated second tier4 test** (`tier4_planned_long_running_fixes_many_scattered_bugs`, lines 651-665):
+   - Applied identical changes as first tier4 test
+   - Uses `[tier4_planned]` prefix for failure output
+   - Shares same metrics line format for consistency
 
-### RED
+## Verification Results
 
-- Command: `npx vitest run src/components/UserMessageBubble.test.tsx`
-- Relevant failure:
+✓ **Compilation**: `cargo test --test agent_benchmark --no-run` - CLEAN (12.62s)
+✓ **Clippy**: `cargo clippy --tests` - CLEAN (no warnings)
+✓ **Lib tests**: `cargo test --lib` - PASSED (244 passed; 0 failed)
 
-```text
-Error: Failed to resolve import "./UserMessageBubble" from "src/components/UserMessageBubble.test.tsx". Does the file exist?
+## Diagnostic Output Examples
+
+When a tier4 run completes, the output will now include:
+
+```
+  [tier4] bug_07: marker still present; fixed line missing
+  [tier4] bug_14: fixed line missing
+  [metrics] score=18/20 turns=42 elapsed_s=125.4 seed=12345
 ```
 
-- Why expected: the test was written before `UserMessageBubble.tsx` existed, so the initial run should fail at import resolution.
+This enables:
+- Per-file root cause analysis of failures
+- Machine parsing of metrics via regex on `[metrics]` lines
+- Distinction between operator fixes that worked but comments remained vs. actual unfixed bugs
+- Reproducibility tracking via seed value in metrics line
 
-### GREEN
+## Commit
 
-- Command: `npx vitest run src/components/UserMessageBubble.test.tsx src/components/MessageContent.test.tsx`
-- Relevant passing output:
+Ready for commit per task specification:
+```bash
+git add src-tauri/tests/agent_benchmark.rs
+git commit -m "feat(bench): per-file failure reasons and seeded metrics line for tier4
 
-```text
-Test Files  2 passed (2)
-Tests       22 passed (22)
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
-
-## Files changed
-
-- `src/components/MarkdownPreview.tsx`
-- `src/components/UserMessageBubble.tsx`
-- `src/components/UserMessageBubble.test.tsx`
-- `src/components/MessageContent.tsx`
-- `src/components/MessageContent.test.tsx`
-
-## Self-review findings
-
-- The extraction is narrow and preserves the existing outer user row contract.
-- `UserMessageBubble` keeps the same visual defaults and token-meter behavior for both plain text and rich text messages.
-
-## Issues or concerns
-
-- None.
-
-## Follow-up fix evidence
-
-- Added a direct `MessageContent` regression for the normal user token-meter integration path:
-  - `renders the user token meter wired through the top-level MessageContent row`
-- This assertion passed immediately after being added, so no new RED failure was available for that coverage-only change; the underlying behavior was already present.
-- Added an explicit return type to `UserMessageBubble` using `React.JSX.Element`.
-- Verification runs after the follow-up fix:
-  - `npx vitest run src/components/UserMessageBubble.test.tsx src/components/MessageContent.test.tsx`
-  - Result: `2 passed`, `23 tests passed`
-  - `npx tsc -b --noEmit`
-  - Result: blocked by an unrelated existing error in `src/views/workspace/transcriptTurns.test.ts`:
-    - `TS2783: 'id' is specified more than once, so this usage will be overwritten.`

@@ -1,61 +1,57 @@
-What I implemented
+# Task 3 Report: Sampling alignment with Qwen 2507 guidance
 
-- Added `StickyUserMessage` as a standalone sticky wrapper around `UserMessageBubble`.
-- Kept the wrapper local-state only: collapsed by default, expands on focus or click, collapses when focus leaves the sticky region.
-- Applied the required outer classes and attributes: `data-testid="chat-message"`, `data-sticky-user-message="true"`, `sticky top-4 z-40 mb-8 sm:mb-6`, `role="group"`, and `aria-label="You said"`.
-- Passed the required collapsed and expanded bubble classes through `bubbleClassName`.
+## Status
+**COMPLETE**
 
-What I tested and test results
+## Commit Hash
+`f961762`
 
-- Ran the focused Vitest file for the new component.
-- Result after implementation: `3 passed`.
+## Verification Summary
+Sampler chain successfully aligned to Qwen3-*-2507 recommended parameters: replaced repeat-penalty (64, 1.1, 0.0, 0.0) with presence-penalty model (64, 1.0, 0.0, 1.0); updated top-k from 40→20, top-p from 0.9→0.8; added min_p(0.0, 1).
 
-TDD Evidence
+## Implementation Details
 
-- RED: `npx vitest run src/views/workspace/StickyUserMessage.test.tsx`
-- Relevant failure before implementation: `Failed to resolve import "./StickyUserMessage" from "src/views/workspace/StickyUserMessage.test.tsx". Does the file exist?`
-- Why expected: the test was written first and the component file did not exist yet.
+### Step 1: Verified min_p signature
+Confirmed `LlamaSampler::min_p(p: f32, min_keep: usize)` exists in llama-cpp-2-0.1.150 at line 286 of sampling.rs.
 
-- GREEN: `npx vitest run src/views/workspace/StickyUserMessage.test.tsx`
-- Relevant passing output after implementation: `Test Files 1 passed (1)` and `Tests 3 passed (3)`.
+### Step 2: Replaced sampler chain
+Updated `/Users/gimenes/code/doce/src-tauri/src/inference/mod.rs` lines 462-468 with Qwen-recommended parameters plus motivating comment explaining the presence-penalty shift for grammar-safe repetition control.
 
-Files changed
+**Old chain:**
+```rust
+chain.extend([
+    LlamaSampler::penalties(64, 1.1, 0.0, 0.0),
+    LlamaSampler::top_k(40),
+    LlamaSampler::top_p(0.9, 1),
+    LlamaSampler::temp(0.7),
+    LlamaSampler::dist(seed),
+]);
+```
 
-- `src/views/workspace/StickyUserMessage.tsx`
-- `src/views/workspace/StickyUserMessage.test.tsx`
-- `.superpowers/sdd/task-3-report.md`
+**New chain:**
+```rust
+// Qwen3-*-2507's own recommended sampling (model card): temp 0.7,
+// top-p 0.8, top-k 20, min-p 0 — with presence-penalty for
+// repetition control instead of repeat-penalty (repeat-penalty
+// taxes the tokens JSON repeats BY DESIGN — braces, quotes, key
+// names — and inside an active grammar it can only distort
+// argument content).
+chain.extend([
+    LlamaSampler::penalties(64, 1.0, 0.0, 1.0),
+    LlamaSampler::top_k(20),
+    LlamaSampler::top_p(0.8, 1),
+    LlamaSampler::min_p(0.0, 1),
+    LlamaSampler::temp(0.7),
+    LlamaSampler::dist(seed),
+]);
+```
 
-Self-review findings
+### Step 3: Verification
+- `cargo test --lib`: **PASS** (244 passed; 0 failed; 2 ignored)
+- `cargo clippy --lib`: **CLEAN** (no warnings)
 
-- The focus handler is guarded so nested focus inside the bubble does not retrigger the scroll callback.
+### Step 4: Commit
+Git commit f961762 created with message and co-author attribution as specified.
 
-Issues or concerns
-
-- None noted from the focused test run.
-
-Fix evidence
-
-- RED: `npx vitest run src/views/workspace/StickyUserMessage.test.tsx`
-- Relevant failure before the fix: `expected "vi.fn()" to be called 1 times, but got 0 times` in `invokes onScrollToTurn again when clicked while already focused`.
-- Why expected: the click handler still only expanded locally and did not call `onScrollToTurn` on its own.
-
-- GREEN: `npx vitest run src/views/workspace/StickyUserMessage.test.tsx`
-- Relevant passing output after the fix: `Test Files 1 passed (1)` and `Tests 4 passed (4)`.
-
-Re-review fix evidence
-
-- RED: `npx vitest run src/views/workspace/StickyUserMessage.test.tsx`
-- Relevant failure before the corrected fix: `expected "vi.fn()" to be called 1 times, but got 0 times` in `calls onScrollToTurn once per pointer click, including an already-focused target`.
-- Why expected: the click path was still suppressing the callback instead of letting the pointer click invoke it exactly once.
-
-- GREEN: `npx vitest run src/views/workspace/StickyUserMessage.test.tsx`
-- Relevant passing output after the corrected fix: `Test Files 1 passed (1)` and `Tests 4 passed (4)`.
-
-Pointer-level fix evidence
-
-- RED: `npx vitest run src/views/workspace/StickyUserMessage.test.tsx`
-- Relevant failure before the pointer fix: `expected "vi.fn()" to be called 1 times, but got 2 times` in `treats touch pointer activation as one scroll request`.
-- Why expected: the duplicate-scroll guard still used mouse-only activation, so touch pointer focus and click both invoked the callback.
-
-- GREEN: `npx vitest run src/views/workspace/StickyUserMessage.test.tsx`
-- Relevant passing output after the pointer fix: `Test Files 1 passed (1)` and `Tests 5 passed (5)`.
+## Concerns
+None. The benchmark gate was explicitly not run per controller instructions; the changes are minimal and well-documented.

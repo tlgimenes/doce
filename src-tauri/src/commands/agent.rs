@@ -1023,24 +1023,7 @@ async fn persist_assistant_text_reply(
     .map_err(|e| e.to_string())
 }
 
-/// 006-chat-empty-state (research.md § 1): tells the model what directory
-/// it's working in when one is known, so it can construct sensible paths
-/// itself. Deliberately just this — it does not make `Bash` run with `cwd`
-/// as its process working directory, or make `Read`/`Write`/`Edit`/`Glob`/
-/// `Grep` resolve relative paths against it; that fuller fix is its own,
-/// separate, larger change (see `plan.md`'s Complexity Tracking).
-#[allow(dead_code)]
-fn system_message(cwd: Option<&std::path::Path>) -> String {
-    match cwd {
-        Some(path) => format!(
-            "{SYSTEM_PROMPT}\n\nYou are currently working in the directory: {}",
-            path.display()
-        ),
-        None => SYSTEM_PROMPT.to_string(),
-    }
-}
-
-/// The plan engine's state prompt plus the cwd line `system_message` has
+/// The plan engine's state prompt plus the cwd line that tells the model
 /// always appended — used both to seed `initial_messages[0]` (and the
 /// pre-loop compaction budget) and by `RealBackend::generate`'s per-turn
 /// swap.
@@ -1470,15 +1453,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn system_message_appends_the_cwd_line_when_known() {
-        let msg = system_message(Some(std::path::Path::new("/Users/tester/code/doce")));
-        assert!(msg.starts_with(SYSTEM_PROMPT));
+    fn plan_system_message_appends_the_cwd_line_when_known() {
+        let mut state = crate::agent::plan::PlanState::default();
+        let msg = plan_system_message(&mut state, Some(std::path::Path::new("/Users/tester/code/doce")));
         assert!(msg.contains("You are currently working in the directory: /Users/tester/code/doce"));
+        // Verify the prompt body is the planning prompt
+        let base = crate::agent::plan::PlanState::default().system_prompt();
+        assert!(msg.starts_with(&base));
     }
 
     #[test]
-    fn system_message_is_unchanged_when_no_cwd_is_known() {
-        assert_eq!(system_message(None), SYSTEM_PROMPT);
+    fn plan_system_message_is_unchanged_when_no_cwd_is_known() {
+        let mut state = crate::agent::plan::PlanState::default();
+        let msg = plan_system_message(&mut state, None);
+        let base = crate::agent::plan::PlanState::default().system_prompt();
+        assert_eq!(msg, base);
     }
 
     // --- 004-tool-call-widgets: US3 (AskUserQuestion pause/resume) ---

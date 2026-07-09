@@ -1,46 +1,39 @@
-## What I implemented
+# Task 4 Report: §4.11 Correctness Fixes
 
-- Added `src/views/workspace/TranscriptTurn.tsx` as a thin transcript-turn renderer.
-- Added `PendingTurnWidget` with the exact bash/task union contract.
-- Rendered `StickyUserMessage` and the sticky background strip when `turn.user` exists.
-- Rendered turn rows through existing `MessageContent` so tool dispatch and row semantics stay centralized.
-- Rendered pending `BashWidget` / `TaskWidget` content when supplied.
-- Rendered turn-local error content when supplied.
+## Status
+COMPLETE
 
-## What I tested and test results
+## Commit Hash
+5c32a56
 
-- Focused test file: `src/views/workspace/TranscriptTurn.test.tsx`
-- Result after implementation: 4 tests passed.
+## Verification Summary
+Applied n_threads to InferenceEngine context params; usage measurement now uses plan prompt instead of flat system prompt. All 244 lib tests pass; clippy clean.
 
-## TDD Evidence
+## Changes Made
 
-### RED
-
-- Command: `npx vitest run src/views/workspace/TranscriptTurn.test.tsx`
-- Relevant failing output:
-
-  ```text
-  Error: Failed to resolve import "./TranscriptTurn" from "src/views/workspace/TranscriptTurn.test.tsx". Does the file exist?
+### 1. InferenceEngine n_threads Fix
+- Added `n_threads: i32` field to `InferenceEngine` struct
+- Modified `load()` to store the parameter: `Ok(Self { backend, model, n_threads })`
+- Applied it in `generate()` using builder methods:
+  ```rust
+  let ctx_params = LlamaContextParams::default()
+      .with_n_ctx(NonZeroU32::new(CONTEXT_WINDOW_TOKENS))
+      .with_n_threads(self.n_threads)
+      .with_n_threads_batch(self.n_threads);
   ```
+- Verified both methods exist in llama-cpp-2 0.1.150 registry
 
-- Why this failure was expected: the test imported the new renderer before it existed, so the suite had to fail at module resolution.
+### 2. Context Usage Measurement Fix
+- Updated `emit_context_usage_update()` in `src-tauri/src/commands/agent.rs`
+- Replaced `&system_message(cwd)` with fresh `PlanState::default()` + `plan_system_message()`
+- Added explanatory comment noting this matches top-level loop's actual seed prompt (~300 token difference)
 
-### GREEN
+### 3. Dead Code Suppression
+- Added `#[allow(dead_code)]` to `system_message()` function (still used by tests)
 
-- Command: `npx vitest run src/views/workspace/TranscriptTurn.test.tsx`
-- Result: `Test Files  1 passed (1)`, `Tests  4 passed (4)`
+## Test Results
+- `cargo test --lib`: 244 passed, 0 failed, 2 ignored
+- `cargo clippy --lib --tests`: No warnings
 
-## Files changed
-
-- `src/views/workspace/TranscriptTurn.tsx`
-- `src/views/workspace/TranscriptTurn.test.tsx`
-- `.superpowers/sdd/task-4-report.md`
-
-## Self-review findings
-
-- The renderer stays thin and delegates row semantics to `MessageContent`, which matches the task contract.
-- `isLastTurn` is accepted and preserved on the root element as metadata, but it does not change rendering behavior in this task.
-
-## Issues or concerns
-
-- None.
+## Concerns
+None. Both thread-count parameters are now genuinely applied, and usage measurement aligns with actual rendering behavior.
