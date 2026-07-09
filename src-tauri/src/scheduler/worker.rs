@@ -102,6 +102,7 @@ async fn run_generation(app: &AppHandle, request: &GenerationRequest) -> Result<
             &rendered,
             64,
             crate::inference::ToolCallMode::Forbid,
+            None,
             |piece| {
                 let _ = app_emit.emit(
                     "assistant-token",

@@ -122,6 +122,7 @@ impl AgentBackend for BenchBackend<'_> {
                 &rendered,
                 doce_lib::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS as i32,
                 doce_lib::inference::ToolCallMode::Allow,
+                None,
                 |_| {},
                 || false,
             )
@@ -233,25 +234,15 @@ impl AgentBackend for PlanExecBackend<'_> {
 
     async fn generate(&mut self, mut messages: Vec<ChatMessage>) -> String {
         self.turns += 1;
-        if let Some(first) = messages.first_mut() {
-            // Same cwd suffix production's plan_system_message appends --
-            // without it the model has no anchor for path arguments and
-            // was observed globbing the filesystem root ("path": "/"),
-            // concluding the task's files don't exist.
-            *first = ChatMessage::system(format!(
-                "{}
-
-You are currently working in the directory: {}",
-                self.plan_state.system_prompt(true),
-                self.cwd.display()
-            ));
-        }
-        // Recite the live plan at the context tail (Manus's recitation
-        // trick) to keep the global plan inside the model's recent attention
-        // span on long tasks -- the in-memory clone only, never persisted.
-        if let Some(recitation) = self.plan_state.recitation_text() {
-            messages.push(doce_lib::inference::ChatMessage::user(recitation));
-        }
+        // Stable-prefix architecture, exactly as production's `RealBackend`:
+        // `messages[0]` is the immutable union prompt + cwd line seeded by
+        // `run_planned_benchmark_task` and never touched here, so the
+        // session's KV prefix survives every plan-state transition. All
+        // volatile state (mode banner, current step framing, refusal,
+        // recitation checklist) rides in ONE tail message; the current
+        // state's tool set is enforced at the sampler (grammar name-enum),
+        // not by prompt swaps.
+        messages.push(ChatMessage::user(self.plan_state.state_tail()));
 
         let rendered = self
             .engine
@@ -263,6 +254,7 @@ You are currently working in the directory: {}",
                 &rendered,
                 doce_lib::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS as i32,
                 doce_lib::inference::ToolCallMode::Require,
+                Some(self.plan_state.allowed_tool_names(true)),
                 |_| {},
                 || false,
             )
@@ -364,15 +356,22 @@ async fn run_planned_benchmark_task(
     cwd: &Path,
     max_plan_turns: u32,
 ) -> BenchmarkRun {
-    use doce_lib::agent::plan::PLANNING_SYSTEM_PROMPT;
-
     let context = AgentContext {
         is_subagent: false,
         max_turns: max_plan_turns,
         cwd: Some(cwd.to_path_buf()),
     };
+    // Seeded ONCE with the immutable union prompt + the same cwd suffix
+    // production's plan_system_message appends (without it the model has no
+    // anchor for path arguments and was observed globbing the filesystem
+    // root ("path": "/"), concluding the task's files don't exist) --
+    // byte-stable for the whole run, matching production's messages[0].
     let initial_messages = vec![
-        ChatMessage::system(PLANNING_SYSTEM_PROMPT),
+        ChatMessage::system(format!(
+            "{}\n\nYou are currently working in the directory: {}",
+            doce_lib::agent::plan::plan_system_prompt(true),
+            cwd.display()
+        )),
         ChatMessage::user(task),
     ];
     let start = Instant::now();

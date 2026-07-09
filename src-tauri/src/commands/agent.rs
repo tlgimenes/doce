@@ -574,32 +574,26 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
     }
 
     async fn generate(&mut self, mut messages: Vec<ChatMessage>) -> String {
-        // The two-state engine: every generation renders under the prompt
-        // for the CURRENT state (Planning, refusal-annotated when
-        // revising, or the per-step Executing prompt) -- swapped only on
-        // this call's own clone of `messages` (run_loop clones before every
-        // `generate`), never written back to run_loop's canonical list.
-        // That list's [0] -- what `measure`/`compact` below actually budget
-        // against -- stays whatever this turn's SEED Planning prompt was,
-        // for the whole turn; bounded and fail-safe regardless of which
-        // state the loop later reaches mid-turn.
-        let system_text = plan_system_message(&mut self.plan_state, self.cwd, true);
-        if let Some(first) = messages.first_mut() {
-            *first = ChatMessage::system(system_text);
-        }
-        // Recite the live plan at the context tail (Manus's recitation
-        // trick) to keep the global plan inside the model's recent attention
-        // span on long tasks -- the in-memory clone only, never persisted.
-        if let Some(recitation) = self.plan_state.recitation_text() {
-            messages.push(ChatMessage::user(recitation));
-        }
+        // Stable-prefix prompt architecture: `messages[0]` is the immutable
+        // union prompt (+ turn-stable cwd line) seeded by
+        // `send_agent_message` and NEVER touched here, so the session's KV
+        // prefix survives every Planning<->Executing and step->step
+        // transition -- only the tail below (plus the newest tool exchange)
+        // re-decodes each turn. Everything volatile (mode banner, current
+        // step framing, refusal context, recitation checklist) rides in ONE
+        // tail message, appended to this call's own clone of `messages`
+        // (run_loop clones before every `generate`), never written back to
+        // run_loop's canonical list.
+        messages.push(ChatMessage::user(self.plan_state.state_tail()));
         // The plan loop REQUIRES a tool call at the sampler level in BOTH
         // states: a plain-text reply anywhere would end the entire task,
         // and the model was observed degrading into exactly that
         // (`StepDone(...)` as prose mid-step; a bare "ResumeExecution"
         // text after twenty repetitive AddStep calls). "Done" is itself a
         // tool call now (FinishTask), so requiring tool calls never traps
-        // the loop.
+        // the loop. The union prompt advertises BOTH states' tools, so the
+        // current state's set is enforced here at the sampler instead: a
+        // tool outside it is unsamplable (grammar name-enum gating).
         match self.engine.render_chat_prompt(&messages) {
             Ok(rendered) => self
                 .session
@@ -608,6 +602,7 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
                     &rendered,
                     crate::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS as i32,
                     crate::inference::ToolCallMode::Require,
+                    Some(self.plan_state.allowed_tool_names(true)),
                     |_piece| {},
                     || false,
                 )
@@ -697,21 +692,13 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
     }
 
     async fn generate(&mut self, mut messages: Vec<ChatMessage>) -> String {
-        // Same two-state engine as `RealBackend::generate` (see that impl's
-        // doc comment for the full rationale) -- subagents get the same
-        // Planning/Executing prompt swap and the same tool-call requirement,
-        // just without ActivePlans/events (no tracker for a subagent's own
-        // transcript).
-        let system_text = plan_system_message(&mut self.plan_state, self.cwd, false);
-        if let Some(first) = messages.first_mut() {
-            *first = ChatMessage::system(system_text);
-        }
-        // Recite the live plan at the context tail (Manus's recitation
-        // trick) to keep the global plan inside the model's recent attention
-        // span on long tasks -- the in-memory clone only, never persisted.
-        if let Some(recitation) = self.plan_state.recitation_text() {
-            messages.push(ChatMessage::user(recitation));
-        }
+        // Same stable-prefix architecture as `RealBackend::generate` (see
+        // that impl's doc comment for the full rationale): `messages[0]` is
+        // the immutable subagent union prompt (`allow_task = false` -- no
+        // `Task` tool, FR-016) seeded by `execute_top_level_tool`, never
+        // touched here; all volatile state rides the single tail message,
+        // and the current state's tool set is enforced at the sampler.
+        messages.push(ChatMessage::user(self.plan_state.state_tail()));
         match self.engine.render_chat_prompt(&messages) {
             Ok(rendered) => self
                 .engine
@@ -719,6 +706,7 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
                     &rendered,
                     crate::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS as i32,
                     crate::inference::ToolCallMode::Require,
+                    Some(self.plan_state.allowed_tool_names(false)),
                     |_piece| {},
                     || false,
                 )
@@ -894,10 +882,11 @@ async fn execute_top_level_tool(
     // than starting the subagent unscoped.
     let sub_context = AgentContext::subagent().with_cwd(cwd.map(|p| p.to_path_buf()));
     // Subagents now run the same two-state plan engine as the top-level
-    // loop (rather than the flat SYSTEM_PROMPT ReAct loop) — seeded here,
-    // before the backend literal below takes ownership of the state.
-    let mut plan_state = crate::agent::plan::PlanState::default();
-    let sub_system_prompt = plan_system_message(&mut plan_state, sub_context.cwd.as_deref(), false);
+    // loop (rather than the flat SYSTEM_PROMPT ReAct loop) — the fresh
+    // state is owned by the backend literal below; the seed prompt is the
+    // state-free subagent union prompt (`allow_task = false`).
+    let plan_state = crate::agent::plan::PlanState::default();
+    let sub_system_prompt = plan_system_message(sub_context.cwd.as_deref(), false);
     // FR-015: a fresh, isolated context — just the system prompt plus the
     // delegated task, no parent conversation history.
     let sub_messages = vec![
@@ -1059,8 +1048,7 @@ async fn emit_context_usage_update(
     };
     // Measure usage against the plan engine's actual seed prompt (matches the top-level loop's
     // initial system prompt), not the flat SYSTEM_PROMPT which understated usage by ~300 tokens.
-    let mut seed_state = crate::agent::plan::PlanState::default();
-    let system_prompt = plan_system_message(&mut seed_state, cwd, true);
+    let system_prompt = plan_system_message(cwd, true);
     if let Ok(usage) = crate::context::compute_usage(
         conn,
         engine,
@@ -1114,19 +1102,19 @@ async fn persist_assistant_text_reply(
     .map_err(|e| e.to_string())
 }
 
-/// The plan engine's state prompt plus the cwd line that tells the model
-/// always appended — used both to seed `initial_messages[0]` (and the
-/// pre-loop compaction budget) and by `RealBackend::generate`'s per-turn
-/// swap. `allow_task` is forwarded to `PlanState::system_prompt` --
-/// `false` for the subagent path (FR-016's one-level nesting cap means
-/// `run_loop` rejects any `Task` call from a subagent, so its Executing
-/// prompt must not advertise the tool at all), `true` everywhere top-level.
-fn plan_system_message(
-    state: &mut crate::agent::plan::PlanState,
-    cwd: Option<&std::path::Path>,
-    allow_task: bool,
-) -> String {
-    let base = state.system_prompt(allow_task);
+/// The plan engine's immutable union prompt plus the cwd line that tells
+/// the model where it's working — what seeds `initial_messages[0]` (and
+/// the pre-loop compaction budget / usage measurement). Deliberately
+/// state-free: both inputs are turn-stable (the union prompt is a cached
+/// static; a conversation's workspace can't change mid-turn), so the
+/// message this returns is byte-identical every time a given host renders
+/// it — the invariant `PromptSession`'s KV-prefix reuse depends on.
+/// `allow_task` picks the host flavor: `false` for the subagent path
+/// (FR-016's one-level nesting cap means `run_loop` rejects any `Task`
+/// call from a subagent, so its prompt must not advertise the tool at
+/// all), `true` everywhere top-level.
+fn plan_system_message(cwd: Option<&std::path::Path>, allow_task: bool) -> String {
+    let base = crate::agent::plan::plan_system_prompt(allow_task);
     match cwd {
         Some(path) => format!(
             "{base}\n\nYou are currently working in the directory: {}",
@@ -1390,8 +1378,8 @@ pub async fn send_agent_message(
     // per-turn `maybe_compact` calls inside the loop for why this alone
     // isn't sufficient for agent mode (tool results can push a *later* turn
     // over budget even when the first turn was fine).
-    let mut plan_state = crate::agent::plan::PlanState::default();
-    let system_prompt = plan_system_message(&mut plan_state, cwd.as_deref(), true);
+    let plan_state = crate::agent::plan::PlanState::default();
+    let system_prompt = plan_system_message(cwd.as_deref(), true);
     let usage = crate::context::maybe_compact(
         &conn,
         engine,
@@ -1558,20 +1546,40 @@ mod tests {
 
     #[test]
     fn plan_system_message_appends_the_cwd_line_when_known() {
-        let mut state = crate::agent::plan::PlanState::default();
-        let msg = plan_system_message(&mut state, Some(std::path::Path::new("/Users/tester/code/doce")), true);
+        let msg = plan_system_message(Some(std::path::Path::new("/Users/tester/code/doce")), true);
         assert!(msg.contains("You are currently working in the directory: /Users/tester/code/doce"));
-        // Verify the prompt body is the planning prompt
-        let base = crate::agent::plan::PlanState::default().system_prompt(true);
-        assert!(msg.starts_with(&base));
+        // Verify the prompt body is the immutable union prompt.
+        let base = crate::agent::plan::plan_system_prompt(true);
+        assert!(msg.starts_with(base));
     }
 
     #[test]
     fn plan_system_message_is_unchanged_when_no_cwd_is_known() {
-        let mut state = crate::agent::plan::PlanState::default();
-        let msg = plan_system_message(&mut state, None, true);
-        let base = crate::agent::plan::PlanState::default().system_prompt(true);
-        assert_eq!(msg, base);
+        let msg = plan_system_message(None, true);
+        assert_eq!(msg, crate::agent::plan::plan_system_prompt(true));
+    }
+
+    /// The KV-prefix invariant: what seeds `messages[0]` must be
+    /// byte-identical on every render for a given host flavor — there is
+    /// no state input left to vary it (`plan_system_message` is
+    /// deliberately state-free), so consecutive turns and plan-state
+    /// transitions can never swap the prompt out from under the session.
+    #[test]
+    fn plan_system_message_is_byte_stable_across_renders() {
+        let cwd = std::path::Path::new("/Users/tester/code/doce");
+        assert_eq!(
+            plan_system_message(Some(cwd), true),
+            plan_system_message(Some(cwd), true)
+        );
+        assert_eq!(
+            plan_system_message(Some(cwd), false),
+            plan_system_message(Some(cwd), false)
+        );
+        // The subagent flavor differs (no Task tool) but is stable too.
+        assert_ne!(
+            plan_system_message(Some(cwd), true),
+            plan_system_message(Some(cwd), false)
+        );
     }
 
     // --- 004-tool-call-widgets: US3 (AskUserQuestion pause/resume) ---

@@ -255,6 +255,75 @@ fn generation_seed() -> u32 {
         })
 }
 
+/// The JSON schema every tool call must satisfy — Qwen's own trained
+/// (Hermes-style) `{"name": string, "arguments": object}` shape. Kept as
+/// its own function so `tool_call_grammar`'s unit tests exercise the exact
+/// schema the sampler builds from.
+fn tool_call_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "name": { "type": "string" },
+            "arguments": { "type": "object" }
+        },
+        "required": ["name", "arguments"]
+    })
+}
+
+/// The `name-kv` rule `json_schema_to_grammar` emits for `tool_call_schema`
+/// (an unconstrained JSON string), and the gated replacement that points it
+/// at the `name-value` enum rule instead. Written out as literals so the
+/// substitution in `tool_call_grammar` is exact — and so a llama.cpp
+/// upgrade that changes the emitted shape fails loudly there rather than
+/// silently leaving names unconstrained.
+const NAME_KV_STRING_RULE: &str = r#"name-kv ::= "\"name\"" space ":" space string"#;
+const NAME_KV_ENUM_RULE: &str = r#"name-kv ::= "\"name\"" space ":" space name-value"#;
+
+/// Assembles the complete GBNF for one tool-call response from
+/// `json_schema_to_grammar`'s output: demotes its `root` to a sub-rule,
+/// wraps it in the literal `<tool_call>` tags (matching Qwen's template
+/// newlines) as the real root, and — when `allowed_names` is set — rewires
+/// the `name` field from "any JSON string" to a generated enum alternation
+/// (`name-value ::= ("\"CreatePlan\"" | "\"AddStep\"" | ...) space`), which
+/// is how the plan engine's per-state tool gating is enforced at the
+/// sampler. Pure string assembly, unit-tested without a model.
+fn tool_call_grammar(
+    json_grammar: &str,
+    allowed_names: Option<&[&str]>,
+) -> Result<String, InferenceError> {
+    let json_grammar = json_grammar.replacen("root ::=", "tool-json ::=", 1);
+    let json_grammar = match allowed_names {
+        None => json_grammar,
+        Some([]) => {
+            // An empty enum is an unsatisfiable grammar — a host bug,
+            // surfaced here rather than compiled into a sampler that can
+            // never produce a token.
+            return Err(InferenceError::Backend(
+                "tool_call_grammar: allowed_names must not be empty".to_string(),
+            ));
+        }
+        Some(names) => {
+            if !json_grammar.contains(NAME_KV_STRING_RULE) {
+                return Err(InferenceError::Backend(format!(
+                    "tool_call_grammar: expected name rule {NAME_KV_STRING_RULE:?} not found — json_schema_to_grammar output shape changed"
+                )));
+            }
+            let alternation = names
+                .iter()
+                .map(|n| format!("\"\\\"{n}\\\"\""))
+                .collect::<Vec<_>>()
+                .join(" | ");
+            format!(
+                "{}\nname-value ::= ({alternation}) space",
+                json_grammar.replacen(NAME_KV_STRING_RULE, NAME_KV_ENUM_RULE, 1)
+            )
+        }
+    };
+    Ok(format!(
+        "{json_grammar}\nroot ::= \"<tool_call>\\n\" tool-json \"\\n</tool_call>\""
+    ))
+}
+
 /// Owns the single loaded model + backend for the whole app (research.md
 /// §24 — exactly one inference worker, one context, at any moment).
 pub struct InferenceEngine {
@@ -370,30 +439,24 @@ impl InferenceEngine {
     /// completely unconstrained the whole time. Once the closing tag is
     /// produced the grammar is complete, which also forecloses the
     /// observed run-on failure of appending a second call in the same
-    /// response. Deliberately doesn't constrain `name` to an enum of
-    /// currently-available tools — `dispatch::execute` already handles an
-    /// unrecognized tool name gracefully as an ordinary tool-error result
-    /// fed back into the loop, so keeping this schema static avoids
-    /// threading a dynamic tool list through every `generate()` call for a
-    /// marginal benefit.
-    fn tool_call_grammar_sampler(&self, required: bool) -> Result<LlamaSampler, InferenceError> {
-        let schema = serde_json::json!({
-            "type": "object",
-            "properties": {
-                "name": { "type": "string" },
-                "arguments": { "type": "object" }
-            },
-            "required": ["name", "arguments"]
-        });
-        let json_grammar = json_schema_to_grammar(&schema.to_string())
+    /// response.
+    ///
+    /// `allowed_names`, when set, additionally constrains the `name` field
+    /// to that enum (see `tool_call_grammar`): the plan engine's per-state
+    /// tool gating now lives HERE, at the sampler, because its system
+    /// prompt is a byte-stable union of both states' tools — a tool outside
+    /// the current state's set must be unsamplable, not merely
+    /// un-advertised. `None` keeps the historical static schema (any name),
+    /// which `dispatch::execute` already handles gracefully for
+    /// unrecognized names.
+    fn tool_call_grammar_sampler(
+        &self,
+        required: bool,
+        allowed_names: Option<&[&str]>,
+    ) -> Result<LlamaSampler, InferenceError> {
+        let json_grammar = json_schema_to_grammar(&tool_call_schema().to_string())
             .map_err(|e| InferenceError::Backend(e.to_string()))?;
-        // json_schema_to_grammar's output defines `root` for the bare JSON
-        // object; demote that to a sub-rule and wrap it in the literal
-        // tags (matching Qwen's template newlines) as the real root.
-        let json_grammar = json_grammar.replacen("root ::=", "tool-json ::=", 1);
-        let grammar_str = format!(
-            "{json_grammar}\nroot ::= \"<tool_call>\\n\" tool-json \"\\n</tool_call>\""
-        );
+        let grammar_str = tool_call_grammar(&json_grammar, allowed_names)?;
         if required {
             LlamaSampler::grammar(&self.model, &grammar_str, "root")
                 .map_err(|e| InferenceError::Backend(e.to_string()))
@@ -452,16 +515,27 @@ impl InferenceEngine {
     /// `PromptSession::generate` — so this path and the prefix-reusing agent
     /// path can never drift in sampler setup, streaming, or cancellation
     /// semantics.
+    /// `allowed_tools` (only meaningful with `Allow`/`Require`) further
+    /// constrains the sampled tool `name` to that enum — the plan engine's
+    /// per-state gating; `None` keeps the name unconstrained.
     pub fn generate(
         &self,
         prompt: &str,
         max_tokens: i32,
         tool_calls: ToolCallMode,
+        allowed_tools: Option<&[&str]>,
         on_token: impl FnMut(&str),
         should_cancel: impl FnMut() -> bool,
     ) -> Result<String, InferenceError> {
-        self.new_session()?
-            .generate(self, prompt, max_tokens, tool_calls, on_token, should_cancel)
+        self.new_session()?.generate(
+            self,
+            prompt,
+            max_tokens,
+            tool_calls,
+            allowed_tools,
+            on_token,
+            should_cancel,
+        )
     }
 }
 
@@ -519,15 +593,19 @@ impl PromptSession<'_> {
     /// re-passing `&InferenceEngine` for tokenization / piece-decoding /
     /// grammar-sampler construction sidesteps a second, self-referential
     /// borrow of the model through the context. A FRESH sampler chain is
-    /// built per call (grammar mode is per-call via `tool_calls`; determinism
-    /// is per-call via `generation_seed`) — a sampler is never reused across
+    /// built per call (grammar mode is per-call via `tool_calls`, and the
+    /// name-enum gate is per-call via `allowed_tools` — the plan engine
+    /// passes a different tool set as its state changes; determinism is
+    /// per-call via `generation_seed`) — a sampler is never reused across
     /// calls.
+    #[allow(clippy::too_many_arguments)]
     pub fn generate(
         &mut self,
         engine: &InferenceEngine,
         prompt: &str,
         max_tokens: i32,
         tool_calls: ToolCallMode,
+        allowed_tools: Option<&[&str]>,
         mut on_token: impl FnMut(&str),
         mut should_cancel: impl FnMut() -> bool,
     ) -> Result<String, InferenceError> {
@@ -597,8 +675,12 @@ impl PromptSession<'_> {
         let mut chain = Vec::with_capacity(6);
         match tool_calls {
             ToolCallMode::Forbid => {}
-            ToolCallMode::Allow => chain.push(engine.tool_call_grammar_sampler(false)?),
-            ToolCallMode::Require => chain.push(engine.tool_call_grammar_sampler(true)?),
+            ToolCallMode::Allow => {
+                chain.push(engine.tool_call_grammar_sampler(false, allowed_tools)?)
+            }
+            ToolCallMode::Require => {
+                chain.push(engine.tool_call_grammar_sampler(true, allowed_tools)?)
+            }
         }
         // Qwen3-*-2507's own recommended sampling (model card): temp 0.7,
         // top-p 0.8, top-k 20, min-p 0 — with presence-penalty for
@@ -761,6 +843,60 @@ mod tests {
         assert_eq!(prefill_chunks_from(500, 1025, 512), vec![500..1012, 1012..1025]);
         // A one-token suffix (the degenerate `common == len - 1` case).
         assert_eq!(prefill_chunks_from(9, 10, 512), vec![9..10]);
+    }
+
+    // --- name-enum GBNF gating (stable-prefix prompt architecture) ---
+    //
+    // Pure string assembly, testable without a model:
+    // `json_schema_to_grammar` is a model-free llama.cpp function, and
+    // `tool_call_grammar` is this module's own transform on its output.
+
+    #[test]
+    fn tool_call_grammar_without_names_wraps_the_json_object_in_tool_call_tags() {
+        let json_grammar = json_schema_to_grammar(&tool_call_schema().to_string()).unwrap();
+        let grammar = tool_call_grammar(&json_grammar, None).unwrap();
+        assert!(grammar.contains("tool-json ::="));
+        assert!(grammar.contains("root ::= \"<tool_call>\\n\" tool-json \"\\n</tool_call>\""));
+        // Unconstrained: the name field is still a plain JSON string.
+        assert!(grammar.contains("name-kv ::= \"\\\"name\\\"\" space \":\" space string"));
+    }
+
+    #[test]
+    fn tool_call_grammar_with_allowed_names_constrains_the_name_field_to_an_enum() {
+        let json_grammar = json_schema_to_grammar(&tool_call_schema().to_string()).unwrap();
+        let grammar = tool_call_grammar(&json_grammar, Some(&["CreatePlan", "AddStep"])).unwrap();
+        assert!(grammar.contains("name-kv ::= \"\\\"name\\\"\" space \":\" space name-value"));
+        assert!(grammar.contains(r#"name-value ::= ("\"CreatePlan\"" | "\"AddStep\"") space"#));
+        assert!(
+            !grammar.contains("name-kv ::= \"\\\"name\\\"\" space \":\" space string"),
+            "the unconstrained name rule must be gone once an enum is requested"
+        );
+        // Everything else survives untouched.
+        assert!(grammar.contains("arguments-kv ::="));
+        assert!(grammar.contains("root ::= \"<tool_call>\\n\" tool-json \"\\n</tool_call>\""));
+    }
+
+    #[test]
+    fn tool_call_grammar_with_a_single_allowed_name_is_a_one_literal_enum() {
+        let json_grammar = json_schema_to_grammar(&tool_call_schema().to_string()).unwrap();
+        let grammar = tool_call_grammar(&json_grammar, Some(&["FinishTask"])).unwrap();
+        assert!(grammar.contains(r#"name-value ::= ("\"FinishTask\"") space"#));
+    }
+
+    #[test]
+    fn tool_call_grammar_rejects_an_empty_allowed_names_list() {
+        // An empty enum would be an unsatisfiable grammar -- a host bug,
+        // surfaced loudly rather than compiled into a sampler that can
+        // never produce a token.
+        let json_grammar = json_schema_to_grammar(&tool_call_schema().to_string()).unwrap();
+        assert!(tool_call_grammar(&json_grammar, Some(&[])).is_err());
+    }
+
+    #[test]
+    fn tool_call_grammar_errors_when_the_name_rule_shape_is_missing() {
+        // Guards against a llama.cpp upgrade changing json_schema_to_grammar's
+        // output shape: gating must fail loudly, never silently un-gate.
+        assert!(tool_call_grammar("root ::= something-else", Some(&["Read"])).is_err());
     }
 
     #[test]

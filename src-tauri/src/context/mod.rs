@@ -373,6 +373,7 @@ pub async fn summarize_and_persist(
             &rendered,
             SUMMARY_MAX_TOKENS,
             crate::inference::ToolCallMode::Forbid,
+            None,
             |_| {},
             || false,
         )

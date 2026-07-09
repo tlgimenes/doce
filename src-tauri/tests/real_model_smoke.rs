@@ -68,6 +68,7 @@ fn render_chat_prompt_and_generate_produce_a_real_short_completion() {
         &rendered,
         16,
         doce_lib::inference::ToolCallMode::Forbid,
+        None,
         |piece| output.push_str(piece),
         || false,
     );
@@ -134,13 +135,13 @@ fn prompt_session_prefix_reuse_matches_a_fresh_context_and_is_faster() {
     // The first call's own output is irrelevant; it exists only to populate
     // the session's KV cache so the second call has a prefix to reuse.
     let _first = session
-        .generate(&engine, &base_prompt, 32, ToolCallMode::Forbid, |_| {}, || false)
+        .generate(&engine, &base_prompt, 32, ToolCallMode::Forbid, None, |_| {}, || false)
         .expect("first session generate");
     let first_elapsed = t0.elapsed().as_secs_f64();
 
     let t1 = Instant::now();
     let session_second = session
-        .generate(&engine, &extended_prompt, 32, ToolCallMode::Forbid, |_| {}, || false)
+        .generate(&engine, &extended_prompt, 32, ToolCallMode::Forbid, None, |_| {}, || false)
         .expect("second session generate (prefix reuse)");
     let second_elapsed = t1.elapsed().as_secs_f64();
 
@@ -148,7 +149,7 @@ fn prompt_session_prefix_reuse_matches_a_fresh_context_and_is_faster() {
     // the exact thing prefix reuse is meant to be equivalent to.
     let t2 = Instant::now();
     let fresh = engine
-        .generate(&extended_prompt, 32, ToolCallMode::Forbid, |_| {}, || false)
+        .generate(&extended_prompt, 32, ToolCallMode::Forbid, None, |_| {}, || false)
         .expect("fresh full-context generate");
     let fresh_elapsed = t2.elapsed().as_secs_f64();
 
@@ -196,7 +197,7 @@ fn grammar_constrained_tool_call_produces_syntactically_valid_json_against_the_r
         .expect("render should succeed");
 
     let result = engine
-        .generate(&rendered, 128, doce_lib::inference::ToolCallMode::Allow, |_| {}, || false)
+        .generate(&rendered, 128, doce_lib::inference::ToolCallMode::Allow, None, |_| {}, || false)
         .expect("generation should succeed");
     println!("real model tool-call output: {result:?}");
 
@@ -308,7 +309,7 @@ fn apply_lightweight_clearing_then_summarize_against_the_real_model() {
         .render_chat_prompt(&messages)
         .expect("render should succeed");
     let summary = engine
-        .generate(&rendered, 256, doce_lib::inference::ToolCallMode::Forbid, |_| {}, || false)
+        .generate(&rendered, 256, doce_lib::inference::ToolCallMode::Forbid, None, |_| {}, || false)
         .expect("summarization generate should succeed");
 
     println!("real model summary: {summary:?}");
