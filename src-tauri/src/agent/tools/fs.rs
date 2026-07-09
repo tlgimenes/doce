@@ -11,23 +11,48 @@ pub enum ToolError {
     AmbiguousMatch { path: String, count: usize },
 }
 
+/// Per-line clamp: a single pathological line (minified JS, one-line JSONL
+/// record) must not blow through the total cap on its own.
+pub const READ_MAX_LINE_CHARS: usize = 2000;
+/// Total output cap: ~2k tokens of the 8192-token window. The marker names
+/// the exact `offset` to continue from, so paging never needs guesswork.
+pub const READ_MAX_BYTES: usize = 8192;
+
 /// `Read` (FR-009): matches Claude Code's own tool — 1-indexed line
 /// numbers, `cat -n`-style, with optional offset/limit for large files.
 /// Not sandboxed to any workspace (FR-009 explicitly: "without restricting
-/// these actions to the opened workspace folder").
+/// these actions to the opened workspace folder"). Output is bounded
+/// (2026-07-09 payload-files design): long lines are clamped and the total
+/// is capped with an honest continue-from marker, because Read results are
+/// never payload-staged — this truncation is the only thing standing
+/// between a huge file and the model's context window.
 pub fn read(path: &Path, offset: Option<usize>, limit: Option<usize>) -> Result<String, ToolError> {
     let content = fs::read_to_string(path)?;
     let start = offset.unwrap_or(0);
     let take = limit.unwrap_or(2000);
 
-    let numbered: String = content
-        .lines()
-        .enumerate()
-        .skip(start)
-        .take(take)
-        .map(|(i, line)| format!("{:>6}\t{line}\n", i + 1))
-        .collect();
-    Ok(numbered)
+    let mut out = String::new();
+    let mut emitted = 0usize;
+    for (i, line) in content.lines().enumerate().skip(start).take(take) {
+        let clamped: String = if line.chars().count() > READ_MAX_LINE_CHARS {
+            let head: String = line.chars().take(READ_MAX_LINE_CHARS).collect();
+            format!("{head}… [line truncated]")
+        } else {
+            line.to_string()
+        };
+        let rendered = format!("{:>6}\t{clamped}\n", i + 1);
+        if out.len() + rendered.len() > READ_MAX_BYTES {
+            let continue_from = start + emitted;
+            out.push_str(&format!(
+                "[capped at {} bytes — continue with offset={continue_from}]\n",
+                out.len()
+            ));
+            return Ok(out);
+        }
+        out.push_str(&rendered);
+        emitted += 1;
+    }
+    Ok(out)
 }
 
 /// `Write` (FR-009): creates or overwrites a file, creating parent
@@ -164,5 +189,36 @@ mod tests {
 
         edit(&file, "foo", "bar", true).unwrap();
         assert_eq!(fs::read_to_string(&file).unwrap(), "bar bar bar");
+    }
+
+    #[test]
+    fn read_clamps_single_long_lines() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("long.txt");
+        std::fs::write(&p, format!("{}\nshort", "a".repeat(5000))).unwrap();
+        let out = read(&p, None, None).unwrap();
+        let first_line = out.lines().next().unwrap();
+        assert!(first_line.len() < 2100, "long line must be clamped");
+        assert!(first_line.ends_with("… [line truncated]"));
+        assert!(out.contains("short"), "later lines still served");
+    }
+
+    #[test]
+    fn read_caps_total_bytes_with_a_continue_offset() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("big.txt");
+        // 1000 lines x ~30 bytes ≈ 30KB > READ_MAX_BYTES.
+        std::fs::write(&p, "0123456789012345678901234\n".repeat(1000)).unwrap();
+        let out = read(&p, None, None).unwrap();
+        assert!(out.len() <= 8192 + 200, "body bounded (allow marker slack)");
+        // The marker names the exact offset to continue from: the number of
+        // lines already emitted (offset is a skip count).
+        let emitted = out.lines().count() - 1; // minus the marker line
+        assert!(out
+            .trim_end()
+            .ends_with(&format!("continue with offset={emitted}]")));
+        // And that offset actually continues where this read stopped.
+        let next = read(&p, Some(emitted), None).unwrap();
+        assert!(next.starts_with(&format!("{:>6}\t", emitted + 1)));
     }
 }

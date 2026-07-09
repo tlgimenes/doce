@@ -281,7 +281,7 @@ pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
                         model_text: content.clone(),
                         detail: json!({
                             "toolName": "Read", "filePath": path, "offset": offset, "limit": limit,
-                            "outcome": {"ok": true, "content": content, "truncated": truncated},
+                            "outcome": {"ok": true, "contentPreview": content.chars().take(2000).collect::<String>(), "contentBytes": content.len(), "truncated": truncated},
                         }),
                     }
                 }
