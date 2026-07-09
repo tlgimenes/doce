@@ -270,3 +270,92 @@ Result:
 
 - `src/App.tsx`
 - `src/App.test.tsx`
+
+## Final re-review fix: reconcile ShortcutsDialog when Cmd+K opens command-center state
+
+### What I changed
+
+- Made `openCommandCenter` in `src/App.tsx` explicitly own the transition out of `ShortcutsDialog` by closing `showShortcutsDialog` before opening the command-center latch.
+- Kept `openCommandCenter` idempotent as an opener by continuing to set `showCommandCenter(true)`.
+- Replaced the older App-level shortcuts-dialog regression with focused coverage for:
+  - open shortcuts dialog from the shell
+  - verify `Cmd+F` stays blocked while it is open
+  - press `Cmd+K`
+  - confirm the shortcuts dialog closes as part of the handoff
+  - dismiss the command-center latch with `Escape`
+  - verify `Cmd+F` opens search
+- Preserved the skipped future Task 3/4 integration test unchanged.
+
+### TDD evidence
+
+#### RED
+
+Command:
+
+```bash
+npm test -- src/App.test.tsx
+```
+
+Result:
+
+- Exit code: `1`
+- `Test Files  1 failed (1)`
+- `Tests  1 failed | 21 passed | 1 skipped (23)`
+- Failure: `shortcuts-dialog` remained mounted after `Cmd+K`, proving `openCommandCenter` did not reconcile the visible shortcuts surface
+
+#### GREEN
+
+Command:
+
+```bash
+npm test -- src/App.test.tsx
+```
+
+Result:
+
+- Exit code: `0`
+- `Test Files  1 passed (1)`
+- `Tests  22 passed | 1 skipped (23)`
+
+### Verification commands and exact results
+
+1. Required App shortcut routing suite:
+
+```bash
+npm test -- src/App.test.tsx
+```
+
+Result:
+
+- Exit code: `0`
+- `Test Files  1 passed (1)`
+- `Tests  22 passed | 1 skipped (23)`
+
+2. Required Task 2 regression suite:
+
+```bash
+npm test -- src/lib/shortcuts.test.ts src/views/chat/ConversationList.test.tsx
+```
+
+Result:
+
+- Exit code: `0`
+- `Test Files  2 passed (2)`
+- `Tests  16 passed (16)`
+
+3. Build verification:
+
+```bash
+npm run build
+```
+
+Result:
+
+- Exit code: `0`
+- `tsc -b && vite build` completed successfully
+- Existing Vite chunk-size warning remains: `Some chunks are larger than 500 kB after minification`
+
+### Files changed for this final re-review fix
+
+- `src/App.tsx`
+- `src/App.test.tsx`

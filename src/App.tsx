@@ -108,6 +108,11 @@ export default function App() {
     setShowSettings(true);
   }, [clearCommandCenterLatch]);
 
+  const openCommandCenter = useCallback(() => {
+    setShowShortcutsDialog(false);
+    setShowCommandCenter(true);
+  }, []);
+
   // 005-keyboard-shortcuts: the app's first global (not input-scoped)
   // keyboard shortcuts. One shared registry (lib/shortcuts.ts) drives both
   // the listener below and the shortcuts dialog rendered further down
@@ -132,14 +137,14 @@ export default function App() {
           openSearch();
         },
         openCommandCenter: () => {
-          setShowCommandCenter(true);
+          openCommandCenter();
         },
         toggleWidgetGallery: () => {
           clearCommandCenterLatch();
           setShowWidgetGallery((prev) => !prev);
         },
       }),
-    [activeConversation, clearCommandCenterLatch, openSearch],
+    [activeConversation, clearCommandCenterLatch, openCommandCenter, openSearch],
   );
 
   useEffect(() => {

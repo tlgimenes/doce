@@ -461,7 +461,7 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     expect(await screen.findByTestId("search-panel")).toBeInTheDocument();
   });
 
-  it("keeps the shortcuts dialog reachable from the app shell and blocks Cmd+F until it closes", async () => {
+  it("hands off from the shortcuts dialog to Cmd+K and lets Cmd+F open search after dismiss", async () => {
     render(<App />);
     await waitForReady();
 
@@ -471,9 +471,10 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     pressCmd("f");
     expect(screen.queryByTestId("search-panel")).not.toBeInTheDocument();
 
-    await userEvent.click(screen.getByTestId("close-shortcuts-dialog"));
+    pressCmd("k");
     await waitFor(() => expect(screen.queryByTestId("shortcuts-dialog")).not.toBeInTheDocument());
 
+    await userEvent.keyboard("{Escape}");
     pressCmd("f");
     expect(await screen.findByTestId("search-panel")).toBeInTheDocument();
   });
