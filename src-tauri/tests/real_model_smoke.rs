@@ -184,7 +184,8 @@ fn apply_lightweight_clearing_then_summarize_against_the_real_model() {
             ),
             content_type: "tool_result".to_string(),
             sequence: i,
-            raw_content: String::new(),
+            plan: false,
+            offloaded_to: None,
         });
     }
     for i in 12..20 {
@@ -196,7 +197,8 @@ fn apply_lightweight_clearing_then_summarize_against_the_real_model() {
             },
             content_type: "text".to_string(),
             sequence: i,
-            raw_content: String::new(),
+            plan: false,
+            offloaded_to: None,
         });
     }
 

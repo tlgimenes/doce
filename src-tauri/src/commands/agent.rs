@@ -200,6 +200,16 @@ impl Drop for ActiveGenerationGuard<'_> {
 /// the *latest* message for as long as it's genuinely pending — that's
 /// what `compute_status`'s existing "latest message is a pending
 /// AskUserQuestion tool_call" check relies on to report `requires_action`.
+///
+/// `plan` mirrors the same `"plan": true` marker `persist_plan_tool` has
+/// always stamped onto this call's paired `tool_result` row (via its own
+/// `detail`) — a review finding on the row-shape asymmetry: this row used
+/// to persist bare `{"arguments": ...}` even for a plan-machine tool,
+/// silently miscounting it as an ordinary/regular tool row by
+/// `context::apply_lightweight_clearing`'s plan/regular partitioning,
+/// which could push genuine tool history out of `TOOL_KEEP_N` prematurely.
+/// `false` for every non-plan caller — the persisted shape for those is
+/// byte-for-byte unchanged.
 async fn persist_tool_call(
     app: Option<&AppHandle>,
     conn: &tokio_rusqlite::Connection,
@@ -207,12 +217,17 @@ async fn persist_tool_call(
     tool_call_id: &str,
     tool_name: &str,
     arguments: serde_json::Value,
+    plan: bool,
 ) {
     let conversation_id = conversation_id.to_string();
     let tool_call_id = tool_call_id.to_string();
     let tool_name = tool_name.to_string();
     let now = now_ms();
-    let call_content = serde_json::json!({ "arguments": arguments }).to_string();
+    let call_content = if plan {
+        serde_json::json!({ "arguments": arguments, "plan": true }).to_string()
+    } else {
+        serde_json::json!({ "arguments": arguments }).to_string()
+    };
     let _ = conn
         .call({
             let conversation_id = conversation_id.clone();
@@ -305,7 +320,9 @@ async fn persist_tool_result(
 /// Convenience wrapper for the six tools whose call and result are always
 /// known together (everything but `AskUserQuestion`) — both land at
 /// adjacent sequence numbers, one right after the other, sharing the same
-/// `tool_call_id`.
+/// `tool_call_id`. `plan` forwards straight to `persist_tool_call` (see its
+/// own doc comment) — the paired `tool_result`'s `plan`/other markers stay
+/// wherever they already live inside `detail`, unaffected by this param.
 #[allow(clippy::too_many_arguments)]
 async fn persist_tool_call_and_result(
     app: Option<&AppHandle>,
@@ -316,6 +333,7 @@ async fn persist_tool_call_and_result(
     arguments: serde_json::Value,
     model_text: &str,
     detail: serde_json::Value,
+    plan: bool,
 ) {
     persist_tool_call(
         app,
@@ -324,6 +342,7 @@ async fn persist_tool_call_and_result(
         tool_call_id,
         tool_name,
         arguments,
+        plan,
     )
     .await;
     persist_tool_result(
@@ -341,9 +360,12 @@ async fn persist_tool_call_and_result(
 /// Persists a plan-machine tool interaction (one of the five plan tools,
 /// or a state-gated rejection of a regular tool) as an ordinary
 /// call/result pair — the model's reconstructed history needs them — with
-/// a `"plan": true` marker in the detail, which is the frontend's signal
-/// to keep the row out of the transcript (spec: plan activity is
-/// tracker-only).
+/// a `"plan": true` marker in BOTH rows (the result's `detail` and, as of
+/// this fix, the call's own content too — see `persist_tool_call`'s doc
+/// comment for why the call row needs it independently), which is the
+/// frontend's signal to keep the row out of the transcript (spec: plan
+/// activity is tracker-only) and `context::apply_lightweight_clearing`'s
+/// signal to clear it under `PLAN_KEEP_N` rather than `TOOL_KEEP_N`.
 async fn persist_plan_tool(
     app: Option<&AppHandle>,
     conn: &tokio_rusqlite::Connection,
@@ -366,6 +388,7 @@ async fn persist_plan_tool(
             "plan": true,
             "outcome": {"ok": !result.starts_with("Error"), "text": result},
         }),
+        true,
     )
     .await;
 }
@@ -455,6 +478,7 @@ async fn handle_ask_user_question(
         tool_call_id,
         "AskUserQuestion",
         arguments_with_id,
+        false,
     )
     .await;
 
@@ -731,6 +755,7 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
             call.arguments.clone(),
             &outcome.model_text,
             outcome.detail.clone(),
+            false,
         )
         .await;
         ToolExecution::Result(outcome.model_text)
@@ -802,6 +827,7 @@ async fn execute_top_level_tool(
         &tool_call_id,
         "Task",
         serde_json::json!({ "prompt": prompt }),
+        false,
     )
     .await;
 
@@ -950,6 +976,7 @@ async fn handle_general_tool_call(
         tool_call_id,
         &call.name,
         call.arguments.clone(),
+        false,
     )
     .await;
 
@@ -1878,6 +1905,7 @@ mod tests {
             serde_json::json!({"file_path": "/tmp/notes.txt"}),
             "hi",
             serde_json::json!({"toolName": "Read", "filePath": "/tmp/notes.txt", "outcome": {"ok": true, "content": "hi", "truncated": false}}),
+            false,
         )
         .await;
 
@@ -1891,6 +1919,7 @@ mod tests {
             "call2",
             "Task",
             serde_json::json!({"prompt": "go read the file"}),
+            false,
         )
         .await;
         persist_tool_result(
@@ -1980,6 +2009,7 @@ mod tests {
             "call1",
             "Task",
             serde_json::json!({"prompt": "go read the file"}),
+            false,
         )
         .await;
 
@@ -2232,6 +2262,92 @@ mod tests {
         let detail: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(detail["plan"], true, "the transcript-skip marker");
         assert_eq!(detail["outcome"]["ok"], true);
+    }
+
+    /// Fetches the sole `tool_call` row's `content` for `conversation_id` --
+    /// unlike `latest_message` (which returns whatever row sorts last, the
+    /// paired `tool_result` for a `persist_plan_tool`/
+    /// `persist_tool_call_and_result` call), this targets the CALL row
+    /// specifically.
+    async fn tool_call_content(conn: &tokio_rusqlite::Connection, conversation_id: &str) -> String {
+        let conversation_id = conversation_id.to_string();
+        conn.call(move |conn: &mut Connection| {
+            conn.query_row(
+                "SELECT content FROM messages WHERE conversation_id = ?1 AND content_type = 'tool_call'",
+                [&conversation_id],
+                |row| row.get(0),
+            )
+        })
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn persist_plan_tool_marks_the_call_row_with_plan_true_too() {
+        // Regression for a review finding on baab3f3: the CALL row used to
+        // persist bare `{"arguments": ...}` with no "plan" marker at all --
+        // only the RESULT row (asserted in
+        // persist_plan_tool_marks_both_rows_shape_with_plan_true above)
+        // ever carried one. That asymmetry let
+        // context::apply_lightweight_clearing's plan/regular partitioning
+        // silently miscount a plan interaction's call row as an ordinary
+        // tool row, which could push genuine tool history out of
+        // TOOL_KEEP_N prematurely (reproduced at the pure-function level by
+        // context::mod's own
+        // plan_call_rows_are_plan_partitioned_and_never_displace_regular_tool_history
+        // test).
+        let conn = crate::storage::test_async_connection().await;
+        seed_conversation(&conn, "c1").await;
+
+        persist_plan_tool(
+            None,
+            &conn,
+            "c1",
+            "tc1",
+            &crate::agent::ToolCall {
+                name: "CreatePlan".to_string(),
+                arguments: serde_json::json!({"goal": "g", "steps": ["a"]}),
+            },
+            "Plan created with 1 steps. Call ResumeExecution to begin.",
+        )
+        .await;
+
+        let call_content = tool_call_content(&conn, "c1").await;
+        let call_detail: serde_json::Value = serde_json::from_str(&call_content).unwrap();
+        assert_eq!(
+            call_detail["plan"], true,
+            "the call row must carry the same plan marker as its paired result row"
+        );
+        assert_eq!(call_detail["arguments"]["goal"], "g");
+    }
+
+    #[tokio::test]
+    async fn persist_tool_call_for_a_regular_tool_never_gains_a_plan_marker() {
+        // The other half of the same fix: the plan marker must be opt-in,
+        // not leak onto ordinary tool calls that never touch the plan
+        // machine -- locks the persisted shape for every non-plan caller
+        // (handle_general_tool_call, handle_ask_user_question, the Task
+        // branch) as byte-for-byte unchanged from before this fix.
+        let conn = crate::storage::test_async_connection().await;
+        seed_conversation(&conn, "c1").await;
+
+        persist_tool_call(
+            None,
+            &conn,
+            "c1",
+            "tc1",
+            "Bash",
+            serde_json::json!({"command": "ls"}),
+            false,
+        )
+        .await;
+
+        let call_content = tool_call_content(&conn, "c1").await;
+        assert_eq!(
+            call_content,
+            serde_json::json!({"arguments": {"command": "ls"}}).to_string(),
+            "a non-plan tool_call row must not gain a plan key at all"
+        );
     }
 
     #[tokio::test]

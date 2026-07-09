@@ -244,56 +244,35 @@ pub async fn compute_usage(
     usage_from_history(engine, conversation_id, &history, system_prompt, &settings).await
 }
 
-/// The `"plan"`/`"offloadedTo"` flags tier 1 needs out of a tool row's
-/// `raw_content` JSON (data-model.md's `detail` shape) — parsed once per
-/// row rather than once per flag.
-struct ToolRowFlags {
-    plan: bool,
-    offloaded_to: Option<String>,
-}
-
-fn parse_tool_row_flags(raw_content: &str) -> ToolRowFlags {
-    let parsed: Option<serde_json::Value> = serde_json::from_str(raw_content).ok();
-    let plan = parsed
-        .as_ref()
-        .and_then(|v| v.get("plan"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let offloaded_to = parsed
-        .as_ref()
-        .and_then(|v| v.get("offloadedTo"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    ToolRowFlags { plan, offloaded_to }
-}
-
 /// Tier 1: a pure, idempotent, load-time transform. Walking oldest-to-newest,
 /// every `tool_call`/`tool_result` message beyond the most recent `keep_n`
 /// such messages has its content replaced with a placeholder — the
 /// restorable pointer text (`limits::tool_cleared_placeholder_with_pointer`)
-/// when the row's `detail.offloadedTo` names a saved-to-disk copy, else the
-/// plain `TOOL_CLEARED_PLACEHOLDER`. Plan-marked rows (`detail.plan ==
-/// true` — the plan-machine tools, `commands::agent::persist_plan_tool`)
-/// are their own, stricter population: cleared beyond the most recent
-/// `limits::PLAN_KEEP_N` regardless of `keep_n`, since a plan row only
-/// ever echoes state the always-regenerated system/state prompt already
-/// carries in full. Returns the count actually cleared (both populations
-/// combined). Independent of persistence — recomputable fresh from
-/// `content_type`+order (+ each row's own `raw_content`) alone every time,
+/// when the row's `offloaded_to` names a saved-to-disk copy, else the
+/// plain `TOOL_CLEARED_PLACEHOLDER`. Plan-marked rows (`plan == true` — the
+/// plan-machine tools, `commands::agent::persist_plan_tool`, which stamps
+/// this marker onto BOTH its call and result row) are their own, stricter
+/// population: cleared beyond the most recent `limits::PLAN_KEEP_N`
+/// regardless of `keep_n`, since a plan row only ever echoes state the
+/// always-regenerated system/state prompt already carries in full. Returns
+/// the count actually cleared (both populations combined). Independent of
+/// persistence — recomputable fresh from `content_type`+order (+ each row's
+/// own `plan`/`offloaded_to`, themselves parsed once at load time by
+/// `storage::conversations::load_history_annotated`) alone every time,
 /// which is why no "cut marker" is needed for this tier to stay correct
 /// across reloads (research.md).
 pub fn apply_lightweight_clearing(history: &mut [HistoryMessage], keep_n: usize) -> usize {
-    let tool_rows: Vec<(usize, ToolRowFlags)> = history
+    let tool_rows: Vec<(usize, bool, Option<String>)> = history
         .iter()
         .enumerate()
         .filter(|(_, m)| m.content_type == "tool_call" || m.content_type == "tool_result")
-        .map(|(i, m)| (i, parse_tool_row_flags(&m.raw_content)))
+        .map(|(i, m)| (i, m.plan, m.offloaded_to.clone()))
         .collect();
 
     let plan_indices: Vec<usize> = tool_rows
         .iter()
-        .filter(|(_, flags)| flags.plan)
-        .map(|(i, _)| *i)
+        .filter(|(_, plan, _)| *plan)
+        .map(|(i, _, _)| *i)
         .collect();
     let plan_to_clear: &[usize] = if plan_indices.len() > limits::PLAN_KEEP_N {
         &plan_indices[..plan_indices.len() - limits::PLAN_KEEP_N]
@@ -303,8 +282,8 @@ pub fn apply_lightweight_clearing(history: &mut [HistoryMessage], keep_n: usize)
 
     let regular_indices: Vec<usize> = tool_rows
         .iter()
-        .filter(|(_, flags)| !flags.plan)
-        .map(|(i, _)| *i)
+        .filter(|(_, plan, _)| !*plan)
+        .map(|(i, _, _)| *i)
         .collect();
     let regular_to_clear: &[usize] = if regular_indices.len() > keep_n {
         &regular_indices[..regular_indices.len() - keep_n]
@@ -313,9 +292,9 @@ pub fn apply_lightweight_clearing(history: &mut [HistoryMessage], keep_n: usize)
     };
 
     let mut cleared = 0;
-    for (i, flags) in &tool_rows {
+    for (i, _, offloaded_to) in &tool_rows {
         if plan_to_clear.contains(i) || regular_to_clear.contains(i) {
-            let placeholder = match &flags.offloaded_to {
+            let placeholder = match offloaded_to {
                 Some(path) => limits::tool_cleared_placeholder_with_pointer(path),
                 None => TOOL_CLEARED_PLACEHOLDER.to_string(),
             };
@@ -646,24 +625,29 @@ mod tests {
             chat: ChatMessage::user(content),
             content_type: content_type.to_string(),
             sequence,
-            raw_content: String::new(),
+            plan: false,
+            offloaded_to: None,
         }
     }
 
-    /// A `tool_result` row carrying real `raw_content` JSON (the persisted
-    /// `detail` blob) — for exercising tier 1's `"plan"`/`"offloadedTo"`
-    /// parsing, which `history_message` above deliberately leaves empty.
-    fn history_message_with_raw_content(
+    /// A tool row with an explicit `plan`/`offloaded_to` — the two fields
+    /// `storage::conversations::load_history_annotated` parses once at load
+    /// time from a real row's `content` JSON (see that module's own tests
+    /// for coverage of the parsing itself); `history_message` above
+    /// deliberately defaults both to their "never a plan/offload row" state.
+    fn history_message_with_flags(
         content_type: &str,
         sequence: i64,
         content: &str,
-        raw_content: &str,
+        plan: bool,
+        offloaded_to: Option<&str>,
     ) -> HistoryMessage {
         HistoryMessage {
             chat: ChatMessage::user(content),
             content_type: content_type.to_string(),
             sequence,
-            raw_content: raw_content.to_string(),
+            plan,
+            offloaded_to: offloaded_to.map(|s| s.to_string()),
         }
     }
 
@@ -728,18 +712,16 @@ mod tests {
     #[test]
     fn cleared_row_with_offloaded_to_gets_the_restorable_pointer_placeholder() {
         // TOOL_KEEP_N + 1 tool_result rows -- the oldest (index 0) is the
-        // one that actually gets cleared. Its raw_content JSON carries
-        // offloadedTo, seeded exactly as `commands::agent::execute_tool`
-        // persists it (`detail["offloadedTo"] = json!(offloaded_to)`).
+        // one that actually gets cleared. Its `offloaded_to` is set,
+        // mirroring what `storage::conversations::load_history_annotated`
+        // parses out of a real row whose `detail.offloadedTo` was stamped
+        // by `commands::agent::execute_tool` (`detail["offloadedTo"] =
+        // json!(offloaded_to)`).
         let mut history: Vec<HistoryMessage> = (0..(TOOL_KEEP_N as i64 + 1))
             .map(|i| history_message("tool_result", i, &format!("result {i}")))
             .collect();
-        history[0] = history_message_with_raw_content(
-            "tool_result",
-            0,
-            "result 0",
-            &serde_json::json!({"offloadedTo": "/tmp/x.txt"}).to_string(),
-        );
+        history[0] =
+            history_message_with_flags("tool_result", 0, "result 0", false, Some("/tmp/x.txt"));
 
         let cleared = apply_lightweight_clearing(&mut history, TOOL_KEEP_N);
         assert_eq!(cleared, 1);
@@ -756,14 +738,7 @@ mod tests {
     #[test]
     fn cleared_row_without_offloaded_to_gets_the_plain_placeholder() {
         let mut history: Vec<HistoryMessage> = (0..(TOOL_KEEP_N as i64 + 1))
-            .map(|i| {
-                history_message_with_raw_content(
-                    "tool_result",
-                    i,
-                    &format!("result {i}"),
-                    &serde_json::json!({"offloadedTo": null}).to_string(),
-                )
-            })
+            .map(|i| history_message("tool_result", i, &format!("result {i}")))
             .collect();
 
         let cleared = apply_lightweight_clearing(&mut history, TOOL_KEEP_N);
@@ -773,14 +748,14 @@ mod tests {
 
     #[test]
     fn plan_rows_clear_beyond_the_most_recent_two_even_when_keep_n_would_keep_them_all() {
-        let plan_detail = serde_json::json!({"plan": true}).to_string();
         let mut history: Vec<HistoryMessage> = (0..5)
             .map(|i| {
-                history_message_with_raw_content(
+                history_message_with_flags(
                     "tool_result",
                     i,
                     &format!("plan result {i}"),
-                    &plan_detail,
+                    true,
+                    None,
                 )
             })
             .collect();
@@ -800,11 +775,10 @@ mod tests {
 
     #[test]
     fn plan_rows_and_regular_tool_rows_are_cleared_independently() {
-        let plan_detail = serde_json::json!({"plan": true}).to_string();
         let mut history = vec![
-            history_message_with_raw_content("tool_result", 0, "plan 0", &plan_detail),
-            history_message_with_raw_content("tool_result", 1, "plan 1", &plan_detail),
-            history_message_with_raw_content("tool_result", 2, "plan 2", &plan_detail),
+            history_message_with_flags("tool_result", 0, "plan 0", true, None),
+            history_message_with_flags("tool_result", 1, "plan 1", true, None),
+            history_message_with_flags("tool_result", 2, "plan 2", true, None),
             history_message("tool_result", 3, "regular 0"),
             history_message("tool_result", 4, "regular 1"),
         ];
@@ -819,6 +793,52 @@ mod tests {
         assert_eq!(history[2].chat.text(), "plan 2");
         assert_eq!(history[3].chat.text(), "regular 0");
         assert_eq!(history[4].chat.text(), "regular 1");
+    }
+
+    #[test]
+    fn plan_call_rows_are_plan_partitioned_and_never_displace_regular_tool_history() {
+        // Regression for a review finding on baab3f3: a plan tool's CALL
+        // row (`commands::agent::persist_tool_call`) used to persist with
+        // no "plan" marker at all -- only its paired RESULT row carried
+        // one -- so this row's `plan` field was silently always `false`,
+        // miscounting every plan interaction's call row as an
+        // ordinary/regular tool row in the partition below. With enough
+        // plan activity interspersed among genuine tool history, that
+        // miscount could push a genuine, recent tool result out of
+        // TOOL_KEEP_N prematurely -- exactly what this reproduces: if
+        // either `plan_call_*` row here were (incorrectly) constructed
+        // with `plan: false`, "genuine result 1" would be cleared instead
+        // of surviving.
+        let mut history = vec![
+            history_message("tool_result", 0, "genuine result 0"),
+            history_message_with_flags("tool_call", 1, "plan call A", true, None),
+            history_message_with_flags("tool_result", 2, "plan result A", true, None),
+            history_message("tool_result", 3, "genuine result 1"),
+            history_message_with_flags("tool_call", 4, "plan call B", true, None),
+            history_message_with_flags("tool_result", 5, "plan result B", true, None),
+            history_message("tool_result", 6, "genuine result 2"),
+        ];
+
+        let cleared = apply_lightweight_clearing(&mut history, TOOL_KEEP_N);
+
+        // Regular population is exactly the 3 genuine results (TOOL_KEEP_N
+        // = 2 survive, the oldest clears) -- the two plan call rows never
+        // count toward it at all.
+        assert_eq!(history[0].chat.text(), TOOL_CLEARED_PLACEHOLDER);
+        assert_eq!(
+            history[3].chat.text(),
+            "genuine result 1",
+            "a plan interaction's call row must never displace genuine tool history out of TOOL_KEEP_N"
+        );
+        assert_eq!(history[6].chat.text(), "genuine result 2");
+        // Plan population is the 4 plan rows (2 pairs); PLAN_KEEP_N=2 keeps
+        // only the most recent pair (call B/result B), clearing the oldest
+        // (call A/result A).
+        assert_eq!(history[1].chat.text(), TOOL_CLEARED_PLACEHOLDER);
+        assert_eq!(history[2].chat.text(), TOOL_CLEARED_PLACEHOLDER);
+        assert_eq!(history[4].chat.text(), "plan call B");
+        assert_eq!(history[5].chat.text(), "plan result B");
+        assert_eq!(cleared, 3);
     }
 
     // apply_lightweight_clearing_in_memory/compact_in_memory's own former
@@ -1067,7 +1087,8 @@ mod tests {
                 chat: ChatMessage::assistant(format!("m{i}")),
                 content_type: "text".to_string(),
                 sequence: i,
-                raw_content: String::new(),
+                plan: false,
+                offloaded_to: None,
             })
             .collect();
         let selected = messages_to_summarize(&history, 2);

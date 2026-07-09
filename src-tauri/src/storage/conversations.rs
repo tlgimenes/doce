@@ -16,15 +16,53 @@ pub struct HistoryMessage {
     pub chat: ChatMessage,
     pub content_type: String,
     pub sequence: i64,
-    /// The row's raw, unprocessed `content` column value. For `tool_call`/
-    /// `tool_result` rows this is the persisted JSON `detail` blob
-    /// (data-model.md) — `chat`'s own reconstruction above discards it in
-    /// favor of the plain model-facing text (`model_text`), so anything
-    /// that needs the richer JSON back (010-context-window-management
-    /// tier 1's `"plan"`/`"offloadedTo"` flags) has to read it from here
-    /// instead. Not meaningful for other content types (plain text,
-    /// spliced `context_notice`) — nothing reads it for those.
-    pub raw_content: String,
+    /// True for a `tool_call`/`tool_result` row whose persisted JSON
+    /// `detail` blob (data-model.md) carries `"plan": true` — the
+    /// plan-machine tools (`commands::agent::persist_plan_tool`), parsed
+    /// once here at load time (`parse_tool_row_flags`) since `chat`'s own
+    /// reconstruction above discards `content` in favor of the plain
+    /// model-facing text (`model_text`). Tier 1
+    /// (`context::apply_lightweight_clearing`) reads this to clear a plan
+    /// row under `PLAN_KEEP_N` rather than `TOOL_KEEP_N`. Always `false`
+    /// for every other content type — nothing reads it for those.
+    pub plan: bool,
+    /// The `detail.offloadedTo` path for a `tool_result` row whose full
+    /// output was previously offloaded to disk
+    /// (`context::offload::offload_if_oversized`), parsed the same way as
+    /// `plan`. Tier 1 uses this to clear the row to a restorable
+    /// `Read`-able pointer instead of the plain placeholder. Always `None`
+    /// for every other content type, and for a tool row that was never
+    /// offloaded.
+    ///
+    /// Replaces this struct's former `raw_content: String` field (a review
+    /// finding: keeping every row's full raw JSON around for the lifetime
+    /// of every loaded history duplicated large chat turns and untruncated
+    /// detail blobs in memory just so a later pass could parse it once
+    /// more) — these two parsed facts are the only thing tier 1 actually
+    /// needs out of that JSON, so they're computed once here and the
+    /// string itself is dropped.
+    pub offloaded_to: Option<String>,
+}
+
+/// Parses a tool row's persisted `detail` JSON (data-model.md) for the two
+/// flags tier 1 needs — `"plan"` and `"offloadedTo"` — once here at load
+/// time rather than keeping the raw JSON string around for `apply_
+/// lightweight_clearing` to re-parse later. `content` is only ever
+/// `detail`-shaped JSON for a `tool_call`/`tool_result` row; callers must
+/// not invoke this for any other content type.
+fn parse_tool_row_flags(content: &str) -> (bool, Option<String>) {
+    let parsed: Option<serde_json::Value> = serde_json::from_str(content).ok();
+    let plan = parsed
+        .as_ref()
+        .and_then(|v| v.get("plan"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let offloaded_to = parsed
+        .as_ref()
+        .and_then(|v| v.get("offloadedTo"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    (plan, offloaded_to)
 }
 
 /// Builds the chat-template message history for a conversation: every
@@ -114,7 +152,8 @@ pub fn load_history_annotated(
             chat: ChatMessage::system(summary.clone()),
             content_type: "context_notice".to_string(),
             sequence: *splice_sequence,
-            raw_content: String::new(),
+            plan: false,
+            offloaded_to: None,
         });
     }
 
@@ -129,10 +168,17 @@ pub fn load_history_annotated(
             }
         }
 
-        // Preserved before `content` is consumed/moved below -- tier 1
-        // (`context::apply_lightweight_clearing`) reads this back to find
-        // a tool_result row's `"plan"`/`"offloadedTo"` detail flags.
-        let raw_content = content.clone();
+        // Parsed once, before `content` is consumed/moved below, only for
+        // the two content types whose `content` is actually `detail`-shaped
+        // JSON -- tier 1 (`context::apply_lightweight_clearing`) reads
+        // these two fields back off the resulting `HistoryMessage` rather
+        // than re-parsing raw JSON itself.
+        let (plan, offloaded_to) = if content_type == "tool_call" || content_type == "tool_result"
+        {
+            parse_tool_row_flags(&content)
+        } else {
+            (false, None)
+        };
 
         // 010-context-window-management (structured tool calls): a
         // `tool_call`/`tool_result` row reconstructs into the same
@@ -178,7 +224,8 @@ pub fn load_history_annotated(
             chat,
             content_type,
             sequence,
-            raw_content,
+            plan,
+            offloaded_to,
         });
     }
 
@@ -724,6 +771,118 @@ mod tests {
             history[1].chat.text(),
             "<tool_response>a.txt</tool_response>"
         );
+    }
+
+    // --- HistoryMessage.plan/offloaded_to: parsed once at load time from a
+    // tool row's `content` JSON (replacing the former raw_content: String
+    // field a review finding on this feature flagged as duplicating every
+    // row's full content in memory for the lifetime of every loaded
+    // history) ---
+
+    #[test]
+    fn a_tool_call_rows_plan_marker_is_parsed_from_its_own_content() {
+        // The regression this covers: a plan-machine tool's CALL row used
+        // to persist with no "plan" marker at all (only its paired RESULT
+        // row carried one), so this row's `plan` field must reflect
+        // whatever is actually in ITS OWN content, not its paired row's.
+        let conn = setup_conn();
+        insert_tool_message(
+            &conn,
+            "c1",
+            "assistant",
+            "tool_call",
+            r#"{"arguments":{"goal":"g","steps":["a"]},"plan":true}"#,
+            0,
+            "CreatePlan",
+            "call-1",
+            None,
+        );
+
+        let skills_dir = empty_skills_dir();
+        let history = load_history_annotated(&conn, "c1", skills_dir.path()).unwrap();
+        assert_eq!(history.len(), 1);
+        assert!(history[0].plan, "the call row's own plan marker must be parsed, not defaulted to false");
+        assert_eq!(history[0].offloaded_to, None);
+    }
+
+    #[test]
+    fn a_tool_result_rows_offloaded_to_is_parsed_from_its_own_content() {
+        let conn = setup_conn();
+        insert_tool_message(
+            &conn,
+            "c1",
+            "tool",
+            "tool_result",
+            r#"{"toolName":"Read","offloadedTo":"/tmp/offload.txt"}"#,
+            0,
+            "Read",
+            "call-1",
+            Some("preview..."),
+        );
+
+        let skills_dir = empty_skills_dir();
+        let history = load_history_annotated(&conn, "c1", skills_dir.path()).unwrap();
+        assert_eq!(history.len(), 1);
+        assert!(!history[0].plan);
+        assert_eq!(history[0].offloaded_to.as_deref(), Some("/tmp/offload.txt"));
+    }
+
+    #[test]
+    fn tool_rows_with_no_plan_or_offloaded_to_key_parse_to_false_and_none() {
+        let conn = setup_conn();
+        insert_tool_message(
+            &conn,
+            "c1",
+            "assistant",
+            "tool_call",
+            r#"{"arguments":{"command":"ls"}}"#,
+            0,
+            "Bash",
+            "call-1",
+            None,
+        );
+        insert_tool_message(
+            &conn,
+            "c1",
+            "tool",
+            "tool_result",
+            r#"{"toolName":"Bash","outcome":{"ok":true}}"#,
+            1,
+            "Bash",
+            "call-1",
+            Some("ok"),
+        );
+
+        let skills_dir = empty_skills_dir();
+        let history = load_history_annotated(&conn, "c1", skills_dir.path()).unwrap();
+        assert_eq!(history.len(), 2);
+        for message in &history {
+            assert!(!message.plan);
+            assert_eq!(message.offloaded_to, None);
+        }
+    }
+
+    #[test]
+    fn non_tool_rows_never_parse_plan_or_offloaded_to_even_if_their_text_looks_like_json() {
+        // A 'text'/'rich_text'/spliced-'context_notice' row's `content` is
+        // never `detail`-shaped JSON -- parse_tool_row_flags must never run
+        // against it, even in the pathological case where the plain text
+        // itself happens to parse as JSON containing these same keys.
+        let conn = setup_conn();
+        insert_message(
+            &conn,
+            "c1",
+            "user",
+            "text",
+            r#"{"plan": true, "offloadedTo": "/tmp/should-not-be-read.txt"}"#,
+            0,
+        );
+
+        let skills_dir = empty_skills_dir();
+        let history = load_history_annotated(&conn, "c1", skills_dir.path()).unwrap();
+        assert_eq!(history.len(), 1);
+        assert!(!history[0].plan);
+        assert_eq!(history[0].offloaded_to, None);
     }
 
     /// No test exercises a real skill directory except the two rich-text
