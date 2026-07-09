@@ -24,14 +24,13 @@ describe("StickyUserMessage", () => {
 
     const shell = screen.getByTestId("chat-message");
     const focusTarget = screen.getByTestId("sticky-user-message-bubble");
-    const bubble = screen.getByTestId("user-message-bubble");
 
     expect(shell).toHaveAttribute("data-sticky-user-message", "true");
     expect(shell).toHaveClass("sticky", "top-4", "z-40");
     expect(shell).toHaveAttribute("aria-label", "You said");
     expect(focusTarget).toHaveAttribute("tabindex", "0");
-    expect(bubble).toHaveClass("max-h-[84px]", "overflow-hidden");
-    expect(bubble.className).toContain("[mask-image:linear-gradient");
+    expect(focusTarget).toHaveClass("max-h-[84px]", "overflow-hidden");
+    expect(focusTarget.className).toContain("[mask-image:linear-gradient");
     expect(screen.getByTestId("token-meter")).toHaveTextContent("↑ 12 tokens");
   });
 
@@ -44,7 +43,7 @@ describe("StickyUserMessage", () => {
     fireEvent.focus(focusTarget);
 
     expect(onScrollToTurn).toHaveBeenCalledTimes(1);
-    expect(screen.getByTestId("user-message-bubble")).toHaveClass("max-h-[50vh]", "overflow-auto");
+    expect(focusTarget).toHaveClass("max-h-[50vh]", "overflow-auto");
   });
 
   it("calls onScrollToTurn once per pointer click, including an already-focused target", async () => {
@@ -56,13 +55,13 @@ describe("StickyUserMessage", () => {
 
     await user.click(focusTarget);
     expect(onScrollToTurn).toHaveBeenCalledTimes(1);
-    expect(screen.getByTestId("user-message-bubble")).toHaveClass("max-h-[50vh]", "overflow-auto");
+    expect(focusTarget).toHaveClass("max-h-[50vh]", "overflow-auto");
 
     onScrollToTurn.mockClear();
     await user.click(focusTarget);
 
     expect(onScrollToTurn).toHaveBeenCalledTimes(1);
-    expect(screen.getByTestId("user-message-bubble")).toHaveClass("max-h-[50vh]", "overflow-auto");
+    expect(focusTarget).toHaveClass("max-h-[50vh]", "overflow-auto");
   });
 
   it("treats touch pointer activation as one scroll request", () => {
@@ -76,7 +75,19 @@ describe("StickyUserMessage", () => {
     fireEvent.click(focusTarget);
 
     expect(onScrollToTurn).toHaveBeenCalledTimes(1);
-    expect(screen.getByTestId("user-message-bubble")).toHaveClass("max-h-[50vh]", "overflow-auto");
+    expect(focusTarget).toHaveClass("max-h-[50vh]", "overflow-auto");
+  });
+
+  it("keeps the expanded scroll region focusable with a visible focus style", () => {
+    render(<StickyUserMessage message={userMessage()} />);
+
+    const focusTarget = screen.getByTestId("sticky-user-message-bubble");
+
+    fireEvent.focus(focusTarget);
+
+    expect(focusTarget).toHaveClass("max-h-[50vh]", "overflow-auto");
+    expect(focusTarget).toHaveClass("focus-visible:ring-2");
+    expect(focusTarget).not.toHaveClass("outline-none");
   });
 
   it("collapses when focus leaves the sticky component", () => {
@@ -87,9 +98,6 @@ describe("StickyUserMessage", () => {
     fireEvent.focus(focusTarget);
     fireEvent.blur(focusTarget, { relatedTarget: document.createElement("button") });
 
-    expect(screen.getByTestId("user-message-bubble")).toHaveClass(
-      "max-h-[84px]",
-      "overflow-hidden",
-    );
+    expect(focusTarget).toHaveClass("max-h-[84px]", "overflow-hidden");
   });
 });

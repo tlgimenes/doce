@@ -41,6 +41,13 @@ export default function StickyUserMessage({
     pointerOriginRef.current = false;
   };
 
+  const bubbleClassName = cn(
+    "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+    expanded
+      ? "max-h-[50vh] overflow-auto opacity-100"
+      : "max-h-[84px] overflow-hidden opacity-99 [mask-image:linear-gradient(to_bottom,black_calc(100%-16px),transparent)]",
+  );
+
   return (
     <div
       aria-label="You said"
@@ -49,26 +56,20 @@ export default function StickyUserMessage({
       data-testid="chat-message"
       role="group"
     >
-      <div
-        className="outline-none"
-        data-testid="sticky-user-message-bubble"
-        onBlur={collapseIfFocusLeft}
-        onPointerDown={() => {
-          pointerOriginRef.current = true;
+      <UserMessageBubble
+        message={message}
+        bubbleClassName={bubbleClassName}
+        bubbleProps={{
+          onBlur: collapseIfFocusLeft,
+          onClick: expandAndScrollOnClick,
+          onFocus: expandAndScrollOnFocus,
+          onPointerDown: () => {
+            pointerOriginRef.current = true;
+          },
+          tabIndex: 0,
         }}
-        onClick={expandAndScrollOnClick}
-        onFocus={expandAndScrollOnFocus}
-        tabIndex={0}
-      >
-        <UserMessageBubble
-          message={message}
-          bubbleClassName={cn(
-            expanded
-              ? "max-h-[50vh] overflow-auto opacity-100"
-              : "max-h-[84px] overflow-hidden opacity-99 [mask-image:linear-gradient(to_bottom,black_calc(100%-16px),transparent)]",
-          )}
-        />
-      </div>
+        bubbleTestId="sticky-user-message-bubble"
+      />
     </div>
   );
 }

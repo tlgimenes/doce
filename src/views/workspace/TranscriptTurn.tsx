@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import type * as React from "react";
 import MessageContent from "@/components/MessageContent";
 import BashWidget from "@/views/chat/tool-widgets/BashWidget";
@@ -23,8 +24,15 @@ export default function TranscriptTurn({
   pendingWidget = null,
   error = null,
 }: TranscriptTurnProps): React.JSX.Element {
+  const turnRef = useRef<HTMLDivElement>(null);
+
+  const scrollToTurn = () => {
+    turnRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
   return (
     <div
+      ref={turnRef}
       className="flex flex-col pb-2"
       data-testid="transcript-turn"
       data-last-turn={isLastTurn ? "true" : "false"}
@@ -36,7 +44,7 @@ export default function TranscriptTurn({
             className="sticky top-0 z-40 h-4 w-full bg-background"
             data-testid="sticky-user-background"
           />
-          <StickyUserMessage message={turn.user} />
+          <StickyUserMessage message={turn.user} onScrollToTurn={scrollToTurn} />
         </>
       )}
       <div data-testid="transcript-turn-body" className="min-w-0">

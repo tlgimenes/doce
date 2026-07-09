@@ -1,5 +1,5 @@
-import { render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, render, screen, within } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 import type { BashDetail, Message, TaskDetail } from "@/lib/ipc";
 import type { TranscriptTurn as TranscriptTurnModel } from "./transcriptTurns";
 import TranscriptTurn, { type PendingTurnWidget } from "./TranscriptTurn";
@@ -46,6 +46,31 @@ describe("TranscriptTurn", () => {
     expect(transcriptTurn.querySelector('[data-sticky-user-message="true"]')).not.toBeNull();
     expect(within(transcriptTurn).getByText("run the tests")).toBeInTheDocument();
     expect(within(body).getByText("done")).toBeInTheDocument();
+  });
+
+  it("re-anchors the owning turn when the sticky user bubble is focused", () => {
+    const scrollIntoView = vi.fn();
+    const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+
+    try {
+      render(<TranscriptTurn turn={turn({})} />);
+
+      fireEvent.focus(screen.getByTestId("sticky-user-message-bubble"));
+
+      expect(scrollIntoView).toHaveBeenCalledWith({
+        behavior: "smooth",
+        block: "start",
+      });
+    } finally {
+      Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+        configurable: true,
+        value: originalScrollIntoView,
+      });
+    }
   });
 
   it("renders assistant-only turns without sticky user chrome", () => {
