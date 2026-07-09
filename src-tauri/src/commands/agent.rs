@@ -792,6 +792,7 @@ async fn execute_top_level_tool(
         cwd: sub_context.cwd.as_deref(),
         threshold: sub_threshold,
     };
+    let sub_started_at = now_ms();
     let sub_result = run_loop(&sub_context, sub_messages, &mut sub_backend).await;
 
     let sub_final = match sub_result {
@@ -809,20 +810,15 @@ async fn execute_top_level_tool(
         .count_tokens(&sub_final_for_db)
         .ok()
         .map(|n| n as i64);
-    let _ = conn
-        .call(move |conn: &mut Connection| -> rusqlite::Result<()> {
-            let seq: i64 = conn.query_row(
-                "SELECT COALESCE(MAX(sequence), -1) + 1 FROM messages WHERE conversation_id = ?1",
-                [&subagent_id_for_db],
-                |row| row.get(0),
-            )?;
-            conn.execute(
-                "INSERT INTO messages (id, conversation_id, role, content_type, content, created_at, sequence, token_count) VALUES (?1, ?2, 'assistant', 'text', ?3, ?4, ?5, ?6)",
-                rusqlite::params![Uuid::now_v7().to_string(), subagent_id_for_db, sub_final_for_db, now, seq, sub_token_count],
-            )?;
-            Ok(())
-        })
-        .await;
+    let _ = persist_assistant_text_reply(
+        conn,
+        &subagent_id_for_db,
+        &sub_final_for_db,
+        sub_started_at,
+        now,
+        sub_token_count,
+    )
+    .await;
 
     // 004-tool-call-widgets/FR-010: the parent conversation only ever sees
     // a running/complete status for the delegation itself — never the
@@ -944,6 +940,46 @@ async fn emit_context_usage_update(
     {
         let _ = app.emit("context-usage-update", usage);
     }
+}
+
+async fn persist_assistant_text_reply(
+    conn: &tokio_rusqlite::Connection,
+    conversation_id: &str,
+    content: &str,
+    created_at: i64,
+    persisted_at: i64,
+    token_count: Option<i64>,
+) -> Result<i64, String> {
+    let conversation_id = conversation_id.to_string();
+    let content = content.to_string();
+    let duration_ms = (persisted_at - created_at).max(0);
+
+    conn.call(move |conn: &mut Connection| -> rusqlite::Result<i64> {
+        let seq: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(sequence), -1) + 1 FROM messages WHERE conversation_id = ?1",
+            [&conversation_id],
+            |row| row.get(0),
+        )?;
+        conn.execute(
+            "INSERT INTO messages (id, conversation_id, role, content_type, content, created_at, sequence, duration_ms, token_count) VALUES (?1, ?2, 'assistant', 'text', ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                Uuid::now_v7().to_string(),
+                conversation_id,
+                content,
+                created_at,
+                seq,
+                duration_ms,
+                token_count,
+            ],
+        )?;
+        conn.execute(
+            "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
+            rusqlite::params![persisted_at, conversation_id],
+        )?;
+        Ok(seq)
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// 006-chat-empty-state (research.md § 1): tells the model what directory
@@ -1315,27 +1351,16 @@ pub async fn send_agent_message(
         Err(e) => format!("Error: {e}"),
     };
 
-    let now = now_ms();
-    let final_seq: i64 = conn
-        .call({
-            let conversation_id = conversation_id.clone();
-            let final_text = final_text.clone();
-            move |conn: &mut Connection| -> rusqlite::Result<i64> {
-                let seq: i64 = conn.query_row(
-                    "SELECT COALESCE(MAX(sequence), -1) + 1 FROM messages WHERE conversation_id = ?1",
-                    [&conversation_id],
-                    |row| row.get(0),
-                )?;
-                conn.execute(
-                    "INSERT INTO messages (id, conversation_id, role, content_type, content, created_at, sequence) VALUES (?1, ?2, 'assistant', 'text', ?3, ?4, ?5)",
-                    rusqlite::params![Uuid::now_v7().to_string(), conversation_id, final_text, now, seq],
-                )?;
-                conn.execute("UPDATE conversations SET updated_at = ?1 WHERE id = ?2", rusqlite::params![now, conversation_id])?;
-                Ok(seq)
-            }
-        })
-        .await
-        .map_err(|e| e.to_string())?;
+    let final_persisted_at = now_ms();
+    let final_seq = persist_assistant_text_reply(
+        &conn,
+        &conversation_id,
+        &final_text,
+        now,
+        final_persisted_at,
+        None,
+    )
+    .await?;
 
     // Streaming (UI refactor): the final answer is the last item Loop 1
     // ever appends -- signal it the same way every tool_call/tool_result
@@ -1563,6 +1588,45 @@ mod tests {
         assert_eq!(role, "user");
         assert_eq!(content_type, "rich_text");
         assert_eq!(content, rich_json);
+    }
+
+    #[tokio::test]
+    async fn persist_assistant_text_reply_records_elapsed_duration() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_conversation(&conn, "c1").await;
+
+        let seq = persist_assistant_text_reply(&conn, "c1", "final answer", 1_000, 3_750, None)
+            .await
+            .unwrap();
+
+        assert_eq!(seq, 0);
+        let row: (String, String, i64, Option<i64>, String) = conn
+            .call(|conn: &mut Connection| {
+                conn.query_row(
+                    "SELECT role, content_type, created_at, duration_ms, content FROM messages WHERE conversation_id = 'c1'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+                )
+            })
+            .await
+            .unwrap();
+        assert_eq!(row.0, "assistant");
+        assert_eq!(row.1, "text");
+        assert_eq!(row.2, 1_000);
+        assert_eq!(row.3, Some(2_750));
+        assert_eq!(row.4, "final answer");
+
+        let updated_at: i64 = conn
+            .call(|conn: &mut Connection| {
+                conn.query_row(
+                    "SELECT updated_at FROM conversations WHERE id = 'c1'",
+                    [],
+                    |row| row.get(0),
+                )
+            })
+            .await
+            .unwrap();
+        assert_eq!(updated_at, 3_750);
     }
 
     #[tokio::test]
