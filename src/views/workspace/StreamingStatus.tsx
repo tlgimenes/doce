@@ -46,9 +46,8 @@ export default function StreamingStatus({ startedAt }: StreamingStatusProps) {
         </span>
         <span>Thinking</span>
         <span
-          className="min-w-[4.5ch] text-right font-mono tabular-nums"
+          className="w-[4.5ch] text-right font-mono tabular-nums"
           data-testid="agent-thinking-timer"
-          aria-hidden="true"
         >
           {formatElapsedMs(now - effectiveStartedAt)}
         </span>

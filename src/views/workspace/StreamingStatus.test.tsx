@@ -21,21 +21,24 @@ describe("StreamingStatus", () => {
     expect(screen.getByTestId("agent-thinking-timer")).toHaveClass("tabular-nums");
   });
 
-  it("ticks from the provided start timestamp without changing layout width classes", async () => {
+  it("ticks across the 9.9s -> 10.0s boundary without changing fixed-width classes", async () => {
     vi.useFakeTimers();
-    vi.setSystemTime(10_000);
+    vi.setSystemTime(9_900);
 
     render(<StreamingStatus startedAt={9_000} />);
 
-    expect(screen.getByTestId("agent-thinking-timer")).toHaveTextContent("1.0s");
+    expect(screen.getByTestId("agent-thinking-timer")).toHaveTextContent("0.9s");
+    expect(screen.getByTestId("agent-thinking-timer")).toHaveClass("w-[4.5ch]");
+    expect(screen.getByTestId("agent-thinking-timer")).not.toHaveClass("min-w-[4.5ch]");
 
-    vi.setSystemTime(12_300);
+    vi.setSystemTime(9_900);
     await act(async () => {
       vi.advanceTimersByTime(100);
     });
 
-    expect(screen.getByTestId("agent-thinking-timer")).toHaveTextContent("3.4s");
-    expect(screen.getByTestId("agent-thinking-timer")).toHaveClass("min-w-[4.5ch]");
+    expect(screen.getByTestId("agent-thinking-timer")).toHaveTextContent("1.0s");
+    expect(screen.getByTestId("agent-thinking-timer")).toHaveClass("w-[4.5ch]");
+    expect(screen.getByTestId("agent-thinking-timer")).not.toHaveClass("min-w-[4.5ch]");
   });
 
   it("falls back to the mount time when no user-message timestamp is available", async () => {
