@@ -1,5 +1,5 @@
-import ReactMarkdown from "react-markdown";
 import Timer from "@/components/Timer";
+import MarkdownPreview from "@/components/MarkdownPreview";
 import { formatTokenCount } from "@/lib/formatTokenCount";
 import {
   parseContextNoticeDetail,
@@ -44,19 +44,21 @@ export default function MessageContent({ message: m, showTimer = false }: Messag
   if (m.role === "user") {
     return (
       <div className="mb-6" data-testid="chat-message" role="group" aria-label="You said">
-        <div className="prose prose-sm dark:prose-invert max-w-none rounded-lg bg-muted p-3 text-foreground">
-          {/* 009-rich-chat-input, US2 (T026): a rich_text user message (a
-              paste-collapse chip, and eventually attachment/skill chips)
-              dispatches to UserMessageContent, mirroring this file's existing
-              tool_result -> ToolWidget dispatch — every other user message
-              (contentType 'text', today's only other case) renders exactly as
-              it always has. */}
-          {m.contentType === "rich_text" ? (
+        {m.contentType === "rich_text" ? (
+          <div className="prose prose-sm dark:prose-invert max-w-none rounded-lg bg-muted p-3 text-foreground">
+            {/* 009-rich-chat-input, US2 (T026): a rich_text user message (a
+                paste-collapse chip, and eventually attachment/skill chips)
+                dispatches to UserMessageContent, mirroring this file's existing
+                tool_result -> ToolWidget dispatch — every other user message
+                (contentType 'text', today's only other case) renders exactly as
+                it always has. */}
             <UserMessageContent content={m.content} />
-          ) : (
-            <ReactMarkdown>{m.content}</ReactMarkdown>
-          )}
-        </div>
+          </div>
+        ) : (
+          <MarkdownPreview className="rounded-lg bg-muted p-3 text-foreground">
+            {m.content}
+          </MarkdownPreview>
+        )}
         {/* 010-context-window-management (UI refactor): input tokens for
             what the user sent — mirrors Claude Code's own per-turn token
             meter, arrow-directioned the same way (↑ sent/uploaded, ↓
@@ -129,9 +131,7 @@ export default function MessageContent({ message: m, showTimer = false }: Messag
 
   return (
     <div className="mb-6" data-testid="chat-message" role="group" aria-label="doce replied">
-      <div className="prose prose-sm dark:prose-invert max-w-none">
-        <ReactMarkdown>{m.content}</ReactMarkdown>
-      </div>
+      <MarkdownPreview>{m.content}</MarkdownPreview>
       {(showTimer || m.tokenCount != null) && (
         <p className="mt-1 text-xs text-muted-foreground" data-testid="token-meter">
           {showTimer && <Timer createdAt={m.createdAt} durationMs={m.durationMs} />}

@@ -40,6 +40,21 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
     expect(screen.getByText("0.5s")).toBeInTheDocument();
   });
 
+  it("continues to render markdown after the markdown renderer is shared", () => {
+    render(
+      <MessageContent
+        message={baseMessage({
+          contentType: "text",
+          content: "## Heading\n\n- one\n- two",
+        })}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { level: 2, name: "Heading" })).toBeInTheDocument();
+    expect(screen.getByText("one")).toBeInTheDocument();
+    expect(screen.getByText("two")).toBeInTheDocument();
+  });
+
   // --- 010-context-window-management (UI refactor): token meter ---
 
   it("shows an input-token meter (↑) on a user message when tokenCount is known", () => {
