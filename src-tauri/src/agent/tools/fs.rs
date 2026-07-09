@@ -17,6 +17,11 @@ pub const READ_MAX_LINE_CHARS: usize = 2000;
 /// Total output cap: ~2k tokens of the 8192-token window. The marker names
 /// the exact `offset` to continue from, so paging never needs guesswork.
 pub const READ_MAX_BYTES: usize = 8192;
+/// How the byte-cap marker line begins. Shared with `dispatch.rs`'s Read
+/// arm so the `truncated` flag can be derived from the output itself
+/// without re-reading the file (and can never drift from the marker's
+/// actual format).
+pub const READ_CAP_MARKER_PREFIX: &str = "[capped at ";
 
 /// `Read` (FR-009): matches Claude Code's own tool — 1-indexed line
 /// numbers, `cat -n`-style, with optional offset/limit for large files.
@@ -32,8 +37,13 @@ pub fn read(path: &Path, offset: Option<usize>, limit: Option<usize>) -> Result<
     let take = limit.unwrap_or(2000);
 
     let mut out = String::new();
-    let mut emitted = 0usize;
-    for (i, line) in content.lines().enumerate().skip(start).take(take) {
+    for (emitted, (i, line)) in content
+        .lines()
+        .enumerate()
+        .skip(start)
+        .take(take)
+        .enumerate()
+    {
         let clamped: String = if line.chars().count() > READ_MAX_LINE_CHARS {
             let head: String = line.chars().take(READ_MAX_LINE_CHARS).collect();
             format!("{head}… [line truncated]")
@@ -42,15 +52,17 @@ pub fn read(path: &Path, offset: Option<usize>, limit: Option<usize>) -> Result<
         };
         let rendered = format!("{:>6}\t{clamped}\n", i + 1);
         if out.len() + rendered.len() > READ_MAX_BYTES {
+            // `emitted` is the 0-indexed position of the line NOT being
+            // appended, i.e. the count of lines already emitted — so
+            // `start + emitted` is the absolute skip count to resume from.
             let continue_from = start + emitted;
             out.push_str(&format!(
-                "[capped at {} bytes — continue with offset={continue_from}]\n",
+                "{READ_CAP_MARKER_PREFIX}{} bytes — continue with offset={continue_from}]\n",
                 out.len()
             ));
             return Ok(out);
         }
         out.push_str(&rendered);
-        emitted += 1;
     }
     Ok(out)
 }

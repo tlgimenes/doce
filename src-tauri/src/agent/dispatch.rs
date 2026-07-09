@@ -274,9 +274,16 @@ pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
                     // fs::read caps at `limit` (default 2000) lines — the
                     // returned content hitting that count exactly is the
                     // only signal available here that more lines existed
-                    // past the cap, without a second, wasteful read.
+                    // past the cap, without a second, wasteful read. It
+                    // can also stop early on READ_MAX_BYTES with far fewer
+                    // lines, in which case its last line is the cap marker
+                    // — either way the read was truncated.
                     let cap = limit.unwrap_or(2000);
-                    let truncated = content.lines().count() >= cap;
+                    let byte_capped = content
+                        .lines()
+                        .last()
+                        .is_some_and(|l| l.starts_with(fs::READ_CAP_MARKER_PREFIX));
+                    let truncated = byte_capped || content.lines().count() >= cap;
                     ToolOutcome {
                         model_text: content.clone(),
                         detail: json!({
@@ -622,6 +629,36 @@ mod tests {
             None,
         );
         assert!(result.model_text.contains("hello"));
+    }
+
+    #[test]
+    fn read_byte_cap_sets_truncated_true_in_detail() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("big.txt");
+        // 1000 lines x ~27 bytes ≈ 27KB — well past READ_MAX_BYTES (8192),
+        // but far fewer emitted lines than the 2000-line limit, so the old
+        // line-count-only derivation would have reported truncated: false.
+        stdfs::write(&file, "abcdefghijklmnopqrstuvwxyz\n".repeat(1000)).unwrap();
+
+        let result = execute(
+            &call(
+                "Read",
+                serde_json::json!({"file_path": file.to_str().unwrap()}),
+            ),
+            None,
+        );
+
+        assert_eq!(result.detail["outcome"]["ok"], true);
+        assert_eq!(
+            result.detail["outcome"]["truncated"], true,
+            "a byte-capped read must report truncated: true, got detail {}",
+            result.detail
+        );
+        let last_line = result.model_text.lines().last().unwrap();
+        assert!(
+            last_line.starts_with(fs::READ_CAP_MARKER_PREFIX),
+            "model_text must end with the cap marker, got {last_line:?}"
+        );
     }
 
     #[test]
