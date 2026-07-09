@@ -236,6 +236,12 @@ You are currently working in the directory: {}",
                 self.cwd.display()
             ));
         }
+        // Recite the live plan at the context tail (Manus's recitation
+        // trick) to keep the global plan inside the model's recent attention
+        // span on long tasks -- the in-memory clone only, never persisted.
+        if let Some(recitation) = self.plan_state.recitation_text() {
+            messages.push(doce_lib::inference::ChatMessage::user(recitation));
+        }
 
         let rendered = self
             .engine

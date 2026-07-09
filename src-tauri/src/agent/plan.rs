@@ -354,6 +354,35 @@ impl PlanState {
     pub fn has_plan(&self) -> bool {
         !self.plan.steps.is_empty()
     }
+
+    /// The live plan restated for the context TAIL — Manus's recitation
+    /// trick: on long tasks the system prompt drifts into the
+    /// lost-in-the-middle zone; a compact checklist at the end of the
+    /// context keeps the global plan inside the model's recent attention
+    /// span. `None` when no plan exists (trivial turns pay nothing).
+    pub fn recitation_text(&self) -> Option<String> {
+        if !self.has_plan() {
+            return None;
+        }
+        let done = self.plan.steps.iter().filter(|s| s.done).count();
+        let current = match self.state {
+            LoopState::Executing { step_index } => Some(step_index),
+            LoopState::Planning => None,
+        };
+        let mut lines = vec![format!("Plan status -- goal: {}", self.plan.goal)];
+        for (i, step) in self.plan.steps.iter().enumerate() {
+            let mark = if step.done {
+                "[x]"
+            } else if current == Some(i) {
+                "[>]"
+            } else {
+                "[ ]"
+            };
+            lines.push(format!("{mark} {}", step.description));
+        }
+        lines.push(format!("({done}/{} done)", self.plan.steps.len()));
+        Some(lines.join("\n"))
+    }
 }
 
 #[cfg(test)]
@@ -602,5 +631,47 @@ mod tests {
         assert!(prompt.contains("ship it"));
         assert!(prompt.contains("write tests"));
         assert!(prompt.contains("StepDone"));
+    }
+
+    #[test]
+    fn recitation_text_formats_the_live_plan_for_context_tail() {
+        // Fresh state with no plan returns None
+        let ps = PlanState::default();
+        assert!(ps.recitation_text().is_none(), "fresh state should have no recitation");
+
+        // Create a 3-step plan
+        let mut ps = PlanState::default();
+        ps.handle_plan_tool(&call(
+            "CreatePlan",
+            serde_json::json!({"goal": "fix bugs", "steps": ["fix a", "fix b", "fix c"]}),
+        ));
+
+        // Mark the first step done, then move to executing the second
+        ps.handle_plan_tool(&call("ResumeExecution", serde_json::json!({})));
+        ps.handle_plan_tool(&call("StepDone", serde_json::json!({"summary": "done"})));
+
+        // Now in Executing{1}, with step 0 done
+        assert_eq!(ps.state, LoopState::Executing { step_index: 1 });
+        assert!(ps.plan.steps[0].done);
+
+        let recitation = ps.recitation_text().expect("should have recitation with active plan");
+
+        // Check all required elements
+        assert!(recitation.contains("fix bugs"), "should contain goal");
+        assert!(recitation.contains("[x]"), "should mark done step with [x]");
+        assert!(recitation.contains("[>]"), "should mark current step with [>]");
+        assert!(
+            recitation.contains("fix a") || recitation.contains("[x] fix a"),
+            "done step should appear in recitation"
+        );
+        assert!(
+            recitation.contains("fix b") || recitation.contains("[>] fix b"),
+            "current step should appear with [>] marker"
+        );
+        assert!(
+            recitation.contains("fix c") || recitation.contains("[ ] fix c"),
+            "undone step should appear with [ ] marker"
+        );
+        assert!(recitation.contains("1/3"), "should show progress counter");
     }
 }

@@ -580,6 +580,12 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
         if let Some(first) = messages.first_mut() {
             *first = ChatMessage::system(system_text);
         }
+        // Recite the live plan at the context tail (Manus's recitation
+        // trick) to keep the global plan inside the model's recent attention
+        // span on long tasks -- the in-memory clone only, never persisted.
+        if let Some(recitation) = self.plan_state.recitation_text() {
+            messages.push(ChatMessage::user(recitation));
+        }
         // The plan loop REQUIRES a tool call at the sampler level in BOTH
         // states: a plain-text reply anywhere would end the entire task,
         // and the model was observed degrading into exactly that
@@ -691,6 +697,12 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
         let system_text = plan_system_message(&mut self.plan_state, self.cwd, false);
         if let Some(first) = messages.first_mut() {
             *first = ChatMessage::system(system_text);
+        }
+        // Recite the live plan at the context tail (Manus's recitation
+        // trick) to keep the global plan inside the model's recent attention
+        // span on long tasks -- the in-memory clone only, never persisted.
+        if let Some(recitation) = self.plan_state.recitation_text() {
+            messages.push(ChatMessage::user(recitation));
         }
         match self.engine.render_chat_prompt(&messages) {
             Ok(rendered) => self
