@@ -1,17 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { ArrowDownIcon } from "@phosphor-icons/react";
 import { StickToBottom, type StickToBottomContext } from "use-stick-to-bottom";
-import MessageContent from "@/components/MessageContent";
 import { cn } from "@/lib/cn";
 import { runViewTransition } from "@/lib/viewTransition";
 import { Button } from "@/components/ui/button";
 import RichInput from "@/views/chat/rich-input/RichInput";
 import UserAskWidget from "@/views/chat/tool-widgets/UserAskWidget";
-import BashWidget from "@/views/chat/tool-widgets/BashWidget";
 import PlanTracker from "@/views/workspace/PlanTracker";
 import StreamingStatus from "@/views/workspace/StreamingStatus";
 import WorkspaceTopbar from "@/views/workspace/WorkspaceTopbar";
-import TaskWidget from "@/views/chat/tool-widgets/TaskWidget";
+import TranscriptTurn, { type PendingTurnWidget } from "@/views/workspace/TranscriptTurn";
+import { groupTranscriptTurns } from "@/views/workspace/transcriptTurns";
 import {
   commands,
   events,
@@ -331,6 +330,13 @@ export default function Workspace({
   const activeTurnStartedAt = showGenericStreamingStatus
     ? (activeTurnStartedAtCandidate ?? genericStatusFallbackStartedAtRef.current)
     : null;
+  const transcriptTurns = useMemo(() => groupTranscriptTurns(messages), [messages]);
+  const previousTurns = transcriptTurns.slice(0, -1);
+  const lastTurn = transcriptTurns.at(-1) ?? null;
+  const pendingTurnWidget: PendingTurnWidget | null =
+    pendingToolCall?.kind === "bash" || pendingToolCall?.kind === "task"
+      ? pendingToolCall
+      : null;
 
   const send = useCallback(
     (content: string, richContent?: RichMessageContent): boolean => {
@@ -470,7 +476,7 @@ export default function Workspace({
           reset-pinning-on-switch effect. */}
       <StickToBottom
         key={conversationId}
-        className="@container relative min-h-0 flex-1"
+        className="[container-type:size] relative min-h-0 flex-1"
         initial="instant"
         contextRef={stickToBottomContextRef}
       >
@@ -481,38 +487,40 @@ export default function Workspace({
               className="h-full overflow-y-auto p-4"
               data-testid="workspace-scroll-container"
             >
-              <div ref={contentRef} className="mx-auto max-w-3xl">
-                {messages.map((m) => (
-                  <MessageContent
-                    key={m.id}
-                    message={m}
-                    showTimer={
-                      m.role === "assistant" && m.contentType === "text" && m.durationMs != null
-                    }
-                  />
-                ))}
-                {(pendingToolCall?.kind === "bash" || pendingToolCall?.kind === "task") && (
+              <div
+                ref={contentRef}
+                className="overflow-x-clip"
+                data-testid="workspace-transcript-content"
+              >
+                <div className="mx-auto max-w-3xl">
+                  {previousTurns.map((turn) => (
+                    <TranscriptTurn key={turn.id} turn={turn} />
+                  ))}
+                </div>
+                {lastTurn ? (
                   <div
-                    className="mb-6"
-                    data-testid="chat-message"
-                    role="group"
-                    aria-label="doce replied"
+                    className="mx-auto min-h-[100cqh] max-w-3xl"
+                    data-testid="last-transcript-turn-viewport"
                   >
-                    {pendingToolCall.kind === "bash" && (
-                      <BashWidget detail={pendingToolCall.detail} />
-                    )}
-                    {pendingToolCall.kind === "task" && (
-                      <TaskWidget detail={pendingToolCall.detail} />
-                    )}
+                    <TranscriptTurn
+                      key={lastTurn.id}
+                      turn={lastTurn}
+                      isLastTurn
+                      pendingWidget={pendingTurnWidget}
+                      error={error}
+                    />
                   </div>
-                )}
-                {error && (
-                  <div
-                    className="mb-6 rounded-lg bg-destructive/10 p-3 text-sm text-destructive"
-                    data-testid="workspace-error"
-                  >
-                    {error}
-                  </div>
+                ) : (
+                  error && (
+                    <div className="mx-auto max-w-3xl">
+                      <div
+                        className="mb-6 rounded-lg bg-destructive/10 p-3 text-sm text-destructive"
+                        data-testid="workspace-error"
+                      >
+                        {error}
+                      </div>
+                    </div>
+                  )
                 )}
               </div>
             </div>

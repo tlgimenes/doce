@@ -181,6 +181,62 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     await waitFor(() => expect(commands.listMessages).toHaveBeenCalledWith("conv-1"));
   });
 
+  it("renders user messages as sticky turn anchors that own following assistant rows", async () => {
+    vi.mocked(commands.listMessages).mockResolvedValue([
+      messageFixture("u1", "first request", 1),
+      {
+        id: "a1",
+        conversationId: "conv-1",
+        role: "assistant",
+        contentType: "text",
+        content: "first answer",
+        toolName: null,
+        createdAt: 2,
+        durationMs: null,
+        tokenCount: null,
+      },
+      messageFixture("u2", "second request", 3),
+      {
+        id: "a2",
+        conversationId: "conv-1",
+        role: "assistant",
+        contentType: "text",
+        content: "second answer",
+        toolName: null,
+        createdAt: 4,
+        durationMs: null,
+        tokenCount: null,
+      },
+    ]);
+
+    render(<Workspace conversationId="conv-1" />);
+
+    await screen.findByText("second answer");
+
+    const turns = screen.getAllByTestId("transcript-turn");
+    expect(turns).toHaveLength(2);
+    expect(turns[0]).toHaveTextContent("first request");
+    expect(turns[0]).toHaveTextContent("first answer");
+    expect(turns[0]).not.toHaveTextContent("second request");
+    expect(turns[1]).toHaveTextContent("second request");
+    expect(turns[1]).toHaveTextContent("second answer");
+    expect(document.querySelectorAll('[data-sticky-user-message="true"]')).toHaveLength(2);
+  });
+
+  it("keeps the transcript content wrapper sticky-safe and makes the latest turn viewport-height", async () => {
+    vi.mocked(commands.listMessages).mockResolvedValue([messageFixture("u1", "latest request", 1)]);
+
+    render(<Workspace conversationId="conv-1" />);
+
+    await screen.findByText("latest request");
+
+    expect(screen.getByTestId("workspace-scroll-container").parentElement).toHaveClass(
+      "[container-type:size]",
+    );
+    expect(screen.getByTestId("workspace-transcript-content")).toHaveClass("overflow-x-clip");
+    expect(screen.getByTestId("last-transcript-turn-viewport")).toHaveClass("min-h-[100cqh]");
+  });
+
   it("notifies when active messages refresh so the app can mark the conversation seen", async () => {
     const onConversationSeen = vi.fn();
     vi.mocked(commands.listMessages).mockResolvedValue([
@@ -396,6 +452,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     expect(status).toHaveTextContent("Working");
     expect(screen.getByTestId("agent-thinking-timer")).toHaveTextContent("0.0s");
     expect(status.closest('[data-testid="chat-message"]')).toBeNull();
+    expect(status.closest('[data-testid="transcript-turn"]')).toBeNull();
     expectElementBefore(status, composerShell);
     expect(status).toHaveClass("border-b");
     expect(composerShell).not.toHaveClass("border-t");
@@ -562,6 +619,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     // The normal composer is replaced entirely, not merely disabled -- the
     // question widget sits in its place instead.
     expect(screen.queryByTestId("agent-input")).not.toBeInTheDocument();
+    expect(widget.closest('[data-testid="transcript-turn"]')).toBeNull();
 
     await userEvent.click(screen.getByRole("radio", { name: "A" }));
     expect(commands.answerUserQuestion).not.toHaveBeenCalled();
@@ -650,6 +708,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     const status = await screen.findByTestId("bash-status");
     expect(status).toHaveTextContent(/running/i);
     expect(screen.getByTestId("bash-command")).toHaveTextContent("cargo test --lib");
+    expect(status.closest('[data-testid="transcript-turn"]')).toHaveTextContent("run the tests");
     expect(screen.queryByTestId("agent-thinking")).not.toBeInTheDocument();
   });
 
@@ -686,6 +745,9 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
 
     const status = await screen.findByTestId("task-status");
     expect(status).toHaveTextContent(/running/i);
+    expect(status.closest('[data-testid="transcript-turn"]')).toHaveTextContent(
+      "investigate the bug",
+    );
     expect(screen.queryByTestId("agent-thinking")).not.toBeInTheDocument();
   });
 
