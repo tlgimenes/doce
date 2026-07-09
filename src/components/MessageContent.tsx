@@ -129,17 +129,21 @@ export default function MessageContent({ message: m, showTimer = false }: Messag
     );
   }
 
+  const showAssistantDuration = showTimer || m.durationMs != null;
+  const showAssistantMetadata =
+    m.contentType === "text" && (showAssistantDuration || m.tokenCount != null);
+
   return (
     <div className="mb-6" data-testid="chat-message" role="group" aria-label="doce replied">
       <MarkdownPreview>{m.content}</MarkdownPreview>
-      {(showTimer || m.tokenCount != null) && (
+      {showAssistantMetadata && (
         <p className="mt-1 text-xs text-muted-foreground" data-testid="token-meter">
-          {showTimer && <Timer createdAt={m.createdAt} durationMs={m.durationMs} />}
+          {showAssistantDuration && <Timer createdAt={m.createdAt} durationMs={m.durationMs} />}
           {/* 010-context-window-management (UI refactor): output tokens
               for this reply, combined with the elapsed-time chron on the
               same line — mirrors Claude Code's own status line ("3m 51s ·
               ↓ 15.6k tokens"). */}
-          {showTimer && m.tokenCount != null && " · "}
+          {showAssistantDuration && m.tokenCount != null && " · "}
           {m.tokenCount != null && `↓ ${formatTokenCount(m.tokenCount)} tokens`}
         </p>
       )}

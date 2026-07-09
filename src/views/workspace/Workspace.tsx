@@ -524,7 +524,15 @@ export default function Workspace({
             >
               <div ref={contentRef} className="mx-auto max-w-3xl">
                 {messages.map((m) => (
-                  <MessageContent key={m.id} message={m} />
+                  <MessageContent
+                    key={m.id}
+                    message={m}
+                    showTimer={
+                      m.role === "assistant" &&
+                      m.contentType === "text" &&
+                      m.durationMs != null
+                    }
+                  />
                 ))}
                 {(pendingToolCall?.kind === "bash" ||
                   pendingToolCall?.kind === "task") && (

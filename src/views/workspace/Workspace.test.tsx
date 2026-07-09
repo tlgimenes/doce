@@ -148,6 +148,30 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     });
   });
 
+  it("renders assistant duration metadata beside tokens for persisted transcript replies", async () => {
+    vi.mocked(commands.listMessages).mockResolvedValue([
+      {
+        id: "m1",
+        conversationId: "conv-1",
+        role: "assistant",
+        contentType: "text",
+        content: "hello",
+        toolName: null,
+        createdAt: 2,
+        durationMs: 500,
+        tokenCount: 15600,
+      },
+    ]);
+
+    render(<Workspace conversationId="conv-1" />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("token-meter")).toHaveTextContent(
+        "0.5s · ↓ 15.6k tokens",
+      ),
+    );
+  });
+
   it("fills the shell content area instead of forcing viewport height", async () => {
     render(<Workspace conversationId="conv-1" />);
 

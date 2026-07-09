@@ -24,20 +24,70 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
     expect(screen.getByText("hi there")).toBeInTheDocument();
   });
 
-  it("renders a text assistant message as markdown, with Timer only when showTimer is true", () => {
+  it("renders a live assistant timer only when showTimer is true and no persisted duration exists", () => {
     const { rerender } = render(
-      <MessageContent message={baseMessage({ contentType: "text", content: "the answer" })} />,
+      <MessageContent
+        message={baseMessage({ contentType: "text", content: "the answer", durationMs: null })}
+      />,
     );
     expect(screen.getByText("the answer")).toBeInTheDocument();
     expect(screen.queryByText(/0\.5s/)).not.toBeInTheDocument();
 
     rerender(
       <MessageContent
-        message={baseMessage({ contentType: "text", content: "the answer" })}
+        message={baseMessage({ contentType: "text", content: "the answer", durationMs: null })}
         showTimer
       />,
     );
-    expect(screen.getByText("0.5s")).toBeInTheDocument();
+    expect(screen.getByTestId("token-meter")).toHaveTextContent(/^\d+\.\d+s$/);
+  });
+
+  it("shows assistant duration and tokens together for completed text replies", () => {
+    render(
+      <MessageContent
+        message={baseMessage({ contentType: "text", content: "the answer", tokenCount: 15600 })}
+      />,
+    );
+
+    expect(screen.getByTestId("token-meter")).toHaveTextContent("0.5s · ↓ 15.6k tokens");
+  });
+
+  it("shows only assistant duration when tokens are unavailable for a completed text reply", () => {
+    render(<MessageContent message={baseMessage({ contentType: "text", content: "the answer" })} />);
+
+    expect(screen.getByTestId("token-meter")).toHaveTextContent("0.5s");
+  });
+
+  it("shows only assistant tokens when duration is unavailable", () => {
+    render(
+      <MessageContent
+        message={baseMessage({
+          contentType: "text",
+          content: "the answer",
+          durationMs: null,
+          tokenCount: 100,
+        })}
+      />,
+    );
+
+    const meter = screen.getByTestId("token-meter");
+    expect(meter).toHaveTextContent("↓ 100 tokens");
+    expect(meter).not.toHaveTextContent("0.5s");
+  });
+
+  it("shows no assistant metadata footer when neither duration nor tokens are available", () => {
+    render(
+      <MessageContent
+        message={baseMessage({
+          contentType: "text",
+          content: "the answer",
+          durationMs: null,
+          tokenCount: null,
+        })}
+      />,
+    );
+
+    expect(screen.queryByTestId("token-meter")).not.toBeInTheDocument();
   });
 
   it("continues to render markdown after the markdown renderer is shared", () => {
@@ -75,27 +125,20 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
     expect(screen.queryByTestId("token-meter")).not.toBeInTheDocument();
   });
 
-  it("combines the elapsed-time chron and an output-token meter (↓) on an assistant message", () => {
+  it("combines the live elapsed-time chron and an output-token meter (↓) on an assistant message when showTimer is enabled", () => {
     render(
       <MessageContent
-        message={baseMessage({ contentType: "text", content: "the answer", tokenCount: 15600 })}
+        message={baseMessage({
+          contentType: "text",
+          content: "the answer",
+          durationMs: null,
+          tokenCount: 15600,
+        })}
         showTimer
       />,
     );
     const meter = screen.getByTestId("token-meter");
-    expect(meter).toHaveTextContent("0.5s");
-    expect(meter).toHaveTextContent("↓ 15.6k tokens");
-  });
-
-  it("shows just the token meter (no chron) on an assistant message when showTimer is false", () => {
-    render(
-      <MessageContent
-        message={baseMessage({ contentType: "text", content: "the answer", tokenCount: 100 })}
-      />,
-    );
-    const meter = screen.getByTestId("token-meter");
-    expect(meter).toHaveTextContent("↓ 100 tokens");
-    expect(meter).not.toHaveTextContent("0.5s");
+    expect(meter).toHaveTextContent(/↓ 15\.6k tokens/);
   });
 
   it("renders an error message distinctly", () => {
@@ -142,6 +185,25 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
       />,
     );
     expect(screen.getByTestId("unknown-tool-widget")).toBeInTheDocument();
+  });
+
+  it("does not add assistant duration metadata to non-text rows", () => {
+    render(
+      <MessageContent
+        message={baseMessage({
+          contentType: "tool_result",
+          toolName: "SomeMcpTool",
+          content: JSON.stringify({
+            toolName: "SomeMcpTool",
+            arguments: { input: "x" },
+            outcome: { ok: true, text: "did the thing" },
+          }),
+          tokenCount: 100,
+        })}
+      />,
+    );
+
+    expect(screen.queryByTestId("token-meter")).not.toBeInTheDocument();
   });
 
   // --- 010-context-window-management/US2: context_notice dispatch ---
@@ -192,5 +254,51 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
       />,
     );
     expect(screen.getByTestId("context-notice")).toHaveTextContent("not valid json");
+  });
+
+  it("renders nothing for plan-machine tool rows (plan activity is tracker-only)", () => {
+    const planCall = {
+      id: "pc1",
+      conversationId: "c1",
+      role: "assistant",
+      contentType: "tool_call",
+      content: JSON.stringify({ arguments: { goal: "g", steps: ["a"] } }),
+      toolName: "CreatePlan",
+      createdAt: 1,
+      durationMs: null,
+      tokenCount: null,
+    } as const;
+    const planResult = {
+      ...planCall,
+      id: "pr1",
+      role: "tool",
+      contentType: "tool_result",
+      content: JSON.stringify({
+        toolName: "CreatePlan",
+        arguments: { goal: "g", steps: ["a"] },
+        plan: true,
+        outcome: { ok: true, text: "Plan created with 1 steps." },
+      }),
+    } as const;
+    // A state-gated rejection carries a REGULAR tool name but the plan
+    // marker — it must be skipped by the marker, not the name.
+    const gatedRejection = {
+      ...planResult,
+      id: "pr2",
+      toolName: "Write",
+      content: JSON.stringify({
+        toolName: "Write",
+        arguments: {},
+        plan: true,
+        outcome: { ok: false, text: "Error: Write is not available in the current phase" },
+      }),
+    } as const;
+
+    const { container: c1 } = render(<MessageContent message={planCall} />);
+    const { container: c2 } = render(<MessageContent message={planResult} />);
+    const { container: c3 } = render(<MessageContent message={gatedRejection} />);
+    expect(c1).toBeEmptyDOMElement();
+    expect(c2).toBeEmptyDOMElement();
+    expect(c3).toBeEmptyDOMElement();
   });
 });
