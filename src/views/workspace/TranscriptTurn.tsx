@@ -1,3 +1,4 @@
+import type * as React from "react";
 import MessageContent from "@/components/MessageContent";
 import BashWidget from "@/views/chat/tool-widgets/BashWidget";
 import TaskWidget from "@/views/chat/tool-widgets/TaskWidget";
@@ -21,7 +22,7 @@ export default function TranscriptTurn({
   isLastTurn = false,
   pendingWidget = null,
   error = null,
-}: TranscriptTurnProps): JSX.Element {
+}: TranscriptTurnProps): React.JSX.Element {
   return (
     <div
       className="flex flex-col pb-2"

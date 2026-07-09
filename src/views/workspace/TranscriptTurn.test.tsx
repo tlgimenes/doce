@@ -4,13 +4,13 @@ import type { BashDetail, Message, TaskDetail } from "@/lib/ipc";
 import type { TranscriptTurn as TranscriptTurnModel } from "./transcriptTurns";
 import TranscriptTurn, { type PendingTurnWidget } from "./TranscriptTurn";
 
-function message(overrides: Partial<Message> & { id: string }): Message {
+function message({ id, ...overrides }: Partial<Message> & { id: string }): Message {
   return {
-    id: overrides.id,
+    id,
     conversationId: "conv-1",
     role: "assistant",
     contentType: "text",
-    content: overrides.id,
+    content: id,
     toolName: null,
     createdAt: 1,
     durationMs: null,

@@ -334,9 +334,7 @@ export default function Workspace({
   const previousTurns = transcriptTurns.slice(0, -1);
   const lastTurn = transcriptTurns.at(-1) ?? null;
   const pendingTurnWidget: PendingTurnWidget | null =
-    pendingToolCall?.kind === "bash" || pendingToolCall?.kind === "task"
-      ? pendingToolCall
-      : null;
+    pendingToolCall?.kind === "bash" || pendingToolCall?.kind === "task" ? pendingToolCall : null;
 
   const send = useCallback(
     (content: string, richContent?: RichMessageContent): boolean => {

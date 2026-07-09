@@ -1,4 +1,5 @@
 import { useRef, useState, type FocusEvent } from "react";
+import type * as React from "react";
 import UserMessageBubble from "@/components/UserMessageBubble";
 import { cn } from "@/lib/cn";
 import type { Message } from "@/lib/ipc";
@@ -11,7 +12,7 @@ export interface StickyUserMessageProps {
 export default function StickyUserMessage({
   message,
   onScrollToTurn,
-}: StickyUserMessageProps): JSX.Element {
+}: StickyUserMessageProps): React.JSX.Element {
   const [expanded, setExpanded] = useState(false);
   const pointerOriginRef = useRef(false);
 
