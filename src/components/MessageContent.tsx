@@ -1,5 +1,6 @@
 import Timer from "@/components/Timer";
 import MarkdownPreview from "@/components/MarkdownPreview";
+import UserMessageBubble from "@/components/UserMessageBubble";
 import { formatTokenCount } from "@/lib/formatTokenCount";
 import {
   parseContextNoticeDetail,
@@ -17,7 +18,6 @@ import {
   type UnknownToolDetail,
   type WriteDetail,
 } from "@/lib/ipc";
-import UserMessageContent from "@/views/chat/rich-input/UserMessageContent";
 import UnknownToolWidget from "@/views/chat/tool-widgets/UnknownToolWidget";
 import EditDiffWidget from "@/views/chat/tool-widgets/EditDiffWidget";
 import BashWidget from "@/views/chat/tool-widgets/BashWidget";
@@ -45,30 +45,7 @@ export default function MessageContent({ message: m, showTimer = false }: Messag
   if (m.role === "user") {
     return (
       <div className="mb-6" data-testid="chat-message" role="group" aria-label="You said">
-        {m.contentType === "rich_text" ? (
-          <div className="prose prose-sm dark:prose-invert max-w-none rounded-lg bg-muted p-3 text-foreground">
-            {/* 009-rich-chat-input, US2 (T026): a rich_text user message (a
-                paste-collapse chip, and eventually attachment/skill chips)
-                dispatches to UserMessageContent, mirroring this file's existing
-                tool_result -> ToolWidget dispatch — every other user message
-                (contentType 'text', today's only other case) renders exactly as
-                it always has. */}
-            <UserMessageContent content={m.content} />
-          </div>
-        ) : (
-          <MarkdownPreview className="rounded-lg bg-muted p-3 text-foreground">
-            {m.content}
-          </MarkdownPreview>
-        )}
-        {/* 010-context-window-management (UI refactor): input tokens for
-            what the user sent — mirrors Claude Code's own per-turn token
-            meter, arrow-directioned the same way (↑ sent/uploaded, ↓
-            received/downloaded — see the assistant-side meter below). */}
-        {m.tokenCount != null && (
-          <p className="mt-1 text-xs text-muted-foreground" data-testid="token-meter">
-            ↑ {formatTokenCount(m.tokenCount)} tokens
-          </p>
-        )}
+        <UserMessageBubble message={m} />
       </div>
     );
   }

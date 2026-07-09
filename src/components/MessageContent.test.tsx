@@ -21,7 +21,11 @@ function baseMessage(overrides: Partial<Message>): Message {
 describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
   it("renders a user message as a plain markdown bubble", () => {
     render(<MessageContent message={baseMessage({ role: "user", content: "hi there" })} />);
-    expect(screen.getByText("hi there")).toBeInTheDocument();
+
+    const row = screen.getByTestId("chat-message");
+    expect(row).toHaveAttribute("role", "group");
+    expect(row).toHaveAttribute("aria-label", "You said");
+    expect(screen.getByTestId("user-message-bubble")).toHaveTextContent("hi there");
   });
 
   it("renders a live assistant timer only when showTimer is true and no persisted duration exists", () => {
