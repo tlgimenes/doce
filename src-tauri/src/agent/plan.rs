@@ -1,10 +1,11 @@
 //! Goal/plan state for the two-state agent loop: a single `run_loop` call
 //! whose system prompt and available tools depend on an external state the
-//! backend itself carries (`LoopState`) — not two separate loops. See
-//! `tests/agent_benchmark.rs`'s state-driven backend for the actual
-//! `AgentBackend` implementation; this module only holds the state shape
-//! and the two system prompts, so both the benchmark and any future
-//! production wiring build on the same definitions.
+//! backend itself carries (`LoopState`) — not two separate loops. The state
+//! machine itself lives here as `PlanState`: both production
+//! (`commands::agent::RealBackend`) and the benchmark's `PlanExecBackend`
+//! (`tests/agent_benchmark.rs`) embed this same struct as their
+//! `AgentBackend`'s `plan_state` field, rather than each independently
+//! reimplementing the state shape and system prompts.
 //!
 //! `Planning` maintains the plan via ordinary tool calls (`CreatePlan`/
 //! `AddStep`) and can independently verify results with read-only tools —
@@ -75,7 +76,7 @@ pub const PLANNING_SYSTEM_PROMPT: &str = r#"You are a planning supervisor. You m
 
 Available tools:
 - CreatePlan: {"goal": string, "steps": [string]} -- define the plan. Valid only once, when no plan exists yet. Step granularity matters: each step is executed with its own limited number of turns, so a step must be small enough to actually finish within that. If the task repeats similar work across multiple items (e.g. multiple files), create ONE STEP PER ITEM, never a single step like "for each file, do X" that silently bundles many items together -- that kind of step cannot finish in a bounded number of turns and will only get partway done.
-- AddStep: {"description": string} -- append a step. This is how you extend or correct the plan after the first CreatePlan call -- do not call CreatePlan again, that would discard progress already made on other steps.
+- AddStep: {"description": string} -- append a step. This is how you extend or correct the plan after the first CreatePlan call -- do not call CreatePlan again, that would discard progress already made on other steps. Plans you may see in earlier conversation history are finished -- each new user request starts with no plan.
 - ResumeExecution: {} -- hand off to the next step that isn't done yet. Call this right after CreatePlan to begin, and again any time you've finished adding/correcting steps and are ready to continue.
 - Read: {"file_path": string} / Grep: {"pattern": string, "path"?: string} / Glob: {"pattern": string, "path"?: string} -- read-only tools to independently verify a step's actual result yourself, instead of trusting its summary. Glob's pattern is a single wildcard expression, e.g. "bug_*.txt" or "*.rs" -- never a space-separated list of literal filenames, that matches nothing.
 - AskUserQuestion: {"header": string, "question": string, "options": [{"label": string, "description"?: string}], "multiSelect"?: boolean} -- ask the user directly if the request is genuinely ambiguous.
@@ -158,7 +159,9 @@ impl PlanState {
     /// NOT available in the current state return a rejection. `None` means
     /// "this is an ordinary tool the host should dispatch itself" —
     /// read-only tools + AskUserQuestion while Planning, file/shell/Task
-    /// while Executing (the exact gating the benchmark validated 20/20).
+    /// while Executing (the per-state tool-name sets the benchmark
+    /// validated 20/20; actually dispatching whatever passes through is the
+    /// host's job, not this function's).
     pub fn handle_plan_tool(&mut self, call: &crate::agent::ToolCall) -> Option<String> {
         let result = match (self.state, call.name.as_str()) {
             (LoopState::Planning, "CreatePlan") => {
@@ -191,17 +194,27 @@ impl PlanState {
                 }
             }
             (LoopState::Planning, "AddStep") => {
-                let description = call
-                    .arguments
-                    .get("description")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-                self.plan.steps.push(PlanStep {
-                    description,
-                    done: false,
-                });
-                format!("Step added. Plan now has {} steps.", self.plan.steps.len())
+                if !self.has_plan() {
+                    // On a follow-up user turn, the previous turn's finished
+                    // plan rows replay in model history and can invite the
+                    // model to call AddStep against the fresh, empty
+                    // PlanState this turn actually started with -- without
+                    // this guard that produces a goal-less plan and an
+                    // Executing prompt with an empty goal.
+                    "Error: no plan exists yet -- call CreatePlan first".to_string()
+                } else {
+                    let description = call
+                        .arguments
+                        .get("description")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    self.plan.steps.push(PlanStep {
+                        description,
+                        done: false,
+                    });
+                    format!("Step added. Plan now has {} steps.", self.plan.steps.len())
+                }
             }
             (LoopState::Planning, "ResumeExecution") => match self.next_undone_step() {
                 Some(idx) => {
@@ -366,6 +379,30 @@ mod tests {
         // Consumed: the next planning prompt is clean again.
         let prompt2 = ps.system_prompt();
         assert!(!prompt2.contains("the file does not exist"));
+    }
+
+    #[test]
+    fn add_step_rejects_when_no_plan_exists_yet() {
+        let mut ps = PlanState::default();
+        assert!(!ps.has_plan());
+
+        let result = ps
+            .handle_plan_tool(&call("AddStep", serde_json::json!({"description": "orphan step"})))
+            .unwrap();
+        assert!(result.starts_with("Error"));
+        assert!(!ps.has_plan(), "AddStep must not mutate the plan when none exists");
+        assert!(ps.plan.steps.is_empty());
+
+        // A subsequent CreatePlan still works normally.
+        let created = ps
+            .handle_plan_tool(&call(
+                "CreatePlan",
+                serde_json::json!({"goal": "g", "steps": ["a"]}),
+            ))
+            .unwrap();
+        assert!(created.contains("1 steps"));
+        assert!(ps.has_plan());
+        assert_eq!(ps.plan.goal, "g");
     }
 
     #[test]

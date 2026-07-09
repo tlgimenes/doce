@@ -182,14 +182,14 @@ async fn run_benchmark_task(
 }
 
 /// `AgentBackend` for the single two-state loop (`agent::plan::LoopState`):
-/// one `run_loop` call, one continuous `messages` history, one backend
-/// whose `generate` swaps `messages[0]` for whichever system prompt
-/// matches `self.state` before every render, and whose `execute_tool`
-/// dispatches on `(state, tool name)` -- most calls just do the work,
-/// but `CreatePlan`/`ResumeExecution`/`StepDone`/`RefuseStep` also mutate
-/// `self.state` as their side effect, the transition itself surfacing as
-/// nothing more than an ordinary tool result. See `agent::plan`'s own doc
-/// comment for why this replaced an earlier two-backend/recursive-`run_loop`
+/// one `run_loop` call, one continuous `messages` history. The state
+/// machine and prompt-swap themselves live in `agent::plan::PlanState`
+/// (embedded below as `plan_state`), shared with production
+/// (`commands::agent::RealBackend`) -- this struct keeps only host
+/// concerns: dispatching regular tool calls that pass through the plan
+/// machine, the canned `AskUserQuestion` answer, the `Task` subagent, and
+/// benchmark tracing. See `agent::plan`'s own doc comment for why the
+/// two-state design replaced an earlier two-backend/recursive-`run_loop`
 /// design.
 struct PlanExecBackend<'a> {
     engine: &'a InferenceEngine,

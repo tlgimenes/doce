@@ -545,8 +545,13 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
     async fn generate(&mut self, mut messages: Vec<ChatMessage>) -> String {
         // The two-state engine: every generation renders under the prompt
         // for the CURRENT state (Planning, refusal-annotated when
-        // revising, or the per-step Executing prompt) — the seed system
-        // message from send_agent_message is replaced wholesale.
+        // revising, or the per-step Executing prompt) -- swapped only on
+        // this call's own clone of `messages` (run_loop clones before every
+        // `generate`), never written back to run_loop's canonical list.
+        // That list's [0] -- what `measure`/`compact` below actually budget
+        // against -- stays whatever this turn's SEED Planning prompt was,
+        // for the whole turn; bounded and fail-safe regardless of which
+        // state the loop later reaches mid-turn.
         let system_text = plan_system_message(&mut self.plan_state, self.cwd);
         if let Some(first) = messages.first_mut() {
             *first = ChatMessage::system(system_text);

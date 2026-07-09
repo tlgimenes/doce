@@ -53,8 +53,15 @@ describe("PlanTracker", () => {
     expect(card).toHaveTextContent("1/3");
     const steps = screen.getAllByTestId("plan-step");
     expect(steps).toHaveLength(3);
-    expect(steps[0]).toHaveClass("line-through");
     expect(steps[1]).toHaveAttribute("data-current", "true");
+
+    // The strike-through belongs on the description text, not the <li> --
+    // an ancestor's line-through can't be cancelled by a child's
+    // no-underline, so it must not sit on the row itself (it would visually
+    // strike the ✓ icon too in a real browser).
+    const descriptionSpan = steps[0].querySelector("span.truncate");
+    expect(descriptionSpan).toHaveClass("line-through");
+    expect(steps[0]).not.toHaveClass("line-through");
 
     // Check done step icon is green
     const doneCheckSpan = steps[0].querySelector("span.w-3");
@@ -102,6 +109,59 @@ describe("PlanTracker", () => {
     expect(screen.getByTestId("plan-tracker")).toHaveClass("opacity-0");
     // …then gone.
     await waitFor(() => expect(screen.queryByTestId("plan-tracker")).not.toBeInTheDocument());
+  });
+
+  it("ignores a late-resolving recovery snapshot once a plan-update null event already ended the turn (stuck-tracker race)", async () => {
+    let resolveRecovery!: (v: PlanSnapshot | null) => void;
+    vi.mocked(commands.getActivePlan).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveRecovery = resolve;
+        }),
+    );
+    render(<PlanTracker conversationId="c1" />);
+    await waitFor(() => expect(events.onPlanUpdate).toHaveBeenCalled());
+
+    // The turn ends (plan: null) before the recovery invoke has resolved.
+    act(() => firePlanUpdate({ conversationId: "c1", plan: null }));
+    expect(screen.queryByTestId("plan-tracker")).not.toBeInTheDocument();
+
+    // The recovery invoke resolves late with a stale snapshot -- it must
+    // not resurrect the tracker for a turn that has already ended.
+    await act(async () => {
+      resolveRecovery(snapshot());
+    });
+    expect(screen.queryByTestId("plan-tracker")).not.toBeInTheDocument();
+  });
+
+  it("keeps the fresher plan-update snapshot when a stale recovery invoke resolves after it (stale-clobber race)", async () => {
+    let resolveRecovery!: (v: PlanSnapshot | null) => void;
+    vi.mocked(commands.getActivePlan).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveRecovery = resolve;
+        }),
+    );
+    render(<PlanTracker conversationId="c1" />);
+    await waitFor(() => expect(events.onPlanUpdate).toHaveBeenCalled());
+
+    const fresherPlan = snapshot({
+      steps: [
+        { description: "Find all bug markers", done: true },
+        { description: "Fix bug_01.txt", done: true },
+        { description: "Fix bug_02.txt", done: false },
+      ],
+      currentStepIndex: 2,
+    });
+    act(() => firePlanUpdate({ conversationId: "c1", plan: fresherPlan }));
+    expect(screen.getByTestId("plan-card")).toHaveTextContent("2/3");
+
+    // The stale recovery invoke resolves after the fresher event -- must
+    // not clobber what the event already established.
+    await act(async () => {
+      resolveRecovery(snapshot());
+    });
+    expect(screen.getByTestId("plan-card")).toHaveTextContent("2/3");
   });
 
   it("collapses completed steps and caps pending once the plan exceeds 6 steps", async () => {

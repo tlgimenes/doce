@@ -57,18 +57,26 @@ export default function PlanTracker({ conversationId }: PlanTrackerProps) {
       }, FADE_OUT_MS);
     };
 
+    // Set once a plan-update event for THIS conversation has been seen, so
+    // the mount-time recovery invoke below can tell it's become stale --
+    // covers both a stale snapshot clobbering a fresher live event, and a
+    // `plan: null` event fading the tracker before recovery even resolves
+    // (a late, stale resolve must not resurrect it).
+    let sawEvent = false;
+
     setPlan(null);
     setLeaving(false);
     setExpanded(false);
     void commands
       .getActivePlan(conversationId)
       .then((recovered) => {
-        if (!cancelled && recovered) setPlan(recovered);
+        if (!cancelled && recovered && !sawEvent) setPlan(recovered);
       })
       .catch(() => {});
     void events
       .onPlanUpdate((payload) => {
         if (cancelled || payload.conversationId !== conversationId) return;
+        sawEvent = true;
         applyUpdate(payload.plan);
       })
       .then((fn) => {
@@ -163,17 +171,17 @@ function PlanCard({ plan, doneCount }: { plan: PlanSnapshot; doneCount: number }
             key={index}
             className={cn(
               "flex items-baseline gap-1.5 text-xs",
-              step.done && "text-muted-foreground line-through",
+              step.done && "text-muted-foreground",
               !step.done && index !== plan.currentStepIndex && "text-muted-foreground",
               index === plan.currentStepIndex && "font-semibold",
             )}
             data-current={index === plan.currentStepIndex ? "true" : undefined}
             data-testid="plan-step"
           >
-            <span className={cn("w-3 shrink-0 no-underline", step.done && "text-emerald-600")}>
+            <span className={cn("w-3 shrink-0", step.done && "text-emerald-600")}>
               {step.done ? "✓" : index === plan.currentStepIndex ? "●" : "○"}
             </span>
-            <span className="truncate" title={step.description}>
+            <span className={cn("truncate", step.done && "line-through")} title={step.description}>
               {step.description}
             </span>
           </li>
