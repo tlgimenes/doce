@@ -13,9 +13,10 @@
 
 use doce_lib::agent::{parse_response, LoopStep, SYSTEM_PROMPT};
 use doce_lib::context::{self, ContextSettings};
-use doce_lib::inference::{ChatMessage, InferenceEngine};
+use doce_lib::inference::{ChatMessage, InferenceEngine, ToolCallMode};
 use doce_lib::storage::conversations::HistoryMessage;
 use std::path::PathBuf;
+use std::time::Instant;
 
 fn installed_model_path() -> PathBuf {
     let home = std::env::var("HOME").expect("HOME must be set");
@@ -80,6 +81,95 @@ fn render_chat_prompt_and_generate_produce_a_real_short_completion() {
     assert_eq!(
         output, full_text,
         "on_token callback must match the returned text"
+    );
+}
+
+#[test]
+#[ignore]
+fn prompt_session_prefix_reuse_matches_a_fresh_context_and_is_faster() {
+    // The empirical proof the KV-prefix-reuse task stands on: a second
+    // `PromptSession::generate` whose prompt EXTENDS the first's shares a
+    // large prefix with what the session already holds materialized, so it
+    // re-decodes only the divergent suffix -- yet must sample the EXACT same
+    // output a fresh, from-scratch context would for that same extended
+    // prompt (same fixed seed). If prefix reuse changed the logits at any
+    // position, the sampled tokens would diverge; equality is the semantic
+    // guarantee. The second call must also be visibly faster than the fresh
+    // full-prompt decode, since it skips re-prefilling the shared prefix.
+    std::env::set_var("DOCE_GEN_SEED", "20240709");
+    let path = installed_model_path();
+    let engine = InferenceEngine::load(&path, 4).expect("model should load");
+
+    // A deliberately long system prompt so the shared prefix is large and
+    // the re-prefill it saves is measurable, not lost in the noise.
+    let long_system = format!(
+        "You are a meticulous assistant. {}",
+        "Follow every instruction precisely and answer tersely. "
+            .repeat(80)
+    );
+    let base_messages = vec![
+        ChatMessage::system(long_system.clone()),
+        ChatMessage::user("Name one primary color. Answer with just the color."),
+    ];
+    let base_prompt = engine
+        .render_chat_prompt(&base_messages)
+        .expect("render base");
+
+    // The second prompt extends the first: same system + same first user
+    // turn, then an assistant turn and a follow-up user turn. Everything up
+    // to the divergence point is a shared prefix reused from the first call.
+    let extended_messages = vec![
+        ChatMessage::system(long_system),
+        ChatMessage::user("Name one primary color. Answer with just the color."),
+        ChatMessage::assistant("Red"),
+        ChatMessage::user("Now name a different primary color, just the color."),
+    ];
+    let extended_prompt = engine
+        .render_chat_prompt(&extended_messages)
+        .expect("render extended");
+
+    let mut session = engine.new_session().expect("session should create");
+
+    let t0 = Instant::now();
+    // The first call's own output is irrelevant; it exists only to populate
+    // the session's KV cache so the second call has a prefix to reuse.
+    let _first = session
+        .generate(&engine, &base_prompt, 32, ToolCallMode::Forbid, |_| {}, || false)
+        .expect("first session generate");
+    let first_elapsed = t0.elapsed().as_secs_f64();
+
+    let t1 = Instant::now();
+    let session_second = session
+        .generate(&engine, &extended_prompt, 32, ToolCallMode::Forbid, |_| {}, || false)
+        .expect("second session generate (prefix reuse)");
+    let second_elapsed = t1.elapsed().as_secs_f64();
+
+    // A brand-new context decodes the whole extended prompt from scratch --
+    // the exact thing prefix reuse is meant to be equivalent to.
+    let t2 = Instant::now();
+    let fresh = engine
+        .generate(&extended_prompt, 32, ToolCallMode::Forbid, |_| {}, || false)
+        .expect("fresh full-context generate");
+    let fresh_elapsed = t2.elapsed().as_secs_f64();
+
+    println!(
+        "[prompt_session_smoke] first_call={first_elapsed:.3}s \
+         second_call_prefix_reuse={second_elapsed:.3}s fresh_full_decode={fresh_elapsed:.3}s"
+    );
+    println!("[prompt_session_smoke] session_second={session_second:?}");
+    println!("[prompt_session_smoke] fresh={fresh:?}");
+
+    std::env::remove_var("DOCE_GEN_SEED");
+
+    assert_eq!(
+        session_second, fresh,
+        "prefix reuse must produce byte-identical output to a fresh-context \
+         decode of the same prompt with the same seed"
+    );
+    assert!(
+        second_elapsed < fresh_elapsed,
+        "the prefix-reusing second call ({second_elapsed:.3}s) should be \
+         faster than the fresh full-prompt decode ({fresh_elapsed:.3}s)"
     );
 }
 

@@ -3,7 +3,7 @@ use crate::agent::tools::ask_user::{PendingQuestions, QuestionOption};
 use crate::agent::{dispatch, run_loop, subagent, AgentContext, ToolCall, ToolExecution};
 use crate::commands::conversations::{ActiveGenerations, InferenceState};
 use crate::commands::models::now_ms;
-use crate::inference::{ChatMessage, InferenceEngine};
+use crate::inference::{ChatMessage, InferenceEngine, PromptSession};
 use crate::storage::conversations::load_history;
 use crate::storage::DbCell;
 use rusqlite::Connection;
@@ -522,6 +522,13 @@ async fn handle_ask_user_question(
 /// and event emission that loop actually runs against.
 struct RealBackend<'a> {
     engine: &'a InferenceEngine,
+    /// One persistent inference context for the whole turn: each turn's
+    /// prompt extends the previous one's, so its KV cache reuses the shared
+    /// prefix and re-decodes only the newest tool exchange, rather than
+    /// re-prefilling the entire growing history every turn. Owned (not a
+    /// borrow) so its `LlamaContext` is dropped with the backend, before the
+    /// engine's mutex guard is released in `send_agent_message`.
+    session: PromptSession<'a>,
     conn: &'a tokio_rusqlite::Connection,
     conversation_id: &'a str,
     app: &'a AppHandle,
@@ -595,8 +602,9 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
         // the loop.
         match self.engine.render_chat_prompt(&messages) {
             Ok(rendered) => self
-                .engine
+                .session
                 .generate(
+                    self.engine,
                     &rendered,
                     crate::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS as i32,
                     crate::inference::ToolCallMode::Require,
@@ -1443,8 +1451,13 @@ pub async fn send_agent_message(
         .context_window()
         .saturating_sub(crate::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS);
 
+    // One session for the whole turn (KV-prefix reuse across turns). Built
+    // here, inside the engine-guard scope, so its `LlamaContext`'s borrow of
+    // the model stays valid for as long as the backend runs.
+    let session = engine.new_session().map_err(|e| e.to_string())?;
     let mut backend = RealBackend {
         engine,
+        session,
         conn: &conn,
         conversation_id: &conversation_id,
         app: &app,
@@ -1456,6 +1469,10 @@ pub async fn send_agent_message(
         active_plans: &active_plans,
     };
     let result = run_loop(&context, initial_messages, &mut backend).await;
+    // Drop the backend (and with it the session's `LlamaContext`, which
+    // borrows the model) BEFORE releasing the engine guard — the context's
+    // Drop must run while the engine it borrows is still locked in scope.
+    drop(backend);
     drop(guard);
 
     let final_text = match result {

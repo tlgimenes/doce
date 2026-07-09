@@ -1,10 +1,12 @@
 use llama_cpp_2::context::params::LlamaContextParams;
+use llama_cpp_2::context::LlamaContext;
 use llama_cpp_2::json_schema_to_grammar;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::model::{AddBos, LlamaChatMessage, LlamaChatTemplate, LlamaModel};
 use llama_cpp_2::sampling::LlamaSampler;
+use llama_cpp_2::token::LlamaToken;
 use std::num::NonZeroU32;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -21,7 +23,8 @@ pub enum InferenceError {
 /// more tokens than this in a single call, so any prompt longer than this
 /// (system prompt + tool list + growing conversation history routinely
 /// exceeds it in agent mode) must be prefilled across multiple `decode()`
-/// calls via `prefill_chunks`, not one `batch.add()` loop over every token.
+/// calls via `prefill_chunks_from`, not one `batch.add()` loop over every
+/// token.
 const BATCH_CAPACITY: usize = 512;
 
 /// The model's total context window, in tokens (010-context-window-management).
@@ -41,17 +44,34 @@ const BATCH_CAPACITY: usize = 512;
 /// pipeline had too little headroom to work with at that size.
 pub const CONTEXT_WINDOW_TOKENS: u32 = 8192;
 
-/// Splits `n_tokens` positions into `[start, end)` ranges of at most
-/// `batch_capacity` each, in order — the sequence of chunks `generate()`
-/// prefills the prompt in. Pure and independent of llama.cpp so the
-/// off-by-one-prone boundary math (the exact bug this fixes: a prompt of
-/// precisely `batch_capacity + 1` tokens) can be unit-tested without a real
-/// model.
-fn prefill_chunks(n_tokens: usize, batch_capacity: usize) -> Vec<std::ops::Range<usize>> {
-    (0..n_tokens)
+/// Splits the half-open range `[start, n_tokens)` into `<= batch_capacity`
+/// chunks, in order — the sequence of chunks a prompt (or, for a
+/// `PromptSession` that reused a KV prefix of length `start`, its divergent
+/// suffix) is prefilled in. Positions are *absolute* (they continue from
+/// `start`, not re-based to 0), so the suffix batch's `n_past` is exactly
+/// `start`, which keeps the reused prefix's KV entries at their original
+/// positions. `start == 0` is the whole-prompt case. Pure and independent of
+/// llama.cpp so the off-by-one-prone boundary math (the exact bug this
+/// fixes: a prompt of precisely `batch_capacity + 1` tokens) can be
+/// unit-tested without a real model.
+fn prefill_chunks_from(
+    start: usize,
+    n_tokens: usize,
+    batch_capacity: usize,
+) -> Vec<std::ops::Range<usize>> {
+    (start..n_tokens)
         .step_by(batch_capacity)
-        .map(|start| start..(start + batch_capacity).min(n_tokens))
+        .map(|s| s..(s + batch_capacity).min(n_tokens))
         .collect()
+}
+
+/// Length of the longest shared prefix of two token slices — how many
+/// leading tokens a new prompt has in common with what a `PromptSession`
+/// already holds materialized in its KV cache, and therefore how much of
+/// the prompt can be reused rather than re-decoded. Pure and llama.cpp-free
+/// so the reuse boundary is unit-testable without a real model.
+fn common_prefix_len(a: &[LlamaToken], b: &[LlamaToken]) -> usize {
+    a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count()
 }
 
 /// A tool call's or tool result's structured payload — the content-block
@@ -389,59 +409,178 @@ impl InferenceEngine {
         }
     }
 
-    /// Generation used for the chat path (User Story 2), the agent tool-use
-    /// loop (User Story 3), and integration tests, invoking `on_token` as
-    /// each token is produced so the caller can emit `assistant-token`
-    /// events in real time rather than waiting for the full response.
-    /// `prompt` is expected to already be chat-template-rendered (see
-    /// `render_chat_prompt`) — this function just tokenizes and decodes
-    /// whatever string it's given. `tool_calls` gates the
-    /// grammar-constrained sampler above — the plain chat path and
-    /// tier-2 summarization never set it, since neither ever wants (or
-    /// should be able to produce) a `<tool_call>` response.
+    /// Opens a fresh persistent inference context whose KV cache can be
+    /// reused across `PromptSession::generate` calls (prefix reuse). A host
+    /// holds ONE session for the length of an agent turn: each turn's prompt
+    /// extends the previous one's, so all but the newest slice of the
+    /// (large, growing) history is served from the KV cache rather than
+    /// re-decoded — the difference between O(N^2) and O(N) prefill across a
+    /// turn. Every context is built with the same fixed `n_ctx`
+    /// (`CONTEXT_WINDOW_TOKENS`) and thread counts `generate` has always used,
+    /// so a session is behaviourally identical to the old per-call context
+    /// on its first call and only diverges (favourably) on later calls.
+    pub fn new_session(&self) -> Result<PromptSession<'_>, InferenceError> {
+        let ctx_params = LlamaContextParams::default()
+            .with_n_ctx(NonZeroU32::new(CONTEXT_WINDOW_TOKENS))
+            .with_n_threads(self.n_threads)
+            .with_n_threads_batch(self.n_threads);
+        let ctx = self
+            .model
+            .new_context(&self.backend, ctx_params)
+            .map_err(|e| InferenceError::Backend(e.to_string()))?;
+        Ok(PromptSession {
+            ctx,
+            cached: Vec::new(),
+        })
+    }
+
+    /// Generation used for the chat path (User Story 2), tier-2
+    /// summarization, subagents (until migrated), and integration tests,
+    /// invoking `on_token` as each token is produced so the caller can emit
+    /// `assistant-token` events in real time rather than waiting for the full
+    /// response. `prompt` is expected to already be chat-template-rendered
+    /// (see `render_chat_prompt`) — this function just tokenizes and decodes
+    /// whatever string it's given. `tool_calls` gates the grammar-constrained
+    /// sampler above — the plain chat path and tier-2 summarization never set
+    /// it, since neither ever wants (or should be able to produce) a
+    /// `<tool_call>` response.
+    ///
+    /// Implemented as a convenience wrapper over a throwaway `PromptSession`:
+    /// it decodes the whole prompt from a clean context every call (no prefix
+    /// reuse), which is exactly right for one-shot callers. There is
+    /// deliberately only ONE decode implementation —
+    /// `PromptSession::generate` — so this path and the prefix-reusing agent
+    /// path can never drift in sampler setup, streaming, or cancellation
+    /// semantics.
     pub fn generate(
         &self,
+        prompt: &str,
+        max_tokens: i32,
+        tool_calls: ToolCallMode,
+        on_token: impl FnMut(&str),
+        should_cancel: impl FnMut() -> bool,
+    ) -> Result<String, InferenceError> {
+        self.new_session()?
+            .generate(self, prompt, max_tokens, tool_calls, on_token, should_cancel)
+    }
+}
+
+/// A persistent inference context whose KV cache is reused across `generate`
+/// calls. Created by `InferenceEngine::new_session`; a host (`RealBackend`)
+/// holds one for the length of a single agent turn.
+///
+/// The KV cache holds a token sequence at positions `[0, cached.len())` on
+/// llama.cpp sequence 0. Each `generate` call finds the longest prefix its
+/// new prompt shares with `cached`, drops the KV entries past that prefix,
+/// decodes only the divergent suffix, and samples as usual — so a turn that
+/// re-feeds the same growing history pays to decode only each turn's newest
+/// slice (the last tool exchange), not the whole history every time.
+pub struct PromptSession<'m> {
+    ctx: LlamaContext<'m>,
+    /// The token sequence currently materialized in the KV cache (sequence
+    /// 0, positions `[0, cached.len())`). Includes both the prompt tokens
+    /// AND the tokens this session itself sampled, so the next call's prefix
+    /// comparison also covers this call's own output — which the agent loop
+    /// re-feeds verbatim as part of the next prompt. Kept exactly in step
+    /// with the KV cache on every path: truncated the instant the KV is
+    /// truncated, extended only once a decode has actually landed, and
+    /// cleared entirely on any decode failure (a failed decode can leave the
+    /// KV in an undefined state, so the safe move is to force the next call
+    /// to re-prefill from scratch rather than trust a stale prefix —
+    /// correctness beats reuse).
+    cached: Vec<LlamaToken>,
+}
+
+// SAFETY: `LlamaContext` is `!Send` solely because it wraps a raw
+// `NonNull<llama_context>` pointer (llama-cpp-2 marks `LlamaModel` itself
+// `Send + Sync`, but conservatively leaves the context auto-derived
+// `!Send`). The underlying llama.cpp context is plain heap state (KV-cache
+// and logits buffers) with no thread affinity — `llama_decode` spins up its
+// own threadpool per call and does not rely on the caller's thread identity
+// — so it is safe to *move* between threads. The only real hazard is
+// concurrent *use* from two threads, and a `PromptSession` structurally
+// cannot be used concurrently: it is neither `Sync` nor `Clone`, it is owned
+// by exactly one agent turn, and every method takes `&mut self`. That turn
+// holds the engine `Mutex` for its whole duration, so at most one thread
+// ever touches the context. Implementing `Send` (not `Sync`) lets tokio
+// migrate the owning task between worker threads across `.await` points —
+// the only reason this is needed, since a `PromptSession` now lives across
+// the agent loop's awaits — which is a sequential move, never a data race.
+unsafe impl Send for PromptSession<'_> {}
+
+impl PromptSession<'_> {
+    /// Like `InferenceEngine::generate`, but reuses the KV prefix shared with
+    /// the previous call rather than decoding the whole prompt from scratch.
+    /// See the struct doc comment for the overall strategy.
+    ///
+    /// `engine` is the same engine `new_session` was called on — it is
+    /// threaded back in here (rather than stored on the session) because the
+    /// borrow that produced `self.ctx` already holds the model immutably, and
+    /// re-passing `&InferenceEngine` for tokenization / piece-decoding /
+    /// grammar-sampler construction sidesteps a second, self-referential
+    /// borrow of the model through the context. A FRESH sampler chain is
+    /// built per call (grammar mode is per-call via `tool_calls`; determinism
+    /// is per-call via `generation_seed`) — a sampler is never reused across
+    /// calls.
+    pub fn generate(
+        &mut self,
+        engine: &InferenceEngine,
         prompt: &str,
         max_tokens: i32,
         tool_calls: ToolCallMode,
         mut on_token: impl FnMut(&str),
         mut should_cancel: impl FnMut() -> bool,
     ) -> Result<String, InferenceError> {
-        let ctx_params = LlamaContextParams::default()
-            .with_n_ctx(NonZeroU32::new(CONTEXT_WINDOW_TOKENS))
-            .with_n_threads(self.n_threads)
-            .with_n_threads_batch(self.n_threads);
-        let mut ctx = self
-            .model
-            .new_context(&self.backend, ctx_params)
-            .map_err(|e| InferenceError::Backend(e.to_string()))?;
-
-        let tokens = self
+        let tokens = engine
             .model
             .str_to_token(prompt, AddBos::Always)
             .map_err(|e| InferenceError::Backend(e.to_string()))?;
 
-        // The batch is a fixed-size client buffer (BATCH_CAPACITY slots) —
-        // llama.cpp can't decode more tokens than that in one call, so a
-        // prompt longer than BATCH_CAPACITY (system prompt + tool list +
-        // growing conversation history routinely exceeds it in agent mode)
-        // must be prefilled in sequential chunks, not one `batch.add()` loop
-        // over every token (that overflows with `BatchAddError::
-        // InsufficientSpace`, surfaced to users as "llama.cpp backend error:
-        // Insufficient Space of 512"). Only the very last token overall gets
-        // `logits = true`, since sampling only needs the final position's
-        // distribution.
+        // How much of this prompt is already materialized in the KV cache
+        // from the previous call. Capped at `tokens.len() - 1` so at least
+        // one token is always decoded below: if the entire prompt were
+        // already cached (`common == tokens.len()`, e.g. the prompt is a
+        // prefix of what we hold), there would be no suffix to decode and
+        // thus no fresh logits at the final position to sample the first
+        // output token from — so we deliberately re-decode the last prompt
+        // token to regenerate them.
+        let common =
+            common_prefix_len(&tokens, &self.cached).min(tokens.len().saturating_sub(1));
+
+        // Drop the KV entries past the shared prefix — range `[common, end)`
+        // on sequence 0 (`p1 = None` means "to the end"; llama.cpp's range is
+        // half-open `[p0, p1)`), leaving `[0, common)` intact for reuse.
+        // Truncate `cached` in the same breath so the two never disagree.
+        if let Err(e) = self.ctx.clear_kv_cache_seq(Some(0), Some(common as u32), None) {
+            self.cached.clear();
+            return Err(InferenceError::Backend(e.to_string()));
+        }
+        self.cached.truncate(common);
+
+        // Prefill only the divergent suffix `[common, tokens.len())`, with
+        // absolute positions continuing from `common` (n_past = common), so
+        // the reused prefix's KV entries keep their original positions. Same
+        // fixed-capacity chunked prefill the whole-prompt path uses (a
+        // suffix can still exceed BATCH_CAPACITY); only the very last token
+        // overall gets `logits = true`, since sampling only needs the final
+        // position's distribution. On any failure `cached` is cleared (the
+        // KV may be partial), forcing a clean re-prefill next call.
         let mut batch = LlamaBatch::new(BATCH_CAPACITY, 1);
         let last_idx = tokens.len() - 1;
-        for chunk in prefill_chunks(tokens.len(), BATCH_CAPACITY) {
+        for chunk in prefill_chunks_from(common, tokens.len(), BATCH_CAPACITY) {
             batch.clear();
-            for i in chunk {
-                batch
-                    .add(tokens[i], i as i32, &[0], i == last_idx)
-                    .map_err(|e| InferenceError::Backend(e.to_string()))?;
+            for i in chunk.clone() {
+                if let Err(e) = batch.add(tokens[i], i as i32, &[0], i == last_idx) {
+                    self.cached.clear();
+                    return Err(InferenceError::Backend(e.to_string()));
+                }
             }
-            ctx.decode(&mut batch)
-                .map_err(|e| InferenceError::Backend(e.to_string()))?;
+            if let Err(e) = self.ctx.decode(&mut batch) {
+                self.cached.clear();
+                return Err(InferenceError::Backend(e.to_string()));
+            }
+            // Now durably in the KV cache — safe to record as cached.
+            self.cached.extend_from_slice(&tokens[chunk]);
         }
 
         // A plain greedy (always-argmax) sampler tends to degenerate into
@@ -458,8 +597,8 @@ impl InferenceEngine {
         let mut chain = Vec::with_capacity(6);
         match tool_calls {
             ToolCallMode::Forbid => {}
-            ToolCallMode::Allow => chain.push(self.tool_call_grammar_sampler(false)?),
-            ToolCallMode::Require => chain.push(self.tool_call_grammar_sampler(true)?),
+            ToolCallMode::Allow => chain.push(engine.tool_call_grammar_sampler(false)?),
+            ToolCallMode::Require => chain.push(engine.tool_call_grammar_sampler(true)?),
         }
         // Qwen3-*-2507's own recommended sampling (model card): temp 0.7,
         // top-p 0.8, top-k 20, min-p 0 — with presence-penalty for
@@ -481,9 +620,9 @@ impl InferenceEngine {
 
         // Starts from `tokens.len()` (the full prompt length), not
         // `batch.n_tokens()` — that now only reflects however many tokens
-        // the *last prefill chunk* held, not the full prompt, now that
-        // prefill runs in chunks; using it here would silently restart
-        // position numbering partway through the prompt.
+        // the *last prefill chunk* held, not the full prompt, since prefill
+        // runs in chunks; using it here would silently restart position
+        // numbering partway through the prompt.
         for n_cur in (tokens.len() as i32..).take(max_tokens as usize) {
             // Checked between decode steps (research.md §24 / tasks.md
             // T018), not just before starting — a cancellation should stop
@@ -491,11 +630,11 @@ impl InferenceEngine {
             if should_cancel() {
                 break;
             }
-            let token = sampler.sample(&ctx, batch.n_tokens() - 1);
-            if self.model.is_eog_token(token) {
+            let token = sampler.sample(&self.ctx, batch.n_tokens() - 1);
+            if engine.model.is_eog_token(token) {
                 break;
             }
-            let piece = self
+            let piece = engine
                 .model
                 .token_to_piece(token, &mut decoder, true, None)
                 .unwrap_or_default();
@@ -503,11 +642,17 @@ impl InferenceEngine {
             output.push_str(&piece);
 
             batch.clear();
-            batch
-                .add(token, n_cur, &[0], true)
-                .map_err(|e| InferenceError::Backend(e.to_string()))?;
-            ctx.decode(&mut batch)
-                .map_err(|e| InferenceError::Backend(e.to_string()))?;
+            if let Err(e) = batch.add(token, n_cur, &[0], true) {
+                self.cached.clear();
+                return Err(InferenceError::Backend(e.to_string()));
+            }
+            if let Err(e) = self.ctx.decode(&mut batch) {
+                self.cached.clear();
+                return Err(InferenceError::Backend(e.to_string()));
+            }
+            // Decoded into the KV — record it so the next call's prefix
+            // comparison covers this generated token too.
+            self.cached.push(token);
         }
 
         Ok(output)
@@ -520,17 +665,17 @@ mod tests {
 
     #[test]
     fn empty_prompt_has_no_chunks() {
-        assert_eq!(prefill_chunks(0, 512), Vec::<std::ops::Range<usize>>::new());
+        assert_eq!(prefill_chunks_from(0, 0, 512), Vec::<std::ops::Range<usize>>::new());
     }
 
     #[test]
     fn prompt_under_capacity_is_a_single_chunk() {
-        assert_eq!(prefill_chunks(100, 512), vec![0..100]);
+        assert_eq!(prefill_chunks_from(0, 100, 512), vec![0..100]);
     }
 
     #[test]
     fn prompt_exactly_at_capacity_is_a_single_chunk() {
-        assert_eq!(prefill_chunks(512, 512), vec![0..512]);
+        assert_eq!(prefill_chunks_from(0, 512, 512), vec![0..512]);
     }
 
     #[test]
@@ -539,18 +684,18 @@ mod tests {
         // batch used to overflow on the 513th `batch.add()` call
         // (BatchAddError::InsufficientSpace(512), surfaced to users as
         // "Insufficient Space of 512") instead of starting a new chunk.
-        assert_eq!(prefill_chunks(513, 512), vec![0..512, 512..513]);
+        assert_eq!(prefill_chunks_from(0, 513, 512), vec![0..512, 512..513]);
     }
 
     #[test]
     fn prompt_several_times_capacity_splits_evenly() {
-        assert_eq!(prefill_chunks(1024, 512), vec![0..512, 512..1024]);
+        assert_eq!(prefill_chunks_from(0, 1024, 512), vec![0..512, 512..1024]);
     }
 
     #[test]
     fn prompt_several_times_capacity_plus_remainder() {
         assert_eq!(
-            prefill_chunks(1025, 512),
+            prefill_chunks_from(0, 1025, 512),
             vec![0..512, 512..1024, 1024..1025]
         );
     }
@@ -558,7 +703,7 @@ mod tests {
     #[test]
     fn every_token_position_is_covered_exactly_once() {
         for n_tokens in [1, 511, 512, 513, 1000, 2048, 2049] {
-            let chunks = prefill_chunks(n_tokens, 512);
+            let chunks = prefill_chunks_from(0, n_tokens, 512);
             let covered: Vec<usize> = chunks.iter().flat_map(|r| r.clone()).collect();
             let expected: Vec<usize> = (0..n_tokens).collect();
             assert_eq!(covered, expected, "n_tokens={n_tokens}");
@@ -567,6 +712,55 @@ mod tests {
                 "a chunk exceeded batch capacity for n_tokens={n_tokens}"
             );
         }
+    }
+
+    #[test]
+    fn common_prefix_len_of_equal_slices_is_the_full_length() {
+        let a = vec![LlamaToken(1), LlamaToken(2), LlamaToken(3)];
+        let b = vec![LlamaToken(1), LlamaToken(2), LlamaToken(3)];
+        assert_eq!(common_prefix_len(&a, &b), 3);
+    }
+
+    #[test]
+    fn common_prefix_len_of_disjoint_slices_is_zero() {
+        let a = vec![LlamaToken(1), LlamaToken(2)];
+        let b = vec![LlamaToken(9), LlamaToken(8)];
+        assert_eq!(common_prefix_len(&a, &b), 0);
+    }
+
+    #[test]
+    fn common_prefix_len_when_one_is_a_prefix_of_the_other_is_the_shorter_length() {
+        let short = vec![LlamaToken(1), LlamaToken(2)];
+        let long = vec![LlamaToken(1), LlamaToken(2), LlamaToken(3), LlamaToken(4)];
+        // Symmetric: whichever way round, the answer is the shared run length.
+        assert_eq!(common_prefix_len(&short, &long), 2);
+        assert_eq!(common_prefix_len(&long, &short), 2);
+    }
+
+    #[test]
+    fn common_prefix_len_stops_at_the_first_divergence() {
+        let a = vec![LlamaToken(1), LlamaToken(2), LlamaToken(3), LlamaToken(4)];
+        let b = vec![LlamaToken(1), LlamaToken(2), LlamaToken(99), LlamaToken(4)];
+        assert_eq!(common_prefix_len(&a, &b), 2);
+    }
+
+    #[test]
+    fn common_prefix_len_with_an_empty_slice_is_zero() {
+        let a = vec![LlamaToken(1), LlamaToken(2)];
+        let empty: Vec<LlamaToken> = Vec::new();
+        assert_eq!(common_prefix_len(&a, &empty), 0);
+        assert_eq!(common_prefix_len(&empty, &a), 0);
+    }
+
+    #[test]
+    fn prefill_chunks_from_a_nonzero_start_covers_only_the_suffix() {
+        // The suffix a PromptSession decodes after reusing a KV prefix of
+        // length 3: positions are absolute (continue from 3), not re-based.
+        assert_eq!(prefill_chunks_from(3, 10, 512), vec![3..10]);
+        // A suffix longer than one batch splits, still absolute-positioned.
+        assert_eq!(prefill_chunks_from(500, 1025, 512), vec![500..1012, 1012..1025]);
+        // A one-token suffix (the degenerate `common == len - 1` case).
+        assert_eq!(prefill_chunks_from(9, 10, 512), vec![9..10]);
     }
 
     #[test]

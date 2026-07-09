@@ -36,7 +36,7 @@
 
 use doce_lib::agent::{dispatch, run_loop, AgentBackend, AgentContext, AgentError, SYSTEM_PROMPT};
 use doce_lib::context;
-use doce_lib::inference::{ChatMessage, InferenceEngine};
+use doce_lib::inference::{ChatMessage, InferenceEngine, PromptSession};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
@@ -77,6 +77,9 @@ fn report(name: &str, run: &BenchmarkRun) {
 /// on the `TurnCapExceeded` error path, not on success).
 struct BenchBackend<'a> {
     engine: &'a InferenceEngine,
+    /// One persistent inference context per loop (KV-prefix reuse across
+    /// turns) -- the same shape production's `RealBackend` now holds.
+    session: PromptSession<'a>,
     cwd: &'a Path,
     threshold: u32,
     turns: u32,
@@ -110,9 +113,12 @@ impl AgentBackend for BenchBackend<'_> {
             .render_chat_prompt(&messages)
             .expect("chat template should render");
         // max_tokens matches commands::agent's real generate() call
-        // (limits::AGENT_TURN_MAX_OUTPUT_TOKENS) for the same reason.
-        self.engine
+        // (limits::AGENT_TURN_MAX_OUTPUT_TOKENS) for the same reason. Goes
+        // through the persistent session (KV-prefix reuse), exactly as
+        // production's RealBackend does.
+        self.session
             .generate(
+                self.engine,
                 &rendered,
                 doce_lib::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS as i32,
                 doce_lib::inference::ToolCallMode::Allow,
@@ -172,6 +178,7 @@ async fn run_benchmark_task(
         .saturating_sub(doce_lib::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS);
     let mut backend = BenchBackend {
         engine,
+        session: engine.new_session().expect("session should create"),
         cwd,
         threshold,
         turns: 0,
@@ -199,6 +206,9 @@ async fn run_benchmark_task(
 /// design.
 struct PlanExecBackend<'a> {
     engine: &'a InferenceEngine,
+    /// One persistent inference context for the whole planned run (KV-prefix
+    /// reuse across turns), matching production's `RealBackend`.
+    session: PromptSession<'a>,
     cwd: &'a Path,
     threshold: u32,
     turns: u32,
@@ -247,8 +257,9 @@ You are currently working in the directory: {}",
             .engine
             .render_chat_prompt(&messages)
             .expect("chat template should render");
-        self.engine
+        self.session
             .generate(
+                self.engine,
                 &rendered,
                 doce_lib::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS as i32,
                 doce_lib::inference::ToolCallMode::Require,
@@ -300,6 +311,10 @@ You are currently working in the directory: {}",
                 vec![ChatMessage::system(SYSTEM_PROMPT), ChatMessage::user(prompt)];
             let mut sub_backend = BenchBackend {
                 engine: self.engine,
+                session: self
+                    .engine
+                    .new_session()
+                    .expect("subagent session should create"),
                 cwd: self.cwd,
                 threshold: self.threshold,
                 turns: 0,
@@ -367,6 +382,7 @@ async fn run_planned_benchmark_task(
         .saturating_sub(doce_lib::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS);
     let mut backend = PlanExecBackend {
         engine,
+        session: engine.new_session().expect("session should create"),
         cwd,
         threshold,
         turns: 0,
