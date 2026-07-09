@@ -220,6 +220,21 @@ impl ChatMessage {
     }
 }
 
+/// The sampler seed for one `generate()` call: `DOCE_GEN_SEED` (set by the
+/// benchmark protocol for reproducible runs — single-run agent benchmarks
+/// were observed swinging 0/20..20/20 on seed alone) or per-call entropy.
+fn generation_seed() -> u32 {
+    std::env::var("DOCE_GEN_SEED")
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or_else(|| {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0)
+        })
+}
+
 /// Owns the single loaded model + backend for the whole app (research.md
 /// §24 — exactly one inference worker, one context, at any moment).
 pub struct InferenceEngine {
@@ -433,10 +448,7 @@ impl InferenceEngine {
         // matches the defaults most chat-completion APIs use: a repeat
         // penalty over recent tokens, then temperature + top-k/top-p to
         // pick among the remaining reasonable candidates.
-        let seed = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or(0);
+        let seed = generation_seed();
         // The grammar sampler, when present, goes first in the chain —
         // matching upstream llama.cpp's own convention of masking to
         // grammar-legal tokens before penalty/temperature/top-k/top-p
@@ -546,5 +558,18 @@ mod tests {
                 "a chunk exceeded batch capacity for n_tokens={n_tokens}"
             );
         }
+    }
+
+    #[test]
+    fn generation_seed_honors_the_env_var_and_falls_back_to_entropy() {
+        // Serial-unsafe env mutation is confined to this one test.
+        std::env::set_var("DOCE_GEN_SEED", "42");
+        assert_eq!(generation_seed(), 42);
+        std::env::set_var("DOCE_GEN_SEED", "not-a-number");
+        let a = generation_seed();
+        let b = generation_seed();
+        // Entropy fallback: not asserted unequal (could collide), just valid.
+        let _ = (a, b);
+        std::env::remove_var("DOCE_GEN_SEED");
     }
 }
