@@ -12,7 +12,6 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
-use uuid::Uuid;
 
 /// 004-tool-call-widgets (`001`'s originally-specified `ask-user-question`
 /// event, implemented here — contracts/tool-widgets.md): fired the moment
@@ -215,9 +214,11 @@ impl Drop for ActiveGenerationGuard<'_> {
 /// which could push genuine tool history out of `TOOL_KEEP_N` prematurely.
 /// `false` for every non-plan caller — the persisted shape for those is
 /// byte-for-byte unchanged.
+#[allow(clippy::too_many_arguments)]
 async fn persist_tool_call(
     app: Option<&AppHandle>,
     conn: &tokio_rusqlite::Connection,
+    transcript_dir: Option<std::path::PathBuf>,
     conversation_id: &str,
     tool_call_id: &str,
     tool_name: &str,
@@ -236,17 +237,23 @@ async fn persist_tool_call(
     let _ = conn
         .call({
             let conversation_id = conversation_id.clone();
-            move |conn: &mut Connection| -> rusqlite::Result<()> {
-                let seq: i64 = conn.query_row(
-                    "SELECT COALESCE(MAX(sequence), -1) + 1 FROM messages WHERE conversation_id = ?1",
-                    [&conversation_id],
-                    |row| row.get(0),
-                )?;
-                conn.execute(
-                    "INSERT INTO messages (id, conversation_id, role, content_type, content, tool_name, created_at, sequence, tool_call_id) VALUES (?1, ?2, 'assistant', 'tool_call', ?3, ?4, ?5, ?6, ?7)",
-                    rusqlite::params![Uuid::now_v7().to_string(), conversation_id, call_content, tool_name, now, seq, tool_call_id],
-                )?;
-                Ok(())
+            move |conn: &mut Connection| -> rusqlite::Result<i64> {
+                crate::storage::messages::insert(
+                    conn,
+                    transcript_dir.as_deref(),
+                    &crate::storage::messages::NewMessage {
+                        conversation_id: &conversation_id,
+                        role: "assistant",
+                        content_type: "tool_call",
+                        content: &call_content,
+                        tool_name: Some(&tool_name),
+                        tool_call_id: Some(&tool_call_id),
+                        model_text: None,
+                        created_at: now,
+                        duration_ms: None,
+                        token_count: None,
+                    },
+                )
             }
         })
         .await;
@@ -274,9 +281,11 @@ async fn persist_tool_call(
 /// interrupted-error result while this turn was still running), the second
 /// insert is skipped — one ToolUse must never reconstruct with two
 /// ToolResults in `load_history`.
+#[allow(clippy::too_many_arguments)]
 async fn persist_tool_result(
     app: Option<&AppHandle>,
     conn: &tokio_rusqlite::Connection,
+    transcript_dir: Option<std::path::PathBuf>,
     conversation_id: &str,
     tool_call_id: &str,
     tool_name: &str,
@@ -301,14 +310,21 @@ async fn persist_tool_result(
                 if already_paired {
                     return Ok(());
                 }
-                let seq: i64 = conn.query_row(
-                    "SELECT COALESCE(MAX(sequence), -1) + 1 FROM messages WHERE conversation_id = ?1",
-                    [&conversation_id],
-                    |row| row.get(0),
-                )?;
-                conn.execute(
-                    "INSERT INTO messages (id, conversation_id, role, content_type, content, tool_name, created_at, sequence, tool_call_id, model_text) VALUES (?1, ?2, 'tool', 'tool_result', ?3, ?4, ?5, ?6, ?7, ?8)",
-                    rusqlite::params![Uuid::now_v7().to_string(), conversation_id, content, tool_name, now, seq, tool_call_id, model_text],
+                crate::storage::messages::insert(
+                    conn,
+                    transcript_dir.as_deref(),
+                    &crate::storage::messages::NewMessage {
+                        conversation_id: &conversation_id,
+                        role: "tool",
+                        content_type: "tool_result",
+                        content: &content,
+                        tool_name: Some(&tool_name),
+                        tool_call_id: Some(&tool_call_id),
+                        model_text: Some(&model_text),
+                        created_at: now,
+                        duration_ms: None,
+                        token_count: None,
+                    },
                 )?;
                 Ok(())
             }
@@ -332,6 +348,7 @@ async fn persist_tool_result(
 async fn persist_tool_call_and_result(
     app: Option<&AppHandle>,
     conn: &tokio_rusqlite::Connection,
+    transcript_dir: Option<std::path::PathBuf>,
     conversation_id: &str,
     tool_call_id: &str,
     tool_name: &str,
@@ -343,6 +360,7 @@ async fn persist_tool_call_and_result(
     persist_tool_call(
         app,
         conn,
+        transcript_dir.clone(),
         conversation_id,
         tool_call_id,
         tool_name,
@@ -353,6 +371,7 @@ async fn persist_tool_call_and_result(
     persist_tool_result(
         app,
         conn,
+        transcript_dir,
         conversation_id,
         tool_call_id,
         tool_name,
@@ -374,6 +393,7 @@ async fn persist_tool_call_and_result(
 async fn persist_plan_tool(
     app: Option<&AppHandle>,
     conn: &tokio_rusqlite::Connection,
+    transcript_dir: Option<std::path::PathBuf>,
     conversation_id: &str,
     tool_call_id: &str,
     call: &ToolCall,
@@ -382,6 +402,7 @@ async fn persist_plan_tool(
     persist_tool_call_and_result(
         app,
         conn,
+        transcript_dir,
         conversation_id,
         tool_call_id,
         &call.name,
@@ -433,9 +454,11 @@ fn parse_question_options(call: &ToolCall) -> Vec<QuestionOption> {
 /// `questionId` — there was never a real reason these were two separate
 /// concepts; unifying them is what the structured-tool-call redesign is
 /// about.
+#[allow(clippy::too_many_arguments)]
 async fn handle_ask_user_question(
     app: Option<&AppHandle>,
     conn: &tokio_rusqlite::Connection,
+    transcript_dir: Option<std::path::PathBuf>,
     pending: &PendingQuestions,
     conversation_id: &str,
     tool_call_id: &str,
@@ -479,6 +502,7 @@ async fn handle_ask_user_question(
     persist_tool_call(
         app,
         conn,
+        transcript_dir.clone(),
         conversation_id,
         tool_call_id,
         "AskUserQuestion",
@@ -502,6 +526,7 @@ async fn handle_ask_user_question(
     persist_tool_result(
         app,
         conn,
+        transcript_dir,
         conversation_id,
         tool_call_id,
         "AskUserQuestion",
@@ -543,6 +568,11 @@ struct RealBackend<'a> {
     pending: &'a PendingQuestions,
     plan_state: crate::agent::plan::PlanState,
     active_plans: &'a ActivePlans,
+    /// Resolved once per turn by `send_agent_message`
+    /// (`app.path().app_data_dir()...join("transcripts")`) — reused for
+    /// every persist call this backend makes, rather than re-resolving it
+    /// from `app` on every single tool call.
+    transcript_dir: Option<std::path::PathBuf>,
 }
 
 impl crate::agent::AgentBackend for RealBackend<'_> {
@@ -637,6 +667,7 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
             persist_plan_tool(
                 Some(self.app),
                 self.conn,
+                self.transcript_dir.clone(),
                 self.conversation_id,
                 &tool_call_id,
                 &call,
@@ -746,6 +777,7 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
             persist_plan_tool(
                 None,
                 self.conn,
+                self.app_data_dir.as_ref().map(|d| d.join("transcripts")),
                 self.subagent_id,
                 &tool_call_id,
                 &call,
@@ -803,6 +835,7 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
         persist_tool_call_and_result(
             None,
             self.conn,
+            self.app_data_dir.as_ref().map(|d| d.join("transcripts")),
             self.subagent_id,
             &tool_call_id,
             &call.name,
@@ -839,10 +872,21 @@ async fn execute_top_level_tool(
     app: &AppHandle,
     pending: &PendingQuestions,
 ) -> String {
+    // Resolved once, reused for every persist call this function makes
+    // (including the subagent's own final-answer row below, which lives
+    // under the same `<app_data_dir>/transcripts` directory as every other
+    // conversation).
+    let transcript_dir = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|d| d.join("transcripts"));
+
     if call.name == "AskUserQuestion" {
         return handle_ask_user_question(
             Some(app),
             conn,
+            transcript_dir.clone(),
             pending,
             parent_conversation_id,
             &tool_call_id,
@@ -878,6 +922,7 @@ async fn execute_top_level_tool(
     persist_tool_call(
         Some(app),
         conn,
+        transcript_dir.clone(),
         parent_conversation_id,
         &tool_call_id,
         "Task",
@@ -909,6 +954,7 @@ async fn execute_top_level_tool(
             persist_tool_result(
                 Some(app),
                 conn,
+                transcript_dir.clone(),
                 parent_conversation_id,
                 &tool_call_id,
                 "Task",
@@ -980,6 +1026,7 @@ async fn execute_top_level_tool(
         .map(|n| n as i64);
     let _ = persist_assistant_text_reply(
         conn,
+        transcript_dir.clone(),
         &subagent_id_for_db,
         &sub_final_for_db,
         sub_started_at,
@@ -997,6 +1044,7 @@ async fn execute_top_level_tool(
     persist_tool_result(
         Some(app),
         conn,
+        transcript_dir,
         parent_conversation_id,
         &tool_call_id,
         "Task",
@@ -1037,9 +1085,15 @@ async fn handle_general_tool_call(
     tool_call_id: &str,
     call: &ToolCall,
 ) -> String {
+    // Derived from the already-resolved `app_data_dir` param (not a fresh
+    // `app.path().app_data_dir()` call) -- the same directory
+    // `context::payload::stage_tool_result` below stages into, just a
+    // different subdirectory.
+    let transcript_dir = app_data_dir.as_ref().map(|d| d.join("transcripts"));
     persist_tool_call(
         app,
         conn,
+        transcript_dir.clone(),
         parent_conversation_id,
         tool_call_id,
         &call.name,
@@ -1090,6 +1144,7 @@ async fn handle_general_tool_call(
     persist_tool_result(
         app,
         conn,
+        transcript_dir,
         parent_conversation_id,
         tool_call_id,
         &call.name,
@@ -1131,6 +1186,7 @@ async fn emit_context_usage_update(
 
 async fn persist_assistant_text_reply(
     conn: &tokio_rusqlite::Connection,
+    transcript_dir: Option<std::path::PathBuf>,
     conversation_id: &str,
     content: &str,
     created_at: i64,
@@ -1142,22 +1198,21 @@ async fn persist_assistant_text_reply(
     let duration_ms = (persisted_at - created_at).max(0);
 
     conn.call(move |conn: &mut Connection| -> rusqlite::Result<i64> {
-        let seq: i64 = conn.query_row(
-            "SELECT COALESCE(MAX(sequence), -1) + 1 FROM messages WHERE conversation_id = ?1",
-            [&conversation_id],
-            |row| row.get(0),
-        )?;
-        conn.execute(
-            "INSERT INTO messages (id, conversation_id, role, content_type, content, created_at, sequence, duration_ms, token_count) VALUES (?1, ?2, 'assistant', 'text', ?3, ?4, ?5, ?6, ?7)",
-            rusqlite::params![
-                Uuid::now_v7().to_string(),
-                conversation_id,
-                content,
+        let seq = crate::storage::messages::insert(
+            conn,
+            transcript_dir.as_deref(),
+            &crate::storage::messages::NewMessage {
+                conversation_id: &conversation_id,
+                role: "assistant",
+                content_type: "text",
+                content: &content,
+                tool_name: None,
+                tool_call_id: None,
+                model_text: None,
                 created_at,
-                seq,
-                duration_ms,
+                duration_ms: Some(duration_ms),
                 token_count,
-            ],
+            },
         )?;
         conn.execute(
             "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
@@ -1218,55 +1273,85 @@ fn plan_system_message(cwd: Option<&std::path::Path>, allow_task: bool) -> Strin
 /// the exact persisted shape, and the expansion — is unit-testable against
 /// a real, temporary DB connection and skills directory, the same way
 /// `persist_tool_call`/`persist_tool_result` above already are.
+///
+/// Returns `(sequence, model_text)` — the sequence `storage::messages::insert`
+/// allocated for this row (rather than a caller-precomputed one, now that
+/// the choke point owns allocation), which `send_agent_message` reuses for
+/// its own follow-up `token_count` update.
 async fn persist_user_turn(
     conn: &tokio_rusqlite::Connection,
+    transcript_dir: Option<std::path::PathBuf>,
     skills_dir: &Path,
     conversation_id: &str,
-    next_seq: i64,
     now: i64,
     content: &str,
     rich_content: Option<&str>,
-) -> Result<String, String> {
+) -> Result<(i64, String), String> {
     let rich: Option<RichMessageContent> = rich_content
         .map(serde_json::from_str::<RichMessageContent>)
         .transpose()
         .map_err(|e| format!("invalid rich_content: {e}"))?;
 
-    match &rich {
+    let seq = match &rich {
         Some(_) => {
             let json = rich_content
                 .expect("rich_content is Some whenever `rich` parsed above is Some")
                 .to_string();
             let conversation_id = conversation_id.to_string();
-            conn.call(move |conn: &mut Connection| -> rusqlite::Result<()> {
-                conn.execute(
-                    "INSERT INTO messages (id, conversation_id, role, content_type, content, created_at, sequence) VALUES (?1, ?2, 'user', 'rich_text', ?3, ?4, ?5)",
-                    rusqlite::params![Uuid::now_v7().to_string(), conversation_id, json, now, next_seq],
-                )?;
-                Ok(())
+            let transcript_dir = transcript_dir.clone();
+            conn.call(move |conn: &mut Connection| -> rusqlite::Result<i64> {
+                crate::storage::messages::insert(
+                    conn,
+                    transcript_dir.as_deref(),
+                    &crate::storage::messages::NewMessage {
+                        conversation_id: &conversation_id,
+                        role: "user",
+                        content_type: "rich_text",
+                        content: &json,
+                        tool_name: None,
+                        tool_call_id: None,
+                        model_text: None,
+                        created_at: now,
+                        duration_ms: None,
+                        token_count: None,
+                    },
+                )
             })
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())?
         }
         None => {
             let conversation_id = conversation_id.to_string();
             let content = content.to_string();
-            conn.call(move |conn: &mut Connection| -> rusqlite::Result<()> {
-                conn.execute(
-                    "INSERT INTO messages (id, conversation_id, role, content_type, content, created_at, sequence) VALUES (?1, ?2, 'user', 'text', ?3, ?4, ?5)",
-                    rusqlite::params![Uuid::now_v7().to_string(), conversation_id, content, now, next_seq],
-                )?;
-                Ok(())
+            conn.call(move |conn: &mut Connection| -> rusqlite::Result<i64> {
+                crate::storage::messages::insert(
+                    conn,
+                    transcript_dir.as_deref(),
+                    &crate::storage::messages::NewMessage {
+                        conversation_id: &conversation_id,
+                        role: "user",
+                        content_type: "text",
+                        content: &content,
+                        tool_name: None,
+                        tool_call_id: None,
+                        model_text: None,
+                        created_at: now,
+                        duration_ms: None,
+                        token_count: None,
+                    },
+                )
             })
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())?
         }
-    }
+    };
 
-    match &rich {
-        Some(r) => expand_segments(&r.segments, skills_dir, true),
-        None => Ok(content.to_string()),
-    }
+    let model_text = match &rich {
+        Some(r) => expand_segments(&r.segments, skills_dir, true)?,
+        None => content.to_string(),
+    };
+
+    Ok((seq, model_text))
 }
 
 /// FR-008/FR-009: runs the agent tool-use loop to completion for one user
@@ -1313,26 +1398,20 @@ pub async fn send_agent_message(
         .app_data_dir()
         .map_err(|e| e.to_string())?
         .join("skills");
+    // Resolved once, reused for every persist call this turn makes
+    // (`persist_user_turn` below, `RealBackend`'s per-tool persists, and the
+    // final answer at the end of this function).
+    let transcript_dir = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|d| d.join("transcripts"));
 
-    let next_seq = conn
-        .call({
-            let conversation_id = conversation_id.clone();
-            move |conn: &mut Connection| -> rusqlite::Result<i64> {
-                conn.query_row(
-                    "SELECT COALESCE(MAX(sequence), -1) + 1 FROM messages WHERE conversation_id = ?1",
-                    [&conversation_id],
-                    |row| row.get::<_, i64>(0),
-                )
-            }
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let model_text_for_turn = persist_user_turn(
+    let (next_seq, model_text_for_turn) = persist_user_turn(
         &conn,
+        transcript_dir.clone(),
         &skills_dir,
         &conversation_id,
-        next_seq,
         now,
         &content,
         rich_content.as_deref(),
@@ -1449,6 +1528,7 @@ pub async fn send_agent_message(
     let system_prompt = plan_system_message(cwd.as_deref(), true);
     let usage = crate::context::maybe_compact(
         &conn,
+        transcript_dir.clone(),
         engine,
         &conversation_id,
         &skills_dir,
@@ -1528,6 +1608,7 @@ pub async fn send_agent_message(
         pending: &pending_questions,
         plan_state,
         active_plans: &active_plans,
+        transcript_dir: transcript_dir.clone(),
     };
     let result = run_loop(&context, initial_messages, &mut backend).await;
     // Drop the backend (and with it the session's `LlamaContext`, which
@@ -1544,6 +1625,7 @@ pub async fn send_agent_message(
     let final_persisted_at = now_ms();
     let final_seq = persist_assistant_text_reply(
         &conn,
+        transcript_dir,
         &conversation_id,
         &final_text,
         now,
@@ -1696,11 +1778,12 @@ mod tests {
         seed_conversation(&conn, "c1").await;
         let skills_dir = tempfile::tempdir().unwrap();
 
-        let model_text =
-            persist_user_turn(&conn, skills_dir.path(), "c1", 0, 0, "plain hello", None)
+        let (seq, model_text) =
+            persist_user_turn(&conn, None, skills_dir.path(), "c1", 0, "plain hello", None)
                 .await
                 .unwrap();
 
+        assert_eq!(seq, 0);
         assert_eq!(model_text, "plain hello");
         let (role, content_type, _, content) = latest_message(&conn, "c1").await;
         assert_eq!(role, "user");
@@ -1722,11 +1805,11 @@ mod tests {
         })
         .to_string();
 
-        let model_text = persist_user_turn(
+        let (_seq, model_text) = persist_user_turn(
             &conn,
+            None,
             skills_dir.path(),
             "c1",
-            0,
             0,
             "plain hello", // deliberately ignored -- never persisted or returned
             Some(&rich_json),
@@ -1750,9 +1833,9 @@ mod tests {
 
         let result = persist_user_turn(
             &conn,
+            None,
             skills_dir.path(),
             "c1",
-            0,
             0,
             "plain hello",
             Some("not valid json"),
@@ -1790,9 +1873,9 @@ mod tests {
 
         let result = persist_user_turn(
             &conn,
+            None,
             skills_dir.path(),
             "c1",
-            0,
             0,
             "plain hello",
             Some(&rich_json),
@@ -1811,9 +1894,10 @@ mod tests {
         let conn = crate::storage::test_async_connection().await;
         seed_conversation(&conn, "c1").await;
 
-        let seq = persist_assistant_text_reply(&conn, "c1", "final answer", 1_000, 3_750, None)
-            .await
-            .unwrap();
+        let seq =
+            persist_assistant_text_reply(&conn, None, "c1", "final answer", 1_000, 3_750, None)
+                .await
+                .unwrap();
 
         assert_eq!(seq, 0);
         let row: (String, String, i64, Option<i64>, String) = conn
@@ -1857,6 +1941,7 @@ mod tests {
         persist_tool_result(
             None,
             &conn,
+            None,
             "c1",
             "tc1",
             "Bash",
@@ -1867,6 +1952,7 @@ mod tests {
         persist_tool_result(
             None,
             &conn,
+            None,
             "c1",
             "tc1",
             "Bash",
@@ -1909,9 +1995,18 @@ mod tests {
         let conn_bg = conn.clone();
         let emitted_bg = emitted.clone();
         let handle = tokio::spawn(async move {
-            handle_ask_user_question(None, &conn_bg, &pending_bg, "c1", "q1", &call, |event| {
-                *emitted_bg.lock().unwrap() = Some(event);
-            })
+            handle_ask_user_question(
+                None,
+                &conn_bg,
+                None,
+                &pending_bg,
+                "c1",
+                "q1",
+                &call,
+                |event| {
+                    *emitted_bg.lock().unwrap() = Some(event);
+                },
+            )
             .await
         });
 
@@ -2009,6 +2104,7 @@ mod tests {
         persist_tool_call_and_result(
             None,
             &conn,
+            None,
             "sub",
             "call1",
             "Read",
@@ -2025,6 +2121,7 @@ mod tests {
         persist_tool_call(
             None,
             &conn,
+            None,
             "parent",
             "call2",
             "Task",
@@ -2035,6 +2132,7 @@ mod tests {
         persist_tool_result(
             None,
             &conn,
+            None,
             "parent",
             "call2",
             "Task",
@@ -2115,6 +2213,7 @@ mod tests {
         persist_tool_call(
             None,
             &conn,
+            None,
             "parent",
             "call1",
             "Task",
@@ -2139,6 +2238,7 @@ mod tests {
         persist_tool_result(
             None,
             &conn,
+            None,
             "parent",
             "call1",
             "Task",
@@ -2555,6 +2655,7 @@ mod tests {
         persist_plan_tool(
             None,
             &conn,
+            None,
             "c1",
             "tc1",
             &crate::agent::ToolCall {
@@ -2612,6 +2713,7 @@ mod tests {
         persist_plan_tool(
             None,
             &conn,
+            None,
             "c1",
             "tc1",
             &crate::agent::ToolCall {
@@ -2644,6 +2746,7 @@ mod tests {
         persist_tool_call(
             None,
             &conn,
+            None,
             "c1",
             "tc1",
             "Bash",
@@ -2668,6 +2771,7 @@ mod tests {
         persist_plan_tool(
             None,
             &conn,
+            None,
             "sub-1",
             "tc1",
             &crate::agent::ToolCall {

@@ -61,6 +61,11 @@ async fn run_one(app: &AppHandle, request: GenerationRequest) {
 
 async fn run_generation(app: &AppHandle, request: &GenerationRequest) -> Result<String, String> {
     let conn = app.state::<DbCell>().get(app).await?.clone();
+    let transcript_dir = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|d| d.join("transcripts"));
 
     let model_path: Option<String> = conn
         .call(|conn: &mut Connection| -> rusqlite::Result<String> {
@@ -131,23 +136,41 @@ async fn run_generation(app: &AppHandle, request: &GenerationRequest) -> Result<
 
     conn.call({
         let conversation_id = request.conversation_id.clone();
-        let assistant_message_id = request.assistant_message_id.clone();
         let assistant_created_at = request.assistant_created_at;
         let full_text = full_text.clone();
+        let transcript_dir = transcript_dir.clone();
         move |conn: &mut Connection| -> rusqlite::Result<()> {
-            let seq: i64 = conn.query_row(
-                "SELECT COALESCE(MAX(sequence), -1) + 1 FROM messages WHERE conversation_id = ?1",
-                [&conversation_id],
-                |row| row.get(0),
+            // Inserts the assistant reply and bumps `conversations.updated_at`
+            // in one transaction, same as before -- `rusqlite::Transaction`
+            // derefs to `&Connection`, so `messages::insert(&tx, ...)` runs
+            // inside it. Note: `messages::insert` mints its own row id
+            // (`Uuid::now_v7()`) rather than reusing
+            // `request.assistant_message_id` -- nothing downstream looks a
+            // row up by that id (it's only used to correlate the live
+            // `assistant-token`/`assistant-message-complete` events emitted
+            // during this same streaming session), so this is safe.
+            let tx = conn.transaction()?;
+            crate::storage::messages::insert(
+                &tx,
+                transcript_dir.as_deref(),
+                &crate::storage::messages::NewMessage {
+                    conversation_id: &conversation_id,
+                    role: "assistant",
+                    content_type: "text",
+                    content: &full_text,
+                    tool_name: None,
+                    tool_call_id: None,
+                    model_text: None,
+                    created_at: assistant_created_at,
+                    duration_ms: Some(duration_ms),
+                    token_count,
+                },
             )?;
-            conn.execute(
-                "INSERT INTO messages (id, conversation_id, role, content_type, content, created_at, sequence, duration_ms, token_count) VALUES (?1, ?2, 'assistant', 'text', ?3, ?4, ?5, ?6, ?7)",
-                rusqlite::params![assistant_message_id, conversation_id, full_text, assistant_created_at, seq, duration_ms, token_count],
-            )?;
-            conn.execute(
+            tx.execute(
                 "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
                 rusqlite::params![now, conversation_id],
             )?;
+            tx.commit()?;
             Ok(())
         }
     })

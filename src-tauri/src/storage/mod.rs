@@ -1,4 +1,5 @@
 pub mod conversations;
+pub mod messages;
 mod migrations;
 
 use rusqlite::Connection;

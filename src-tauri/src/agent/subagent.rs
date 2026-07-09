@@ -49,9 +49,24 @@ pub fn spawn_subagent(
     )
     .map_err(|e| SubagentError::Db(e.to_string()))?;
 
-    conn.execute(
-        "INSERT INTO messages (id, conversation_id, role, content_type, content, created_at, sequence) VALUES (?1, ?2, 'user', 'text', ?3, ?4, 0)",
-        rusqlite::params![Uuid::now_v7().to_string(), subagent_id, task_prompt, now],
+    // `transcript_dir: None` -- this synchronous, `&Connection`-only
+    // function has no `AppHandle` to resolve one from; the subagent's first
+    // `heal_if_stale` regenerates the transcript from this row regardless.
+    crate::storage::messages::insert(
+        conn,
+        None,
+        &crate::storage::messages::NewMessage {
+            conversation_id: &subagent_id,
+            role: "user",
+            content_type: "text",
+            content: task_prompt,
+            tool_name: None,
+            tool_call_id: None,
+            model_text: None,
+            created_at: now,
+            duration_ms: None,
+            token_count: None,
+        },
     )
     .map_err(|e| SubagentError::Db(e.to_string()))?;
 

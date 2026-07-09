@@ -386,18 +386,26 @@ fn interrupted_tool_result_detail(
 /// persisted under `role='assistant'` too) and `tool_name=NULL`.
 pub fn persist_context_notice(
     conn: &Connection,
+    transcript_dir: Option<&Path>,
     conversation_id: &str,
     now: i64,
     kind_json: &str,
 ) -> rusqlite::Result<()> {
-    let seq: i64 = conn.query_row(
-        "SELECT COALESCE(MAX(sequence), -1) + 1 FROM messages WHERE conversation_id = ?1",
-        [conversation_id],
-        |row| row.get(0),
-    )?;
-    conn.execute(
-        "INSERT INTO messages (id, conversation_id, role, content_type, content, created_at, sequence) VALUES (?1, ?2, 'assistant', 'context_notice', ?3, ?4, ?5)",
-        rusqlite::params![uuid::Uuid::now_v7().to_string(), conversation_id, kind_json, now, seq],
+    crate::storage::messages::insert(
+        conn,
+        transcript_dir,
+        &crate::storage::messages::NewMessage {
+            conversation_id,
+            role: "assistant",
+            content_type: "context_notice",
+            content: kind_json,
+            tool_name: None,
+            tool_call_id: None,
+            model_text: None,
+            created_at: now,
+            duration_ms: None,
+            token_count: None,
+        },
     )?;
     Ok(())
 }
@@ -534,7 +542,8 @@ mod tests {
             "CREATE TABLE messages (
                 id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, role TEXT NOT NULL,
                 content_type TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL,
-                sequence INTEGER NOT NULL, tool_name TEXT, tool_call_id TEXT, model_text TEXT
+                sequence INTEGER NOT NULL, tool_name TEXT, tool_call_id TEXT, model_text TEXT,
+                duration_ms INTEGER, token_count INTEGER
             );",
         )
         .unwrap();
@@ -1171,6 +1180,7 @@ mod tests {
 
         persist_context_notice(
             &conn,
+            None,
             "c1",
             1000,
             r#"{"kind":"cleared","clearedCount":1,"notice":"n"}"#,

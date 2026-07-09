@@ -76,8 +76,12 @@ pub fn append_entry(
 
 /// The per-row body: what the model saw. tool rows use `model_text`
 /// (falling back to `content` for legacy rows persisted before model_text
-/// existed); everything else uses `content`.
-fn row_body(content_type: &str, content: &str, model_text: Option<&str>) -> String {
+/// existed); everything else uses `content`. `pub(crate)` so
+/// `storage::messages::insert` (the single write path) can decide a fresh
+/// row's body the same way `regenerate` decides a persisted row's — the two
+/// must never drift, or a freshly-appended entry could read differently
+/// than the same row would render after a `regenerate` pass.
+pub(crate) fn row_body(content_type: &str, content: &str, model_text: Option<&str>) -> String {
     match content_type {
         "tool_call" | "tool_result" => model_text.unwrap_or(content).to_string(),
         _ => content.to_string(),

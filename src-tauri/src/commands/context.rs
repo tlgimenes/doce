@@ -67,8 +67,14 @@ pub async fn compact_conversation(
     let guard = inference_state.0.lock().await;
     let engine = guard.as_ref().ok_or("No model loaded")?;
 
+    let transcript_dir = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|d| d.join("transcripts"));
     context::maybe_compact(
         &conn,
+        transcript_dir,
         engine,
         &conversation_id,
         &skills_dir,

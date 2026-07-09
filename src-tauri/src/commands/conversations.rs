@@ -311,7 +311,6 @@ pub async fn send_message(
     rich_content: Option<String>,
 ) -> Result<SendMessageResult, String> {
     let conn = db_cell.get(&app).await?.clone();
-    let user_message_id = Uuid::now_v7().to_string();
     let request_id = Uuid::now_v7().to_string();
     let now = now_ms();
 
@@ -325,15 +324,25 @@ pub async fn send_message(
         .app_data_dir()
         .map_err(|e| e.to_string())?
         .join("skills");
+    let transcript_dir = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|d| d.join("transcripts"));
 
-    let next_seq = conn
+    // FR-012: title comes from the first message only, no model call --
+    // decided up front (an existence check, not the sequence the insert
+    // below will allocate, since `storage::messages::insert` — the single
+    // choke point every message row now goes through — owns that
+    // allocation internally rather than handing it back before inserting).
+    let is_first_message: bool = conn
         .call({
             let conversation_id = conversation_id.clone();
-            move |conn: &mut Connection| -> rusqlite::Result<i64> {
+            move |conn: &mut Connection| -> rusqlite::Result<bool> {
                 conn.query_row(
-                    "SELECT COALESCE(MAX(sequence), -1) + 1 FROM messages WHERE conversation_id = ?1",
+                    "SELECT NOT EXISTS(SELECT 1 FROM messages WHERE conversation_id = ?1)",
                     [&conversation_id],
-                    |row| row.get::<_, i64>(0),
+                    |row| row.get(0),
                 )
             }
         })
@@ -349,34 +358,56 @@ pub async fn send_message(
     let (content_type, persisted_content, title_source) =
         resolve_message_content(&content, rich_content.as_deref(), &skills_dir)?;
 
-    // FR-012: title comes from the first message only, no model call.
-    let title_update = if next_seq == 0 {
+    let title_update = if is_first_message {
         Some(generate_title(&title_source))
     } else {
         None
     };
 
-    conn.call({
-        let conversation_id = conversation_id.clone();
-        let user_message_id = user_message_id.clone();
-        move |conn: &mut Connection| -> rusqlite::Result<()> {
-            let tx = conn.transaction()?;
-            tx.execute(
-                "INSERT INTO messages (id, conversation_id, role, content_type, content, created_at, sequence) VALUES (?1, ?2, 'user', ?3, ?4, ?5, ?6)",
-                rusqlite::params![user_message_id, conversation_id, content_type, persisted_content, now, next_seq],
-            )?;
-            if let Some(title) = &title_update {
-                tx.execute(
-                    "UPDATE conversations SET title = ?1 WHERE id = ?2",
-                    rusqlite::params![title, conversation_id],
+    let user_message_id = conn
+        .call({
+            let conversation_id = conversation_id.clone();
+            let transcript_dir = transcript_dir.clone();
+            move |conn: &mut Connection| -> rusqlite::Result<String> {
+                let tx = conn.transaction()?;
+                let seq = crate::storage::messages::insert(
+                    &tx,
+                    transcript_dir.as_deref(),
+                    &crate::storage::messages::NewMessage {
+                        conversation_id: &conversation_id,
+                        role: "user",
+                        content_type: &content_type,
+                        content: &persisted_content,
+                        tool_name: None,
+                        tool_call_id: None,
+                        model_text: None,
+                        created_at: now,
+                        duration_ms: None,
+                        token_count: None,
+                    },
                 )?;
+                if let Some(title) = &title_update {
+                    tx.execute(
+                        "UPDATE conversations SET title = ?1 WHERE id = ?2",
+                        rusqlite::params![title, conversation_id],
+                    )?;
+                }
+                // `messages::insert` mints its own id internally rather than
+                // taking a caller-supplied one -- read the real row id back
+                // (by the sequence it just allocated) so `user_message_id`
+                // below stays accurate for both the token_count follow-up
+                // and `SendMessageResult.message_id`.
+                let id: String = tx.query_row(
+                    "SELECT id FROM messages WHERE conversation_id = ?1 AND sequence = ?2",
+                    rusqlite::params![conversation_id, seq],
+                    |row| row.get(0),
+                )?;
+                tx.commit()?;
+                Ok(id)
             }
-            tx.commit()?;
-            Ok(())
-        }
-    })
-    .await
-    .map_err(|e| e.to_string())?;
+        })
+        .await
+        .map_err(|e| e.to_string())?;
 
     // Fail fast rather than queueing work that can never succeed — the
     // worker double-checks this too (the model could be uninstalled
@@ -440,6 +471,7 @@ pub async fn send_message(
     // inside `generate()`.
     let usage = crate::context::maybe_compact(
         &conn,
+        transcript_dir.clone(),
         engine,
         &conversation_id,
         &skills_dir,

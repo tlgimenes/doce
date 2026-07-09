@@ -180,13 +180,20 @@ async fn load_history_via_conn(
 
 async fn persist_notice(
     conn: &tokio_rusqlite::Connection,
+    transcript_dir: Option<std::path::PathBuf>,
     conversation_id: &str,
     notice_json: String,
 ) -> Result<(), String> {
     let conversation_id = conversation_id.to_string();
     let now = crate::commands::models::now_ms();
     conn.call(move |conn: &mut Connection| {
-        persist_context_notice(conn, &conversation_id, now, &notice_json)
+        persist_context_notice(
+            conn,
+            transcript_dir.as_deref(),
+            &conversation_id,
+            now,
+            &notice_json,
+        )
     })
     .await
     .map_err(|e| e.to_string())
@@ -354,6 +361,7 @@ fn messages_to_summarize(
 /// Returns `Ok(None)` (no-op) when there's nothing eligible to summarize.
 pub async fn summarize_and_persist(
     conn: &tokio_rusqlite::Connection,
+    transcript_dir: Option<std::path::PathBuf>,
     engine: &InferenceEngine,
     conversation_id: &str,
     history: &[HistoryMessage],
@@ -387,7 +395,7 @@ pub async fn summarize_and_persist(
         "notice": "Conversation condensed to save space",
     })
     .to_string();
-    persist_notice(conn, conversation_id, notice_json).await?;
+    persist_notice(conn, transcript_dir, conversation_id, notice_json).await?;
 
     Ok(Some(summary))
 }
@@ -408,6 +416,7 @@ pub async fn summarize_and_persist(
 /// error, even if it's still high afterward).
 pub async fn maybe_compact(
     conn: &tokio_rusqlite::Connection,
+    transcript_dir: Option<std::path::PathBuf>,
     engine: &InferenceEngine,
     conversation_id: &str,
     skills_dir: &Path,
@@ -443,7 +452,7 @@ pub async fn maybe_compact(
             "notice": format!("{cleared_count} old tool result{plural} cleared to save space"),
         })
         .to_string();
-        persist_notice(conn, conversation_id, notice_json).await?;
+        persist_notice(conn, transcript_dir.clone(), conversation_id, notice_json).await?;
         usage =
             usage_from_history(engine, conversation_id, &history, system_prompt, &settings).await?;
     }
@@ -451,6 +460,7 @@ pub async fn maybe_compact(
     if over_compact_threshold(&usage) {
         let summarized = summarize_and_persist(
             conn,
+            transcript_dir.clone(),
             engine,
             conversation_id,
             &history,
