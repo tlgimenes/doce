@@ -568,12 +568,14 @@ fn tier4_fixture(dir: &Path) {
     }
 }
 
-/// Returns (fixed_count, total) -- each file counts as fixed only if the
-/// `// BUG:` marker is gone AND the corrected line is present, so a file
-/// that just deletes the comment without actually fixing the operator
-/// doesn't count.
-fn tier4_score(dir: &Path) -> (usize, usize) {
+/// Per-file grading for tier 4: fixed = the `// BUG:` marker is gone AND
+/// the corrected line is present. Returns (fixed_count, total, failures)
+/// where each failure names the file and which criterion failed — a 0/20
+/// where every operator was actually fixed but the comments remained
+/// (observed for real) must be diagnosable from the output alone.
+fn tier4_score(dir: &Path) -> (usize, usize, Vec<String>) {
     let mut fixed = 0;
+    let mut failures = Vec::new();
     for i in 0..TIER4_BUG_COUNT {
         let a = i as i32;
         let b = (i + 1) as i32;
@@ -583,9 +585,15 @@ fn tier4_score(dir: &Path) -> (usize, usize) {
         let fixed_line_present = content.contains(&format!("let result = {a} + {b};"));
         if marker_gone && fixed_line_present {
             fixed += 1;
+        } else {
+            failures.push(format!(
+                "bug_{i:02}: {}{}",
+                if marker_gone { "" } else { "marker still present; " },
+                if fixed_line_present { "" } else { "fixed line missing" }
+            ));
         }
     }
-    (fixed, TIER4_BUG_COUNT)
+    (fixed, TIER4_BUG_COUNT, failures)
 }
 
 #[tokio::test]
@@ -614,8 +622,16 @@ async fn tier4_long_running_fixes_many_scattered_bugs() {
     .await;
     report("tier4", &run);
 
-    let (fixed, total) = tier4_score(dir.path());
-    println!("[tier4] score: {fixed}/{total} bugs correctly fixed");
+    let (fixed, total, failures) = tier4_score(dir.path());
+    for f in &failures {
+        println!("  [tier4] {f}");
+    }
+    println!(
+        "[metrics] score={fixed}/{total} turns={} elapsed_s={:.1} seed={}",
+        run.turns_taken,
+        run.elapsed.as_secs_f32(),
+        std::env::var("DOCE_GEN_SEED").unwrap_or_else(|_| "entropy".into())
+    );
     // Deliberately not hard-asserted -- this is the graded stress test
     // (see module doc). The printed score is the actual benchmark output.
 }
@@ -651,8 +667,16 @@ async fn tier4_planned_long_running_fixes_many_scattered_bugs() {
     let run = run_planned_benchmark_task(&engine, &task, dir.path(), 150).await;
     report("tier4_planned", &run);
 
-    let (fixed, total) = tier4_score(dir.path());
-    println!("[tier4_planned] score: {fixed}/{total} bugs correctly fixed");
+    let (fixed, total, failures) = tier4_score(dir.path());
+    for f in &failures {
+        println!("  [tier4_planned] {f}");
+    }
+    println!(
+        "[metrics] score={fixed}/{total} turns={} elapsed_s={:.1} seed={}",
+        run.turns_taken,
+        run.elapsed.as_secs_f32(),
+        std::env::var("DOCE_GEN_SEED").unwrap_or_else(|_| "entropy".into())
+    );
     // Deliberately not hard-asserted, same reasoning as tier 4 itself.
 }
 
