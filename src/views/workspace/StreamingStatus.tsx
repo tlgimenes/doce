@@ -18,7 +18,7 @@ export default function StreamingStatus({ startedAt }: StreamingStatusProps) {
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
-    const intervalId = window.setInterval(() => setNow(Date.now() - 100), 100);
+    const intervalId = window.setInterval(() => setNow(Date.now()), 100);
     return () => window.clearInterval(intervalId);
   }, []);
 

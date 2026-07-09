@@ -29,7 +29,7 @@ describe("StreamingStatus", () => {
 
     expect(screen.getByTestId("agent-thinking-timer")).toHaveTextContent("1.0s");
 
-    vi.setSystemTime(12_400);
+    vi.setSystemTime(12_300);
     await act(async () => {
       vi.advanceTimersByTime(100);
     });
@@ -46,7 +46,7 @@ describe("StreamingStatus", () => {
 
     expect(screen.getByTestId("agent-thinking-timer")).toHaveTextContent("0.0s");
 
-    vi.setSystemTime(5_900);
+    vi.setSystemTime(5_800);
     await act(async () => {
       vi.advanceTimersByTime(100);
     });
