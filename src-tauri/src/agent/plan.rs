@@ -54,10 +54,13 @@ pub struct Plan {
 /// Which of the two states the loop is in right now. Carried by the
 /// backend, not `run_loop` itself — `run_loop`'s own signature and control
 /// flow are completely unaware this exists.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LoopState {
+    #[default]
     Planning,
-    Executing { step_index: usize },
+    Executing {
+        step_index: usize,
+    },
 }
 
 /// System prompt for `LoopState::Planning`. Tools: `CreatePlan` (define
@@ -104,6 +107,154 @@ You must end by calling StepDone or RefuseStep -- never answer in plain text her
     )
 }
 
+/// The five tools owned by the plan state machine itself — used by the
+/// frontend (via ipc.ts's mirror of this list) to keep plan activity
+/// invisible in the transcript, and by hosts to route calls.
+pub const PLAN_TOOL_NAMES: [&str; 5] = [
+    "CreatePlan",
+    "AddStep",
+    "ResumeExecution",
+    "StepDone",
+    "RefuseStep",
+];
+
+/// The two-state Planning/Executing machine, promoted from the benchmark's
+/// `PlanExecBackend` so production (`commands::agent::RealBackend`) and the
+/// benchmark embed the SAME engine — one implementation, two thin hosts.
+/// Owns the plan, the current state, and the refusal context; hosts own
+/// everything else (inference, persistence, events, real tool dispatch).
+#[derive(Debug, Default)]
+pub struct PlanState {
+    pub plan: Plan,
+    pub state: LoopState,
+    /// Set by `RefuseStep`, consumed (and cleared) the next time
+    /// `system_prompt` renders the Planning prompt — carries the refusal
+    /// reason into that one revision turn without lingering after.
+    refusal_context: Option<String>,
+}
+
+impl PlanState {
+    /// The system prompt for the current state: Planning (refusal-annotated
+    /// when a step was just refused) or the per-step Executing prompt.
+    /// `&mut` because rendering the Planning prompt consumes the refusal
+    /// context. The caller appends its own cwd line.
+    pub fn system_prompt(&mut self) -> String {
+        match self.state {
+            LoopState::Planning => match self.refusal_context.take() {
+                Some(reason) => format!(
+                    "{PLANNING_SYSTEM_PROMPT}\n\nThe previous step could not be completed. Reason given: {reason}\n\nRevise the plan accordingly (AddStep, then ResumeExecution)."
+                ),
+                None => PLANNING_SYSTEM_PROMPT.to_string(),
+            },
+            LoopState::Executing { step_index } => {
+                let step_desc = self.plan.steps[step_index].description.clone();
+                executing_system_prompt(&self.plan.goal, &step_desc)
+            }
+        }
+    }
+
+    /// Handles a tool call that belongs to the plan machine: the five plan
+    /// tools mutate state and return their result; regular tools that are
+    /// NOT available in the current state return a rejection. `None` means
+    /// "this is an ordinary tool the host should dispatch itself" —
+    /// read-only tools + AskUserQuestion while Planning, file/shell/Task
+    /// while Executing (the exact gating the benchmark validated 20/20).
+    pub fn handle_plan_tool(&mut self, call: &crate::agent::ToolCall) -> Option<String> {
+        let result = match (self.state, call.name.as_str()) {
+            (LoopState::Planning, "CreatePlan") => {
+                if !self.plan.steps.is_empty() {
+                    "Error: a plan already exists -- use AddStep to extend or correct it, CreatePlan is only valid once".to_string()
+                } else {
+                    let goal = call
+                        .arguments
+                        .get("goal")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    let steps: Vec<PlanStep> = call
+                        .arguments
+                        .get("steps")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|s| s.as_str())
+                                .map(|d| PlanStep {
+                                    description: d.to_string(),
+                                    done: false,
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let step_count = steps.len();
+                    self.plan = Plan { goal, steps };
+                    format!("Plan created with {step_count} steps. Call ResumeExecution to begin.")
+                }
+            }
+            (LoopState::Planning, "AddStep") => {
+                let description = call
+                    .arguments
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                self.plan.steps.push(PlanStep {
+                    description,
+                    done: false,
+                });
+                format!("Step added. Plan now has {} steps.", self.plan.steps.len())
+            }
+            (LoopState::Planning, "ResumeExecution") => match self.next_undone_step() {
+                Some(idx) => {
+                    self.state = LoopState::Executing { step_index: idx };
+                    format!("Resuming at step {idx}: {}", self.plan.steps[idx].description)
+                }
+                None => "Error: no undone steps -- create or add a step first".to_string(),
+            },
+            (LoopState::Planning, "Read" | "Grep" | "Glob" | "AskUserQuestion") => return None,
+            (LoopState::Executing { step_index }, "StepDone") => {
+                self.plan.steps[step_index].done = true;
+                match self.next_undone_step() {
+                    Some(next) => {
+                        self.state = LoopState::Executing { step_index: next };
+                        format!("Step {step_index} done. Moving to step {next}.")
+                    }
+                    None => {
+                        self.state = LoopState::Planning;
+                        format!("Step {step_index} done. All steps report done -- back to planning for final review.")
+                    }
+                }
+            }
+            (LoopState::Executing { step_index }, "RefuseStep") => {
+                let reason = call
+                    .arguments
+                    .get("reason")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("(no reason given)");
+                self.refusal_context = Some(format!(
+                    "step {step_index} (\"{}\"): {reason}",
+                    self.plan.steps[step_index].description
+                ));
+                self.state = LoopState::Planning;
+                "Step refused. Back to planning.".to_string()
+            }
+            (
+                LoopState::Executing { .. },
+                "Read" | "Write" | "Edit" | "Bash" | "Grep" | "Glob" | "Task",
+            ) => return None,
+            (_, other) => format!("Error: {other} is not available in the current phase"),
+        };
+        Some(result)
+    }
+
+    pub fn next_undone_step(&self) -> Option<usize> {
+        self.plan.steps.iter().position(|s| !s.done)
+    }
+
+    pub fn has_plan(&self) -> bool {
+        !self.plan.steps.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,5 +273,153 @@ mod tests {
         assert!(prompt.contains("write the tests"));
         assert!(prompt.contains("StepDone"));
         assert!(prompt.contains("RefuseStep"));
+    }
+
+    use crate::agent::ToolCall;
+
+    fn call(name: &str, arguments: serde_json::Value) -> ToolCall {
+        ToolCall {
+            name: name.to_string(),
+            arguments,
+        }
+    }
+
+    #[test]
+    fn create_plan_then_resume_moves_to_executing_the_first_step() {
+        let mut ps = PlanState::default();
+        assert_eq!(ps.state, LoopState::Planning);
+        assert!(!ps.has_plan());
+
+        let result = ps
+            .handle_plan_tool(&call(
+                "CreatePlan",
+                serde_json::json!({"goal": "fix bugs", "steps": ["fix a", "fix b"]}),
+            ))
+            .expect("CreatePlan is a plan tool");
+        assert!(result.contains("2 steps"));
+        assert!(ps.has_plan());
+        assert_eq!(ps.plan.goal, "fix bugs");
+        assert_eq!(ps.state, LoopState::Planning, "CreatePlan alone does not start execution");
+
+        let result = ps
+            .handle_plan_tool(&call("ResumeExecution", serde_json::json!({})))
+            .expect("ResumeExecution is a plan tool");
+        assert!(result.contains("fix a"));
+        assert_eq!(ps.state, LoopState::Executing { step_index: 0 });
+    }
+
+    #[test]
+    fn create_plan_is_only_valid_once() {
+        let mut ps = PlanState::default();
+        ps.handle_plan_tool(&call(
+            "CreatePlan",
+            serde_json::json!({"goal": "g", "steps": ["a"]}),
+        ));
+        let second = ps
+            .handle_plan_tool(&call(
+                "CreatePlan",
+                serde_json::json!({"goal": "other", "steps": ["x"]}),
+            ))
+            .unwrap();
+        assert!(second.starts_with("Error"));
+        assert_eq!(ps.plan.goal, "g", "the existing plan must be untouched");
+    }
+
+    #[test]
+    fn step_done_advances_to_next_undone_step_and_returns_to_planning_when_finished() {
+        let mut ps = PlanState::default();
+        ps.handle_plan_tool(&call(
+            "CreatePlan",
+            serde_json::json!({"goal": "g", "steps": ["a", "b"]}),
+        ));
+        ps.handle_plan_tool(&call("ResumeExecution", serde_json::json!({})));
+
+        let result = ps
+            .handle_plan_tool(&call("StepDone", serde_json::json!({"summary": "did a"})))
+            .unwrap();
+        assert!(ps.plan.steps[0].done);
+        assert_eq!(ps.state, LoopState::Executing { step_index: 1 });
+        assert!(result.contains("step 1"));
+
+        ps.handle_plan_tool(&call("StepDone", serde_json::json!({"summary": "did b"})));
+        assert!(ps.plan.steps[1].done);
+        assert_eq!(ps.state, LoopState::Planning, "all done returns to planning for review");
+    }
+
+    #[test]
+    fn refuse_step_returns_to_planning_and_threads_the_reason_into_the_next_prompt() {
+        let mut ps = PlanState::default();
+        ps.handle_plan_tool(&call(
+            "CreatePlan",
+            serde_json::json!({"goal": "g", "steps": ["impossible"]}),
+        ));
+        ps.handle_plan_tool(&call("ResumeExecution", serde_json::json!({})));
+
+        ps.handle_plan_tool(&call(
+            "RefuseStep",
+            serde_json::json!({"reason": "the file does not exist"}),
+        ));
+        assert_eq!(ps.state, LoopState::Planning);
+
+        let prompt = ps.system_prompt();
+        assert!(prompt.contains("the file does not exist"), "refusal reason must reach the revision prompt");
+        // Consumed: the next planning prompt is clean again.
+        let prompt2 = ps.system_prompt();
+        assert!(!prompt2.contains("the file does not exist"));
+    }
+
+    #[test]
+    fn add_step_appends_and_resume_picks_the_first_undone_step() {
+        let mut ps = PlanState::default();
+        ps.handle_plan_tool(&call(
+            "CreatePlan",
+            serde_json::json!({"goal": "g", "steps": ["a"]}),
+        ));
+        ps.handle_plan_tool(&call("ResumeExecution", serde_json::json!({})));
+        ps.handle_plan_tool(&call("StepDone", serde_json::json!({})));
+        assert_eq!(ps.state, LoopState::Planning);
+
+        ps.handle_plan_tool(&call("AddStep", serde_json::json!({"description": "b"})));
+        assert_eq!(ps.plan.steps.len(), 2);
+        ps.handle_plan_tool(&call("ResumeExecution", serde_json::json!({})));
+        assert_eq!(ps.state, LoopState::Executing { step_index: 1 });
+    }
+
+    #[test]
+    fn regular_tools_are_state_gated() {
+        let mut ps = PlanState::default();
+        // Planning: read-only + AskUserQuestion pass through (None = host dispatches).
+        assert!(ps.handle_plan_tool(&call("Read", serde_json::json!({}))).is_none());
+        assert!(ps.handle_plan_tool(&call("AskUserQuestion", serde_json::json!({}))).is_none());
+        // Planning: write tools are rejected.
+        let rejected = ps.handle_plan_tool(&call("Write", serde_json::json!({}))).unwrap();
+        assert!(rejected.starts_with("Error"));
+
+        ps.handle_plan_tool(&call(
+            "CreatePlan",
+            serde_json::json!({"goal": "g", "steps": ["a"]}),
+        ));
+        ps.handle_plan_tool(&call("ResumeExecution", serde_json::json!({})));
+        // Executing: file/shell/Task pass through, plan-editing is rejected.
+        assert!(ps.handle_plan_tool(&call("Write", serde_json::json!({}))).is_none());
+        assert!(ps.handle_plan_tool(&call("Task", serde_json::json!({}))).is_none());
+        let rejected = ps.handle_plan_tool(&call("AddStep", serde_json::json!({"description": "x"}))).unwrap();
+        assert!(rejected.starts_with("Error"));
+    }
+
+    #[test]
+    fn system_prompt_matches_the_state() {
+        let mut ps = PlanState::default();
+        assert!(ps.system_prompt().contains("planning supervisor"));
+
+        ps.handle_plan_tool(&call(
+            "CreatePlan",
+            serde_json::json!({"goal": "ship it", "steps": ["write tests"]}),
+        ));
+        ps.handle_plan_tool(&call("ResumeExecution", serde_json::json!({})));
+        let prompt = ps.system_prompt();
+        assert!(prompt.contains("ship it"));
+        assert!(prompt.contains("write tests"));
+        assert!(prompt.contains("StepDone"));
     }
 }
