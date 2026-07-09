@@ -679,6 +679,10 @@ struct SubagentBackend<'a> {
     cwd: Option<&'a Path>,
     threshold: u32,
     plan_state: crate::agent::plan::PlanState,
+    /// Payload staging root (2026-07-09 payload-files design) — resolved by
+    /// the spawn site, which holds the AppHandle this backend deliberately
+    /// doesn't. None only in unit tests that don't exercise staging.
+    app_data_dir: Option<std::path::PathBuf>,
 }
 
 impl crate::agent::AgentBackend for SubagentBackend<'_> {
@@ -761,6 +765,41 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
         let outcome =
             dispatch::execute_async(call.clone(), self.cwd.map(|p| p.to_path_buf())).await;
         let outcome = crate::context::annotate_with_token_count(self.engine, outcome);
+
+        // 010-context-window-management/US3 (FR-011/FR-012), 2026-07-09
+        // payload-files design: mirrors `handle_general_tool_call`'s staging
+        // block exactly (including the Read carve-out) — the subagent path
+        // gets the same payload-file treatment as the top-level one.
+        let settings = crate::context::ContextSettings::load(self.conn)
+            .await
+            .unwrap_or_else(|_| crate::context::ContextSettings::from_raw(&Default::default()));
+
+        let (model_text, detail) = if call.name == "Read" {
+            // Carve-out: never write a copy of a file we just read — the
+            // payload reference IS the source. `fs::read`'s own caps
+            // (Task 5) bound the text.
+            let mut detail = outcome.detail.clone();
+            detail["payloadRef"] = detail["filePath"].clone();
+            (outcome.model_text.clone(), detail)
+        } else {
+            match self.app_data_dir.as_deref() {
+                Some(app_data_dir) => {
+                    let staged = crate::context::payload::stage_tool_result(
+                        app_data_dir,
+                        self.subagent_id,
+                        &tool_call_id,
+                        &outcome,
+                        settings.tool_output_offload_tokens,
+                        |text| self.engine.count_tokens(text).unwrap_or(usize::MAX),
+                    );
+                    let mut detail = staged.detail;
+                    detail["payloadRef"] = serde_json::json!(staged.payload_ref);
+                    (staged.model_text, detail)
+                }
+                None => (outcome.model_text.clone(), outcome.detail.clone()),
+            }
+        };
+
         persist_tool_call_and_result(
             None,
             self.conn,
@@ -768,12 +807,12 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
             &tool_call_id,
             &call.name,
             call.arguments.clone(),
-            &outcome.model_text,
-            outcome.detail.clone(),
+            &model_text,
+            detail,
             false,
         )
         .await;
-        ToolExecution::Result(outcome.model_text)
+        ToolExecution::Result(model_text)
     }
 }
 
@@ -919,6 +958,7 @@ async fn execute_top_level_tool(
         cwd: sub_context.cwd.as_deref(),
         threshold: sub_threshold,
         plan_state,
+        app_data_dir: app.path().app_data_dir().ok(),
     };
     let sub_started_at = now_ms();
     let sub_result = run_loop(&sub_context, sub_messages, &mut sub_backend).await;
@@ -2164,6 +2204,7 @@ mod tests {
             cwd: Some(dir.path()),
             threshold: 1024,
             plan_state: crate::agent::plan::PlanState::default(),
+            app_data_dir: None,
         };
         use crate::agent::AgentBackend;
         let call = crate::agent::ToolCall {
@@ -2175,6 +2216,75 @@ mod tests {
         let (_, _, _, content) = latest_message(&conn, "sub").await;
         let detail: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert!(detail["tokenCount"].as_u64().is_some());
+    }
+
+    // --- Task 4: subagent path staged through context::payload ---
+
+    #[tokio::test]
+    #[ignore]
+    async fn subagent_tool_result_carries_a_payload_ref() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_conversation(&conn, "sub").await;
+        let app_data_dir = tempfile::tempdir().unwrap();
+
+        let engine = crate::inference::InferenceEngine::load(&test_model_path(), 4)
+            .expect("model should load");
+        let mut backend = SubagentBackend {
+            engine: &engine,
+            conn: &conn,
+            subagent_id: "sub",
+            cwd: None,
+            threshold: 1024,
+            plan_state: crate::agent::plan::PlanState::default(),
+            app_data_dir: Some(app_data_dir.path().to_path_buf()),
+        };
+        use crate::agent::AgentBackend;
+
+        // Bash is only reachable past the plan machine in the Executing
+        // state (`PlanState::handle_plan_tool`'s Planning-state arm rejects
+        // it) -- drive the machine there the same way a real turn would,
+        // through `execute_tool` itself, rather than reaching into
+        // `plan_state`'s private fields.
+        backend
+            .execute_tool(
+                "plan1".to_string(),
+                crate::agent::ToolCall {
+                    name: "CreatePlan".to_string(),
+                    arguments: serde_json::json!({"goal": "test", "steps": ["run a command"]}),
+                },
+            )
+            .await;
+        backend
+            .execute_tool(
+                "plan2".to_string(),
+                crate::agent::ToolCall {
+                    name: "ResumeExecution".to_string(),
+                    arguments: serde_json::json!({}),
+                },
+            )
+            .await;
+
+        let call = crate::agent::ToolCall {
+            name: "Bash".to_string(),
+            arguments: serde_json::json!({"command": "echo hello world"}),
+        };
+        backend.execute_tool("call1".to_string(), call).await;
+
+        let (_, content_type, _, content) = latest_message(&conn, "sub").await;
+        assert_eq!(content_type, "tool_result");
+        let detail: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let payload_ref = detail["payloadRef"]
+            .as_str()
+            .expect("payloadRef must be a path");
+        assert!(
+            std::path::Path::new(payload_ref).exists(),
+            "the payload file must actually exist on disk"
+        );
+        let written = std::fs::read_to_string(payload_ref).unwrap();
+        assert!(
+            written.contains("hello world"),
+            "the payload file must hold the command's stdout, got: {written:?}"
+        );
     }
 
     // --- Task 3: early tool_call persist for the general top-level path ---

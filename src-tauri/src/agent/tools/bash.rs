@@ -94,14 +94,14 @@ pub fn truncate_tail_biased(text: &str) -> String {
         let tail_begin = ceil_char_boundary(text, text.len() - BYTE_FALLBACK_TAIL_BYTES);
         let omitted = tail_begin - head_end;
         return format!(
-            "{}\n... [{omitted} bytes omitted -- full output preserved in the conversation transcript]\n{}",
+            "{}\n... [{omitted} bytes omitted -- full output saved to this call's payload file]\n{}",
             &text[..head_end],
             &text[tail_begin..]
         );
     }
     let omitted = text.len().saturating_sub(kept);
     format!(
-        "{}\n... [{omitted} bytes omitted -- full output preserved in the conversation transcript]\n{}",
+        "{}\n... [{omitted} bytes omitted -- full output saved to this call's payload file]\n{}",
         head.join("\n"),
         tail.join("\n")
     )
