@@ -1,17 +1,5 @@
 import { useEffect, useState } from "react";
 
-const SESSION_STARTED_AT_KEY = "__streamingStatusSessionStartedAt";
-
-function getSessionStartedAt(): number {
-  const root = globalThis as { [key: string]: unknown };
-  const stored = root[SESSION_STARTED_AT_KEY];
-  if (typeof stored === "number") return stored;
-
-  const now = Date.now();
-  root[SESSION_STARTED_AT_KEY] = now;
-  return now;
-}
-
 interface StreamingStatusProps {
   startedAt: number | null;
 }
@@ -21,7 +9,8 @@ function formatElapsedMs(elapsedMs: number) {
 }
 
 export default function StreamingStatus({ startedAt }: StreamingStatusProps) {
-  const effectiveStartedAt = startedAt ?? getSessionStartedAt();
+  const [fallbackStartedAt] = useState(() => Date.now());
+  const effectiveStartedAt = startedAt ?? fallbackStartedAt;
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -30,12 +19,7 @@ export default function StreamingStatus({ startedAt }: StreamingStatusProps) {
   }, []);
 
   return (
-    <div
-      className="border-b border-border px-4"
-      data-testid="agent-thinking"
-      role="status"
-      aria-label="Thinking"
-    >
+    <div className="border-b border-border px-4" data-testid="agent-thinking">
       <div className="mx-auto flex h-8 max-w-3xl items-center gap-2 text-xs text-muted-foreground">
         <span className="inline-flex gap-1" data-testid="agent-thinking-dots" aria-hidden="true">
           <span
@@ -51,9 +35,12 @@ export default function StreamingStatus({ startedAt }: StreamingStatusProps) {
             data-testid="agent-thinking-dot"
           />
         </span>
-        <span>Thinking</span>
+        <span role="status" aria-atomic="true" aria-label="Thinking">
+          Thinking
+        </span>
         <span
-          className="w-[6ch] shrink-0 text-right font-mono tabular-nums"
+          aria-live="off"
+          className="w-[7ch] shrink-0 text-right font-mono tabular-nums"
           data-testid="agent-thinking-timer"
         >
           {formatElapsedMs(now - effectiveStartedAt)}

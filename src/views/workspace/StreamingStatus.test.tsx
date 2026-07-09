@@ -13,15 +13,21 @@ describe("StreamingStatus", () => {
 
     render(<StreamingStatus startedAt={8_750} />);
 
-    expect(screen.getByRole("status", { name: "Thinking" })).toBeInTheDocument();
+    const status = screen.getByRole("status", { name: "Thinking" });
+    const timer = screen.getByTestId("agent-thinking-timer");
+
+    expect(status).toBeInTheDocument();
+    expect(status).toHaveTextContent("Thinking");
+    expect(status).not.toContainElement(timer);
     expect(screen.getByTestId("agent-thinking")).toHaveTextContent("Thinking");
     expect(screen.getAllByTestId("agent-thinking-dot")).toHaveLength(3);
     expect(screen.getByTestId("agent-thinking-dots")).toHaveAttribute("aria-hidden", "true");
-    expect(screen.getByTestId("agent-thinking-timer")).toHaveTextContent("1.3s");
-    expect(screen.getByTestId("agent-thinking-timer")).toHaveClass("tabular-nums");
+    expect(timer).toHaveTextContent("1.3s");
+    expect(timer).toHaveAttribute("aria-live", "off");
+    expect(timer).toHaveClass("tabular-nums");
   });
 
-  it("persists fallback startedAt across unmount/remount within the same session", async () => {
+  it("uses a fresh fallback startedAt on each mount when no timestamp is provided", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(5_000);
 
@@ -34,17 +40,17 @@ describe("StreamingStatus", () => {
     vi.setSystemTime(6_400);
     render(<StreamingStatus startedAt={null} />);
 
-    expect(screen.getByTestId("agent-thinking-timer")).toHaveTextContent("1.4s");
+    expect(screen.getByTestId("agent-thinking-timer")).toHaveTextContent("0.0s");
   });
 
-  it("ticks across the 9.9s -> 10.0s boundary without changing fixed-width classes", async () => {
+  it("ticks across the 0.9s -> 1.0s boundary without changing fixed-width classes", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(9_900);
 
     render(<StreamingStatus startedAt={9_000} />);
 
     expect(screen.getByTestId("agent-thinking-timer")).toHaveTextContent("0.9s");
-    expect(screen.getByTestId("agent-thinking-timer")).toHaveClass("w-[6ch]");
+    expect(screen.getByTestId("agent-thinking-timer")).toHaveClass("w-[7ch]");
     expect(screen.getByTestId("agent-thinking-timer")).toHaveClass("shrink-0");
 
     vi.setSystemTime(9_900);
@@ -53,7 +59,7 @@ describe("StreamingStatus", () => {
     });
 
     expect(screen.getByTestId("agent-thinking-timer")).toHaveTextContent("1.0s");
-    expect(screen.getByTestId("agent-thinking-timer")).toHaveClass("w-[6ch]");
+    expect(screen.getByTestId("agent-thinking-timer")).toHaveClass("w-[7ch]");
     expect(screen.getByTestId("agent-thinking-timer")).toHaveClass("shrink-0");
   });
 });

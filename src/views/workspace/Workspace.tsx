@@ -178,6 +178,7 @@ export default function Workspace({
   const [backendTurnActive, setBackendTurnActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const isMountedRef = useRef(true);
+  const genericStatusFallbackStartedAtRef = useRef<number | null>(null);
   const currentConversationIdRef = useRef(conversationId);
   currentConversationIdRef.current = conversationId;
   const onConversationSeenRef = useRef(onConversationSeen);
@@ -341,8 +342,20 @@ export default function Workspace({
   );
   const showGenericStreamingStatus =
     pendingToolCall?.kind === "other" || (!pendingToolCall && showThinking);
-  const activeTurnStartedAt =
+  const activeTurnStartedAtCandidate =
     optimisticTurnStartedAt ?? latestUserMessageCreatedAt;
+
+  if (!showGenericStreamingStatus) {
+    genericStatusFallbackStartedAtRef.current = null;
+  } else if (activeTurnStartedAtCandidate !== null) {
+    genericStatusFallbackStartedAtRef.current = activeTurnStartedAtCandidate;
+  } else if (genericStatusFallbackStartedAtRef.current === null) {
+    genericStatusFallbackStartedAtRef.current = Date.now();
+  }
+
+  const activeTurnStartedAt = showGenericStreamingStatus
+    ? activeTurnStartedAtCandidate ?? genericStatusFallbackStartedAtRef.current
+    : null;
 
   const send = useCallback(
     (content: string, richContent?: RichMessageContent): boolean => {

@@ -338,6 +338,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
   });
 
   it("sends a task and shows a thinking state until the real (non-streamed) reply returns", async () => {
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(10_000);
     // Streaming (UI refactor): `send()` no longer builds the final message
     // from `sendAgentMessage`'s own return value -- it relies on the
     // `finally` block's safety-net `listMessages` refetch (the same one
@@ -402,6 +403,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     const status = await screen.findByTestId("agent-thinking");
     const composerShell = screen.getByTestId("workspace-composer-shell");
     expect(status).toHaveTextContent("Thinking");
+    expect(screen.getByTestId("agent-thinking-timer")).toHaveTextContent("0.0s");
     expect(status).not.toHaveTextContent("Working");
     expect(status.closest('[data-testid="chat-message"]')).toBeNull();
     expectElementBefore(status, composerShell);
@@ -420,6 +422,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     expect(renderedMessages[0].textContent).toContain("list the files here");
     expect(renderedMessages[1].textContent).toContain("Found 3 files");
     expect(onConversationSeen).toHaveBeenCalledWith("conv-1");
+    nowSpy.mockRestore();
   });
 
   // --- Streaming (UI refactor): agent-message-persisted mid-turn ---
@@ -791,37 +794,64 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
 
   it("does not reset the streaming chron when an unpaired non-dedicated tool call appears", async () => {
     const nowSpy = vi.spyOn(Date, "now").mockReturnValue(4_000);
-    vi.mocked(commands.listMessages).mockResolvedValue([
-      {
-        id: "u1",
-        conversationId: "conv-1",
-        role: "user",
-        contentType: "text",
-        content: "find the needle",
-        toolName: null,
-        createdAt: 1_000,
-        durationMs: null,
-        tokenCount: null,
-      },
-      {
-        id: "tc1",
-        conversationId: "conv-1",
-        role: "assistant",
-        contentType: "tool_call",
-        content: JSON.stringify({
-          arguments: { pattern: "needle", path: "/tmp" },
-        }),
-        toolName: "Grep",
-        createdAt: 3_000,
-        durationMs: null,
-        tokenCount: null,
-      },
-    ]);
+    let firePersisted!: (p: { conversationId: string }) => void;
+    vi.mocked(events.onAgentMessagePersisted).mockImplementation(async (cb) => {
+      firePersisted = cb;
+      return () => {};
+    });
+    vi.mocked(commands.listMessages)
+      .mockResolvedValueOnce([
+        {
+          id: "u1",
+          conversationId: "conv-1",
+          role: "user",
+          contentType: "text",
+          content: "find the needle",
+          toolName: null,
+          createdAt: 1_000,
+          durationMs: null,
+          tokenCount: null,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: "u1",
+          conversationId: "conv-1",
+          role: "user",
+          contentType: "text",
+          content: "find the needle",
+          toolName: null,
+          createdAt: 1_000,
+          durationMs: null,
+          tokenCount: null,
+        },
+        {
+          id: "tc1",
+          conversationId: "conv-1",
+          role: "assistant",
+          contentType: "tool_call",
+          content: JSON.stringify({
+            arguments: { pattern: "needle", path: "/tmp" },
+          }),
+          toolName: "Grep",
+          createdAt: 3_000,
+          durationMs: null,
+          tokenCount: null,
+        },
+      ]);
+    vi.mocked(commands.isGenerationActive).mockResolvedValue(true);
 
     render(<Workspace conversationId="conv-1" />);
 
     expect(await screen.findByTestId("agent-thinking-timer")).toHaveTextContent(
       "3.0s",
+    );
+    firePersisted({ conversationId: "conv-1" });
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agent-thinking-timer")).toHaveTextContent(
+        "3.0s",
+      ),
     );
     nowSpy.mockRestore();
   });
