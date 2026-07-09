@@ -1,5 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { ArrowDownIcon } from "@phosphor-icons/react";
+import { StickToBottom, type StickToBottomContext } from "use-stick-to-bottom";
 import MessageContent from "@/components/MessageContent";
 import { runViewTransition } from "@/lib/viewTransition";
 import { Button } from "@/components/ui/button";
@@ -23,19 +31,6 @@ import { useContextUsageStore } from "@/state/contextUsageStore";
 import { isCompactCommand } from "@/lib/compactCommand";
 import type { PendingInitialTurn } from "@/views/workspace/pendingInitialTurn";
 
-const AUTOSCROLL_BOTTOM_THRESHOLD_PX = 48;
-
-function isNearScrollBottom(element: HTMLElement): boolean {
-  return (
-    element.scrollHeight - element.scrollTop - element.clientHeight <=
-    AUTOSCROLL_BOTTOM_THRESHOLD_PX
-  );
-}
-
-function scrollElementToBottom(element: HTMLElement) {
-  element.scrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
-}
-
 /**
  * Whether the latest message is a still-pending, successfully-parsed
  * AskUserQuestion tool_call -- the one condition that actually changes
@@ -50,7 +45,11 @@ function scrollElementToBottom(element: HTMLElement) {
  */
 function isQuestionPending(messages: Message[]): boolean {
   const latest = messages[messages.length - 1];
-  if (latest?.contentType !== "tool_call" || latest.toolName !== "AskUserQuestion") return false;
+  if (
+    latest?.contentType !== "tool_call" ||
+    latest.toolName !== "AskUserQuestion"
+  )
+    return false;
   return parseAskUserQuestionCallDetail(latest.content) !== null;
 }
 
@@ -164,9 +163,6 @@ export default function Workspace({
   // send completion) — the final answer's own event flips it back off.
   const [backendTurnActive, setBackendTurnActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [isAutoscrollPinned, setIsAutoscrollPinned] = useState(true);
-  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
-  const autoscrollPinnedRef = useRef(true);
   const isMountedRef = useRef(true);
   const currentConversationIdRef = useRef(conversationId);
   currentConversationIdRef.current = conversationId;
@@ -174,6 +170,7 @@ export default function Workspace({
   onConversationSeenRef.current = onConversationSeen;
   const consumedInitialTurnRef = useRef<string | null>(null);
   const dispatchedInitialTurnRef = useRef<string | null>(null);
+  const stickToBottomContextRef = useRef<StickToBottomContext | null>(null);
   const sendInFlight = useSyncExternalStore(
     subscribeToSendInFlight,
     () => conversationsWithSendInFlight.has(conversationId),
@@ -184,7 +181,10 @@ export default function Workspace({
     const targetConversationId = conversationId;
     void Promise.resolve(commands.isGenerationActive(targetConversationId))
       .then((active) => {
-        if (isMountedRef.current && currentConversationIdRef.current === targetConversationId) {
+        if (
+          isMountedRef.current &&
+          currentConversationIdRef.current === targetConversationId
+        ) {
           setBackendTurnActive(Boolean(active));
         }
       })
@@ -197,7 +197,11 @@ export default function Workspace({
     const targetConversationId = conversationId;
     syncBackendTurnActive();
     const loadedMessages = await commands.listMessages(targetConversationId);
-    if (!isMountedRef.current || currentConversationIdRef.current !== targetConversationId) return;
+    if (
+      !isMountedRef.current ||
+      currentConversationIdRef.current !== targetConversationId
+    )
+      return;
 
     const questionPendingBefore = isQuestionPending(messagesRef.current);
     const questionPendingAfter = isQuestionPending(loadedMessages);
@@ -240,9 +244,13 @@ export default function Workspace({
     syncBackendTurnActive();
     dispatchedInitialTurnRef.current = null;
     commands.listMessages(conversationId).then((loadedMessages) => {
-      if (cancelled || currentConversationIdRef.current !== conversationId) return;
+      if (cancelled || currentConversationIdRef.current !== conversationId)
+        return;
 
-      if (loadedMessages.length === 0 && dispatchedInitialTurnRef.current === conversationId) {
+      if (
+        loadedMessages.length === 0 &&
+        dispatchedInitialTurnRef.current === conversationId
+      ) {
         setMessages((prev) => (prev.length > 0 ? prev : loadedMessages));
         onConversationSeenRef.current?.(conversationId);
         return;
@@ -308,49 +316,10 @@ export default function Workspace({
     }
     return { kind: "other" as const };
   }, [messages]);
-  const pendingQuestion = pendingToolCall?.kind === "question" ? pendingToolCall.detail : null;
+  const pendingQuestion =
+    pendingToolCall?.kind === "question" ? pendingToolCall.detail : null;
   const turnInFlight = sendInFlight || backendTurnActive;
   const showThinking = thinking || turnInFlight;
-
-  const setAutoscrollPinned = useCallback((pinned: boolean) => {
-    autoscrollPinnedRef.current = pinned;
-    setIsAutoscrollPinned(pinned);
-  }, []);
-
-  const scrollToTranscriptBottom = useCallback((force = false) => {
-    const element = scrollContainerRef.current;
-    if (!element) return;
-    if (!force && !autoscrollPinnedRef.current) return;
-    scrollElementToBottom(element);
-  }, []);
-
-  const scheduleScrollToTranscriptBottom = useCallback(() => {
-    const frame = window.requestAnimationFrame(() => {
-      scrollToTranscriptBottom();
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [scrollToTranscriptBottom]);
-
-  const updateAutoscrollPinned = useCallback(() => {
-    const element = scrollContainerRef.current;
-    if (!element) return;
-    setAutoscrollPinned(isNearScrollBottom(element));
-  }, [setAutoscrollPinned]);
-
-  const scrollToBottomAndPin = useCallback(() => {
-    setAutoscrollPinned(true);
-    scrollToTranscriptBottom(true);
-  }, [scrollToTranscriptBottom, setAutoscrollPinned]);
-
-  useEffect(() => {
-    setAutoscrollPinned(true);
-    return scheduleScrollToTranscriptBottom();
-  }, [conversationId, scheduleScrollToTranscriptBottom, setAutoscrollPinned]);
-
-  useEffect(() => {
-    if (!autoscrollPinnedRef.current) return;
-    return scheduleScrollToTranscriptBottom();
-  }, [messages, pendingToolCall, scheduleScrollToTranscriptBottom, showThinking]);
 
   const send = useCallback(
     (content: string, richContent?: RichMessageContent): boolean => {
@@ -363,15 +332,23 @@ export default function Workspace({
           setError(null);
           try {
             const usage = await commands.compactConversation(conversationId);
-            if (!isMountedRef.current || currentConversationIdRef.current !== conversationId) {
-              requestConversationRefresh(conversationId, { contextUsage: usage });
+            if (
+              !isMountedRef.current ||
+              currentConversationIdRef.current !== conversationId
+            ) {
+              requestConversationRefresh(conversationId, {
+                contextUsage: usage,
+              });
               return;
             }
 
             useContextUsageStore.getState().setUsage(usage);
             await refreshMessages();
           } catch (e) {
-            if (isMountedRef.current && currentConversationIdRef.current === conversationId) {
+            if (
+              isMountedRef.current &&
+              currentConversationIdRef.current === conversationId
+            ) {
               setError(String(e));
             }
           }
@@ -392,7 +369,8 @@ export default function Workspace({
       // persist and then hang right alongside it. A pending AskUserQuestion
       // is answerable via its widget; a pending Bash/Task just has to run
       // its course.
-      if ((!content.trim() && !richContent) || turnInFlight || pendingToolCall) return false;
+      if ((!content.trim() && !richContent) || turnInFlight || pendingToolCall)
+        return false;
       if (!markSendInFlight(conversationId)) return false;
 
       setError(null);
@@ -414,6 +392,15 @@ export default function Workspace({
         },
       ]);
       setThinking(true);
+      // Sending your own message always re-engages autoscroll and snaps to
+      // the bottom — the library README's own ChatBox pattern, and load-
+      // bearing here: use-stick-to-bottom only follows content growth
+      // while its sticky lock is engaged, and ANY upward scroll/wheel
+      // (even a stray trackpad flick) silently escapes it. Within the
+      // library's 70px near-bottom threshold the scroll-to-bottom button
+      // stays hidden, so without this call a send can look pinned yet
+      // never follow.
+      void stickToBottomContextRef.current?.scrollToBottom();
       void (async () => {
         try {
           // The `agent-message-persisted` event (subscribed above) is what
@@ -427,12 +414,18 @@ export default function Workspace({
             richContent ? JSON.stringify(richContent) : undefined,
           );
         } catch (e) {
-          if (isMountedRef.current && currentConversationIdRef.current === conversationId) {
+          if (
+            isMountedRef.current &&
+            currentConversationIdRef.current === conversationId
+          ) {
             setError(String(e));
           }
         } finally {
           clearSendInFlight(conversationId);
-          if (isMountedRef.current && currentConversationIdRef.current === conversationId) {
+          if (
+            isMountedRef.current &&
+            currentConversationIdRef.current === conversationId
+          ) {
             setThinking(false);
             dispatchedInitialTurnRef.current = null;
             // Safety net: a real refetch regardless of event timing/ordering,
@@ -454,7 +447,10 @@ export default function Workspace({
     if (pendingInitialTurn.conversationId !== conversationId) return;
     if (consumedInitialTurnRef.current === conversationId) return;
 
-    const dispatched = send(pendingInitialTurn.content, pendingInitialTurn.richContent);
+    const dispatched = send(
+      pendingInitialTurn.content,
+      pendingInitialTurn.richContent,
+    );
     if (!dispatched) return;
 
     consumedInitialTurnRef.current = conversationId;
@@ -465,61 +461,87 @@ export default function Workspace({
   return (
     <div className="flex h-full flex-col bg-background text-foreground">
       {conversation && <WorkspaceTopbar conversation={conversation} />}
-      <div className="relative min-h-0 flex-1">
-        <div
-          ref={scrollContainerRef}
-          className="h-full overflow-y-auto p-4"
-          data-testid="workspace-scroll-container"
-          onScroll={updateAutoscrollPinned}
-        >
-          <div className="mx-auto max-w-3xl">
-            {messages.map((m) => (
-              <MessageContent key={m.id} message={m} />
-            ))}
-            {pendingToolCall?.kind === "bash" || pendingToolCall?.kind === "task" ? (
-              <div
-                className="mb-6"
-                data-testid="chat-message"
-                role="group"
-                aria-label="doce replied"
-              >
-                {pendingToolCall.kind === "bash" && <BashWidget detail={pendingToolCall.detail} />}
-                {pendingToolCall.kind === "task" && <TaskWidget detail={pendingToolCall.detail} />}
+      {/* Autoscroll is use-stick-to-bottom's job (ResizeObserver-driven:
+          follows content growth while pinned, escapes on upward scroll,
+          re-pins near the bottom), replacing the hand-rolled
+          pin/scroll-effect machinery this component used to carry. The
+          render-prop form (not <StickToBottom.Content>) keeps ownership of
+          the scroll/content divs' classes and testids. `key` remounts the
+          scroll state per conversation — a fresh conversation starts
+          pinned at the bottom (`initial="instant"`), matching the old
+          reset-pinning-on-switch effect. */}
+      <StickToBottom
+        key={conversationId}
+        className="relative min-h-0 flex-1"
+        initial="instant"
+        contextRef={stickToBottomContextRef}
+      >
+        {({ scrollRef, contentRef, isAtBottom, scrollToBottom }) => (
+          <>
+            <div
+              ref={scrollRef}
+              className="h-full overflow-y-auto p-4"
+              data-testid="workspace-scroll-container"
+            >
+              <div ref={contentRef} className="mx-auto max-w-3xl">
+                {messages.map((m) => (
+                  <MessageContent key={m.id} message={m} />
+                ))}
+                {pendingToolCall?.kind === "bash" ||
+                pendingToolCall?.kind === "task" ? (
+                  <div
+                    className="mb-6"
+                    data-testid="chat-message"
+                    role="group"
+                    aria-label="doce replied"
+                  >
+                    {pendingToolCall.kind === "bash" && (
+                      <BashWidget detail={pendingToolCall.detail} />
+                    )}
+                    {pendingToolCall.kind === "task" && (
+                      <TaskWidget detail={pendingToolCall.detail} />
+                    )}
+                  </div>
+                ) : (
+                  // "other" shows the indicator even when `thinking`/
+                  // send-in-flight were wiped by a reload — the trailing
+                  // unpaired tool_call itself is the proof a turn is running.
+                  (pendingToolCall?.kind === "other" ||
+                    (!pendingToolCall && showThinking)) && (
+                    <p
+                      className="text-sm text-muted-foreground"
+                      data-testid="agent-thinking"
+                    >
+                      Working…
+                    </p>
+                  )
+                )}
+                {error && (
+                  <div
+                    className="mb-6 rounded-lg bg-destructive/10 p-3 text-sm text-destructive"
+                    data-testid="workspace-error"
+                  >
+                    {error}
+                  </div>
+                )}
               </div>
-            ) : (
-              // "other" shows the indicator even when `thinking`/
-              // send-in-flight were wiped by a reload — the trailing
-              // unpaired tool_call itself is the proof a turn is running.
-              (pendingToolCall?.kind === "other" || (!pendingToolCall && showThinking)) && (
-                <p className="text-sm text-muted-foreground" data-testid="agent-thinking">
-                  Working…
-                </p>
-              )
-            )}
-            {error && (
-              <div
-                className="mb-6 rounded-lg bg-destructive/10 p-3 text-sm text-destructive"
-                data-testid="workspace-error"
+            </div>
+            {!isAtBottom && (
+              <Button
+                type="button"
+                variant="secondary"
+                size="icon"
+                className="absolute bottom-4 left-1/2 z-10 -translate-x-1/2 rounded-full bg-card/95 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-card/80"
+                onClick={() => void scrollToBottom()}
+                aria-label="Scroll to bottom"
+                data-testid="scroll-to-bottom"
               >
-                {error}
-              </div>
+                <ArrowDownIcon size={16} />
+              </Button>
             )}
-          </div>
-        </div>
-        {!isAutoscrollPinned && (
-          <Button
-            type="button"
-            variant="secondary"
-            size="icon"
-            className="absolute bottom-4 left-1/2 z-10 -translate-x-1/2 rounded-full bg-card/95 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-card/80"
-            onClick={scrollToBottomAndPin}
-            aria-label="Scroll to bottom"
-            data-testid="scroll-to-bottom"
-          >
-            <ArrowDownIcon size={16} />
-          </Button>
+          </>
         )}
-      </div>
+      </StickToBottom>
       <div
         className="border-t border-border p-4 [view-transition-name:chat-composer]"
         data-testid="workspace-composer-shell"
