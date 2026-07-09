@@ -133,7 +133,9 @@ fn publish_plan_update(
 /// the plan-tracker twin of `ActiveGenerationGuard`.
 struct ActivePlanGuard<'a> {
     active_plans: &'a ActivePlans,
-    app: AppHandle,
+    /// `None` in unit tests (no live Tauri app to emit through) — Drop
+    /// still clears the map either way, only the emit half is skipped.
+    app: Option<AppHandle>,
     conversation_id: String,
 }
 
@@ -147,13 +149,15 @@ impl Drop for ActivePlanGuard<'_> {
             .remove(&self.conversation_id)
             .is_some();
         if had_plan {
-            let _ = self.app.emit(
-                "plan-update",
-                PlanUpdate {
-                    conversation_id: self.conversation_id.clone(),
-                    plan: None,
-                },
-            );
+            if let Some(app) = &self.app {
+                let _ = app.emit(
+                    "plan-update",
+                    PlanUpdate {
+                        conversation_id: self.conversation_id.clone(),
+                        plan: None,
+                    },
+                );
+            }
         }
     }
 }
@@ -334,6 +338,38 @@ async fn persist_tool_call_and_result(
     .await;
 }
 
+/// Persists a plan-machine tool interaction (one of the five plan tools,
+/// or a state-gated rejection of a regular tool) as an ordinary
+/// call/result pair — the model's reconstructed history needs them — with
+/// a `"plan": true` marker in the detail, which is the frontend's signal
+/// to keep the row out of the transcript (spec: plan activity is
+/// tracker-only).
+async fn persist_plan_tool(
+    app: Option<&AppHandle>,
+    conn: &tokio_rusqlite::Connection,
+    conversation_id: &str,
+    tool_call_id: &str,
+    call: &ToolCall,
+    result: &str,
+) {
+    persist_tool_call_and_result(
+        app,
+        conn,
+        conversation_id,
+        tool_call_id,
+        &call.name,
+        call.arguments.clone(),
+        result,
+        serde_json::json!({
+            "toolName": call.name,
+            "arguments": call.arguments,
+            "plan": true,
+            "outcome": {"ok": !result.starts_with("Error"), "text": result},
+        }),
+    )
+    .await;
+}
+
 fn parse_question_options(call: &ToolCall) -> Vec<QuestionOption> {
     call.arguments
         .get("options")
@@ -469,6 +505,8 @@ struct RealBackend<'a> {
     threshold: u32,
     cwd: Option<&'a Path>,
     pending: &'a PendingQuestions,
+    plan_state: crate::agent::plan::PlanState,
+    active_plans: &'a ActivePlans,
 }
 
 impl crate::agent::AgentBackend for RealBackend<'_> {
@@ -504,7 +542,15 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
         crate::context::fit_turn_to_budget(self.engine, messages).unwrap_or_else(|_| messages.to_vec())
     }
 
-    async fn generate(&mut self, messages: Vec<ChatMessage>) -> String {
+    async fn generate(&mut self, mut messages: Vec<ChatMessage>) -> String {
+        // The two-state engine: every generation renders under the prompt
+        // for the CURRENT state (Planning, refusal-annotated when
+        // revising, or the per-step Executing prompt) — the seed system
+        // message from send_agent_message is replaced wholesale.
+        let system_text = plan_system_message(&mut self.plan_state, self.cwd);
+        if let Some(first) = messages.first_mut() {
+            *first = ChatMessage::system(system_text);
+        }
         match self.engine.render_chat_prompt(&messages) {
             Ok(rendered) => self
                 .engine
@@ -515,6 +561,28 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
     }
 
     async fn execute_tool(&mut self, tool_call_id: String, call: ToolCall) -> String {
+        // Plan machine first: the five plan tools (and state-gated
+        // rejections) never reach dispatch. Their rows persist like any
+        // tool's — marked "plan": true so the transcript skips them — and
+        // every handled call refreshes the live tracker surface.
+        if let Some(result) = self.plan_state.handle_plan_tool(&call) {
+            persist_plan_tool(
+                Some(self.app),
+                self.conn,
+                self.conversation_id,
+                &tool_call_id,
+                &call,
+                &result,
+            )
+            .await;
+            publish_plan_update(
+                Some(self.app),
+                self.active_plans,
+                self.conversation_id,
+                &self.plan_state,
+            );
+            return result;
+        }
         execute_top_level_tool(
             tool_call_id,
             call,
@@ -894,6 +962,24 @@ fn system_message(cwd: Option<&std::path::Path>) -> String {
     }
 }
 
+/// The plan engine's state prompt plus the cwd line `system_message` has
+/// always appended — used both to seed `initial_messages[0]` (and the
+/// pre-loop compaction budget) and by `RealBackend::generate`'s per-turn
+/// swap.
+fn plan_system_message(
+    state: &mut crate::agent::plan::PlanState,
+    cwd: Option<&std::path::Path>,
+) -> String {
+    let base = state.system_prompt();
+    match cwd {
+        Some(path) => format!(
+            "{base}\n\nYou are currently working in the directory: {}",
+            path.display()
+        ),
+        None => base.to_string(),
+    }
+}
+
 /// 009-rich-chat-input/US2 (contracts/rich-chat-input.md): persists this
 /// turn's user message row and derives the text the model actually sees
 /// for it.
@@ -997,6 +1083,7 @@ pub async fn send_agent_message(
     db_cell: State<'_, DbCell>,
     inference: State<'_, InferenceState>,
     active_generations: State<'_, ActiveGenerations>,
+    active_plans: State<'_, ActivePlans>,
     pending_questions: State<'_, PendingQuestions>,
     conversation_id: String,
     content: String,
@@ -1068,6 +1155,11 @@ pub async fn send_agent_message(
         .insert(conversation_id.clone());
     let _active_guard = ActiveGenerationGuard {
         active_generations: &active_generations,
+        conversation_id: conversation_id.clone(),
+    };
+    let _plan_guard = ActivePlanGuard {
+        active_plans: &active_plans,
+        app: Some(app.clone()),
         conversation_id: conversation_id.clone(),
     };
 
@@ -1142,7 +1234,8 @@ pub async fn send_agent_message(
     // per-turn `maybe_compact` calls inside the loop for why this alone
     // isn't sufficient for agent mode (tool results can push a *later* turn
     // over budget even when the first turn was fine).
-    let system_prompt = system_message(cwd.as_deref());
+    let mut plan_state = crate::agent::plan::PlanState::default();
+    let system_prompt = plan_system_message(&mut plan_state, cwd.as_deref());
     let usage = crate::context::maybe_compact(
         &conn,
         engine,
@@ -1211,6 +1304,8 @@ pub async fn send_agent_message(
         threshold,
         cwd: cwd.as_deref(),
         pending: &pending_questions,
+        plan_state,
+        active_plans: &active_plans,
     };
     let result = run_loop(&context, initial_messages, &mut backend).await;
     drop(guard);
@@ -1937,5 +2032,61 @@ mod tests {
         // reload-recovery source of truth get_active_plan reads).
         active_plans.0.lock().unwrap().remove("c1");
         assert!(active_plans.0.lock().unwrap().get("c1").is_none());
+    }
+
+    #[test]
+    fn active_plan_guard_drop_clears_a_registered_plan_without_an_app_handle() {
+        use crate::agent::plan::PlanState;
+        let active_plans = ActivePlans::default();
+        let mut state = PlanState::default();
+        state.handle_plan_tool(&crate::agent::ToolCall {
+            name: "CreatePlan".to_string(),
+            arguments: serde_json::json!({"goal": "g", "steps": ["a"]}),
+        });
+        publish_plan_update(None, &active_plans, "c1", &state);
+        assert!(
+            active_plans.0.lock().unwrap().get("c1").is_some(),
+            "precondition: a plan must actually be registered before the guard drops"
+        );
+
+        {
+            let _guard = ActivePlanGuard {
+                active_plans: &active_plans,
+                app: None,
+                conversation_id: "c1".to_string(),
+            };
+        }
+
+        assert!(
+            active_plans.0.lock().unwrap().get("c1").is_none(),
+            "ActivePlanGuard's Drop must remove the entry even with no AppHandle to emit through"
+        );
+    }
+
+    #[tokio::test]
+    async fn persist_plan_tool_marks_both_rows_shape_with_plan_true() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_conversation(&conn, "c1").await;
+
+        persist_plan_tool(
+            None,
+            &conn,
+            "c1",
+            "tc1",
+            &crate::agent::ToolCall {
+                name: "CreatePlan".to_string(),
+                arguments: serde_json::json!({"goal": "g", "steps": ["a"]}),
+            },
+            "Plan created with 1 steps. Call ResumeExecution to begin.",
+        )
+        .await;
+
+        let (role, content_type, tool_name, content) = latest_message(&conn, "c1").await;
+        assert_eq!(role, "tool");
+        assert_eq!(content_type, "tool_result");
+        assert_eq!(tool_name.as_deref(), Some("CreatePlan"));
+        let detail: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(detail["plan"], true, "the transcript-skip marker");
+        assert_eq!(detail["outcome"]["ok"], true);
     }
 }
