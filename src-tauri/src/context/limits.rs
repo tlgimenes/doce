@@ -75,6 +75,22 @@ pub const DEFAULT_TOOL_OUTPUT_OFFLOAD_CHARS: usize = 2000;
 /// don't need it.
 pub const AGENT_TURN_MAX_OUTPUT_TOKENS: u32 = 1024;
 
+/// Headroom for the per-turn state tail (`agent::plan::PlanState::state_tail`)
+/// -- ~4.7% (3/64) of `CONTEXT_WINDOW_TOKENS`. Every plan host pushes the
+/// tail AFTER `run_loop`'s measure/threshold check and after
+/// `fit_turn_to_budget` have already run, so neither ever sees it; without
+/// this reserve a history parked just under the threshold plus a big tail
+/// (mode banner + Executing goal/step frame + optional refusal reason +
+/// the recitation checklist -- realistically 400-700 tokens on a 20-step
+/// plan) rendered past `n_ctx`, `ctx.decode` failed mid-stream, and the
+/// whole task silently ended with "Error: inference failed" as its final
+/// answer. Sized above the observed worst case so the envelope
+/// `fitted history + tail + AGENT_TURN_MAX_OUTPUT_TOKENS <=
+/// CONTEXT_WINDOW_TOKENS` holds. Subtracted wherever a turn budget is
+/// derived: the plan hosts' `threshold` computations and
+/// `fit_turn_to_budget`'s reserve.
+pub const STATE_TAIL_RESERVE_TOKENS: u32 = 768;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -85,5 +101,10 @@ mod tests {
         assert_eq!(SUMMARY_MAX_TOKENS, (CONTEXT_WINDOW_TOKENS / 16) as i32);
         assert!(DEFAULT_TOOL_OUTPUT_OFFLOAD_CHARS >= 1500);
         assert!(AGENT_TURN_MAX_OUTPUT_TOKENS >= CONTEXT_WINDOW_TOKENS / 16);
+        // The tail reserve must comfortably cover a big plan's tail
+        // (hundreds of tokens) without the combined per-turn reserve
+        // eating a meaningful slice of the window.
+        assert!(STATE_TAIL_RESERVE_TOKENS >= CONTEXT_WINDOW_TOKENS / 32);
+        assert!(STATE_TAIL_RESERVE_TOKENS + AGENT_TURN_MAX_OUTPUT_TOKENS <= CONTEXT_WINDOW_TOKENS / 8);
     }
 }

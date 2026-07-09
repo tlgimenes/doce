@@ -494,8 +494,17 @@ pub fn fit_turn_to_budget(
     engine: &InferenceEngine,
     messages: &[ChatMessage],
 ) -> Result<Vec<ChatMessage>, String> {
+    // The reserve covers BOTH per-turn costs `messages` doesn't contain
+    // yet: the output tokens generation may still produce, and the plan
+    // hosts' state-tail message (`PlanState::state_tail`), which every
+    // plan backend pushes AFTER this fit has already run -- see
+    // `limits::STATE_TAIL_RESERVE_TOKENS` for the overflow this closes.
     engine
-        .fit_to_context(messages, 1, limits::AGENT_TURN_MAX_OUTPUT_TOKENS)
+        .fit_to_context(
+            messages,
+            1,
+            limits::AGENT_TURN_MAX_OUTPUT_TOKENS + limits::STATE_TAIL_RESERVE_TOKENS,
+        )
         .map_err(|e| e.to_string())
 }
 
@@ -1040,6 +1049,56 @@ mod tests {
         assert_eq!(
             result.iter().map(|m| m.text()).collect::<Vec<_>>(),
             vec!["m2", "m3"]
+        );
+    }
+
+    /// F1 (final whole-branch review): the per-turn state tail
+    /// (`PlanState::state_tail`) is pushed AFTER measure/threshold/
+    /// `fit_turn_to_budget` have run, so none of them ever see it. The fix
+    /// reserves `STATE_TAIL_RESERVE_TOKENS` alongside the output reserve;
+    /// this test proves the arithmetic envelope with the exact failure
+    /// shape: a long history that compaction parks just under the
+    /// threshold, plus a realistically large (~700-token) tail.
+    #[test]
+    fn state_tail_reserve_keeps_a_near_threshold_history_plus_tail_within_the_window() {
+        use crate::context::limits::{
+            AGENT_TURN_MAX_OUTPUT_TOKENS, CONTEXT_WINDOW_TOKENS, STATE_TAIL_RESERVE_TOKENS,
+        };
+
+        // Pinned system prompt + enough uniform turns to overflow any budget.
+        let per_message_cost: u32 = 400;
+        let system_cost: u32 = 600;
+        let messages = text_messages(60);
+        let mut costs = vec![per_message_cost; 60];
+        costs[0] = system_cost;
+        let large_tail_cost: u32 = 700; // a 20-step plan's mode banner + frame + checklist
+        let fitted_total = |fitted: &[ChatMessage]| -> u32 {
+            system_cost + (fitted.len() as u32 - 1) * per_message_cost
+        };
+
+        // Pre-fix shape (non-vacuity guard): reserving ONLY the output
+        // tokens leaves a fitted history whose rendered prompt + tail +
+        // output can exceed the window -- the silent late-task abort.
+        let old_budget = CONTEXT_WINDOW_TOKENS - AGENT_TURN_MAX_OUTPUT_TOKENS;
+        let old_fitted = fit_to_budget(&messages, &costs, old_budget, 1);
+        assert!(
+            fitted_total(&old_fitted) + large_tail_cost + AGENT_TURN_MAX_OUTPUT_TOKENS
+                > CONTEXT_WINDOW_TOKENS,
+            "without the tail reserve this history+tail+output must overflow, or this test proves nothing"
+        );
+
+        // Post-fix: `fit_turn_to_budget` (and the hosts' thresholds)
+        // additionally reserve STATE_TAIL_RESERVE_TOKENS, so any tail up
+        // to the reserve plus a full turn's output always fits.
+        let new_budget =
+            CONTEXT_WINDOW_TOKENS - AGENT_TURN_MAX_OUTPUT_TOKENS - STATE_TAIL_RESERVE_TOKENS;
+        let fitted = fit_to_budget(&messages, &costs, new_budget, 1);
+        assert!(large_tail_cost <= STATE_TAIL_RESERVE_TOKENS);
+        assert!(
+            fitted_total(&fitted) + large_tail_cost + AGENT_TURN_MAX_OUTPUT_TOKENS
+                <= CONTEXT_WINDOW_TOKENS,
+            "fitted history ({} tokens) + tail ({large_tail_cost}) + output ({AGENT_TURN_MAX_OUTPUT_TOKENS}) must stay within the {CONTEXT_WINDOW_TOKENS}-token window",
+            fitted_total(&fitted)
         );
     }
 

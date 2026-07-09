@@ -376,9 +376,14 @@ async fn run_planned_benchmark_task(
     ];
     let start = Instant::now();
 
-    let threshold = engine
-        .context_window()
-        .saturating_sub(doce_lib::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS);
+    // Reserves room for the output tokens AND the per-turn state tail
+    // `PlanExecBackend::generate` pushes after run_loop's threshold check
+    // has already passed (see `limits::STATE_TAIL_RESERVE_TOKENS`),
+    // matching production's `RealBackend` threshold exactly.
+    let threshold = engine.context_window().saturating_sub(
+        doce_lib::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS
+            + doce_lib::context::limits::STATE_TAIL_RESERVE_TOKENS,
+    );
     let mut backend = PlanExecBackend {
         engine,
         session: engine.new_session().expect("session should create"),

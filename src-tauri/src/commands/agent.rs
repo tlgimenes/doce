@@ -897,9 +897,13 @@ async fn execute_top_level_tool(
     // every `run_loop` caller (this subagent path had no such protection
     // before this became the loop's own per-turn decision rather than
     // something each caller's `generate` closure had to remember to do).
-    let sub_threshold = engine
-        .context_window()
-        .saturating_sub(crate::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS);
+    // The threshold reserves room for the output tokens AND the per-turn
+    // state tail `SubagentBackend::generate` pushes after this check has
+    // already passed (see `limits::STATE_TAIL_RESERVE_TOKENS`).
+    let sub_threshold = engine.context_window().saturating_sub(
+        crate::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS
+            + crate::context::limits::STATE_TAIL_RESERVE_TOKENS,
+    );
     let mut sub_backend = SubagentBackend {
         engine,
         conn,
@@ -1434,10 +1438,16 @@ pub async fn send_agent_message(
     // `compact`): every turn checks whether the in-flight messages already
     // fit this same budget before ever calling `fit_turn_to_budget` --
     // skips the fit entirely on turns that don't need it, rather than
-    // unconditionally re-measuring every message every turn.
-    let threshold = engine
-        .context_window()
-        .saturating_sub(crate::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS);
+    // unconditionally re-measuring every message every turn. Reserves room
+    // for the output tokens AND the per-turn state tail
+    // `RealBackend::generate` pushes after this check has already passed
+    // (see `limits::STATE_TAIL_RESERVE_TOKENS`): `measure` renders the
+    // canonical messages only, so without the tail reserve a history
+    // parked just under the threshold plus a big tail overflowed `n_ctx`.
+    let threshold = engine.context_window().saturating_sub(
+        crate::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS
+            + crate::context::limits::STATE_TAIL_RESERVE_TOKENS,
+    );
 
     // One session for the whole turn (KV-prefix reuse across turns). Built
     // here, inside the engine-guard scope, so its `LlamaContext`'s borrow of
