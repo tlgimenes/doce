@@ -65,6 +65,20 @@ describe("StickyUserMessage", () => {
     expect(screen.getByTestId("user-message-bubble")).toHaveClass("max-h-[50vh]", "overflow-auto");
   });
 
+  it("treats touch pointer activation as one scroll request", () => {
+    const onScrollToTurn = vi.fn();
+    render(<StickyUserMessage message={userMessage()} onScrollToTurn={onScrollToTurn} />);
+
+    const focusTarget = screen.getByTestId("sticky-user-message-bubble");
+
+    fireEvent.pointerDown(focusTarget, { pointerType: "touch" });
+    fireEvent.focus(focusTarget);
+    fireEvent.click(focusTarget);
+
+    expect(onScrollToTurn).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("user-message-bubble")).toHaveClass("max-h-[50vh]", "overflow-auto");
+  });
+
   it("collapses when focus leaves the sticky component", () => {
     render(<StickyUserMessage message={userMessage()} />);
 

@@ -52,7 +52,7 @@ export default function StickyUserMessage({
         className="outline-none"
         data-testid="sticky-user-message-bubble"
         onBlur={collapseIfFocusLeft}
-        onMouseDown={() => {
+        onPointerDown={() => {
           pointerOriginRef.current = true;
         }}
         onClick={expandAndScrollOnClick}

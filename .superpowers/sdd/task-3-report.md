@@ -50,3 +50,12 @@ Re-review fix evidence
 
 - GREEN: `npx vitest run src/views/workspace/StickyUserMessage.test.tsx`
 - Relevant passing output after the corrected fix: `Test Files 1 passed (1)` and `Tests 4 passed (4)`.
+
+Pointer-level fix evidence
+
+- RED: `npx vitest run src/views/workspace/StickyUserMessage.test.tsx`
+- Relevant failure before the pointer fix: `expected "vi.fn()" to be called 1 times, but got 2 times` in `treats touch pointer activation as one scroll request`.
+- Why expected: the duplicate-scroll guard still used mouse-only activation, so touch pointer focus and click both invoked the callback.
+
+- GREEN: `npx vitest run src/views/workspace/StickyUserMessage.test.tsx`
+- Relevant passing output after the pointer fix: `Test Files 1 passed (1)` and `Tests 5 passed (5)`.
