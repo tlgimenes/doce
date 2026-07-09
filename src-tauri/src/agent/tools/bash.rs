@@ -52,7 +52,7 @@ pub fn truncate_tail_biased(text: &str) -> String {
     let kept: usize = head.iter().chain(tail.iter()).map(|l| l.len() + 1).sum();
     let omitted = text.len().saturating_sub(kept);
     format!(
-        "{}\n... [{omitted} bytes omitted -- full output offloaded]\n{}",
+        "{}\n... [{omitted} bytes omitted -- full output preserved in the conversation transcript]\n{}",
         head.join("\n"),
         tail.join("\n")
     )
@@ -259,6 +259,19 @@ pub fn run(
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
+    // Spawn the child as the leader of its own new process group (pgid ==
+    // its own pid) instead of inheriting ours. A compound command --
+    // `a && b`, a pipeline, `cmd &` -- forks descendants that inherit that
+    // same pgid from their parent (/bin/sh), so signalling the whole group
+    // on timeout (see below) reaches them too. Without this, `child.kill()`
+    // only ever signals the immediate /bin/sh; any forked descendant
+    // survives it as an orphan, still holding an inherited copy of the
+    // stdout/stderr pipes' write end open.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
     let mut child = cmd.spawn()?;
 
     // Drain stdout/stderr on dedicated threads as the child runs, rather
@@ -272,21 +285,34 @@ pub fn run(
     // function's own timeout finally killed the child. Reading
     // concurrently is the fix; the timeout loop below only has to watch
     // for exit/timeout, not also drain output.
+    //
+    // Each reader sends its result over an mpsc channel rather than only
+    // being joinable via its `JoinHandle`, so the timeout path below can
+    // bound how long it waits on a reader instead of blocking on it
+    // unconditionally -- see that path's comment for why a bare wait isn't
+    // safe there even with the process-group kill above. The normal-exit
+    // path uses a plain (non-timeout) `recv()`, which is every bit as safe
+    // as a `join()` would be there: the child has already exited and
+    // closed its own copy of the pipes, so the reader threads are always
+    // moments from sending.
     use std::io::Read;
-    let stdout_reader = child.stdout.take().map(|mut out| {
+    use std::sync::mpsc;
+    let (stdout_tx, stdout_rx) = mpsc::channel::<String>();
+    let (stderr_tx, stderr_rx) = mpsc::channel::<String>();
+    if let Some(mut out) = child.stdout.take() {
         std::thread::spawn(move || {
             let mut buf = String::new();
             let _ = out.read_to_string(&mut buf);
-            buf
-        })
-    });
-    let stderr_reader = child.stderr.take().map(|mut err| {
+            let _ = stdout_tx.send(buf);
+        });
+    }
+    if let Some(mut err) = child.stderr.take() {
         std::thread::spawn(move || {
             let mut buf = String::new();
             let _ = err.read_to_string(&mut buf);
-            buf
-        })
-    });
+            let _ = stderr_tx.send(buf);
+        });
+    }
 
     // A simple poll loop rather than a dedicated timeout crate: this tool
     // is invoked from within the agent loop, which itself runs on a
@@ -298,9 +324,24 @@ pub fn run(
             break Some(status.code().unwrap_or(-1));
         }
         if start.elapsed() > timeout {
+            // Signal the whole process group first (see the
+            // `process_group(0)` comment above) so a background/forked
+            // descendant that outlives the immediate /bin/sh is killed
+            // too, not just orphaned.
+            #[cfg(unix)]
+            {
+                let pid = child.id();
+                // SAFETY: `libc::kill` is a plain syscall wrapper; passing
+                // the negated pid targets the whole process group rather
+                // than a single process, which is exactly the documented
+                // meaning of a negative pid argument to kill(2).
+                unsafe {
+                    libc::kill(-(pid as i32), libc::SIGKILL);
+                }
+            }
             let _ = child.kill();
-            // Reaps the killed child so its pipes' write ends are fully
-            // closed -- otherwise the reader threads joined just below
+            // Reaps the killed child so its own pipe descriptors are fully
+            // closed -- otherwise the reader threads awaited just below
             // could themselves block waiting for EOF that a lingering
             // zombie's still-open descriptors would never deliver.
             let _ = child.wait();
@@ -309,16 +350,39 @@ pub fn run(
         std::thread::sleep(Duration::from_millis(20));
     };
 
-    // Safe to join unconditionally here: on the exit path the pipes are
-    // already at EOF (the child closed them by exiting); on the timeout
-    // path `child.wait()` above already guaranteed the same. Either way
-    // these joins return promptly, they don't reintroduce the deadlock.
-    let stdout = stdout_reader
-        .and_then(|t| t.join().ok())
-        .unwrap_or_default();
-    let stderr = stderr_reader
-        .and_then(|t| t.join().ok())
-        .unwrap_or_default();
+    let (stdout, stderr) = match exit_code {
+        Some(_) => {
+            // Normal exit: the pipes are already at EOF (the child closed
+            // them by exiting), so these are always moments from a send --
+            // this doesn't reintroduce the deadlock the comment above
+            // describes.
+            let stdout = stdout_rx.recv().unwrap_or_default();
+            let stderr = stderr_rx.recv().unwrap_or_default();
+            (stdout, stderr)
+        }
+        None => {
+            // Timeout: belt-and-suspenders on top of the process-group
+            // kill above. Never wait unboundedly on a reader thread here --
+            // even with the group kill, a descendant that ignored/blocked
+            // SIGKILL (or one the group kill somehow missed, e.g. a
+            // process that re-parented into its own new group) can still
+            // hold the pipe's write end open, and `read_to_string` only
+            // returns once every holder of that write end has actually
+            // closed it. Bound the wait instead of trusting it: fall back
+            // to whatever partial output already arrived if a reader
+            // doesn't finish within the window. The thread itself is left
+            // running in that case (not aborted) -- it will still exit on
+            // its own once the pipe eventually closes, it's just no longer
+            // waited on.
+            let stdout = stdout_rx
+                .recv_timeout(Duration::from_millis(500))
+                .unwrap_or_default();
+            let stderr = stderr_rx
+                .recv_timeout(Duration::from_millis(500))
+                .unwrap_or_default();
+            (stdout, stderr)
+        }
+    };
 
     Ok(match exit_code {
         Some(code) => BashResult {
@@ -502,5 +566,35 @@ mod tests {
         // FR-005 regression guard: omitting cwd must not change behavior.
         let result = run("echo hello", None, None).unwrap();
         assert_eq!(result.stdout.trim(), "hello");
+    }
+
+    // Review finding (critical): timeout must bound run()'s wall-clock
+    // duration even when the command forks a descendant that outlives the
+    // immediate /bin/sh -- `sleep 5 & wait` is exactly that shape: `wait`
+    // keeps /bin/sh alive (and blocked) until the background `sleep 5`
+    // finishes, so the 300ms timeout fires long before either would exit
+    // on their own. Before the process-group kill + bounded reader-recv
+    // fix, `child.kill()` only reached /bin/sh; the orphaned `sleep`
+    // process kept the stdout/stderr pipes' write end open, so the reader
+    // threads' `read_to_string` (and a bare `join()` on them) blocked for
+    // the remaining ~5s. Bound generously (well under the 5s a hang would
+    // take, comfortably above the 300ms timeout) to keep this deterministic
+    // under CI/machine load without being a tight timing assertion.
+    #[test]
+    fn run_timeout_bounds_duration_even_with_a_backgrounded_grandchild() {
+        let start = std::time::Instant::now();
+        let result = run("sleep 5 & wait", Some(300), None).unwrap();
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "run() should return well within 3s once its 300ms timeout fires, took {elapsed:?}"
+        );
+        assert_eq!(result.exit_code, -1);
+        assert!(
+            result.stderr.contains("command timed out"),
+            "expected a timeout notice in stderr, got: {:?}",
+            result.stderr
+        );
     }
 }
