@@ -25,11 +25,11 @@ export default function ToolDisclosure({
     <details
       open={open}
       onToggle={(event) => setOpen(event.currentTarget.open)}
-      className="group rounded-lg border border-border bg-card text-sm [&>summary::-webkit-details-marker]:hidden"
+      className="group overflow-hidden rounded-lg border border-border bg-card text-sm [&>summary::-webkit-details-marker]:hidden"
       data-testid={testId}
     >
       <summary
-        className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 focus-visible:outline-offset-[-2px]"
+        className="flex cursor-pointer list-none items-center gap-2 px-3 py-1.5 font-mono text-xs text-muted-foreground focus-visible:outline-offset-[-2px]"
         data-testid={summaryTestId}
       >
         <span className="min-w-0 flex-1 truncate">{summary}</span>
