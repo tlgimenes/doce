@@ -56,3 +56,16 @@ Tests       22 passed (22)
 ## Issues or concerns
 
 - None.
+
+## Follow-up fix evidence
+
+- Added a direct `MessageContent` regression for the normal user token-meter integration path:
+  - `renders the user token meter wired through the top-level MessageContent row`
+- This assertion passed immediately after being added, so no new RED failure was available for that coverage-only change; the underlying behavior was already present.
+- Added an explicit return type to `UserMessageBubble` using `React.JSX.Element`.
+- Verification runs after the follow-up fix:
+  - `npx vitest run src/components/UserMessageBubble.test.tsx src/components/MessageContent.test.tsx`
+  - Result: `2 passed`, `23 tests passed`
+  - `npx tsc -b --noEmit`
+  - Result: blocked by an unrelated existing error in `src/views/workspace/transcriptTurns.test.ts`:
+    - `TS2783: 'id' is specified more than once, so this usage will be overwritten.`

@@ -138,6 +138,23 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
     expect(screen.getByTestId("token-meter")).toHaveTextContent("↑ 42 tokens");
   });
 
+  it("keeps the user token meter wired through the top-level MessageContent row", () => {
+    render(
+      <MessageContent
+        message={baseMessage({
+          role: "user",
+          content: "hi there",
+          tokenCount: 42,
+        })}
+      />,
+    );
+
+    const row = screen.getByTestId("chat-message");
+    expect(row).toHaveAttribute("role", "group");
+    expect(row).toHaveAttribute("aria-label", "You said");
+    expect(screen.getByTestId("token-meter")).toHaveTextContent("↑ 42 tokens");
+  });
+
   it("shows no token meter on a user message when tokenCount is unknown yet", () => {
     render(
       <MessageContent

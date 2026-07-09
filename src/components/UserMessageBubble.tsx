@@ -1,6 +1,7 @@
 import MarkdownPreview from "@/components/MarkdownPreview";
 import { formatTokenCount } from "@/lib/formatTokenCount";
 import { cn } from "@/lib/cn";
+import type * as React from "react";
 import type { Message } from "@/lib/ipc";
 import UserMessageContent from "@/views/chat/rich-input/UserMessageContent";
 
@@ -14,7 +15,7 @@ export default function UserMessageBubble({
   message,
   bubbleClassName,
   tokenMeterClassName,
-}: UserMessageBubbleProps) {
+}: UserMessageBubbleProps): React.JSX.Element {
   return (
     <>
       {message.contentType === "rich_text" ? (
