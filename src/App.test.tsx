@@ -532,10 +532,8 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
 
     pressCmd("f");
 
-    const searchPanel = await screen.findByTestId("search-panel");
-    const dialogContent = searchPanel.closest('[data-testid="app-dialog-content"]');
-    expect(dialogContent).toBeInTheDocument();
-    expect(screen.getByTestId("search-input")).toBeInTheDocument();
+    expect(await screen.findByTestId("conversation-search-dialog")).toBeInTheDocument();
+    expect(screen.getByTestId("search-panel")).toBeInTheDocument();
   });
 
 });

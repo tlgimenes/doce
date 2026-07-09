@@ -32,6 +32,8 @@ function highlightExcerpt(excerpt: string) {
 export default function SearchPanel({ onSelect, recentConversations = [] }: SearchPanelProps) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const recentResults = useMemo(
     () =>
       [...recentConversations]
@@ -48,12 +50,22 @@ export default function SearchPanel({ onSelect, recentConversations = [] }: Sear
 
   const runSearch = async (value: string) => {
     setQuery(value);
+    setError(null);
     if (!value.trim()) {
       setResults([]);
+      setLoading(false);
       return;
     }
-    const found = await commands.searchConversations(value);
-    setResults(found);
+    setLoading(true);
+    try {
+      const found = await commands.searchConversations(value);
+      setResults(found);
+    } catch (err) {
+      setResults([]);
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
   };
 
   const visibleResults = query.trim() ? results : recentResults;
@@ -74,6 +86,16 @@ export default function SearchPanel({ onSelect, recentConversations = [] }: Sear
         />
       </div>
       <div className="flex-1 space-y-2 overflow-y-auto">
+        {loading && (
+          <p className="text-sm text-muted-foreground" data-testid="search-loading">
+            Searching
+          </p>
+        )}
+        {error && (
+          <p className="text-sm text-destructive" data-testid="search-error">
+            {error}
+          </p>
+        )}
         {visibleResults.map((r) => (
           <Button
             key={r.conversationId}
@@ -86,7 +108,7 @@ export default function SearchPanel({ onSelect, recentConversations = [] }: Sear
             <p className="mt-1 text-xs text-muted-foreground">{highlightExcerpt(r.excerpt)}</p>
           </Button>
         ))}
-        {query.trim() && results.length === 0 && (
+        {query.trim() && !loading && !error && results.length === 0 && (
           <p className="text-sm text-muted-foreground">No results.</p>
         )}
       </div>

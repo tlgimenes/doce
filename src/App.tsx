@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { KeyboardIcon } from "lucide-react";
-import Dialog from "@/components/Dialog";
 import { TopbarHost, TopbarProvider } from "@/components/Topbar";
 import { Button } from "@/components/ui/button";
 import Onboarding from "@/views/onboarding/Onboarding";
 import ConversationList, { type ConversationListHandle } from "@/views/chat/ConversationList";
+import ConversationSearchDialog from "@/views/chat/ConversationSearchDialog";
 import EmptyState from "@/views/chat/EmptyState";
-import SearchPanel from "@/views/chat/SearchPanel";
 import Workspace from "@/views/workspace/Workspace";
 import Settings from "@/views/settings/Settings";
 import ShortcutsDialog from "@/views/shortcuts/ShortcutsDialog";
@@ -73,7 +72,6 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showShortcutsDialog, setShowShortcutsDialog] = useState(false);
   const [showWidgetGallery, setShowWidgetGallery] = useState(false);
-  const [searchRecentConversations, setSearchRecentConversations] = useState<Conversation[]>([]);
   const [emptyStateAutoFocusToken, setEmptyStateAutoFocusToken] = useState<number | null>(null);
   const conversationListRef = useRef<ConversationListHandle>(null);
 
@@ -95,7 +93,6 @@ export default function App() {
   const openSearch = useCallback(() => {
     clearCommandCenterLatch();
     setShowSearch(true);
-    commands.listConversations().then(setSearchRecentConversations).catch(console.error);
   }, [clearCommandCenterLatch]);
 
   const openShortcutsDialog = useCallback(() => {
@@ -117,6 +114,17 @@ export default function App() {
     clearCommandCenterLatch();
     setShowSearch(false);
   }, [clearCommandCenterLatch]);
+
+  const handleSearchOpenChange = useCallback(
+    (open: boolean) => {
+      if (open) {
+        setShowSearch(true);
+        return;
+      }
+      closeSearch();
+    },
+    [closeSearch],
+  );
 
   const closeShortcutsDialog = useCallback(() => {
     setShowShortcutsDialog(false);
@@ -214,26 +222,6 @@ export default function App() {
       return hasSameConversationData(current, next) ? current : next;
     });
   }, []);
-
-  const openConversationFromSearch = useCallback(
-    async (conversationId: string) => {
-      const recentConversation = searchRecentConversations.find((c) => c.id === conversationId);
-      const allConversations = recentConversation
-        ? searchRecentConversations
-        : await commands.listConversations();
-      const conversation = allConversations.find((c) => c.id === conversationId);
-
-      if (!conversation) return;
-
-      clearCommandCenterLatch();
-      setShowSearch(false);
-      setShowSettings(false);
-      setPendingInitialTurn(null);
-      setActiveConversation(conversation);
-      markSeen(conversation.id);
-    },
-    [clearCommandCenterLatch, markSeen, searchRecentConversations],
-  );
 
   const activateConversation = (conversation: Conversation, initialTurn?: PendingInitialTurn) => {
     clearCommandCenterLatch();
@@ -340,14 +328,14 @@ export default function App() {
           onClose={closeShortcutsDialog}
           shortcuts={shortcuts}
         />
-        <Dialog open={showSearch} onClose={closeSearch}>
-          <SearchPanel
-            recentConversations={searchRecentConversations}
-            onSelect={(conversationId) => {
-              void openConversationFromSearch(conversationId);
-            }}
-          />
-        </Dialog>
+        <ConversationSearchDialog
+          open={showSearch}
+          onOpenChange={handleSearchOpenChange}
+          recentConversations={conversationListRef.current?.getConversations?.() ?? []}
+          onSelectConversationId={(conversationId) => {
+            conversationListRef.current?.selectById(conversationId);
+          }}
+        />
       </div>
     </TopbarProvider>
   );

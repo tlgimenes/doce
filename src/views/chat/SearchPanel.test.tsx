@@ -88,6 +88,25 @@ describe("SearchPanel", () => {
     await waitFor(() => expect(screen.getByText("No results.")).toBeInTheDocument());
   });
 
+  it("shows a loading state while search is in flight", async () => {
+    vi.mocked(commands.searchConversations).mockReturnValue(new Promise(() => {}));
+
+    render(<SearchPanel onSelect={vi.fn()} />);
+    await userEvent.type(screen.getByTestId("search-input"), "slow");
+
+    expect(await screen.findByTestId("search-loading")).toHaveTextContent("Searching");
+  });
+
+  it("shows a backend error without closing the panel", async () => {
+    vi.mocked(commands.searchConversations).mockRejectedValue(new Error("fts unavailable"));
+
+    render(<SearchPanel onSelect={vi.fn()} />);
+    await userEvent.type(screen.getByTestId("search-input"), "broken");
+
+    expect(await screen.findByTestId("search-error")).toHaveTextContent("fts unavailable");
+    expect(screen.getByTestId("search-panel")).toBeInTheDocument();
+  });
+
   it("omits an inline close button and renders a taller dialog body", () => {
     render(<SearchPanel onSelect={vi.fn()} />);
 

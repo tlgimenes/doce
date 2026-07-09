@@ -35,6 +35,8 @@ interface ConversationListProps {
 // not a duplicate (research.md § 3).
 export interface ConversationListHandle {
   createNew: () => void;
+  getConversations: () => Conversation[];
+  selectById: (conversationId: string) => void;
 }
 
 const STATUS_COLOR: Record<ConversationStatus, string> = {
@@ -101,6 +103,13 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
       onSelect(conversation);
     };
 
+    const selectById = (conversationId: string) => {
+      const conversation = conversations.find((item) => item.id === conversationId);
+      if (conversation) {
+        selectConversation(conversation);
+      }
+    };
+
     const archiveConversation = (
       event: MouseEvent<HTMLButtonElement>,
       conversation: Conversation,
@@ -164,7 +173,11 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
       onOpenSearch();
     };
 
-    useImperativeHandle(ref, () => ({ createNew }));
+    useImperativeHandle(ref, () => ({
+      createNew,
+      getConversations: () => conversations,
+      selectById,
+    }));
 
     return (
       <div

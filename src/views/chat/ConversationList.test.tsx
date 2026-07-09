@@ -443,15 +443,25 @@ describe("ConversationList", () => {
     expect(actions).toBeInTheDocument();
   });
 
-  it("does not expose openSearch via the imperative handle", async () => {
-    vi.mocked(commands.listConversations).mockResolvedValue([]);
+  it("exposes conversation accessors via the imperative handle for app-owned search", async () => {
+    const conversation = {
+      id: "c-search",
+      workspaceId: null,
+      title: "Search target",
+      createdAt: 1,
+      updatedAt: 2,
+      lastSeenAt: 1,
+      status: "done" as const,
+    };
+    vi.mocked(commands.listConversations).mockResolvedValue([conversation]);
     const ref = createRef<ConversationListHandle>();
+    const onSelect = vi.fn();
 
     render(
       <ConversationList
         ref={ref}
         activeId={null}
-        onSelect={vi.fn()}
+        onSelect={onSelect}
         onNewConversation={vi.fn()}
         onOpenSearch={vi.fn()}
         onOpenSettings={vi.fn()}
@@ -459,6 +469,14 @@ describe("ConversationList", () => {
     );
 
     await waitFor(() => expect(ref.current).not.toBeNull());
-    expect(ref.current).toEqual({ createNew: expect.any(Function) });
+    expect(ref.current).toEqual({
+      createNew: expect.any(Function),
+      getConversations: expect.any(Function),
+      selectById: expect.any(Function),
+    });
+    expect(ref.current!.getConversations()).toEqual([conversation]);
+
+    ref.current!.selectById("c-search");
+    expect(onSelect).toHaveBeenCalledWith(conversation);
   });
 });
