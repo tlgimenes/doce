@@ -117,10 +117,21 @@ fn validate_required_args(call: &ToolCall) -> Option<String> {
 /// taken exactly as given.
 pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
     if let Some(error) = validate_required_args(call) {
-        return ToolOutcome {
-            detail: json!({"toolName": call.name, "arguments": call.arguments, "outcome": {"ok": false, "error": error}}),
-            model_text: error,
+        let a = |key: &str| call.arguments.get(key).cloned().unwrap_or(serde_json::Value::Null);
+        // Widget-safe minimal shapes: each known tool's detail must satisfy
+        // its typed widget's required fields (SearchResultsWidget reads
+        // detail.matches.length unconditionally — an absent `matches` is a
+        // frontend crash, not a cosmetic gap).
+        let detail = match call.name.as_str() {
+            "Glob" => json!({"toolName": "Glob", "pattern": a("pattern"), "path": a("path"), "matches": [], "outcome": {"ok": false, "error": error}}),
+            "Grep" => json!({"toolName": "Grep", "pattern": a("pattern"), "path": a("path"), "glob": a("glob"), "matches": [], "truncated": false, "skippedOversized": 0, "outcome": {"ok": false, "error": error}}),
+            "Read" => json!({"toolName": "Read", "filePath": a("file_path"), "outcome": {"ok": false, "error": error}}),
+            "Write" => json!({"toolName": "Write", "filePath": a("file_path"), "outcome": {"ok": false, "error": error}}),
+            "Edit" => json!({"toolName": "Edit", "filePath": a("file_path"), "oldString": a("old_string"), "newString": a("new_string"), "replaceAll": false, "outcome": {"ok": false, "error": error}}),
+            "Bash" => json!({"toolName": "Bash", "command": a("command"), "timeoutMs": null, "outcome": {"ok": false, "error": error}}),
+            other => json!({"toolName": other, "arguments": call.arguments, "outcome": {"ok": false, "error": error}}),
         };
+        return ToolOutcome { detail, model_text: error };
     }
     match call.name.as_str() {
         "Read" => {
@@ -681,6 +692,23 @@ mod tests {
         assert!(result.model_text.starts_with("Error:"));
         assert!(result.model_text.contains("file_path"));
         assert!(result.model_text.contains("string"));
+    }
+
+    #[test]
+    fn validation_failure_details_stay_widget_safe() {
+        // SearchResultsWidget reads detail.matches.length unconditionally —
+        // a validation-failure detail for Glob/Grep must carry matches: [].
+        for tool in ["Glob", "Grep"] {
+            let result = execute(&call(tool, serde_json::json!({})), None);
+            assert!(result.model_text.starts_with("Error:"));
+            assert!(
+                result.detail["matches"].is_array(),
+                "{tool} validation-failure detail must include matches: [], got {}",
+                result.detail
+            );
+        }
+        let result = execute(&call("Read", serde_json::json!({})), None);
+        assert!(result.detail["filePath"].is_null());
     }
 
     // --- 004-tool-call-widgets: US4 (Read/Write/Glob/Grep widgets) ---
