@@ -1,6 +1,6 @@
 use crate::agent::rich_content::{expand_segments, RichMessageContent};
 use crate::agent::tools::ask_user::{PendingQuestions, QuestionOption};
-use crate::agent::{dispatch, run_loop, subagent, AgentContext, ToolCall, SYSTEM_PROMPT};
+use crate::agent::{dispatch, run_loop, subagent, AgentContext, ToolCall, ToolExecution, SYSTEM_PROMPT};
 use crate::commands::conversations::{ActiveGenerations, InferenceState};
 use crate::commands::models::now_ms;
 use crate::inference::{ChatMessage, InferenceEngine};
@@ -556,28 +556,52 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
         if let Some(first) = messages.first_mut() {
             *first = ChatMessage::system(system_text);
         }
+        // The plan loop REQUIRES a tool call at the sampler level in BOTH
+        // states: a plain-text reply anywhere would end the entire task,
+        // and the model was observed degrading into exactly that
+        // (`StepDone(...)` as prose mid-step; a bare "ResumeExecution"
+        // text after twenty repetitive AddStep calls). "Done" is itself a
+        // tool call now (FinishTask), so requiring tool calls never traps
+        // the loop.
         match self.engine.render_chat_prompt(&messages) {
             Ok(rendered) => self
                 .engine
-                .generate(&rendered, 256, true, |_piece| {}, || false)
+                .generate(
+                    &rendered,
+                    crate::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS as i32,
+                    crate::inference::ToolCallMode::Require,
+                    |_piece| {},
+                    || false,
+                )
                 .unwrap_or_else(|e| format!("Error: inference failed: {e}")),
             Err(e) => format!("Error: failed to render chat prompt: {e}"),
         }
     }
 
-    async fn execute_tool(&mut self, tool_call_id: String, call: ToolCall) -> String {
-        // Plan machine first: the five plan tools (and state-gated
-        // rejections) never reach dispatch. Their rows persist like any
-        // tool's — marked "plan": true so the transcript skips them — and
-        // every handled call refreshes the live tracker surface.
-        if let Some(result) = self.plan_state.handle_plan_tool(&call) {
+    async fn execute_tool(&mut self, tool_call_id: String, call: ToolCall) -> ToolExecution {
+        // Plan machine first: the plan tools (and state-gated rejections)
+        // never reach dispatch. Their rows persist like any tool's —
+        // marked "plan": true so the transcript skips them — and every
+        // handled call refreshes the live tracker surface. FinishTask ends
+        // the whole loop with the model's verified final answer.
+        if let Some(outcome) = self.plan_state.handle_plan_tool(&call) {
+            let (result_text, execution) = match outcome {
+                crate::agent::plan::PlanToolReply::Reply(text) => {
+                    let execution = ToolExecution::Result(text.clone());
+                    (text, execution)
+                }
+                crate::agent::plan::PlanToolReply::Finish(answer) => {
+                    let execution = ToolExecution::Finish(answer.clone());
+                    (answer, execution)
+                }
+            };
             persist_plan_tool(
                 Some(self.app),
                 self.conn,
                 self.conversation_id,
                 &tool_call_id,
                 &call,
-                &result,
+                &result_text,
             )
             .await;
             publish_plan_update(
@@ -586,19 +610,21 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
                 self.conversation_id,
                 &self.plan_state,
             );
-            return result;
+            return execution;
         }
-        execute_top_level_tool(
-            tool_call_id,
-            call,
-            self.conn,
-            self.engine,
-            self.conversation_id,
-            self.cwd,
-            self.app,
-            self.pending,
+        ToolExecution::Result(
+            execute_top_level_tool(
+                tool_call_id,
+                call,
+                self.conn,
+                self.engine,
+                self.conversation_id,
+                self.cwd,
+                self.app,
+                self.pending,
+            )
+            .await,
         )
-        .await
     }
 }
 
@@ -635,13 +661,19 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
         match self.engine.render_chat_prompt(&messages) {
             Ok(rendered) => self
                 .engine
-                .generate(&rendered, 256, true, |_piece| {}, || false)
+                .generate(
+                    &rendered,
+                    crate::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS as i32,
+                    crate::inference::ToolCallMode::Allow,
+                    |_piece| {},
+                    || false,
+                )
                 .unwrap_or_else(|e| format!("Error: inference failed: {e}")),
             Err(e) => format!("Error: failed to render chat prompt: {e}"),
         }
     }
 
-    async fn execute_tool(&mut self, tool_call_id: String, call: ToolCall) -> String {
+    async fn execute_tool(&mut self, tool_call_id: String, call: ToolCall) -> ToolExecution {
         // 004-tool-call-widgets: the subagent's own tool activity persists
         // under its own conversation row -- never the parent's --
         // preserving 001's existing FR-015/SC-008 isolation guarantee
@@ -663,7 +695,7 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
             outcome.detail.clone(),
         )
         .await;
-        outcome.model_text
+        ToolExecution::Result(outcome.model_text)
     }
 }
 

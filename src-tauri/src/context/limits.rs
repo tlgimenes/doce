@@ -41,8 +41,16 @@ pub const DEFAULT_HARD_LIMIT_PCT: f64 = 0.9;
 pub const DEFAULT_TOOL_OUTPUT_OFFLOAD_CHARS: usize = 500;
 
 /// `reserve` for `InferenceEngine::fit_to_context`'s per-turn call inside
-/// `agent::run_loop` (`context::fit_turn_to_budget`) -- matches
-/// `commands::agent`'s actual `generate()` `max_tokens` for an agent turn,
-/// the room the fitted prompt must leave for output that doesn't exist yet
-/// to count.
-pub const AGENT_TURN_MAX_OUTPUT_TOKENS: u32 = 256;
+/// `agent::run_loop` (`context::fit_turn_to_budget`) -- and now also the
+/// literal `max_tokens` the agent `generate()` call sites pass (they
+/// reference this constant rather than duplicating the number).
+///
+/// Raised from 256 (~3% of the 8192 window) to 1024 (~12.5%) after a real
+/// benchmark failure: a well-granulated 20-step `CreatePlan` call needs
+/// more than 256 output tokens, so generation was cut off mid-JSON before
+/// the closing `</tool_call>` tag and the truncated call silently became
+/// the turn's "final answer" (tier4_planned scored 0/20 at turn 2). The
+/// grammar guarantees a tool call ends at its closing tag and EOG ends
+/// short answers early, so the extra headroom costs nothing on turns that
+/// don't need it.
+pub const AGENT_TURN_MAX_OUTPUT_TOKENS: u32 = 1024;

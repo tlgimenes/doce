@@ -85,6 +85,22 @@ pub enum MessageContent {
     },
 }
 
+/// How a `generate()` call treats tool calls. `Forbid`: no grammar at all
+/// (plain chat, summarization). `Allow`: lazy grammar — constrains output
+/// only once the model starts a `<tool_call>`, so plain-text final answers
+/// stay completely free. `Require`: non-lazy grammar — the response MUST
+/// be one well-formed tool call, used while the plan engine is Executing a
+/// step, where a plain-text reply would end the whole task (observed for
+/// real: the model emitted `StepDone(...)` as prose mid-task and ended a
+/// 20-file job at file 1 — making plain text unsamplable in that state
+/// closes the failure at the sampler, not the prompt).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolCallMode {
+    Forbid,
+    Allow,
+    Require,
+}
+
 /// A single role-tagged conversation turn. Chat-tuned models like Qwen are
 /// trained on turns wrapped in special tokens (e.g. ChatML's
 /// `<|im_start|>role\n...<|im_end|>`), not on raw concatenated text — see
@@ -169,8 +185,11 @@ impl ChatMessage {
     /// The plain string this message renders to for the model's own
     /// prompt — the one pure transform between the structured shape above
     /// and what `render_chat_prompt`/llama.cpp's chat template needs (a
-    /// flat string per turn). Preserves the exact `{"tool_call": ...}`
-    /// convention the model has already been prompted for. A
+    /// flat string per turn). A `ToolUse` renders in Qwen's own trained
+    /// (Hermes-style) format — `{"name": ..., "arguments": ...}` JSON
+    /// inside `<tool_call></tool_call>` tags with the same newline
+    /// placement Qwen's embedded Jinja template produces — so the model's
+    /// past actions replay in exactly the shape it was trained to emit. A
     /// `ToolResult`'s text is wrapped in the literal `<tool_response>...
     /// </tool_response>` tags Qwen's own chat template uses (confirmed
     /// against its real, embedded Jinja template) -- reproduced here as
@@ -181,7 +200,10 @@ impl ChatMessage {
         match &self.content {
             MessageContent::Text(s) => s.clone(),
             MessageContent::ToolUse { name, input, .. } => {
-                serde_json::json!({ "tool_call": { "name": name, "arguments": input } }).to_string()
+                format!(
+                    "<tool_call>\n{}\n</tool_call>",
+                    serde_json::json!({ "name": name, "arguments": input })
+                )
             }
             // No "Tool result for {tool_name}:" framing -- Qwen's own
             // convention (per its chat template) is just the raw content
@@ -305,41 +327,51 @@ impl InferenceEngine {
     }
 
     /// Builds the grammar-constrained sampler that guarantees any
-    /// `{"tool_call"` the model starts producing is syntactically valid
-    /// JSON matching `{"tool_call": {"name": string, "arguments": object}}`
-    /// — lazy (`LlamaSampler::grammar_lazy`), so it only activates once the
-    /// model actually starts down that path; a plain-text final answer is
-    /// completely unconstrained the whole time. Deliberately doesn't
-    /// constrain `name` to an enum of currently-available tools —
-    /// `dispatch::execute` already handles an unrecognized tool name
-    /// gracefully as an ordinary tool-error result fed back into the loop,
-    /// so keeping this schema static avoids threading a dynamic tool list
-    /// through every `generate()` call for a marginal benefit.
-    fn tool_call_grammar_sampler(&self) -> Result<LlamaSampler, InferenceError> {
+    /// `<tool_call>` the model starts producing completes as Qwen's own
+    /// trained tool-call shape: `{"name": string, "arguments": object}`
+    /// JSON inside `<tool_call></tool_call>` tags — lazy
+    /// (`LlamaSampler::grammar_lazy`), so it only activates once the model
+    /// actually starts down that path; a plain-text final answer is
+    /// completely unconstrained the whole time. Once the closing tag is
+    /// produced the grammar is complete, which also forecloses the
+    /// observed run-on failure of appending a second call in the same
+    /// response. Deliberately doesn't constrain `name` to an enum of
+    /// currently-available tools — `dispatch::execute` already handles an
+    /// unrecognized tool name gracefully as an ordinary tool-error result
+    /// fed back into the loop, so keeping this schema static avoids
+    /// threading a dynamic tool list through every `generate()` call for a
+    /// marginal benefit.
+    fn tool_call_grammar_sampler(&self, required: bool) -> Result<LlamaSampler, InferenceError> {
         let schema = serde_json::json!({
             "type": "object",
             "properties": {
-                "tool_call": {
-                    "type": "object",
-                    "properties": {
-                        "name": { "type": "string" },
-                        "arguments": { "type": "object" }
-                    },
-                    "required": ["name", "arguments"]
-                }
+                "name": { "type": "string" },
+                "arguments": { "type": "object" }
             },
-            "required": ["tool_call"]
+            "required": ["name", "arguments"]
         });
-        let grammar_str = json_schema_to_grammar(&schema.to_string())
+        let json_grammar = json_schema_to_grammar(&schema.to_string())
             .map_err(|e| InferenceError::Backend(e.to_string()))?;
-        LlamaSampler::grammar_lazy(
-            &self.model,
-            &grammar_str,
-            "root",
-            [b"{\"tool_call\"".as_slice()],
-            &[],
-        )
-        .map_err(|e| InferenceError::Backend(e.to_string()))
+        // json_schema_to_grammar's output defines `root` for the bare JSON
+        // object; demote that to a sub-rule and wrap it in the literal
+        // tags (matching Qwen's template newlines) as the real root.
+        let json_grammar = json_grammar.replacen("root ::=", "tool-json ::=", 1);
+        let grammar_str = format!(
+            "{json_grammar}\nroot ::= \"<tool_call>\\n\" tool-json \"\\n</tool_call>\""
+        );
+        if required {
+            LlamaSampler::grammar(&self.model, &grammar_str, "root")
+                .map_err(|e| InferenceError::Backend(e.to_string()))
+        } else {
+            LlamaSampler::grammar_lazy(
+                &self.model,
+                &grammar_str,
+                "root",
+                [b"<tool_call>".as_slice()],
+                &[],
+            )
+            .map_err(|e| InferenceError::Backend(e.to_string()))
+        }
     }
 
     /// Generation used for the chat path (User Story 2), the agent tool-use
@@ -348,15 +380,15 @@ impl InferenceEngine {
     /// events in real time rather than waiting for the full response.
     /// `prompt` is expected to already be chat-template-rendered (see
     /// `render_chat_prompt`) — this function just tokenizes and decodes
-    /// whatever string it's given. `allow_tool_calls` gates the
+    /// whatever string it's given. `tool_calls` gates the
     /// grammar-constrained sampler above — the plain chat path and
     /// tier-2 summarization never set it, since neither ever wants (or
-    /// should be able to produce) a `{"tool_call": ...}` response.
+    /// should be able to produce) a `<tool_call>` response.
     pub fn generate(
         &self,
         prompt: &str,
         max_tokens: i32,
-        allow_tool_calls: bool,
+        tool_calls: ToolCallMode,
         mut on_token: impl FnMut(&str),
         mut should_cancel: impl FnMut() -> bool,
     ) -> Result<String, InferenceError> {
@@ -410,8 +442,10 @@ impl InferenceEngine {
         // grammar-legal tokens before penalty/temperature/top-k/top-p
         // shaping ever sees the distribution.
         let mut chain = Vec::with_capacity(6);
-        if allow_tool_calls {
-            chain.push(self.tool_call_grammar_sampler()?);
+        match tool_calls {
+            ToolCallMode::Forbid => {}
+            ToolCallMode::Allow => chain.push(self.tool_call_grammar_sampler(false)?),
+            ToolCallMode::Require => chain.push(self.tool_call_grammar_sampler(true)?),
         }
         chain.extend([
             LlamaSampler::penalties(64, 1.1, 0.0, 0.0),

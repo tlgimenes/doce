@@ -9,7 +9,7 @@
 //!
 //! `Planning` maintains the plan via ordinary tool calls (`CreatePlan`/
 //! `AddStep`) and can independently verify results with read-only tools —
-//! the same grammar-constrained `{"tool_call": ...}` mechanism every other
+//! the same grammar-constrained `<tool_call>` mechanism every other
 //! tool already uses, not a bespoke one-shot structured-JSON call (an
 //! earlier design that got stuck: re-emitting the entire plan as JSON
 //! every turn, judged from a hand-built evidence string, with no real way
@@ -71,19 +71,38 @@ pub enum LoopState {
 /// next undone step -- used both right after `CreatePlan` and again after
 /// a refusal-driven revision), read-only verification tools, and
 /// `AskUserQuestion`.
-pub const PLANNING_SYSTEM_PROMPT: &str = r#"You are a planning supervisor. You maintain a plan and hand off each step's actual work to an execution mode with file/shell tools -- you do not personally edit files or run commands from here. To use a tool, respond with ONLY a JSON object in this exact shape, nothing else:
-{"tool_call": {"name": "ToolName", "arguments": {...}}}
+pub const PLANNING_SYSTEM_PROMPT: &str = r#"You are a planning supervisor. You maintain a plan and hand off each step's actual work to an execution mode with file/shell tools -- you do not personally edit files or run commands from here.
 
-Available tools:
-- CreatePlan: {"goal": string, "steps": [string]} -- define the plan. Valid only once, when no plan exists yet. Step granularity matters: each step is executed with its own limited number of turns, so a step must be small enough to actually finish within that. If the task repeats similar work across multiple items (e.g. multiple files), create ONE STEP PER ITEM, never a single step like "for each file, do X" that silently bundles many items together -- that kind of step cannot finish in a bounded number of turns and will only get partway done.
-- AddStep: {"description": string} -- append a step. This is how you extend or correct the plan after the first CreatePlan call -- do not call CreatePlan again, that would discard progress already made on other steps. Plans you may see in earlier conversation history are finished -- each new user request starts with no plan.
-- ResumeExecution: {} -- hand off to the next step that isn't done yet. Call this right after CreatePlan to begin, and again any time you've finished adding/correcting steps and are ready to continue.
-- Read: {"file_path": string} / Grep: {"pattern": string, "path"?: string} / Glob: {"pattern": string, "path"?: string} -- read-only tools to independently verify a step's actual result yourself, instead of trusting its summary. Glob's pattern is a single wildcard expression, e.g. "bug_*.txt" or "*.rs" -- never a space-separated list of literal filenames, that matches nothing.
-- AskUserQuestion: {"header": string, "question": string, "options": [{"label": string, "description"?: string}], "multiSelect"?: boolean} -- ask the user directly if the request is genuinely ambiguous.
+# Tools
 
-You return here automatically once every step reports done, or when a step reports it could not be completed (its reason will be given to you). A step reporting done is a CLAIM, not proof -- before answering, independently verify with Read/Grep/Glob rather than trusting it. If verification shows something is genuinely still wrong, use AddStep and ResumeExecution rather than accepting the claim.
+You may call one or more functions to assist with the user query.
 
-Once you have verified the task is genuinely, completely done, respond in plain text with your final answer -- do not wrap it in JSON."#;
+You are provided with function signatures within <tools></tools> XML tags:
+<tools>
+{"type": "function", "function": {"name": "CreatePlan", "description": "Define the plan as a goal and a list of steps. Valid only once, when no plan exists yet. Follow the plan granularity rules below.", "parameters": {"type": "object", "properties": {"goal": {"type": "string"}, "steps": {"type": "array", "items": {"type": "string"}}}, "required": ["goal", "steps"]}}}
+{"type": "function", "function": {"name": "AddStep", "description": "Append one step to the existing plan.", "parameters": {"type": "object", "properties": {"description": {"type": "string"}}, "required": ["description"]}}}
+{"type": "function", "function": {"name": "ResumeExecution", "description": "Hand off to the next step that isn't done yet. Takes no arguments.", "parameters": {"type": "object", "properties": {}}}}
+{"type": "function", "function": {"name": "Read", "description": "Read a file from disk.", "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}}, "required": ["file_path"]}}}
+{"type": "function", "function": {"name": "Grep", "description": "Search file contents with a regular expression. Omit path to search the current working directory.", "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}}, "required": ["pattern"]}}}
+{"type": "function", "function": {"name": "Glob", "description": "Find files by name pattern. The pattern is a single wildcard expression, e.g. \"bug_*.txt\" or \"*.rs\" -- never a space-separated list of literal filenames, that matches nothing. Omit path to search the current working directory.", "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}}, "required": ["pattern"]}}}
+{"type": "function", "function": {"name": "AskUserQuestion", "description": "Ask the user directly if the request is genuinely ambiguous.", "parameters": {"type": "object", "properties": {"header": {"type": "string"}, "question": {"type": "string"}, "options": {"type": "array", "items": {"type": "object", "properties": {"label": {"type": "string"}, "description": {"type": "string"}}, "required": ["label"]}}, "multiSelect": {"type": "boolean"}}, "required": ["header", "question", "options"]}}}
+{"type": "function", "function": {"name": "FinishTask", "description": "End the task and deliver your final answer to the user. Only call this after you have verified the outcome yourself.", "parameters": {"type": "object", "properties": {"answer": {"type": "string"}}, "required": ["answer"]}}}
+</tools>
+
+For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
+<tool_call>
+{"name": <function-name>, "arguments": <args-json-object>}
+</tool_call>
+
+# Plan granularity
+
+Each step is executed with its own limited number of turns, so a step must be small enough to actually finish within that. If the task repeats similar work across multiple items (e.g. multiple files), create ONE STEP PER ITEM -- a task covering 20 files needs 20 per-file steps. NEVER write a step like "repeat this process for the remaining files": a bundled step silently stops partway and the remaining items are lost. Use AddStep to extend or correct the plan afterward -- do not call CreatePlan again, that would discard progress already made. Plans you may see in earlier conversation history are finished -- each new user request starts with no plan.
+
+# Verification
+
+You return here automatically once every step reports done, or when a step reports it could not be completed (its reason will be given to you). A step reporting done is a CLAIM, not proof. Before giving your final answer you MUST independently verify the outcome with Read/Grep/Glob -- re-read the changed files or search for remaining problems yourself. If verification shows something is genuinely still wrong, use AddStep and ResumeExecution rather than accepting the claim.
+
+Once you have verified the task is genuinely, completely done, call FinishTask with your final answer. Every response you give must be exactly one <tool_call>."#;
 
 /// System prompt for `LoopState::Executing { step_index }`, parameterized
 /// with the overall goal and that one step's own description -- a step
@@ -92,17 +111,32 @@ Once you have verified the task is genuinely, completely done, respond in plain 
 /// step text with no goal attached, it hallucinated a nonexistent file).
 pub fn executing_system_prompt(goal: &str, step_description: &str) -> String {
     format!(
-        r#"You are executing one step of a larger plan. To use a tool, respond with ONLY a JSON object in this exact shape, nothing else:
-{{"tool_call": {{"name": "ToolName", "arguments": {{...}}}}}}
+        r#"You are executing one step of a larger plan.
 
 Overall goal: {goal}
 Your current step: {step_description}
 
-Available tools:
-- Read / Write / Edit / Bash / Grep / Glob -- the usual file and shell tools. Glob's pattern is a single wildcard expression, e.g. "bug_*.txt" or "*.rs" -- never a space-separated list of literal filenames, that matches nothing.
-- Task: {{"prompt": string}} -- delegate substantial, self-contained work (extensive exploration, a large search, a bulky sub-investigation) to an isolated subagent instead of doing it inline. This conversation is shared across the WHOLE task, not just this step -- everything you do here stays visible to every later step too, so keep it lean: reach for Task when a piece of work would otherwise flood this shared history with exploration detail nobody later needs, and only the outcome actually matters going forward.
-- StepDone: {{"summary": string}} -- call this once you have actually completed the step, not when you believe you're close.
-- RefuseStep: {{"reason": string}} -- call this if the step cannot be completed as described (unclear, blocked, or wrong). Explain why -- your reason is used to revise the plan.
+# Tools
+
+You may call one or more functions to assist with the user query.
+
+You are provided with function signatures within <tools></tools> XML tags:
+<tools>
+{{"type": "function", "function": {{"name": "Read", "description": "Read a file from disk.", "parameters": {{"type": "object", "properties": {{"file_path": {{"type": "string"}}, "offset": {{"type": "number"}}, "limit": {{"type": "number"}}}}, "required": ["file_path"]}}}}}}
+{{"type": "function", "function": {{"name": "Write", "description": "Create or overwrite a file.", "parameters": {{"type": "object", "properties": {{"file_path": {{"type": "string"}}, "content": {{"type": "string"}}}}, "required": ["file_path", "content"]}}}}}}
+{{"type": "function", "function": {{"name": "Edit", "description": "Targeted in-place edit: replace old_string with new_string inside the file.", "parameters": {{"type": "object", "properties": {{"file_path": {{"type": "string"}}, "old_string": {{"type": "string"}}, "new_string": {{"type": "string"}}, "replace_all": {{"type": "boolean"}}}}, "required": ["file_path", "old_string", "new_string"]}}}}}}
+{{"type": "function", "function": {{"name": "Bash", "description": "Run a shell command.", "parameters": {{"type": "object", "properties": {{"command": {{"type": "string"}}, "timeout": {{"type": "number"}}}}, "required": ["command"]}}}}}}
+{{"type": "function", "function": {{"name": "Grep", "description": "Search file contents with a regular expression. Omit path to search the current working directory.", "parameters": {{"type": "object", "properties": {{"pattern": {{"type": "string"}}, "path": {{"type": "string"}}, "glob": {{"type": "string"}}}}, "required": ["pattern"]}}}}}}
+{{"type": "function", "function": {{"name": "Glob", "description": "Find files by name pattern. The pattern is a single wildcard expression, e.g. \"bug_*.txt\" or \"*.rs\" -- never a space-separated list of literal filenames, that matches nothing.", "parameters": {{"type": "object", "properties": {{"pattern": {{"type": "string"}}, "path": {{"type": "string"}}}}, "required": ["pattern"]}}}}}}
+{{"type": "function", "function": {{"name": "Task", "description": "Delegate substantial, self-contained work (extensive exploration, a large search, a bulky sub-investigation) to an isolated subagent instead of doing it inline. This conversation is shared across the WHOLE task, not just this step -- everything you do here stays visible to every later step too, so keep it lean: reach for Task when a piece of work would otherwise flood this shared history with exploration detail nobody later needs, and only the outcome actually matters going forward.", "parameters": {{"type": "object", "properties": {{"prompt": {{"type": "string"}}}}, "required": ["prompt"]}}}}}}
+{{"type": "function", "function": {{"name": "StepDone", "description": "Call this once you have actually completed the step, not when you believe you're close.", "parameters": {{"type": "object", "properties": {{"summary": {{"type": "string"}}}}, "required": ["summary"]}}}}}}
+{{"type": "function", "function": {{"name": "RefuseStep", "description": "Call this if the step cannot be completed as described (unclear, blocked, or wrong). Explain why -- your reason is used to revise the plan.", "parameters": {{"type": "object", "properties": {{"reason": {{"type": "string"}}}}, "required": ["reason"]}}}}}}
+</tools>
+
+For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
+<tool_call>
+{{"name": <function-name>, "arguments": <args-json-object>}}
+</tool_call>
 
 You must end by calling StepDone or RefuseStep -- never answer in plain text here, that would end the WHOLE task, not just this step."#
     )
@@ -111,13 +145,27 @@ You must end by calling StepDone or RefuseStep -- never answer in plain text her
 /// The five tools owned by the plan state machine itself — used by the
 /// frontend (via ipc.ts's mirror of this list) to keep plan activity
 /// invisible in the transcript, and by hosts to route calls.
-pub const PLAN_TOOL_NAMES: [&str; 5] = [
+pub const PLAN_TOOL_NAMES: [&str; 6] = [
     "CreatePlan",
     "AddStep",
     "ResumeExecution",
     "StepDone",
     "RefuseStep",
+    "FinishTask",
 ];
+
+/// What handling a plan tool produced: an ordinary result string fed back
+/// into the loop, or the task's final answer (`FinishTask`) — hosts map
+/// `Finish` onto `agent::ToolExecution::Finish`, ending `run_loop`.
+/// Putting "done" behind a tool call is what lets BOTH states run with
+/// grammar-required tool calls: free-text replies (which a small model
+/// degrades into after repetitive stretches — observed: a bare
+/// "ResumeExecution" text answer ended a whole task) become unsamplable.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlanToolReply {
+    Reply(String),
+    Finish(String),
+}
 
 /// The two-state Planning/Executing machine, promoted from the benchmark's
 /// `PlanExecBackend` so production (`commands::agent::RealBackend`) and the
@@ -162,7 +210,15 @@ impl PlanState {
     /// while Executing (the per-state tool-name sets the benchmark
     /// validated 20/20; actually dispatching whatever passes through is the
     /// host's job, not this function's).
-    pub fn handle_plan_tool(&mut self, call: &crate::agent::ToolCall) -> Option<String> {
+    pub fn handle_plan_tool(&mut self, call: &crate::agent::ToolCall) -> Option<PlanToolReply> {
+        if self.state == LoopState::Planning && call.name == "FinishTask" {
+            return Some(match call.arguments.get("answer").and_then(|v| v.as_str()) {
+                Some(answer) => PlanToolReply::Finish(answer.to_string()),
+                None => PlanToolReply::Reply(
+                    "Error: FinishTask requires an answer argument".to_string(),
+                ),
+            });
+        }
         let result = match (self.state, call.name.as_str()) {
             (LoopState::Planning, "CreatePlan") => {
                 if !self.plan.steps.is_empty() {
@@ -190,7 +246,15 @@ impl PlanState {
                         .unwrap_or_default();
                     let step_count = steps.len();
                     self.plan = Plan { goal, steps };
-                    format!("Plan created with {step_count} steps. Call ResumeExecution to begin.")
+                    // The granularity nudge rides the result itself — it
+                    // lands in the freshest context at exactly the moment
+                    // the model can still cheaply revise, which binds far
+                    // more reliably on a small model than the same rule
+                    // sitting only in the system prompt (observed: bundled
+                    // plans slipped through prompt-only guidance).
+                    format!(
+                        "Plan created with {step_count} steps. Review it now: if any step bundles multiple items (e.g. \"repeat for the remaining files\"), fix that with AddStep -- one step per item -- BEFORE continuing. Then call ResumeExecution to begin."
+                    )
                 }
             }
             (LoopState::Planning, "AddStep") => {
@@ -233,7 +297,14 @@ impl PlanState {
                     }
                     None => {
                         self.state = LoopState::Planning;
-                        format!("Step {step_index} done. All steps report done -- back to planning for final review.")
+                        // Same decision-moment placement as CreatePlan's
+                        // nudge: the verification requirement is restated
+                        // right when the model is about to write its final
+                        // answer (observed: prompt-only placement let it
+                        // answer with confident, unverified success claims).
+                        format!(
+                            "Step {step_index} done. All steps report done -- back to planning. Before giving your final answer you MUST VERIFY the outcome yourself with Read/Grep/Glob (a step's claim is not proof). If anything is still wrong or unfinished, AddStep then ResumeExecution."
+                        )
                     }
                 }
             }
@@ -256,7 +327,7 @@ impl PlanState {
             ) => return None,
             (_, other) => format!("Error: {other} is not available in the current phase"),
         };
-        Some(result)
+        Some(PlanToolReply::Reply(result))
     }
 
     pub fn next_undone_step(&self) -> Option<usize> {
@@ -297,26 +368,35 @@ mod tests {
         }
     }
 
+    /// Unwraps the ordinary-reply variant — the shape every test below
+    /// except the FinishTask ones expects.
+    fn reply(outcome: Option<PlanToolReply>) -> String {
+        match outcome.expect("expected a handled plan tool") {
+            PlanToolReply::Reply(text) => text,
+            PlanToolReply::Finish(answer) => panic!("expected Reply, got Finish({answer:?})"),
+        }
+    }
+
     #[test]
     fn create_plan_then_resume_moves_to_executing_the_first_step() {
         let mut ps = PlanState::default();
         assert_eq!(ps.state, LoopState::Planning);
         assert!(!ps.has_plan());
 
-        let result = ps
-            .handle_plan_tool(&call(
-                "CreatePlan",
-                serde_json::json!({"goal": "fix bugs", "steps": ["fix a", "fix b"]}),
-            ))
-            .expect("CreatePlan is a plan tool");
+        let result = reply(ps.handle_plan_tool(&call(
+            "CreatePlan",
+            serde_json::json!({"goal": "fix bugs", "steps": ["fix a", "fix b"]}),
+        )));
         assert!(result.contains("2 steps"));
+        assert!(
+            result.contains("one step per item"),
+            "the CreatePlan result must carry the granularity nudge at the decision moment"
+        );
         assert!(ps.has_plan());
         assert_eq!(ps.plan.goal, "fix bugs");
         assert_eq!(ps.state, LoopState::Planning, "CreatePlan alone does not start execution");
 
-        let result = ps
-            .handle_plan_tool(&call("ResumeExecution", serde_json::json!({})))
-            .expect("ResumeExecution is a plan tool");
+        let result = reply(ps.handle_plan_tool(&call("ResumeExecution", serde_json::json!({}))));
         assert!(result.contains("fix a"));
         assert_eq!(ps.state, LoopState::Executing { step_index: 0 });
     }
@@ -328,12 +408,10 @@ mod tests {
             "CreatePlan",
             serde_json::json!({"goal": "g", "steps": ["a"]}),
         ));
-        let second = ps
-            .handle_plan_tool(&call(
-                "CreatePlan",
-                serde_json::json!({"goal": "other", "steps": ["x"]}),
-            ))
-            .unwrap();
+        let second = reply(ps.handle_plan_tool(&call(
+            "CreatePlan",
+            serde_json::json!({"goal": "other", "steps": ["x"]}),
+        )));
         assert!(second.starts_with("Error"));
         assert_eq!(ps.plan.goal, "g", "the existing plan must be untouched");
     }
@@ -347,16 +425,18 @@ mod tests {
         ));
         ps.handle_plan_tool(&call("ResumeExecution", serde_json::json!({})));
 
-        let result = ps
-            .handle_plan_tool(&call("StepDone", serde_json::json!({"summary": "did a"})))
-            .unwrap();
+        let result = reply(ps.handle_plan_tool(&call("StepDone", serde_json::json!({"summary": "did a"}))));
         assert!(ps.plan.steps[0].done);
         assert_eq!(ps.state, LoopState::Executing { step_index: 1 });
         assert!(result.contains("step 1"));
 
-        ps.handle_plan_tool(&call("StepDone", serde_json::json!({"summary": "did b"})));
+        let all_done = reply(ps.handle_plan_tool(&call("StepDone", serde_json::json!({"summary": "did b"}))));
         assert!(ps.plan.steps[1].done);
         assert_eq!(ps.state, LoopState::Planning, "all done returns to planning for review");
+        assert!(
+            all_done.contains("VERIFY"),
+            "the all-steps-done result must instruct verification at the decision moment"
+        );
     }
 
     #[test]
@@ -386,20 +466,19 @@ mod tests {
         let mut ps = PlanState::default();
         assert!(!ps.has_plan());
 
-        let result = ps
-            .handle_plan_tool(&call("AddStep", serde_json::json!({"description": "orphan step"})))
-            .unwrap();
+        let result = reply(ps.handle_plan_tool(&call(
+            "AddStep",
+            serde_json::json!({"description": "orphan step"}),
+        )));
         assert!(result.starts_with("Error"));
         assert!(!ps.has_plan(), "AddStep must not mutate the plan when none exists");
         assert!(ps.plan.steps.is_empty());
 
         // A subsequent CreatePlan still works normally.
-        let created = ps
-            .handle_plan_tool(&call(
-                "CreatePlan",
-                serde_json::json!({"goal": "g", "steps": ["a"]}),
-            ))
-            .unwrap();
+        let created = reply(ps.handle_plan_tool(&call(
+            "CreatePlan",
+            serde_json::json!({"goal": "g", "steps": ["a"]}),
+        )));
         assert!(created.contains("1 steps"));
         assert!(ps.has_plan());
         assert_eq!(ps.plan.goal, "g");
@@ -429,7 +508,7 @@ mod tests {
         assert!(ps.handle_plan_tool(&call("Read", serde_json::json!({}))).is_none());
         assert!(ps.handle_plan_tool(&call("AskUserQuestion", serde_json::json!({}))).is_none());
         // Planning: write tools are rejected.
-        let rejected = ps.handle_plan_tool(&call("Write", serde_json::json!({}))).unwrap();
+        let rejected = reply(ps.handle_plan_tool(&call("Write", serde_json::json!({}))));
         assert!(rejected.starts_with("Error"));
 
         ps.handle_plan_tool(&call(
@@ -440,7 +519,39 @@ mod tests {
         // Executing: file/shell/Task pass through, plan-editing is rejected.
         assert!(ps.handle_plan_tool(&call("Write", serde_json::json!({}))).is_none());
         assert!(ps.handle_plan_tool(&call("Task", serde_json::json!({}))).is_none());
-        let rejected = ps.handle_plan_tool(&call("AddStep", serde_json::json!({"description": "x"}))).unwrap();
+        let rejected = reply(ps.handle_plan_tool(&call("AddStep", serde_json::json!({"description": "x"}))));
+        assert!(rejected.starts_with("Error"));
+    }
+
+    #[test]
+    fn finish_task_ends_from_planning_and_is_rejected_while_executing() {
+        let mut ps = PlanState::default();
+        match ps
+            .handle_plan_tool(&call(
+                "FinishTask",
+                serde_json::json!({"answer": "done and verified"}),
+            ))
+            .unwrap()
+        {
+            PlanToolReply::Finish(answer) => assert_eq!(answer, "done and verified"),
+            other => panic!("expected Finish, got {other:?}"),
+        }
+
+        // Missing answer degrades to an ordinary correctable error.
+        let no_answer = reply(ps.handle_plan_tool(&call("FinishTask", serde_json::json!({}))));
+        assert!(no_answer.starts_with("Error"));
+
+        // While Executing, finishing requires returning to Planning first
+        // (StepDone/RefuseStep) -- FinishTask is state-gated out.
+        ps.handle_plan_tool(&call(
+            "CreatePlan",
+            serde_json::json!({"goal": "g", "steps": ["a"]}),
+        ));
+        ps.handle_plan_tool(&call("ResumeExecution", serde_json::json!({})));
+        let rejected = reply(ps.handle_plan_tool(&call(
+            "FinishTask",
+            serde_json::json!({"answer": "nope"}),
+        )));
         assert!(rejected.starts_with("Error"));
     }
 

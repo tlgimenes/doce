@@ -291,7 +291,13 @@ pub async fn summarize_and_persist(
         .render_chat_prompt(&messages)
         .map_err(|e| e.to_string())?;
     let summary = engine
-        .generate(&rendered, SUMMARY_MAX_TOKENS, false, |_| {}, || false)
+        .generate(
+            &rendered,
+            SUMMARY_MAX_TOKENS,
+            crate::inference::ToolCallMode::Forbid,
+            |_| {},
+            || false,
+        )
         .map_err(|e| e.to_string())?;
 
     let notice_json = serde_json::json!({

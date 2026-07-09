@@ -66,7 +66,7 @@ fn render_chat_prompt_and_generate_produce_a_real_short_completion() {
     let result = engine.generate(
         &rendered,
         16,
-        false,
+        doce_lib::inference::ToolCallMode::Forbid,
         |piece| output.push_str(piece),
         || false,
     );
@@ -87,10 +87,11 @@ fn render_chat_prompt_and_generate_produce_a_real_short_completion() {
 #[ignore]
 fn grammar_constrained_tool_call_produces_syntactically_valid_json_against_the_real_model() {
     // The actual point of this test: `allow_tool_calls: true` should make a
-    // `{"tool_call": ...}` response *guaranteed* well-formed JSON matching
-    // the schema, not just "prompted for and hopefully correct" -- the
-    // whole reason grammar-constrained decoding replaced free-text parsing
-    // as the way `agent::parse_response` gets a trustworthy tool call.
+    // `<tool_call>` response *guaranteed* well-formed -- the tags plus
+    // schema-valid JSON inside, not just "prompted for and hopefully
+    // correct" -- the whole reason grammar-constrained decoding replaced
+    // free-text parsing as the way `agent::parse_response` gets a
+    // trustworthy tool call.
     let path = installed_model_path();
     let engine = InferenceEngine::load(&path, 4).expect("model should load");
 
@@ -105,7 +106,7 @@ fn grammar_constrained_tool_call_produces_syntactically_valid_json_against_the_r
         .expect("render should succeed");
 
     let result = engine
-        .generate(&rendered, 128, true, |_| {}, || false)
+        .generate(&rendered, 128, doce_lib::inference::ToolCallMode::Allow, |_| {}, || false)
         .expect("generation should succeed");
     println!("real model tool-call output: {result:?}");
 
@@ -122,7 +123,7 @@ fn grammar_constrained_tool_call_produces_syntactically_valid_json_against_the_r
             );
         }
         LoopStep::Done(text) => {
-            panic!("expected a real tool call once it committed to the {{\"tool_call\" path, got plain text: {text:?}");
+            panic!("expected a real tool call once it committed to the <tool_call> path, got plain text: {text:?}");
         }
     }
 }
@@ -213,7 +214,7 @@ fn apply_lightweight_clearing_then_summarize_against_the_real_model() {
         .render_chat_prompt(&messages)
         .expect("render should succeed");
     let summary = engine
-        .generate(&rendered, 256, false, |_| {}, || false)
+        .generate(&rendered, 256, doce_lib::inference::ToolCallMode::Forbid, |_| {}, || false)
         .expect("summarization generate should succeed");
 
     println!("real model summary: {summary:?}");

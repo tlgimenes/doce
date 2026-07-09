@@ -112,7 +112,13 @@ impl AgentBackend for BenchBackend<'_> {
         // max_tokens matches commands::agent's real generate() call
         // (limits::AGENT_TURN_MAX_OUTPUT_TOKENS) for the same reason.
         self.engine
-            .generate(&rendered, 256, true, |_| {}, || false)
+            .generate(
+                &rendered,
+                doce_lib::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS as i32,
+                doce_lib::inference::ToolCallMode::Allow,
+                |_| {},
+                || false,
+            )
             .unwrap_or_else(|e| format!("Error: generation failed: {e}"))
     }
 
@@ -120,7 +126,7 @@ impl AgentBackend for BenchBackend<'_> {
         &mut self,
         _tool_call_id: String,
         call: doce_lib::agent::ToolCall,
-    ) -> String {
+    ) -> doce_lib::agent::ToolExecution {
         let result = dispatch::execute(&call, Some(self.cwd)).model_text;
         // Printed for interactive runs, and recorded in `self.trace` as
         // the evidence a plan check-in judges completion against -- the
@@ -137,7 +143,7 @@ impl AgentBackend for BenchBackend<'_> {
             "tool={} args={args_preview} -> {result_preview}",
             call.name
         ));
-        result
+        doce_lib::agent::ToolExecution::Result(result)
     }
 }
 
@@ -218,7 +224,17 @@ impl AgentBackend for PlanExecBackend<'_> {
     async fn generate(&mut self, mut messages: Vec<ChatMessage>) -> String {
         self.turns += 1;
         if let Some(first) = messages.first_mut() {
-            *first = ChatMessage::system(self.plan_state.system_prompt());
+            // Same cwd suffix production's plan_system_message appends --
+            // without it the model has no anchor for path arguments and
+            // was observed globbing the filesystem root ("path": "/"),
+            // concluding the task's files don't exist.
+            *first = ChatMessage::system(format!(
+                "{}
+
+You are currently working in the directory: {}",
+                self.plan_state.system_prompt(),
+                self.cwd.display()
+            ));
         }
 
         let rendered = self
@@ -226,7 +242,13 @@ impl AgentBackend for PlanExecBackend<'_> {
             .render_chat_prompt(&messages)
             .expect("chat template should render");
         self.engine
-            .generate(&rendered, 256, true, |_| {}, || false)
+            .generate(
+                &rendered,
+                doce_lib::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS as i32,
+                doce_lib::inference::ToolCallMode::Require,
+                |_| {},
+                || false,
+            )
             .unwrap_or_else(|e| format!("Error: generation failed: {e}"))
     }
 
@@ -234,12 +256,24 @@ impl AgentBackend for PlanExecBackend<'_> {
         &mut self,
         _tool_call_id: String,
         call: doce_lib::agent::ToolCall,
-    ) -> String {
-        let result = if let Some(result) = self.plan_state.handle_plan_tool(&call) {
-            result
+    ) -> doce_lib::agent::ToolExecution {
+        let plan_finish: Option<String>;
+        let result = if let Some(outcome) = self.plan_state.handle_plan_tool(&call) {
+            match outcome {
+                doce_lib::agent::plan::PlanToolReply::Reply(text) => {
+                    plan_finish = None;
+                    text
+                }
+                doce_lib::agent::plan::PlanToolReply::Finish(answer) => {
+                    plan_finish = Some(answer.clone());
+                    answer
+                }
+            }
         } else if call.name == "AskUserQuestion" {
+            plan_finish = None;
             "Error: no interactive user is available in this benchmark run -- proceed using your own best judgment".to_string()
         } else if call.name == "Task" {
+            plan_finish = None;
             // Mirrors commands::agent's real Task handling: an isolated
             // subagent, FR-016 one-level nesting enforced by run_loop
             // itself via is_subagent -- kept out of the shared
@@ -272,6 +306,7 @@ impl AgentBackend for PlanExecBackend<'_> {
                 Err(e) => format!("Error: subagent did not finish ({e})"),
             }
         } else {
+            plan_finish = None;
             dispatch::execute(&call, Some(self.cwd)).model_text
         };
 
@@ -281,7 +316,10 @@ impl AgentBackend for PlanExecBackend<'_> {
             "  [{:?}] turn {} tool={} args={args_preview} -> {result_preview:?}",
             self.plan_state.state, self.turns, call.name
         );
-        result
+        match plan_finish {
+            Some(answer) => doce_lib::agent::ToolExecution::Finish(answer),
+            None => doce_lib::agent::ToolExecution::Result(result),
+        }
     }
 }
 

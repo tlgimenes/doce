@@ -9,11 +9,20 @@
 //! Tool calls are prompted for (`SYSTEM_PROMPT` below) *and*
 //! grammar-constrained at generation time
 //! (`InferenceEngine::generate`'s `allow_tool_calls`, a lazy GBNF grammar
-//! that only activates once the model starts emitting `{"tool_call"`) —
+//! that only activates once the model starts emitting `<tool_call>`) —
 //! the model's JSON is guaranteed syntactically valid once that happens,
 //! so `parse_response` below trusts it rather than defending against
 //! malformed output. A model that never starts down that path at all just
 //! answers in plain text, same as before.
+//!
+//! The calling convention is Qwen's own trained (Hermes-style) format —
+//! tool signatures declared inside `<tools></tools>` in the system
+//! message, calls emitted as JSON inside `<tool_call></tool_call>` tags —
+//! rather than a bespoke convention the model has to learn in-context.
+//! Small models converge dramatically better inside their training
+//! distribution than outside it; the previous bespoke
+//! `{"tool_call": ...}` JSON shape is still accepted by `parse_response`
+//! as a fallback.
 
 pub mod dispatch;
 pub mod plan;
@@ -21,29 +30,39 @@ pub mod rich_content;
 pub mod subagent;
 pub mod tools;
 
-/// Describes the built-in tool set and the JSON calling convention
-/// `parse_response` expects — this is the `system`-role message of every
-/// agent loop run (see `run_loop`'s `initial_messages`), not raw text
-/// concatenated onto the user's task. Small models tend to need the exact
-/// shape spelled out (with an example) to reliably produce parseable
-/// output — general "you have tools available" phrasing is not enough in
-/// practice.
-pub const SYSTEM_PROMPT: &str = r#"You are a coding and system agent with access to tools. To use a tool, respond with ONLY a JSON object in this exact shape, nothing else:
-{"tool_call": {"name": "ToolName", "arguments": {...}}}
+/// Describes the built-in tool set in the model's own trained format —
+/// this is the `system`-role message of every flat agent loop run (see
+/// `run_loop`'s `initial_messages`), not raw text concatenated onto the
+/// user's task. The `<tools>` block of JSON function signatures and the
+/// `<tool_call>` emission instruction reproduce Qwen3's chat-template
+/// tool wording as closely as possible: a small model reproduces formats
+/// it was trained on far more reliably than formats taught in-context.
+/// Empirical guidance earned against the real model (the Glob
+/// wildcard-vs-filename-list mistake, "clarify only when genuinely
+/// ambiguous") lives in each function's `description` field.
+pub const SYSTEM_PROMPT: &str = r#"You are a coding and system agent with access to tools.
 
-Available tools:
-- Read: {"file_path": string, "offset"?: number, "limit"?: number} — read a file
-- Write: {"file_path": string, "content": string} — create or overwrite a file
-- Edit: {"file_path": string, "old_string": string, "new_string": string, "replace_all"?: boolean} — targeted in-place edit
-- Bash: {"command": string, "timeout"?: number} — run a shell command
-- Glob: {"pattern": string, "path"?: string} — find files by name pattern using wildcards, e.g. "bug_*.txt" or "*.rs" (a single wildcard expression, never a space-separated list of literal filenames — that matches nothing)
-- Grep: {"pattern": string, "path"?: string, "glob"?: string} — search file contents
-- AskUserQuestion: {"header": string, "question": string, "options": [{"label": string, "description"?: string}], "multiSelect"?: boolean} — pause and ask the user a clarifying question instead of guessing; only use this when genuinely ambiguous, not for routine confirmations
+# Tools
 
-Example tool call:
-{"tool_call": {"name": "Read", "arguments": {"file_path": "/tmp/example.txt"}}}
+You may call one or more functions to assist with the user query.
 
-Once you have enough information to answer, respond in plain text with your final answer — do not wrap the final answer in JSON."#;
+You are provided with function signatures within <tools></tools> XML tags:
+<tools>
+{"type": "function", "function": {"name": "Read", "description": "Read a file from disk.", "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}, "offset": {"type": "number"}, "limit": {"type": "number"}}, "required": ["file_path"]}}}
+{"type": "function", "function": {"name": "Write", "description": "Create or overwrite a file.", "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}, "content": {"type": "string"}}, "required": ["file_path", "content"]}}}
+{"type": "function", "function": {"name": "Edit", "description": "Targeted in-place edit: replace old_string with new_string inside the file.", "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}, "old_string": {"type": "string"}, "new_string": {"type": "string"}, "replace_all": {"type": "boolean"}}, "required": ["file_path", "old_string", "new_string"]}}}
+{"type": "function", "function": {"name": "Bash", "description": "Run a shell command.", "parameters": {"type": "object", "properties": {"command": {"type": "string"}, "timeout": {"type": "number"}}, "required": ["command"]}}}
+{"type": "function", "function": {"name": "Glob", "description": "Find files by name pattern using wildcards, e.g. \"bug_*.txt\" or \"*.rs\". The pattern is a single wildcard expression, never a space-separated list of literal filenames -- that matches nothing. Omit path to search the current working directory.", "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}}, "required": ["pattern"]}}}
+{"type": "function", "function": {"name": "Grep", "description": "Search file contents with a regular expression. Omit path to search the current working directory.", "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}, "glob": {"type": "string"}}, "required": ["pattern"]}}}
+{"type": "function", "function": {"name": "AskUserQuestion", "description": "Pause and ask the user a clarifying question instead of guessing. Only use this when genuinely ambiguous, not for routine confirmations.", "parameters": {"type": "object", "properties": {"header": {"type": "string"}, "question": {"type": "string"}, "options": {"type": "array", "items": {"type": "object", "properties": {"label": {"type": "string"}, "description": {"type": "string"}}, "required": ["label"]}}, "multiSelect": {"type": "boolean"}}, "required": ["header", "question", "options"]}}}
+</tools>
+
+For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
+<tool_call>
+{"name": <function-name>, "arguments": <args-json-object>}
+</tool_call>
+
+Call one function at a time and wait for its result before deciding your next step. Once you have enough information to answer, respond in plain text with your final answer -- never inside <tool_call> tags."#;
 
 use crate::inference::ChatMessage;
 use serde::{Deserialize, Serialize};
@@ -66,19 +85,33 @@ pub enum AgentError {
     TurnCapExceeded(u32),
 }
 
-/// The convention the model is prompted to follow: a JSON object with a
-/// `tool_call` key, or nothing at all (a normal text answer). Extracts the
-/// *first* balanced `{...}` object anywhere in the text rather than
-/// requiring the entire response to be exactly one JSON value — found
-/// necessary against a real model in practice: it sometimes runs on past
-/// the first tool call and appends a second one, or wraps the JSON in a
-/// little prose, and requiring an exact whole-string parse silently
-/// degraded those into "the raw JSON became the final answer" instead of
-/// actually calling the tool. Anything with no valid `tool_call`-shaped
-/// object anywhere is treated as the final answer verbatim — a model that
-/// doesn't understand the convention degrades to "always answers
+/// The convention the model is prompted to follow — Qwen's own trained
+/// format: `{"name": ..., "arguments": ...}` JSON inside
+/// `<tool_call></tool_call>` tags. Takes the *first* tag pair anywhere in
+/// the text rather than requiring the whole response to be exactly one
+/// call — found necessary against a real model in practice: it sometimes
+/// runs on past the first call and appends a second one, or wraps the
+/// call in a little prose, and a strict whole-string parse silently
+/// degraded those into "the raw text became the final answer" instead of
+/// actually calling the tool. The pre-native bespoke shape
+/// (`{"tool_call": {...}}` as a bare JSON object) is still accepted as a
+/// fallback. Anything matching neither is the final answer verbatim — a
+/// model that doesn't follow the convention degrades to "always answers
 /// directly", not a crash.
 pub fn parse_response(text: &str) -> LoopStep {
+    if let Some(inner) = first_tool_call_tag(text) {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(inner.trim()) {
+            if let (Some(name), Some(arguments)) = (
+                value.get("name").and_then(|n| n.as_str()),
+                value.get("arguments"),
+            ) {
+                return LoopStep::ToolCall(ToolCall {
+                    name: name.to_string(),
+                    arguments: arguments.clone(),
+                });
+            }
+        }
+    }
     if let Some(json_str) = first_balanced_json_object(text) {
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&json_str) {
             if let Some(call) = value.get("tool_call") {
@@ -95,6 +128,16 @@ pub fn parse_response(text: &str) -> LoopStep {
         }
     }
     LoopStep::Done(text.to_string())
+}
+
+/// The content of the first complete `<tool_call>...</tool_call>` pair,
+/// if any. An unclosed opening tag (e.g. generation cut off by the
+/// max-token cap) yields `None` — the caller's fallback/final-answer
+/// handling deals with it.
+fn first_tool_call_tag(text: &str) -> Option<&str> {
+    let start = text.find("<tool_call>")? + "<tool_call>".len();
+    let end = text[start..].find("</tool_call>")? + start;
+    Some(&text[start..end])
 }
 
 /// Finds the first `{...}` substring with balanced braces (respecting
@@ -228,13 +271,29 @@ impl AgentContext {
 /// crosses a `tokio::spawn` boundary, so the `Send`-bound limitation this
 /// lint warns about (relevant for trait objects / spawned futures) doesn't
 /// apply.
+/// What executing one tool call did to the loop. `Result` feeds the text
+/// back as an ordinary tool result and the loop continues; `Finish` ends
+/// the whole `run_loop` call with the given final answer. `Finish` exists
+/// so a state-driven backend can put "the task is done" behind an
+/// ordinary grammar-constrained tool call (the plan engine's `FinishTask`)
+/// instead of relying on a free-text reply — free text is exactly what a
+/// small model degrades into emitting for tool NAMES after long
+/// repetitive stretches (observed for real: after twenty AddStep calls in
+/// a row, the model answered the bare text "ResumeExecution", which ended
+/// the task as a garbage final answer).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ToolExecution {
+    Result(String),
+    Finish(String),
+}
+
 #[allow(async_fn_in_trait)]
 pub trait AgentBackend {
     fn measure(&mut self, messages: &[ChatMessage]) -> u32;
     fn threshold(&self) -> u32;
     fn compact(&mut self, messages: &[ChatMessage]) -> Vec<ChatMessage>;
     async fn generate(&mut self, messages: Vec<ChatMessage>) -> String;
-    async fn execute_tool(&mut self, tool_call_id: String, call: ToolCall) -> String;
+    async fn execute_tool(&mut self, tool_call_id: String, call: ToolCall) -> ToolExecution;
 }
 
 /// Runs the tool-use loop to completion: repeatedly generates a response,
@@ -261,7 +320,25 @@ pub async fn run_loop<B: AgentBackend>(
         }
         let response = backend.generate(messages.clone()).await;
         match parse_response(&response) {
-            LoopStep::Done(text) => return Ok(text),
+            LoopStep::Done(text) => {
+                // A response that STARTED a tool call but never closed it
+                // is a generation cut off by the max-token cap, not a real
+                // final answer — the grammar guarantees any started call is
+                // well-formed through its closing tag, so truncation is the
+                // one way a garbage call escapes it. Feed a correction back
+                // (consuming a turn) instead of silently ending the whole
+                // task with the truncated text as the "answer" — observed
+                // for real: a 20-step CreatePlan cut off mid-JSON became
+                // the turn's final answer and the task ended at 0/20.
+                if text.contains("<tool_call>") && !text.contains("</tool_call>") {
+                    messages.push(ChatMessage::assistant(text));
+                    messages.push(ChatMessage::user(
+                        "Your tool call was cut off before the closing </tool_call> tag. Re-issue the complete call -- if it was long, make it more concise.",
+                    ));
+                    continue;
+                }
+                return Ok(text);
+            }
             LoopStep::ToolCall(call) => {
                 let tool_call_id = uuid::Uuid::now_v7().to_string();
                 let tool_name = call.name.clone();
@@ -271,17 +348,24 @@ pub async fn run_loop<B: AgentBackend>(
                     tool_name.clone(),
                     arguments,
                 ));
-                let result = if call.name == "Task" && context.is_subagent {
+                let execution = if call.name == "Task" && context.is_subagent {
                     // FR-016: one-level nesting — a subagent cannot itself
                     // spawn a further subagent. Fed back as an ordinary
                     // tool-error result rather than aborting the loop, so
                     // the model can recover (e.g. do the work itself).
-                    "Error: subagents cannot spawn further subagents (one-level nesting limit)"
-                        .to_string()
+                    ToolExecution::Result(
+                        "Error: subagents cannot spawn further subagents (one-level nesting limit)"
+                            .to_string(),
+                    )
                 } else {
                     backend.execute_tool(tool_call_id.clone(), call).await
                 };
-                messages.push(ChatMessage::tool_result(tool_call_id, tool_name, result));
+                match execution {
+                    ToolExecution::Finish(answer) => return Ok(answer),
+                    ToolExecution::Result(result) => {
+                        messages.push(ChatMessage::tool_result(tool_call_id, tool_name, result));
+                    }
+                }
             }
         }
     }
@@ -305,11 +389,14 @@ mod tests {
     struct FakeBackend {
         responses: Vec<String>,
         call_index: usize,
-        on_execute: Box<dyn FnMut(String, ToolCall) -> String>,
+        on_execute: Box<dyn FnMut(String, ToolCall) -> ToolExecution>,
     }
 
     impl FakeBackend {
-        fn new(responses: Vec<String>, on_execute: impl FnMut(String, ToolCall) -> String + 'static) -> Self {
+fn new(
+            responses: Vec<String>,
+            on_execute: impl FnMut(String, ToolCall) -> ToolExecution + 'static,
+        ) -> Self {
             Self {
                 responses,
                 call_index: 0,
@@ -337,14 +424,17 @@ mod tests {
             response
         }
 
-        async fn execute_tool(&mut self, tool_call_id: String, call: ToolCall) -> String {
+        async fn execute_tool(&mut self, tool_call_id: String, call: ToolCall) -> ToolExecution {
             (self.on_execute)(tool_call_id, call)
         }
     }
 
     #[test]
-    fn parses_a_tool_call() {
-        let text = r#"{"tool_call": {"name": "Read", "arguments": {"file_path": "/tmp/f.txt"}}}"#;
+    fn parses_a_native_format_tool_call() {
+        // Qwen3's trained (Hermes-style) format: JSON inside
+        // <tool_call></tool_call> XML tags.
+        let text =
+            "<tool_call>\n{\"name\": \"Read\", \"arguments\": {\"file_path\": \"/tmp/f.txt\"}}\n</tool_call>";
         let step = parse_response(text);
         assert_eq!(
             step,
@@ -353,6 +443,28 @@ mod tests {
                 arguments: serde_json::json!({"file_path": "/tmp/f.txt"}),
             })
         );
+    }
+
+    #[test]
+    fn parses_the_legacy_json_format_as_a_fallback() {
+        // The pre-native bespoke convention -- kept parseable so an
+        // off-distribution reply degrades into a working call instead of
+        // a garbage final answer.
+        let text = r#"{"tool_call": {"name": "Read", "arguments": {"file_path": "/tmp/f.txt"}}}"#;
+        assert_eq!(
+            parse_response(text),
+            LoopStep::ToolCall(ToolCall {
+                name: "Read".to_string(),
+                arguments: serde_json::json!({"file_path": "/tmp/f.txt"}),
+            })
+        );
+    }
+
+    #[test]
+    fn an_unclosed_tool_call_tag_is_a_final_answer_not_a_crash() {
+        // e.g. generation cut off by the max-token cap mid-call.
+        let text = "<tool_call>\n{\"name\": \"Read\", \"arguments\": {\"file_p";
+        assert_eq!(parse_response(text), LoopStep::Done(text.to_string()));
     }
 
     #[test]
@@ -365,7 +477,7 @@ mod tests {
 
     #[test]
     fn malformed_json_falls_back_to_plain_text() {
-        let text = r#"{"tool_call": {"name": "Read"}}"#; // missing "arguments"
+        let text = "<tool_call>\n{\"name\": \"Read\"}\n</tool_call>"; // missing "arguments"
         assert_eq!(parse_response(text), LoopStep::Done(text.to_string()));
     }
 
@@ -376,7 +488,7 @@ mod tests {
         // on the same line, which a strict whole-string JSON parse
         // rejected entirely (falling back to "the raw JSON is the final
         // answer" — the tool never actually got called).
-        let text = r#"{"tool_call": {"name": "Read", "arguments": {"file_path": "/a.txt"}}} {"tool_call": {"name": "Grep", "arguments": {"pattern": "x"}}}"#;
+        let text = "<tool_call>\n{\"name\": \"Read\", \"arguments\": {\"file_path\": \"/a.txt\"}}\n</tool_call>\n<tool_call>\n{\"name\": \"Grep\", \"arguments\": {\"pattern\": \"x\"}}\n</tool_call>";
         assert_eq!(
             parse_response(text),
             LoopStep::ToolCall(ToolCall {
@@ -388,7 +500,7 @@ mod tests {
 
     #[test]
     fn extracts_a_tool_call_wrapped_in_surrounding_prose() {
-        let text = "Sure, let me check that file.\n{\"tool_call\": {\"name\": \"Read\", \"arguments\": {\"file_path\": \"/a.txt\"}}}\nLet me know if that's not what you wanted.";
+        let text = "Sure, let me check that file.\n<tool_call>\n{\"name\": \"Read\", \"arguments\": {\"file_path\": \"/a.txt\"}}\n</tool_call>\nLet me know if that's not what you wanted.";
         assert_eq!(
             parse_response(text),
             LoopStep::ToolCall(ToolCall {
@@ -399,8 +511,8 @@ mod tests {
     }
 
     #[test]
-    fn a_closing_brace_inside_a_string_argument_does_not_end_the_object_early() {
-        let text = r#"{"tool_call": {"name": "Write", "arguments": {"file_path": "/a.txt", "content": "func f() { return 1; }"}}}"#;
+    fn a_closing_brace_inside_a_string_argument_does_not_end_the_call_early() {
+        let text = "<tool_call>\n{\"name\": \"Write\", \"arguments\": {\"file_path\": \"/a.txt\", \"content\": \"func f() { return 1; }\"}}\n</tool_call>";
         let step = parse_response(text);
         assert_eq!(
             step,
@@ -422,12 +534,12 @@ mod tests {
         let context = AgentContext::top_level();
         let mut backend = FakeBackend::new(
             vec![
-                r#"{"tool_call": {"name": "Read", "arguments": {"file_path": "/f.txt"}}}"#.to_string(),
+                "<tool_call>\n{\"name\": \"Read\", \"arguments\": {\"file_path\": \"/f.txt\"}}\n</tool_call>".to_string(),
                 "The file says hello.".to_string(),
             ],
             |_tool_call_id, call| {
                 assert_eq!(call.name, "Read");
-                "hello".to_string()
+                ToolExecution::Result("hello".to_string())
             },
         );
 
@@ -439,6 +551,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_truncated_tool_call_gets_a_correction_turn_instead_of_becoming_the_final_answer() {
+        // The grammar guarantees a STARTED tool call is well-formed to its
+        // closing tag -- the one hole is the max-token cap cutting
+        // generation off mid-call. Observed for real: a 20-step CreatePlan
+        // truncated mid-JSON silently became the whole turn's "final
+        // answer" (benchmark scored 0/20 at turn 2). The loop must feed a
+        // correction back instead.
+        let context = AgentContext::top_level();
+        let executed = std::sync::Arc::new(AtomicU32::new(0));
+        let executed_clone = executed.clone();
+        let mut backend = FakeBackend::new(
+            vec![
+                "<tool_call>\n{\"name\": \"Read\", \"arguments\": {\"file_p".to_string(),
+                "<tool_call>\n{\"name\": \"Read\", \"arguments\": {\"file_path\": \"/f.txt\"}}\n</tool_call>"
+                    .to_string(),
+                "Recovered and done.".to_string(),
+            ],
+            move |_tool_call_id, call| {
+                assert_eq!(call.name, "Read");
+                executed_clone.fetch_add(1, Ordering::SeqCst);
+                ToolExecution::Result("hello".to_string())
+            },
+        );
+
+        let result = run_loop(&context, vec![ChatMessage::user("start")], &mut backend)
+            .await
+            .unwrap();
+
+        assert_eq!(result, "Recovered and done.");
+        assert_eq!(
+            executed.load(Ordering::SeqCst),
+            1,
+            "the re-issued call must actually execute"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_finish_execution_ends_the_loop_with_that_answer() {
+        // The plan engine's FinishTask: "done" is an ordinary
+        // grammar-constrained tool call, so a state that requires tool
+        // calls can still end the task without free-text replies.
+        let context = AgentContext::top_level();
+        let mut backend = FakeBackend::new(
+            vec![
+                "<tool_call>\n{\"name\": \"FinishTask\", \"arguments\": {\"answer\": \"all verified done\"}}\n</tool_call>"
+                    .to_string(),
+            ],
+            |_tool_call_id, call| {
+                assert_eq!(call.name, "FinishTask");
+                ToolExecution::Finish("all verified done".to_string())
+            },
+        );
+
+        let result = run_loop(&context, vec![ChatMessage::user("start")], &mut backend)
+            .await
+            .unwrap();
+        assert_eq!(result, "all verified done");
+    }
+
+    #[tokio::test]
     async fn exceeding_the_turn_cap_is_an_error_not_an_infinite_loop() {
         let context = AgentContext {
             is_subagent: false,
@@ -447,8 +619,8 @@ mod tests {
         };
 
         let mut backend = FakeBackend::new(
-            vec![r#"{"tool_call": {"name": "Read", "arguments": {}}}"#.to_string()],
-            |_tool_call_id, _call| "ok".to_string(),
+            vec!["<tool_call>\n{\"name\": \"Read\", \"arguments\": {}}\n</tool_call>".to_string()],
+            |_tool_call_id, _call| ToolExecution::Result("ok".to_string()),
         );
 
         let result = run_loop(&context, vec![ChatMessage::user("start")], &mut backend).await;
@@ -467,7 +639,7 @@ mod tests {
 
         let mut backend = FakeBackend::new(
             vec![
-                r#"{"tool_call": {"name": "Task", "arguments": {"prompt": "delegate further"}}}"#.to_string(),
+                "<tool_call>\n{\"name\": \"Task\", \"arguments\": {\"prompt\": \"delegate further\"}}\n</tool_call>".to_string(),
                 "I'll handle it myself.".to_string(),
             ],
             move |_tool_call_id, _call| {
@@ -475,7 +647,7 @@ mod tests {
                 // `run_loop` intercepts `Task` calls under `is_subagent`
                 // before calling `execute_tool` at all.
                 executed_tools_clone.fetch_add(1, Ordering::SeqCst);
-                "should not run".to_string()
+                ToolExecution::Result("should not run".to_string())
             },
         );
 
@@ -494,12 +666,12 @@ mod tests {
 
         let mut backend = FakeBackend::new(
             vec![
-                r#"{"tool_call": {"name": "Task", "arguments": {"prompt": "go do research"}}}"#.to_string(),
+                "<tool_call>\n{\"name\": \"Task\", \"arguments\": {\"prompt\": \"go do research\"}}\n</tool_call>".to_string(),
                 "Done, subagent found the answer.".to_string(),
             ],
             |_tool_call_id, call| {
                 assert_eq!(call.name, "Task");
-                "subagent result: 42".to_string()
+                ToolExecution::Result("subagent result: 42".to_string())
             },
         );
 

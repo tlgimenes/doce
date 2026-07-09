@@ -489,6 +489,7 @@ export const PLAN_TOOL_NAMES = new Set([
   "ResumeExecution",
   "StepDone",
   "RefuseStep",
+  "FinishTask",
 ]);
 
 /** True for any row the plan machine persisted: one of the five plan
