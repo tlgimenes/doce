@@ -13,7 +13,7 @@
 - Governing invariant (spec): **SQLite stores exactly what entered the model's context; files store the canonical payloads that might enter it.** No unbounded text may reach `model_text` on any path, including failure paths.
 - Payload file write order: **file first, then SQLite row** — a crash may orphan a file, never a row referencing a missing file.
 - Transcript files are **derived caches**: regenerable from SQLite at any time; append failures are logged and swallowed.
-- Constants (spec, verbatim): threshold default = `CONTEXT_WINDOW_TOKENS / 16` (= 512) under settings key `context.toolOutputOffloadTokens`; `READ_MAX_LINE_CHARS = 2000`; `READ_MAX_BYTES = 8192`; `TRANSCRIPT_ARGS_CAP_CHARS = 2000`; `PREVIEW_CHARS = 500` (retained).
+- Constants (spec, verbatim): threshold default = `CONTEXT_WINDOW_TOKENS / 16` under settings key `context.toolOutputOffloadTokens` — the formula governs, not a literal (the spec's "512" predates commit `7bad741`, which raised the window to 16384, making the derived default 1024); `READ_MAX_LINE_CHARS = 2000`; `READ_MAX_BYTES = 8192`; `TRANSCRIPT_ARGS_CAP_CHARS = 2000`; `PREVIEW_CHARS = 500` (retained).
 - Carve-outs (spec): **Read** never writes a payload copy; **Task**, **AskUserQuestion**, and plan-tool replies stay inline with no payload file.
 - Rust tests: `cargo test` run from `src-tauri/`. Frontend tests: `npm test` (vitest) from repo root. Format Rust with `cargo fmt`, TS with `npm run format` (oxfmt — this repo does not use prettier). Lint TS with `npm run lint` (oxlint).
 - Commit after every task. Do not commit failing tests.
@@ -23,11 +23,13 @@
 ### Task 1: Token-denominated threshold setting
 
 **Files:**
+
 - Modify: `src-tauri/src/context/limits.rs` (add constant; keep `DEFAULT_TOOL_OUTPUT_OFFLOAD_CHARS` until Task 3 removes its last consumer)
 - Modify: `src-tauri/src/context/mod.rs:55-150` (ContextSettings)
 - Test: inline `#[cfg(test)]` in both files (existing modules)
 
 **Interfaces:**
+
 - Produces: `ContextSettings.tool_output_offload_tokens: usize` (default 512), `ContextSettings::KEY_TOOL_OUTPUT_OFFLOAD_TOKENS = "context.toolOutputOffloadTokens"`, `limits::DEFAULT_TOOL_OUTPUT_OFFLOAD_TOKENS`. Task 3 consumes the field; Task 3 removes the old `tool_output_offload_chars` field and its key/default.
 
 - [ ] **Step 1: Write the failing test**
@@ -73,7 +75,7 @@ Expected: FAIL — `no field tool_output_offload_tokens` (compile error).
 In `src-tauri/src/context/limits.rs`, below `DEFAULT_TOOL_OUTPUT_OFFLOAD_CHARS`:
 
 ```rust
-/// 1/16 of `CONTEXT_WINDOW_TOKENS` (= 512 today). A tool result whose
+/// 1/16 of `CONTEXT_WINDOW_TOKENS` (= 1024 at the 16K window). A tool result whose
 /// model-facing text costs at most this many tokens is inlined whole;
 /// anything larger becomes a status reference line pointing at its payload
 /// file (2026-07-09 payload-files design). Token-denominated successor to
@@ -126,10 +128,12 @@ git commit -m "feat(context): token-denominated tool-output threshold setting"
 ### Task 2: `context/payload.rs` — stage every tool result through a payload file
 
 **Files:**
+
 - Create: `src-tauri/src/context/payload.rs`
 - Modify: `src-tauri/src/context/mod.rs` (add `pub mod payload;` next to `pub mod offload;` — offload is deleted in Task 3)
 
 **Interfaces:**
+
 - Consumes: nothing from other tasks (pure function; token counting injected).
 - Produces (Task 3/4 call this):
 
@@ -144,12 +148,13 @@ pub fn stage_tool_result(
     app_data_dir: &Path,
     conversation_id: &str,
     tool_call_id: &str,
-    model_text: &str,
-    detail: serde_json::Value,
+    outcome: &crate::agent::dispatch::ToolOutcome,
     threshold_tokens: usize,
     count_tokens: impl Fn(&str) -> usize,
 ) -> StagedResult
 ```
+
+**Re-baseline note (HEAD moved to `1dad370` after this plan was written):** commit `1dad370` added `ToolOutcome::offload_text()` in `agent/dispatch.rs` — it already returns the full Bash rendition (reconstructed from `detail` via the shared `bash_result_model_text` helper) and borrows `model_text` for every other tool. **Reuse it as the payload source instead of writing a new extraction function.** Taking `&ToolOutcome` here mirrors the existing precedent of `context::annotate_with_token_count`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -173,12 +178,16 @@ mod tests {
         })
     }
 
+    fn outcome(model_text: &str, detail: serde_json::Value) -> crate::agent::dispatch::ToolOutcome {
+        crate::agent::dispatch::ToolOutcome { model_text: model_text.to_string(), detail }
+    }
+
     #[test]
     fn small_result_inlines_but_still_writes_the_payload_file() {
         let dir = tempfile::tempdir().unwrap();
         let staged = stage_tool_result(
-            dir.path(), "conv1", "call1", "short output",
-            json!({"toolName": "Grep", "matches": [], "outcome": {"ok": true}}),
+            dir.path(), "conv1", "call1",
+            &outcome("short output", json!({"toolName": "Grep", "matches": [], "outcome": {"ok": true}})),
             512, fake_count,
         );
         assert_eq!(staged.model_text, "short output");
@@ -192,8 +201,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let big = "line of output\n".repeat(500); // ~1875 fake tokens
         let staged = stage_tool_result(
-            dir.path(), "conv1", "call2", &big,
-            json!({"toolName": "Grep", "matches": ["a", "b"], "outcome": {"ok": true}}),
+            dir.path(), "conv1", "call2",
+            &outcome(&big, json!({"toolName": "Grep", "matches": ["a", "b"], "outcome": {"ok": true}})),
             512, fake_count,
         );
         let path = staged.payload_ref.clone().unwrap();
@@ -211,10 +220,10 @@ mod tests {
         let stderr = "e".repeat(3_000);
         let staged = stage_tool_result(
             dir.path(), "conv1", "call3",
-            "tail-biased preview the model would have seen",
-            bash_detail(&stdout, &stderr),
+            &outcome("tail-biased preview the model would have seen", bash_detail(&stdout, &stderr)),
             512, fake_count,
         );
+        // offload_text()'s full rendition, not the tail-biased preview.
         let written = std::fs::read_to_string(staged.payload_ref.as_ref().unwrap()).unwrap();
         assert!(written.contains(&stdout) && written.contains(&stderr));
         // Slimmed detail: previews + byte counts, bulk gone.
@@ -232,8 +241,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let big_preview = "x".repeat(4_000); // ~1000 fake tokens > 512
         let staged = stage_tool_result(
-            dir.path(), "conv1", "call4", &big_preview,
-            bash_detail(&"s".repeat(10_000), ""),
+            dir.path(), "conv1", "call4",
+            &outcome(&big_preview, bash_detail(&"s".repeat(10_000), "")),
             512, fake_count,
         );
         assert!(staged.model_text.starts_with("Bash: exit 0 — 10000 bytes stdout, 0 bytes stderr"));
@@ -248,8 +257,8 @@ mod tests {
         std::fs::write(&blocker, "not a dir").unwrap();
         let big = "y".repeat(10_000);
         let staged = stage_tool_result(
-            dir.path(), "conv1", "call5", &big,
-            json!({"toolName": "Grep", "matches": [], "outcome": {"ok": true}}),
+            dir.path(), "conv1", "call5",
+            &outcome(&big, json!({"toolName": "Grep", "matches": [], "outcome": {"ok": true}})),
             512, fake_count,
         );
         assert!(staged.payload_ref.is_none());
@@ -292,22 +301,13 @@ pub struct StagedResult {
     pub detail: serde_json::Value,
 }
 
-/// The canonical payload for this result: Bash's is the full untruncated
-/// stdout+stderr living in `detail` (its `model_text` is already
-/// tail-biased); every other tool's `model_text` IS the full result.
-fn full_payload(model_text: &str, detail: &serde_json::Value) -> String {
-    if detail["toolName"] == "Bash" {
-        let stdout = detail["outcome"]["stdout"].as_str().unwrap_or("");
-        let stderr = detail["outcome"]["stderr"].as_str().unwrap_or("");
-        if stderr.is_empty() {
-            stdout.to_string()
-        } else {
-            format!("{stdout}\n--- stderr ---\n{stderr}")
-        }
-    } else {
-        model_text.to_string()
-    }
-}
+// The canonical payload for this result comes from the existing
+// `ToolOutcome::offload_text()` (agent/dispatch.rs, added in 1dad370): the
+// full Bash rendition reconstructed from `detail` via the shared
+// `bash_result_model_text` helper, or a borrow of `model_text` for every
+// other tool. Do NOT write a new extraction function — update
+// `offload_text()`'s doc comment (it references `context::offload`, deleted
+// in Task 3) to reference this module instead.
 
 /// The status line an over-threshold result is replaced with: cheap
 /// metadata that answers "did it work / how big" without a Read round-trip.
@@ -356,13 +356,13 @@ pub fn stage_tool_result(
     app_data_dir: &Path,
     conversation_id: &str,
     tool_call_id: &str,
-    model_text: &str,
-    detail: serde_json::Value,
+    outcome: &crate::agent::dispatch::ToolOutcome,
     threshold_tokens: usize,
     count_tokens: impl Fn(&str) -> usize,
 ) -> StagedResult {
-    let payload = full_payload(model_text, &detail);
-    let detail = slim_detail(detail);
+    let payload = outcome.offload_text().into_owned();
+    let model_text = &outcome.model_text;
+    let detail = slim_detail(outcome.detail.clone());
 
     let dir = app_data_dir.join("tool-outputs").join(conversation_id);
     let write_result = std::fs::create_dir_all(&dir)
@@ -412,6 +412,7 @@ git commit -m "feat(context): payload-file staging for every data-tool result"
 ### Task 3: Wire the top-level path; retire `offload.rs` and the chars setting
 
 **Files:**
+
 - Modify: `src-tauri/src/commands/agent.rs:1003-1041` (`handle_general_tool_call`)
 - Modify: `src-tauri/src/storage/conversations.rs:29-66` (`HistoryMessage.offloaded_to` → `payload_ref`; `parse_tool_row_flags`)
 - Modify: `src-tauri/src/context/mod.rs` (clearing uses renamed field; remove chars setting; remove `pub mod offload;`)
@@ -420,6 +421,7 @@ git commit -m "feat(context): payload-file staging for every data-tool result"
 - Test: existing tests in `commands/agent.rs` (`handle_general_tool_call_persists_...` around line 2143) plus new ones below
 
 **Interfaces:**
+
 - Consumes: `stage_tool_result` (Task 2), `ContextSettings.tool_output_offload_tokens` (Task 1).
 - Produces: persisted `detail.payloadRef` (string path) on every non-Read general tool result; Read results carry `detail.payloadRef` = the tool's resolved source path. `HistoryMessage.payload_ref: Option<String>` (renamed from `offloaded_to`), parsed from `detail.payloadRef` with `detail.offloadedTo` as legacy fallback. `limits::tool_cleared_placeholder_with_pointer(path)` now reads `"[Old tool result cleared; recover with Read \"{path}\"]"`.
 
@@ -473,7 +475,7 @@ Expected: FAIL (payloadRef never stamped; parse ignores the new key).
 
 - [ ] **Step 3: Implement**
 
-**`handle_general_tool_call`** — replace lines 1006-1027 (the offload block and `detail["offloadedTo"]` stamp) with:
+**`handle_general_tool_call`** — replace the whole offload block (as of `1dad370` it spans the `ContextSettings::load` call, the `offload_source = outcome.offload_text()` line, the `offload_if_oversized` match at ~lines 1007-1031, and the `detail["offloadedTo"]` stamp at ~1034 — anchor by grepping `offload_if_oversized` in this file, don't trust line numbers) with:
 
 ```rust
 let settings = crate::context::ContextSettings::load(conn)
@@ -493,8 +495,7 @@ let (model_text, detail) = if call.name == "Read" {
                 &app_data_dir,
                 parent_conversation_id,
                 tool_call_id,
-                &outcome.model_text,
-                outcome.detail.clone(),
+                &outcome,
                 settings.tool_output_offload_tokens,
                 |text| engine.count_tokens(text).unwrap_or(usize::MAX),
             );
@@ -539,6 +540,7 @@ fn parse_tool_row_flags(content: &str) -> (bool, Option<String>) {
 Fix the two construction sites of `HistoryMessage` in this file and every use of `.offloaded_to` in `context/mod.rs` (`apply_lightweight_clearing` lines 264-306 and its tests) — mechanical rename, `cargo build` finds them all.
 
 **Retire the chars setting and offload module:**
+
 - Delete `src-tauri/src/context/offload.rs`; remove `pub mod offload;` from `context/mod.rs`.
 - Remove `tool_output_offload_chars` field, `KEY_TOOL_OUTPUT_OFFLOAD_CHARS`, `DEFAULT_TOOL_OUTPUT_OFFLOAD_CHARS` (both files), its `from_raw` parsing, its slot in `load`'s SQL (back to 4 placeholders), and the `assert!(DEFAULT_TOOL_OUTPUT_OFFLOAD_CHARS >= 1500)` line in the limits test. An existing user-set `context.toolOutputOffloadChars` row is simply never read again (spec: dropped, not converted).
 - Reword the pointer placeholder in `limits.rs` (it now also covers Read rows whose ref is a source path, so "full output saved at" is wrong):
@@ -568,10 +570,12 @@ git commit -m "feat(agent): stage top-level tool results through payload files; 
 ### Task 4: Subagent staging + honest Bash marker
 
 **Files:**
+
 - Modify: `src-tauri/src/commands/agent.rs:669-676` (SubagentBackend struct), `:730-782` (its `execute_tool`), `:907-914` (construction site)
 - Modify: `src-tauri/src/agent/tools/bash.rs:54-58` (marker text) and its tests
 
 **Interfaces:**
+
 - Consumes: `stage_tool_result` (Task 2).
 - Produces: subagent tool_result rows carry `payloadRef` exactly like top-level rows; `truncate_tail_biased`'s marker no longer claims the output is "preserved in the conversation transcript".
 
@@ -623,7 +627,7 @@ In `bash.rs`, change the marker line to:
 "{}\n... [{omitted} bytes omitted — full output saved to this call's payload file]\n{}",
 ```
 
-and update the bash test that asserts on the old marker text (grep for `preserved in the conversation transcript` under `src-tauri/`; the dispatch doc comment at `dispatch.rs:342-347` mentions offload — update it to name `stage_tool_result`).
+**Re-baseline note (`1dad370`):** `truncate_tail_biased` now has TWO marker sites — the original line-window format and the F3 byte-fallback branch — both carrying the same "preserved in the conversation transcript" text. Update both to the wording above (grep for `preserved in the conversation transcript` under `src-tauri/` — hits include the F3 tests added in `1dad370`, which assert on `bytes omitted` and must keep passing; only the trailing clause changes). The dispatch doc comment mentioning offload (`dispatch.rs`, Bash arm and `offload_text()`'s doc) should be updated to name `stage_tool_result`.
 
 - [ ] **Step 4: Run tests**
 
@@ -642,10 +646,12 @@ git commit -m "feat(agent): payload staging on the subagent path; honest Bash ma
 ### Task 5: Read truncation caps (Piece 2)
 
 **Files:**
+
 - Modify: `src-tauri/src/agent/tools/fs.rs:14-31` (`read`) and its tests
 - Modify: `src-tauri/src/agent/dispatch.rs:218-244` (Read arm: `detail.outcome.content` → bounded preview)
 
 **Interfaces:**
+
 - Consumes: nothing new.
 - Produces: `fs::read` output is bounded by `READ_MAX_LINE_CHARS = 2000` per line and `READ_MAX_BYTES = 8192` total, with a continue-offset marker. Read's `detail.outcome` carries `contentPreview` (2000 chars) + `contentBytes` instead of full `content` — frontend types updated in Task 9.
 
@@ -767,10 +773,12 @@ git commit -m "feat(tools): bounded Read — per-line clamp and total cap with c
 ### Task 6: `context/transcript.rs` — render, append, regenerate, heal
 
 **Files:**
+
 - Create: `src-tauri/src/context/transcript.rs`
 - Modify: `src-tauri/src/context/mod.rs` (`pub mod transcript;`)
 
 **Interfaces:**
+
 - Consumes: nothing from other tasks (plain `rusqlite::Connection` + paths).
 - Produces (Tasks 7-8 call these):
 
@@ -1034,12 +1042,14 @@ git commit -m "feat(context): materialized transcript render/append/regenerate/h
 ### Task 7: `storage::messages::insert` — one choke point for every message insert
 
 **Files:**
+
 - Create: `src-tauri/src/storage/messages.rs`
 - Modify: `src-tauri/src/storage/mod.rs` (`pub mod messages;`)
 - Modify: every hand-rolled `MAX(sequence)+1` insert site. Enumerate them with:
   `grep -rn "COALESCE(MAX(sequence)" src-tauri/src` — expected sites: `commands/agent.rs` (persist_tool_call ~line 235, persist_tool_result ~line 299, and any sibling persist helpers the grep reveals), `scheduler/worker.rs` (~line 137), `storage/conversations.rs` (~line 387, `persist_context_notice` and the user/assistant insert helpers), `agent/subagent.rs` (~line 54 seed message).
 
 **Interfaces:**
+
 - Consumes: `transcript::{render_entry, append_entry}`, `row_body` logic (Task 6 — expose the body choice by having `insert` decide it the same way; see code).
 - Produces (Task 8 relies on the transcript side-effect; all existing callers rely on identical DB semantics):
 
@@ -1232,12 +1242,14 @@ git commit -m "refactor(storage): single messages::insert choke point with trans
 ### Task 8: Heal on open, system-prompt transcript line, transcript-aware clearing
 
 **Files:**
+
 - Modify: `src-tauri/src/agent/plan.rs:74-157` (`plan_system_message` gains `transcript_path: Option<&str>`)
 - Modify: `src-tauri/src/commands/agent.rs` (top-level seed + subagent seed at ~line 889 pass the path; heal_if_stale on agent start)
 - Modify: `src-tauri/src/commands/conversations.rs` (heal_if_stale where history loads for chat)
 - Modify: `src-tauri/src/context/mod.rs:264-306` (`apply_lightweight_clearing` gains transcript context) and `src-tauri/src/context/limits.rs` (new placeholder)
 
 **Interfaces:**
+
 - Consumes: `transcript::{heal_if_stale, transcript_path}` (Task 6), `HistoryMessage.payload_ref` (Task 3).
 - Produces: `limits::tool_cleared_placeholder_transcript(path: &str, seq: i64) -> String` = `"[Old tool result cleared; see entry #{seq} in the transcript at \"{path}\" — Read it to recover]"`. New signature `apply_lightweight_clearing(history, keep_n, transcript_path: Option<&str>)`. `plan_system_message(cwd, allow_task, transcript_path)`.
 
@@ -1360,11 +1372,13 @@ git commit -m "feat(context): transcript in system prompt, heal-on-open, restora
 ### Task 9: Frontend — slimmed detail shapes and lazy payload loading
 
 **Files:**
+
 - Modify: `src/lib/ipc.ts` (`BashDetail.outcome`: `stdout/stderr` → `stdoutPreview/stderrPreview/stdoutBytes/stderrBytes`; `ReadDetail.outcome`: `content` → `contentPreview/contentBytes`; both details gain `payloadRef?: string | null`)
 - Modify: `src/views/chat/tool-widgets/BashWidget.tsx`, `src/views/chat/tool-widgets/ReadWidget.tsx` (render previews; `ViewFullOutput` gets `payloadRef ?? offloadedTo`)
 - Test: `src/views/chat/tool-widgets/BashWidget.test.tsx`, `ReadWidget.test.tsx`
 
 **Interfaces:**
+
 - Consumes: the Rust detail shapes from Tasks 3-5 (`stdoutPreview`, `stderrPreview`, `stdoutBytes`, `stderrBytes`, `contentPreview`, `contentBytes`, `payloadRef`). `ViewFullOutput` already lazy-loads any path via the existing `read_attached_file` IPC — no new command needed.
 - Produces: widgets that render instantly from bounded metadata and load bulk on demand. Legacy rows (old `stdout`/`content`/`offloadedTo` keys) must still render.
 
@@ -1377,12 +1391,17 @@ it("renders the preview fields and offers the payload file", () => {
   render(
     <BashWidget
       detail={{
-        toolName: "Bash", command: "cargo test", timeoutMs: null,
+        toolName: "Bash",
+        command: "cargo test",
+        timeoutMs: null,
         payloadRef: "/data/tool-outputs/c1/tc1.txt",
         outcome: {
-          ok: true, exitCode: 0,
-          stdoutPreview: "running 214 tests…", stdoutBytes: 48213,
-          stderrPreview: "", stderrBytes: 0,
+          ok: true,
+          exitCode: 0,
+          stdoutPreview: "running 214 tests…",
+          stdoutBytes: 48213,
+          stderrPreview: "",
+          stderrBytes: 0,
         },
       }}
     />,
@@ -1395,7 +1414,9 @@ it("still renders legacy rows with inline stdout and offloadedTo", () => {
   render(
     <BashWidget
       detail={{
-        toolName: "Bash", command: "ls", timeoutMs: null,
+        toolName: "Bash",
+        command: "ls",
+        timeoutMs: null,
         offloadedTo: "/old/offload.txt",
         outcome: { ok: true, exitCode: 0, stdout: "a.txt", stderr: "" },
       }}
@@ -1462,6 +1483,7 @@ git commit -m "feat(ui): render slimmed tool detail with lazy payload loading"
 ### Task 10: End-to-end verification
 
 **Files:**
+
 - No new code. Possibly touch: `tests/e2e/specs/` if an existing spec asserts on old detail shapes.
 
 - [ ] **Step 1: Full test suites**
@@ -1478,6 +1500,7 @@ Expected: PASS. The subagent spec (`tests/e2e/specs/subagent.spec.ts`) is the SC
 - [ ] **Step 3: Manual smoke (dev app)**
 
 Run: `npm run tauri dev`, open a conversation in agent mode, and verify the full loop the spec promises:
+
 1. Ask for something producing big output ("run `find / -name '*.plist' 2>/dev/null | head -3000`"). The widget shows exit code + previews instantly; "View full output" loads the payload file; `<app_data>/tool-outputs/<conv>/` contains the file.
 2. `<app_data>/transcripts/<conv>.txt` exists and its entries match what the model saw (reference line, not 3000 paths).
 3. Keep the conversation going past `TOOL_KEEP_N` tool calls; ask the model about the earlier output — it should Read the payload file or transcript back (cleared placeholder cites a real path).
