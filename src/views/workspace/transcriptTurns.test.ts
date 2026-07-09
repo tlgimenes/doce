@@ -2,13 +2,13 @@ import { describe, expect, it } from "vitest";
 import type { Message } from "@/lib/ipc";
 import { groupTranscriptTurns } from "./transcriptTurns";
 
-function message(overrides: Partial<Message> & { id: string }): Message {
+function message({ id, ...overrides }: Partial<Message> & { id: string }): Message {
   return {
-    id: overrides.id,
+    id,
     conversationId: "conv-1",
     role: "assistant",
     contentType: "text",
-    content: overrides.id,
+    content: id,
     toolName: null,
     createdAt: 1,
     durationMs: null,
