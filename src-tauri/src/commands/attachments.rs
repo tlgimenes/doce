@@ -65,6 +65,15 @@ fn detect_mime_type(path: &Path) -> String {
         Some("jpg") | Some("jpeg") => "image/jpeg",
         Some("gif") => "image/gif",
         Some("webp") => "image/webp",
+        Some("svg") => "image/svg+xml",
+        Some("mp4") => "video/mp4",
+        Some("webm") => "video/webm",
+        Some("ogg") => "video/ogg",
+        Some("mov") => "video/quicktime",
+        Some("mp3") => "audio/mpeg",
+        Some("wav") => "audio/wav",
+        Some("m4a") => "audio/mp4",
+        Some("flac") => "audio/flac",
         _ => "application/octet-stream",
     }
     .to_string()
@@ -91,6 +100,31 @@ mod tests {
         assert_eq!(result.mime_type, "image/png");
         let decoded = STANDARD.decode(&result.data).unwrap();
         assert_eq!(decoded, bytes);
+    }
+
+    #[test]
+    fn detects_native_preview_mime_types_by_extension() {
+        let cases = [
+            ("diagram.svg", "image/svg+xml"),
+            ("clip.mp4", "video/mp4"),
+            ("clip.webm", "video/webm"),
+            ("clip.ogg", "video/ogg"),
+            ("clip.mov", "video/quicktime"),
+            ("sound.mp3", "audio/mpeg"),
+            ("sound.wav", "audio/wav"),
+            ("sound.m4a", "audio/mp4"),
+            ("sound.flac", "audio/flac"),
+        ];
+
+        for (name, expected_mime) in cases {
+            let dir = tempdir().unwrap();
+            let file_path = dir.path().join(name);
+            fs::write(&file_path, b"preview bytes").unwrap();
+
+            let result = read_attached_file(file_path.to_string_lossy().to_string()).unwrap();
+
+            assert_eq!(result.mime_type, expected_mime, "wrong MIME for {name}");
+        }
     }
 
     #[test]
