@@ -60,6 +60,13 @@ pub const DEFAULT_HARD_LIMIT_PCT: f64 = 0.9;
 /// pointer left inline.
 pub const DEFAULT_TOOL_OUTPUT_OFFLOAD_CHARS: usize = 2000;
 
+/// 1/16 of `CONTEXT_WINDOW_TOKENS` (= 1024 at the 16K window). A tool result whose
+/// model-facing text costs at most this many tokens is inlined whole;
+/// anything larger becomes a status reference line pointing at its payload
+/// file (2026-07-09 payload-files design). Token-denominated successor to
+/// `DEFAULT_TOOL_OUTPUT_OFFLOAD_CHARS`.
+pub const DEFAULT_TOOL_OUTPUT_OFFLOAD_TOKENS: usize = (CONTEXT_WINDOW_TOKENS / 16) as usize;
+
 /// `reserve` for `InferenceEngine::fit_to_context`'s per-turn call inside
 /// `agent::run_loop` (`context::fit_turn_to_budget`) -- and now also the
 /// literal `max_tokens` the agent `generate()` call sites pass (they
@@ -99,12 +106,18 @@ mod tests {
     #[allow(clippy::assertions_on_constants)]
     fn budget_constants_stay_proportional_to_the_window() {
         assert_eq!(SUMMARY_MAX_TOKENS, (CONTEXT_WINDOW_TOKENS / 16) as i32);
+        assert_eq!(
+            DEFAULT_TOOL_OUTPUT_OFFLOAD_TOKENS,
+            (CONTEXT_WINDOW_TOKENS / 16) as usize
+        );
         assert!(DEFAULT_TOOL_OUTPUT_OFFLOAD_CHARS >= 1500);
         assert!(AGENT_TURN_MAX_OUTPUT_TOKENS >= CONTEXT_WINDOW_TOKENS / 16);
         // The tail reserve must comfortably cover a big plan's tail
         // (hundreds of tokens) without the combined per-turn reserve
         // eating a meaningful slice of the window.
         assert!(STATE_TAIL_RESERVE_TOKENS >= CONTEXT_WINDOW_TOKENS / 32);
-        assert!(STATE_TAIL_RESERVE_TOKENS + AGENT_TURN_MAX_OUTPUT_TOKENS <= CONTEXT_WINDOW_TOKENS / 8);
+        assert!(
+            STATE_TAIL_RESERVE_TOKENS + AGENT_TURN_MAX_OUTPUT_TOKENS <= CONTEXT_WINDOW_TOKENS / 8
+        );
     }
 }

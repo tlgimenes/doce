@@ -21,8 +21,8 @@
 pub mod limits;
 pub mod offload;
 
-use crate::inference::{ChatMessage, InferenceEngine, MessageContent};
 use crate::agent::dispatch::ToolOutcome;
+use crate::inference::{ChatMessage, InferenceEngine, MessageContent};
 use crate::storage::conversations::{
     load_history_annotated, persist_context_notice, HistoryMessage,
 };
@@ -60,6 +60,7 @@ pub struct ContextSettings {
     pub compact_threshold_pct: f64,
     pub hard_limit_pct: f64,
     pub tool_output_offload_chars: usize,
+    pub tool_output_offload_tokens: usize,
 }
 
 impl ContextSettings {
@@ -67,11 +68,14 @@ impl ContextSettings {
     pub const DEFAULT_COMPACT_THRESHOLD_PCT: f64 = limits::DEFAULT_COMPACT_THRESHOLD_PCT;
     pub const DEFAULT_HARD_LIMIT_PCT: f64 = limits::DEFAULT_HARD_LIMIT_PCT;
     pub const DEFAULT_TOOL_OUTPUT_OFFLOAD_CHARS: usize = limits::DEFAULT_TOOL_OUTPUT_OFFLOAD_CHARS;
+    pub const DEFAULT_TOOL_OUTPUT_OFFLOAD_TOKENS: usize =
+        limits::DEFAULT_TOOL_OUTPUT_OFFLOAD_TOKENS;
 
     pub const KEY_WARN_THRESHOLD_PCT: &'static str = "context.warnThresholdPct";
     pub const KEY_COMPACT_THRESHOLD_PCT: &'static str = "context.compactThresholdPct";
     pub const KEY_HARD_LIMIT_PCT: &'static str = "context.hardLimitPct";
     pub const KEY_TOOL_OUTPUT_OFFLOAD_CHARS: &'static str = "context.toolOutputOffloadChars";
+    pub const KEY_TOOL_OUTPUT_OFFLOAD_TOKENS: &'static str = "context.toolOutputOffloadTokens";
 
     /// Pure parse-with-defaults-and-clamping logic (data-model.md's
     /// Validation Rules), independent of the DB so it's unit-testable
@@ -99,6 +103,11 @@ impl ContextSettings {
             .and_then(|v| v.parse::<usize>().ok())
             .filter(|v| *v > 0)
             .unwrap_or(Self::DEFAULT_TOOL_OUTPUT_OFFLOAD_CHARS);
+        let tool_output_offload_tokens = raw
+            .get(Self::KEY_TOOL_OUTPUT_OFFLOAD_TOKENS)
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(Self::DEFAULT_TOOL_OUTPUT_OFFLOAD_TOKENS);
 
         // Invariant: warn <= compact <= hardLimit. Clamp up rather than
         // erroring if a hand-edited setting violates it.
@@ -110,10 +119,11 @@ impl ContextSettings {
             compact_threshold_pct,
             hard_limit_pct,
             tool_output_offload_chars,
+            tool_output_offload_tokens,
         }
     }
 
-    /// No separate seeding step is needed for these four keys: an absent
+    /// No separate seeding step is needed for these five keys: an absent
     /// row simply falls back to its default inside `from_raw` above, the
     /// same lazy-default behavior `get_settings`/`update_setting` already
     /// rely on elsewhere in this codebase. A key only ever appears in the
@@ -123,7 +133,7 @@ impl ContextSettings {
         let raw = conn
             .call(|conn: &mut Connection| -> rusqlite::Result<std::collections::HashMap<String, String>> {
                 let mut stmt = conn.prepare(
-                    "SELECT key, value FROM settings WHERE key IN (?1, ?2, ?3, ?4)",
+                    "SELECT key, value FROM settings WHERE key IN (?1, ?2, ?3, ?4, ?5)",
                 )?;
                 let rows = stmt
                     .query_map(
@@ -132,6 +142,7 @@ impl ContextSettings {
                             Self::KEY_COMPACT_THRESHOLD_PCT,
                             Self::KEY_HARD_LIMIT_PCT,
                             Self::KEY_TOOL_OUTPUT_OFFLOAD_CHARS,
+                            Self::KEY_TOOL_OUTPUT_OFFLOAD_TOKENS,
                         ],
                         |row| {
                             let key: String = row.get(0)?;
@@ -1195,6 +1206,38 @@ mod tests {
             texts,
             vec!["tool output", "m1"],
             "only a genuine text/rich_text user row can be the pinned first user message"
+        );
+    }
+
+    // --- ContextSettings ---
+
+    #[test]
+    fn tool_output_offload_tokens_parses_and_defaults() {
+        use std::collections::HashMap;
+        // Absent -> default.
+        let s = ContextSettings::from_raw(&HashMap::new());
+        assert_eq!(
+            s.tool_output_offload_tokens,
+            limits::DEFAULT_TOOL_OUTPUT_OFFLOAD_TOKENS
+        );
+        // Present and valid -> honored.
+        let mut raw = HashMap::new();
+        raw.insert(
+            ContextSettings::KEY_TOOL_OUTPUT_OFFLOAD_TOKENS.to_string(),
+            "1024".to_string(),
+        );
+        assert_eq!(
+            ContextSettings::from_raw(&raw).tool_output_offload_tokens,
+            1024
+        );
+        // Zero/garbage -> default (same clamp discipline as the other keys).
+        raw.insert(
+            ContextSettings::KEY_TOOL_OUTPUT_OFFLOAD_TOKENS.to_string(),
+            "0".to_string(),
+        );
+        assert_eq!(
+            ContextSettings::from_raw(&raw).tool_output_offload_tokens,
+            limits::DEFAULT_TOOL_OUTPUT_OFFLOAD_TOKENS
         );
     }
 }
