@@ -164,12 +164,13 @@ function PlanCard({ plan, doneCount }: { plan: PlanSnapshot; doneCount: number }
             className={cn(
               "flex items-baseline gap-1.5 text-xs",
               step.done && "text-muted-foreground line-through",
+              !step.done && index !== plan.currentStepIndex && "text-muted-foreground",
               index === plan.currentStepIndex && "font-semibold",
             )}
             data-current={index === plan.currentStepIndex ? "true" : undefined}
             data-testid="plan-step"
           >
-            <span className="w-3 shrink-0 no-underline">
+            <span className={cn("w-3 shrink-0 no-underline", step.done && "text-emerald-600")}>
               {step.done ? "✓" : index === plan.currentStepIndex ? "●" : "○"}
             </span>
             <span className="truncate" title={step.description}>

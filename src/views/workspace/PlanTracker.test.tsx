@@ -55,6 +55,15 @@ describe("PlanTracker", () => {
     expect(steps).toHaveLength(3);
     expect(steps[0]).toHaveClass("line-through");
     expect(steps[1]).toHaveAttribute("data-current", "true");
+
+    // Check done step icon is green
+    const doneCheckSpan = steps[0].querySelector("span.w-3");
+    expect(doneCheckSpan).toHaveClass("text-emerald-600");
+
+    // Check pending step has muted styling
+    expect(steps[2]).toHaveClass("text-muted-foreground");
+    // Check current step does not have muted styling
+    expect(steps[1]).not.toHaveClass("text-muted-foreground");
   });
 
   it("appears and updates on plan-update events for its own conversation only", async () => {
