@@ -1,7 +1,8 @@
 import type { ReadDetail } from "@/lib/ipc";
 import { formatByteCount } from "@/lib/formatByteCount";
 import { formatTokenCount } from "@/lib/formatTokenCount";
-import ViewFullOutput from "./ViewFullOutput";
+import ToolDisclosure from "./ToolDisclosure";
+import ReadPreview from "./ReadPreview";
 
 interface ReadWidgetProps {
   detail: ReadDetail;
@@ -28,12 +29,18 @@ export default function ReadWidget({ detail }: ReadWidgetProps) {
     detail.tokenCount != null ? `${formatTokenCount(detail.tokenCount)} tok` : null;
 
   return (
-    <div className="rounded-lg border border-border bg-card p-3 text-sm" data-testid="read-widget">
-      <p className="font-mono text-xs text-muted-foreground">
-        Read <span>{detail.filePath}</span> · {byteCount}
-        {tokenCount != null && <> · {tokenCount}</>}
-      </p>
-      {detail.offloadedTo && <ViewFullOutput path={detail.offloadedTo} />}
-    </div>
+    <ToolDisclosure
+      testId="read-widget"
+      summaryTestId="read-summary"
+      bodyTestId="read-preview"
+      summary={
+        <span className="font-mono text-xs text-muted-foreground">
+          Read <span>{detail.filePath}</span> · {byteCount}
+          {tokenCount != null && <> · {tokenCount}</>}
+        </span>
+      }
+    >
+      <ReadPreview detail={detail} />
+    </ToolDisclosure>
   );
 }

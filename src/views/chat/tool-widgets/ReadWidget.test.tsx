@@ -1,10 +1,11 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import ReadWidget from "./ReadWidget";
 import type { ReadDetail } from "@/lib/ipc";
 
 describe("ReadWidget (004-tool-call-widgets, US4)", () => {
-  it("renders a compact successful file-reference card with path, bytes, and tokens", () => {
+  it("renders successful reads collapsed with path, bytes, tokens, and a chevron", () => {
     const detail: ReadDetail = {
       toolName: "Read",
       filePath: "/tmp/notes.txt",
@@ -16,13 +17,32 @@ describe("ReadWidget (004-tool-call-widgets, US4)", () => {
 
     render(<ReadWidget detail={detail} />);
 
-    expect(screen.getByTestId("read-widget")).toBeInTheDocument();
-    expect(screen.getByTestId("read-widget")).toHaveTextContent(
+    expect(screen.getByTestId("read-widget")).not.toHaveAttribute("open");
+    expect(screen.getByTestId("read-summary")).toHaveTextContent(
       "Read /tmp/notes.txt · 11B · 312 tok",
     );
+    expect(screen.getByTestId("tool-disclosure-chevron")).toBeInTheDocument();
+    expect(screen.queryByTestId("read-preview")).not.toBeInTheDocument();
   });
 
-  it("does not present truncation as a separate visible state", () => {
+  it("expands inline to show captured text preview", async () => {
+    const detail: ReadDetail = {
+      toolName: "Read",
+      filePath: "/tmp/notes.txt",
+      offset: null,
+      limit: null,
+      outcome: { ok: true, content: "captured text", truncated: false },
+      tokenCount: 20,
+    };
+
+    render(<ReadWidget detail={detail} />);
+    await userEvent.click(screen.getByTestId("read-summary"));
+
+    expect(screen.getByTestId("read-preview")).toHaveClass("max-h-80");
+    expect(screen.getByTestId("read-text-preview")).toHaveTextContent("captured text");
+  });
+
+  it("does not present truncation as a separate visible state", async () => {
     const detail: ReadDetail = {
       toolName: "Read",
       filePath: "/tmp/big.txt",
@@ -36,9 +56,31 @@ describe("ReadWidget (004-tool-call-widgets, US4)", () => {
 
     expect(screen.queryByTestId("read-truncated")).not.toBeInTheDocument();
     expect(screen.queryByText("Output truncated")).not.toBeInTheDocument();
-    expect(screen.getByTestId("read-widget")).toHaveTextContent(
+    expect(screen.getByTestId("read-summary")).toHaveTextContent(
       "Read /tmp/big.txt · 16B · 42 tok",
     );
+    await userEvent.click(screen.getByTestId("read-summary"));
+    expect(screen.queryByText("Output truncated")).not.toBeInTheDocument();
+  });
+
+  it("does not present offload as a separate visible state", () => {
+    const detail: ReadDetail = {
+      toolName: "Read",
+      filePath: "/tmp/huge.txt",
+      offset: null,
+      limit: null,
+      outcome: { ok: true, content: "preview only...", truncated: true },
+      tokenCount: 2048,
+      offloadedTo: "/data/tool-outputs/conv1/call1.txt",
+    };
+
+    render(<ReadWidget detail={detail} />);
+
+    expect(screen.getByTestId("read-summary")).toHaveTextContent(
+      "Read /tmp/huge.txt · 15B · 2.0k tok",
+    );
+    expect(screen.queryByTestId("view-full-output-button")).not.toBeInTheDocument();
+    expect(screen.queryByText("View full output")).not.toBeInTheDocument();
   });
 
   it("renders byte metadata and omits only the token segment for older rows without tokenCount", () => {
@@ -52,11 +94,11 @@ describe("ReadWidget (004-tool-call-widgets, US4)", () => {
 
     render(<ReadWidget detail={detail} />);
 
-    expect(screen.getByTestId("read-widget")).toHaveTextContent("Read /tmp/legacy.txt · 11B");
-    expect(screen.getByTestId("read-widget")).not.toHaveTextContent("tok");
+    expect(screen.getByTestId("read-summary")).toHaveTextContent("Read /tmp/legacy.txt · 11B");
+    expect(screen.getByTestId("read-summary")).not.toHaveTextContent("tok");
   });
 
-  it("renders a failure state distinctly", () => {
+  it("renders a failure state distinctly and not as a disclosure", () => {
     const detail: ReadDetail = {
       toolName: "Read",
       filePath: "/tmp/missing.txt",
@@ -69,43 +111,6 @@ describe("ReadWidget (004-tool-call-widgets, US4)", () => {
 
     expect(screen.getByTestId("read-widget")).toHaveClass("border-destructive/40");
     expect(screen.getByText(/No such file or directory/)).toBeInTheDocument();
-  });
-
-  // --- 010-context-window-management/US3 ---
-
-  it("shows a 'View full output' affordance when the result was offloaded", () => {
-    const detail: ReadDetail = {
-      toolName: "Read",
-      filePath: "/tmp/huge.txt",
-      offset: null,
-      limit: null,
-      outcome: { ok: true, content: "preview only...", truncated: true },
-      tokenCount: 2048,
-      offloadedTo: "/data/tool-outputs/conv1/call1.txt",
-    };
-
-    render(<ReadWidget detail={detail} />);
-
-    expect(screen.getByTestId("read-widget")).toHaveTextContent(
-      "Read /tmp/huge.txt · 15B · 2.0k tok",
-    );
-    expect(screen.getByTestId("view-full-output-button")).toBeInTheDocument();
-    expect(screen.queryByTestId("read-truncated")).not.toBeInTheDocument();
-  });
-
-  it("does not show the full-output affordance when the result was not offloaded", () => {
-    const detail: ReadDetail = {
-      toolName: "Read",
-      filePath: "/tmp/notes.txt",
-      offset: null,
-      limit: null,
-      outcome: { ok: true, content: "hello world", truncated: false },
-      tokenCount: 312,
-      offloadedTo: null,
-    };
-
-    render(<ReadWidget detail={detail} />);
-
-    expect(screen.queryByTestId("view-full-output-button")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("read-summary")).not.toBeInTheDocument();
   });
 });
