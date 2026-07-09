@@ -966,12 +966,16 @@ async fn emit_context_usage_update(
     let Ok(skills_dir) = app.path().app_data_dir().map(|d| d.join("skills")) else {
         return;
     };
+    // Measure usage against the plan engine's actual seed prompt (matches the top-level loop's
+    // initial system prompt), not the flat SYSTEM_PROMPT which understated usage by ~300 tokens.
+    let mut seed_state = crate::agent::plan::PlanState::default();
+    let system_prompt = plan_system_message(&mut seed_state, cwd);
     if let Ok(usage) = crate::context::compute_usage(
         conn,
         engine,
         conversation_id,
         &skills_dir,
-        &system_message(cwd),
+        &system_prompt,
     )
     .await
     {
@@ -1025,6 +1029,7 @@ async fn persist_assistant_text_reply(
 /// as its process working directory, or make `Read`/`Write`/`Edit`/`Glob`/
 /// `Grep` resolve relative paths against it; that fuller fix is its own,
 /// separate, larger change (see `plan.md`'s Complexity Tracking).
+#[allow(dead_code)]
 fn system_message(cwd: Option<&std::path::Path>) -> String {
     match cwd {
         Some(path) => format!(

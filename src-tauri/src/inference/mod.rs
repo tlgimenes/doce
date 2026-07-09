@@ -240,6 +240,7 @@ fn generation_seed() -> u32 {
 pub struct InferenceEngine {
     backend: LlamaBackend,
     model: LlamaModel,
+    n_threads: i32,
 }
 
 impl InferenceEngine {
@@ -248,8 +249,7 @@ impl InferenceEngine {
         let model_params = LlamaModelParams::default();
         let model = LlamaModel::load_from_file(&backend, model_path, &model_params)
             .map_err(|e| InferenceError::ModelLoad(e.to_string()))?;
-        let _ = n_threads; // applied when building the context per-generation
-        Ok(Self { backend, model })
+        Ok(Self { backend, model, n_threads })
     }
 
     /// Renders role-tagged `messages` through the model's own chat template
@@ -407,8 +407,10 @@ impl InferenceEngine {
         mut on_token: impl FnMut(&str),
         mut should_cancel: impl FnMut() -> bool,
     ) -> Result<String, InferenceError> {
-        let ctx_params =
-            LlamaContextParams::default().with_n_ctx(NonZeroU32::new(CONTEXT_WINDOW_TOKENS));
+        let ctx_params = LlamaContextParams::default()
+            .with_n_ctx(NonZeroU32::new(CONTEXT_WINDOW_TOKENS))
+            .with_n_threads(self.n_threads)
+            .with_n_threads_batch(self.n_threads);
         let mut ctx = self
             .model
             .new_context(&self.backend, ctx_params)
