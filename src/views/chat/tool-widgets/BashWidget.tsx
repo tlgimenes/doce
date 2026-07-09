@@ -60,8 +60,14 @@ export default function BashWidget({ detail }: BashWidgetProps) {
     );
   }
 
-  const { exitCode, stdout, stderr } = detail.outcome;
+  const { exitCode } = detail.outcome;
   const succeeded = exitCode === 0;
+  // New rows only carry a bounded preview (stdoutPreview/stderrPreview);
+  // legacy rows persisted before the payload-files design still carry the
+  // full stdout/stderr inline.
+  const stdout = detail.outcome.stdoutPreview ?? detail.outcome.stdout ?? "";
+  const stderr = detail.outcome.stderrPreview ?? detail.outcome.stderr ?? "";
+  const payloadPath = detail.payloadRef ?? detail.offloadedTo;
   const stdoutTrunc = truncatedLines(stdout);
   const stderrTrunc = truncatedLines(stderr);
 
@@ -111,7 +117,7 @@ export default function BashWidget({ detail }: BashWidgetProps) {
           Output truncated
         </p>
       )}
-      {detail.offloadedTo && <ViewFullOutput path={detail.offloadedTo} />}
+      {payloadPath && <ViewFullOutput path={payloadPath} />}
     </div>
   );
 }

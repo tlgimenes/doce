@@ -91,8 +91,26 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
                 filePath: "src/agent/dispatch.rs",
                 offset: null,
                 limit: null,
-                outcome: { ok: true, content: "pub fn execute(...", truncated: false },
+                payloadRef: "src/agent/dispatch.rs",
+                outcome: {
+                  ok: true,
+                  contentPreview: "pub fn execute(...",
+                  contentBytes: 48213,
+                  truncated: true,
+                },
                 tokenCount: 312,
+              }}
+            />
+          </Example>
+          <Example label="Text read (legacy row)">
+            <ReadWidget
+              detail={{
+                toolName: "Read",
+                filePath: "src/agent/legacy.rs",
+                offset: null,
+                limit: null,
+                outcome: { ok: true, content: "pub fn legacy(...", truncated: false },
+                tokenCount: 220,
               }}
             />
           </Example>
@@ -187,17 +205,20 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
                 toolName: "Bash",
                 command: "cargo test --lib",
                 timeoutMs: null,
+                payloadRef: "/tmp/doce/tool-outputs/c1/call-1.txt",
                 outcome: {
                   ok: true,
                   exitCode: 0,
-                  stdout: "test result: ok. 202 passed",
-                  stderr: "",
+                  stdoutPreview: "test result: ok. 202 passed",
+                  stdoutBytes: 28,
+                  stderrPreview: "",
+                  stderrBytes: 0,
                 },
                 tokenCount: 89,
               }}
             />
           </Example>
-          <Example label="Completed, non-zero exit">
+          <Example label="Completed, non-zero exit (legacy row)">
             <BashWidget
               detail={{
                 toolName: "Bash",
@@ -218,8 +239,26 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
                 toolName: "Bash",
                 command: "cargo test --test agent_benchmark tier4_planned -- --ignored --nocapture",
                 timeoutMs: null,
+                payloadRef: "/tmp/doce/tool-outputs/c1/call-2.txt",
+                outcome: {
+                  ok: true,
+                  exitCode: 0,
+                  stdoutPreview: "(truncated preview)",
+                  stdoutBytes: 84213,
+                  stderrPreview: "",
+                  stderrBytes: 0,
+                },
+              }}
+            />
+          </Example>
+          <Example label="Offloaded (large output, legacy row)">
+            <BashWidget
+              detail={{
+                toolName: "Bash",
+                command: "find / -name '*.log'",
+                timeoutMs: null,
+                offloadedTo: "/tmp/doce/tool-outputs/c1/call-3.txt",
                 outcome: { ok: true, exitCode: 0, stdout: "(truncated preview)", stderr: "" },
-                offloadedTo: "/tmp/doce/tool-outputs/c1/call-2.txt",
               }}
             />
           </Example>

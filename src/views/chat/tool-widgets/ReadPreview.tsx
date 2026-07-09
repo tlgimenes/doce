@@ -87,11 +87,15 @@ export default function ReadPreview({ detail }: ReadPreviewProps) {
   if (!detail.outcome.ok) return null;
 
   const kind = readPreviewKind(detail.filePath);
+  // New rows only carry a bounded preview (contentPreview); legacy rows
+  // persisted before the payload-files design still carry the full
+  // content inline.
+  const content = detail.outcome.contentPreview ?? detail.outcome.content ?? "";
 
   if (kind === "markdown") {
     return (
       <div data-testid="read-markdown-preview">
-        <MarkdownPreview>{detail.outcome.content}</MarkdownPreview>
+        <MarkdownPreview>{content}</MarkdownPreview>
       </div>
     );
   }
@@ -102,7 +106,7 @@ export default function ReadPreview({ detail }: ReadPreviewProps) {
         className="whitespace-pre-wrap break-words font-mono text-xs"
         data-testid="read-text-preview"
       >
-        {detail.outcome.content}
+        {content}
       </pre>
     );
   }

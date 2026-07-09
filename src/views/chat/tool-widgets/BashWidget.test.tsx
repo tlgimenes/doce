@@ -104,6 +104,47 @@ describe("BashWidget (004-tool-call-widgets, US2)", () => {
     expect(screen.getByTestId("bash-status")).toHaveTextContent("89 tok");
   });
 
+  // --- Task 9 (payload-files design): slimmed detail shapes ---
+
+  it("renders the preview fields and offers the payload file", () => {
+    render(
+      <BashWidget
+        detail={{
+          toolName: "Bash",
+          command: "cargo test",
+          timeoutMs: null,
+          payloadRef: "/data/tool-outputs/c1/tc1.txt",
+          outcome: {
+            ok: true,
+            exitCode: 0,
+            stdoutPreview: "running 214 tests…",
+            stdoutBytes: 48213,
+            stderrPreview: "",
+            stderrBytes: 0,
+          },
+        }}
+      />,
+    );
+    expect(screen.getByTestId("bash-stdout")).toHaveTextContent("running 214 tests…");
+    expect(screen.getByTestId("view-full-output-button")).toBeInTheDocument();
+  });
+
+  it("still renders legacy rows with inline stdout and offloadedTo", () => {
+    render(
+      <BashWidget
+        detail={{
+          toolName: "Bash",
+          command: "ls",
+          timeoutMs: null,
+          offloadedTo: "/old/offload.txt",
+          outcome: { ok: true, exitCode: 0, stdout: "a.txt", stderr: "" },
+        }}
+      />,
+    );
+    expect(screen.getByTestId("bash-stdout")).toHaveTextContent("a.txt");
+    expect(screen.getByTestId("view-full-output-button")).toBeInTheDocument();
+  });
+
   // --- pending/running state (no outcome yet) ---
 
   it("renders a pending state (command shown, no outcome) as Running…", () => {

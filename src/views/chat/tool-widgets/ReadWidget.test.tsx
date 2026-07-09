@@ -63,7 +63,7 @@ describe("ReadWidget (004-tool-call-widgets, US4)", () => {
     expect(screen.queryByText("Output truncated")).not.toBeInTheDocument();
   });
 
-  it("does not present offload as a separate visible state", () => {
+  it("does not present offload as a separate summary-level state, but still offers the payload file once expanded (legacy row)", async () => {
     const detail: ReadDetail = {
       toolName: "Read",
       filePath: "/tmp/huge.txt",
@@ -80,7 +80,50 @@ describe("ReadWidget (004-tool-call-widgets, US4)", () => {
       "Read /tmp/huge.txt · 15B · 2.0k tok",
     );
     expect(screen.queryByTestId("view-full-output-button")).not.toBeInTheDocument();
-    expect(screen.queryByText("View full output")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId("read-summary"));
+    expect(screen.getByTestId("read-text-preview")).toHaveTextContent("preview only...");
+    expect(screen.getByTestId("view-full-output-button")).toBeInTheDocument();
+  });
+
+  // --- Task 9 (payload-files design): slimmed detail shapes ---
+
+  it("renders the content preview and offers the payload file (new row)", async () => {
+    const detail: ReadDetail = {
+      toolName: "Read",
+      filePath: "/tmp/big.rs",
+      offset: null,
+      limit: null,
+      payloadRef: "/tmp/big.rs",
+      outcome: {
+        ok: true,
+        truncated: true,
+        contentPreview: "pub fn execute(...",
+        contentBytes: 48213,
+      },
+    };
+
+    render(<ReadWidget detail={detail} />);
+    await userEvent.click(screen.getByTestId("read-summary"));
+
+    expect(screen.getByTestId("read-text-preview")).toHaveTextContent("pub fn execute(...");
+    expect(screen.getByTestId("view-full-output-button")).toBeInTheDocument();
+  });
+
+  it("still renders legacy rows with inline content (no contentPreview/payloadRef)", async () => {
+    const detail: ReadDetail = {
+      toolName: "Read",
+      filePath: "/tmp/notes.txt",
+      offset: null,
+      limit: null,
+      outcome: { ok: true, content: "hello world", truncated: false },
+    };
+
+    render(<ReadWidget detail={detail} />);
+    await userEvent.click(screen.getByTestId("read-summary"));
+
+    expect(screen.getByTestId("read-text-preview")).toHaveTextContent("hello world");
+    expect(screen.queryByTestId("view-full-output-button")).not.toBeInTheDocument();
   });
 
   it("renders byte metadata and omits only the token segment for older rows without tokenCount", () => {

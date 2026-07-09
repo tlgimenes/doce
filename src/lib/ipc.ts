@@ -60,7 +60,19 @@ export interface Message {
 // `tool_call` row needed.
 
 export type ReadOutcome =
-  | { ok: true; content: string; truncated: boolean }
+  | {
+      ok: true;
+      truncated: boolean;
+      /** payload-files design (Task 5): bounded preview (2000 chars) +
+       * byte count of the already-capped tool output — NOT the source
+       * file's size, do not label it "file size" in the UI. Absent
+       * `content` on this row. */
+      contentPreview?: string;
+      contentBytes?: number;
+      /** Legacy rows persisted before the payload-files design: the full,
+       * uncapped content. */
+      content?: string;
+    }
   | { ok: false; error: string };
 
 export interface ReadDetail {
@@ -69,9 +81,14 @@ export interface ReadDetail {
   offset: number | null;
   limit: number | null;
   outcome: ReadOutcome;
-  /** 010-context-window-management/US3: set when this result was large
-   * enough to be offloaded to disk — the model saw only a preview, but the
-   * full content is still readable from this path. */
+  /** payload-files design: for `Read`, the SOURCE file path itself (not a
+   * copy) — `ViewFullOutput` re-reads it lazily via `read_attached_file`
+   * since `outcome.contentPreview` only carries a bounded preview. */
+  payloadRef?: string | null;
+  /** Legacy field (pre-payload-files, 010-context-window-management/US3):
+   * set when this result was large enough to be offloaded to disk — the
+   * model saw only a preview, but the full content is still readable from
+   * this path. */
   offloadedTo?: string | null;
   /** Real tokenizer count of this result's content — see
    * `context::annotate_with_token_count` on the backend. */
@@ -100,7 +117,20 @@ export interface EditDetail {
 }
 
 export type BashOutcome =
-  | { ok: true; exitCode: number; stdout: string; stderr: string }
+  | {
+      ok: true;
+      exitCode: number;
+      /** payload-files design (Task 5): bounded previews (2000 chars) +
+       * byte counts. Absent `stdout`/`stderr` on this row. */
+      stdoutPreview?: string;
+      stderrPreview?: string;
+      stdoutBytes?: number;
+      stderrBytes?: number;
+      /** Legacy rows persisted before the payload-files design: the full,
+       * uncapped streams. */
+      stdout?: string;
+      stderr?: string;
+    }
   | { ok: false; error: string };
 
 export interface BashDetail {
@@ -110,9 +140,14 @@ export interface BashDetail {
   /** Absent while the command is still running — see BashWidget's pending
    * branch, fed by `parsePendingBashCallDetail`. */
   outcome?: BashOutcome;
-  /** 010-context-window-management/US3: set when this result was large
-   * enough to be offloaded to disk — the model saw only a preview, but the
-   * full stdout/stderr is still readable from this path. */
+  /** payload-files design: path to the full stdout/stderr rendition
+   * staged to disk — `ViewFullOutput` lazily reads it via
+   * `read_attached_file`. */
+  payloadRef?: string | null;
+  /** Legacy field (pre-payload-files, 010-context-window-management/US3):
+   * set when this result was large enough to be offloaded to disk — the
+   * model saw only a preview, but the full stdout/stderr is still readable
+   * from this path. */
   offloadedTo?: string | null;
   /** Real tokenizer count of this result's model-facing text — see
    * `context::annotate_with_token_count` on the backend. Only ever set for
