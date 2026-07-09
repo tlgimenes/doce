@@ -476,7 +476,8 @@ describe("ConversationList", () => {
     });
     expect(ref.current!.getConversations()).toEqual([conversation]);
 
-    ref.current!.selectById("c-search");
+    expect(ref.current!.selectById("c-search")).toBe(true);
     expect(onSelect).toHaveBeenCalledWith(conversation);
+    expect(ref.current!.selectById("missing")).toBe(false);
   });
 });

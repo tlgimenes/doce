@@ -36,7 +36,7 @@ interface ConversationListProps {
 export interface ConversationListHandle {
   createNew: () => void;
   getConversations: () => Conversation[];
-  selectById: (conversationId: string) => void;
+  selectById: (conversationId: string) => boolean;
 }
 
 const STATUS_COLOR: Record<ConversationStatus, string> = {
@@ -105,9 +105,9 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
 
     const selectById = (conversationId: string) => {
       const conversation = conversations.find((item) => item.id === conversationId);
-      if (conversation) {
-        selectConversation(conversation);
-      }
+      if (!conversation) return false;
+      selectConversation(conversation);
+      return true;
     };
 
     const archiveConversation = (

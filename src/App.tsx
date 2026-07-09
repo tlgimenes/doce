@@ -232,6 +232,23 @@ export default function App() {
     });
   };
 
+  const selectConversationFromSearch = useCallback(
+    async (conversationId: string) => {
+      if (conversationListRef.current?.selectById(conversationId)) return;
+
+      try {
+        const conversations = await commands.listConversations();
+        const conversation = conversations.find((item) => item.id === conversationId);
+        if (!conversation) return;
+        activateConversation(conversation);
+        markSeen(conversation.id);
+      } catch (error) {
+        console.error(error);
+      }
+    },
+    [activateConversation, markSeen],
+  );
+
   if (ready === null) return null;
   if (!ready) return <Onboarding onReady={() => setReady(true)} />;
 
@@ -332,9 +349,7 @@ export default function App() {
           open={showSearch}
           onOpenChange={handleSearchOpenChange}
           recentConversations={conversationListRef.current?.getConversations?.() ?? []}
-          onSelectConversationId={(conversationId) => {
-            conversationListRef.current?.selectById(conversationId);
-          }}
+          onSelectConversationId={selectConversationFromSearch}
         />
       </div>
     </TopbarProvider>

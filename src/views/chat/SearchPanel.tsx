@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { commands, type Conversation, type SearchResult } from "@/lib/ipc";
 
@@ -34,6 +34,7 @@ export default function SearchPanel({ onSelect, recentConversations = [] }: Sear
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const latestSearchRequestId = useRef(0);
   const recentResults = useMemo(
     () =>
       [...recentConversations]
@@ -51,6 +52,8 @@ export default function SearchPanel({ onSelect, recentConversations = [] }: Sear
   const runSearch = async (value: string) => {
     setQuery(value);
     setError(null);
+    latestSearchRequestId.current += 1;
+    const requestId = latestSearchRequestId.current;
     if (!value.trim()) {
       setResults([]);
       setLoading(false);
@@ -59,11 +62,14 @@ export default function SearchPanel({ onSelect, recentConversations = [] }: Sear
     setLoading(true);
     try {
       const found = await commands.searchConversations(value);
+      if (latestSearchRequestId.current !== requestId) return;
       setResults(found);
     } catch (err) {
+      if (latestSearchRequestId.current !== requestId) return;
       setResults([]);
       setError(err instanceof Error ? err.message : String(err));
     } finally {
+      if (latestSearchRequestId.current !== requestId) return;
       setLoading(false);
     }
   };

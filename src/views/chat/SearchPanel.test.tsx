@@ -10,6 +10,16 @@ vi.mock("@/lib/ipc", () => ({
   },
 }));
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("SearchPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -105,6 +115,50 @@ describe("SearchPanel", () => {
 
     expect(await screen.findByTestId("search-error")).toHaveTextContent("fts unavailable");
     expect(screen.getByTestId("search-panel")).toBeInTheDocument();
+  });
+
+  it("keeps only the latest in-flight search request in control of results and loading state", async () => {
+    const first = deferred<
+      Array<{ conversationId: string; title: string; excerpt: string; rank: number }>
+    >();
+    const second = deferred<
+      Array<{ conversationId: string; title: string; excerpt: string; rank: number }>
+    >();
+    vi.mocked(commands.searchConversations).mockImplementation((query) => {
+      if (query === "a") return first.promise;
+      if (query === "ab") return second.promise;
+      return Promise.resolve([]);
+    });
+
+    render(<SearchPanel onSelect={vi.fn()} />);
+
+    await userEvent.type(screen.getByTestId("search-input"), "ab");
+    expect(screen.getByTestId("search-loading")).toBeInTheDocument();
+
+    first.resolve([
+      {
+        conversationId: "stale-result",
+        title: "Stale result",
+        excerpt: "old match",
+        rank: -1,
+      },
+    ]);
+
+    await waitFor(() => expect(screen.queryByText("Stale result")).not.toBeInTheDocument());
+    expect(screen.getByTestId("search-loading")).toBeInTheDocument();
+
+    second.resolve([
+      {
+        conversationId: "latest-result",
+        title: "Latest result",
+        excerpt: "new match",
+        rank: -2,
+      },
+    ]);
+
+    expect(await screen.findByText("Latest result")).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByTestId("search-loading")).not.toBeInTheDocument());
+    expect(screen.queryByText("Stale result")).not.toBeInTheDocument();
   });
 
   it("omits an inline close button and renders a taller dialog body", () => {

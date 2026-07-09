@@ -536,6 +536,42 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     expect(screen.getByTestId("search-panel")).toBeInTheDocument();
   });
 
+  it("opens a searched conversation even when the sidebar cache does not contain it", async () => {
+    const searchedConversation = {
+      id: "conv-from-backend",
+      workspaceId: null,
+      title: "Backend-only match",
+      createdAt: 10,
+      updatedAt: 20,
+      lastSeenAt: 10,
+      status: "done" as const,
+    };
+    vi.mocked(commands.listConversations)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([searchedConversation]);
+    vi.mocked(commands.searchConversations).mockResolvedValue([
+      {
+        conversationId: searchedConversation.id,
+        title: searchedConversation.title,
+        excerpt: "found via backend",
+        rank: -1,
+      },
+    ]);
+
+    render(<App />);
+    await waitForReady();
+
+    pressCmd("f");
+    await userEvent.type(screen.getByTestId("search-input"), "backend");
+    await userEvent.click(await screen.findByTestId("search-result"));
+
+    expect(await screen.findByTestId("agent-input")).toBeInTheDocument();
+    expect(screen.getByTestId("workspace-topbar-title")).toHaveTextContent("Backend-only match");
+    await waitFor(() =>
+      expect(screen.queryByTestId("conversation-search-dialog")).not.toBeInTheDocument(),
+    );
+  });
+
 });
 
 // Regression coverage for the App.tsx robustness fix: `ready` used to stay

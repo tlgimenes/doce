@@ -134,3 +134,96 @@ Result:
 ## Concerns
 
 - None blocking.
+
+---
+
+## Review fix follow-up
+
+### Findings addressed
+
+1. Restored an App-owned search selection fallback:
+   - `ConversationListHandle.selectById` now returns `boolean`
+   - `App.tsx` now tries the sidebar handle first, then falls back to `commands.listConversations()` and directly activates the matching conversation when the sidebar cache does not contain the search hit
+   - backend IPC contracts stayed unchanged
+2. Made `SearchPanel.runSearch` latest-request-only:
+   - added a request-sequence ref
+   - stale responses no longer replace newer results
+   - stale `finally` blocks no longer clear the latest loading state
+
+### Regression coverage added
+
+- `src/App.test.tsx`
+  - verifies a search result absent from the sidebar cache still opens the conversation
+- `src/views/chat/SearchPanel.test.tsx`
+  - verifies out-of-order async resolutions do not show stale results and do not clear loading before the newest request settles
+- `src/views/chat/ConversationList.test.tsx`
+  - verifies `selectById` returns `true` on hit and `false` on miss
+
+### TDD evidence
+
+RED:
+
+```bash
+npm test -- src/views/chat/SearchPanel.test.tsx src/App.test.tsx src/views/chat/ConversationList.test.tsx
+```
+
+Result:
+
+- `src/views/chat/SearchPanel.test.tsx`: 1 failed test
+- `src/views/chat/ConversationList.test.tsx`: 1 failed test
+- `src/App.test.tsx`: 1 failed test
+- totals: `3 failed | 44 passed | 1 skipped`
+
+GREEN:
+
+```bash
+npm test -- src/views/chat/SearchPanel.test.tsx src/App.test.tsx src/views/chat/ConversationList.test.tsx
+```
+
+Result:
+
+- `Test Files 3 passed`
+- `Tests 47 passed | 1 skipped`
+
+### Required verification
+
+```bash
+npm test -- src/views/chat/SearchPanel.test.tsx src/views/chat/ConversationSearchDialog.test.tsx src/App.test.tsx
+```
+
+Result:
+
+- `Test Files 3 passed`
+- `Tests 34 passed | 1 skipped`
+
+```bash
+npm test -- src/views/chat/ConversationList.test.tsx
+```
+
+Result:
+
+- `Test Files 1 passed`
+- `Tests 14 passed`
+
+```bash
+npm run build
+```
+
+Result:
+
+- build succeeded
+- Vite emitted the existing large-chunk warning for `dist/assets/index-B3dbf7m3.js` exceeding 500 kB after minification
+
+### Files changed for the review fixes
+
+- `src/App.tsx`
+- `src/App.test.tsx`
+- `src/views/chat/ConversationList.tsx`
+- `src/views/chat/ConversationList.test.tsx`
+- `src/views/chat/SearchPanel.tsx`
+- `src/views/chat/SearchPanel.test.tsx`
+- `.superpowers/sdd/task-3-report.md`
+
+### Concerns
+
+- None.
