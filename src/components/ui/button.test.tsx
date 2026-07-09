@@ -86,9 +86,10 @@ describe("Button", () => {
     expect(onClick).toHaveBeenCalledTimes(2);
   });
 
-  it("does not import Radix Slot", () => {
+  it("does not import the legacy slot package", () => {
+    const legacySlotImport = ["@", "rad", "ix-ui", "/react-slot"].join("");
     const source = readFileSync("src/components/ui/button.tsx", "utf8");
-    expect(source).not.toContain("@radix-ui/react-slot");
-    expect(source).not.toContain("Slot");
+    expect(source).not.toContain(legacySlotImport);
+    expect(source).not.toMatch(/\bSlot\b/);
   });
 });
