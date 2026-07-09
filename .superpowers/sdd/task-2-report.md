@@ -178,6 +178,102 @@ Result:
 - `tsc -b && vite build` completed successfully
 - Existing Vite chunk-size warning remains: `Some chunks are larger than 500 kB after minification`
 
+## Final re-review fix: clear hidden command-center latch when visible surfaces close after Cmd+K
+
+### What I changed
+
+- Kept `openCommandCenter` idempotent as an opener for the interim Task 2 latch state.
+- Added small named close helpers in `src/App.tsx`:
+  - `closeSettings()`
+  - `closeSearch()`
+  - `closeShortcutsDialog()`
+  - `closeWidgetGallery()`
+- Routed Settings and Search through latch-aware close helpers so a hidden `showCommandCenter` state cannot survive after `Cmd+K` is pressed behind those visible surfaces.
+- Folded Widget Gallery into the same close-helper pattern because it is another app-owned surface that can remain visible after `Cmd+K`.
+- Preserved the existing skipped future Task 3/4 integration test unchanged.
+
+### Root cause
+
+- `openCommandCenter()` already reconciled `ShortcutsDialog`, but not Settings or Search.
+- If Settings or Search was already visible, pressing `Cmd+K` set `showCommandCenter` to `true` while the visible surface stayed mounted.
+- Those surfaces then closed through inline `setShowX(false)` handlers, leaving the hidden command-center latch behind and blocking later shortcuts like `Cmd+F`.
+
+### TDD evidence
+
+#### RED
+
+Command:
+
+```bash
+npm test -- src/App.test.tsx
+```
+
+Result:
+
+- Exit code: `1`
+- `Test Files  1 failed (1)`
+- `Tests  2 failed | 22 passed | 1 skipped (25)`
+- Failure 1: `lets Cmd+F reopen search after Cmd+K lands behind an already-open Settings view`
+- Failure 2: `lets Cmd+F reopen search after Cmd+K lands behind an already-open search dialog`
+- Both failures ended with `Unable to find an element by: [data-testid="search-panel"]`, confirming the hidden latch still blocked `Cmd+F` after close.
+
+#### GREEN
+
+Command:
+
+```bash
+npm test -- src/App.test.tsx
+```
+
+Result:
+
+- Exit code: `0`
+- `Test Files  1 passed (1)`
+- `Tests  24 passed | 1 skipped (25)`
+
+### Focused regression coverage added
+
+- `Settings -> Cmd+K -> close Settings -> Cmd+F opens search`
+- `Cmd+F -> Cmd+K -> close Search -> Cmd+F opens search again`
+
+### Required verification commands and exact results
+
+1. App-level regression suite:
+
+```bash
+npm test -- src/App.test.tsx
+```
+
+Result:
+
+- Exit code: `0`
+- `Test Files  1 passed (1)`
+- `Tests  24 passed | 1 skipped (25)`
+
+2. Task 2 regression suite:
+
+```bash
+npm test -- src/lib/shortcuts.test.ts src/views/chat/ConversationList.test.tsx
+```
+
+Result:
+
+- Exit code: `0`
+- `Test Files  2 passed (2)`
+- `Tests  16 passed (16)`
+
+3. Build verification:
+
+```bash
+npm run build
+```
+
+Result:
+
+- Exit code: `0`
+- `tsc -b && vite build` completed successfully
+- Existing Vite chunk-size warning remains: `Some chunks are larger than 500 kB after minification`
+
 ### Files changed for this review fix
 
 - `src/App.tsx`

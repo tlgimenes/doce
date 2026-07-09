@@ -108,6 +108,25 @@ export default function App() {
     setShowSettings(true);
   }, [clearCommandCenterLatch]);
 
+  const closeSettings = useCallback(() => {
+    clearCommandCenterLatch();
+    setShowSettings(false);
+  }, [clearCommandCenterLatch]);
+
+  const closeSearch = useCallback(() => {
+    clearCommandCenterLatch();
+    setShowSearch(false);
+  }, [clearCommandCenterLatch]);
+
+  const closeShortcutsDialog = useCallback(() => {
+    setShowShortcutsDialog(false);
+  }, []);
+
+  const closeWidgetGallery = useCallback(() => {
+    clearCommandCenterLatch();
+    setShowWidgetGallery(false);
+  }, [clearCommandCenterLatch]);
+
   const openCommandCenter = useCallback(() => {
     setShowShortcutsDialog(false);
     setShowCommandCenter(true);
@@ -289,9 +308,9 @@ export default function App() {
             data-testid="app-content-pane"
           >
             {showWidgetGallery ? (
-              <WidgetGallery onClose={() => setShowWidgetGallery(false)} />
+              <WidgetGallery onClose={closeWidgetGallery} />
             ) : showSettings ? (
-              <Settings onClose={() => setShowSettings(false)} />
+              <Settings onClose={closeSettings} />
             ) : activeConversation ? (
               <Workspace
                 key={activeConversation.id}
@@ -318,10 +337,10 @@ export default function App() {
         </div>
         <ShortcutsDialog
           open={showShortcutsDialog}
-          onClose={() => setShowShortcutsDialog(false)}
+          onClose={closeShortcutsDialog}
           shortcuts={shortcuts}
         />
-        <Dialog open={showSearch} onClose={() => setShowSearch(false)}>
+        <Dialog open={showSearch} onClose={closeSearch}>
           <SearchPanel
             recentConversations={searchRecentConversations}
             onSelect={(conversationId) => {
