@@ -19,7 +19,6 @@
 //! same way each time.
 
 pub mod limits;
-pub mod offload;
 pub mod payload;
 
 use crate::agent::dispatch::ToolOutcome;
@@ -60,7 +59,6 @@ pub struct ContextSettings {
     pub warn_threshold_pct: f64,
     pub compact_threshold_pct: f64,
     pub hard_limit_pct: f64,
-    pub tool_output_offload_chars: usize,
     pub tool_output_offload_tokens: usize,
 }
 
@@ -68,14 +66,12 @@ impl ContextSettings {
     pub const DEFAULT_WARN_THRESHOLD_PCT: f64 = limits::DEFAULT_WARN_THRESHOLD_PCT;
     pub const DEFAULT_COMPACT_THRESHOLD_PCT: f64 = limits::DEFAULT_COMPACT_THRESHOLD_PCT;
     pub const DEFAULT_HARD_LIMIT_PCT: f64 = limits::DEFAULT_HARD_LIMIT_PCT;
-    pub const DEFAULT_TOOL_OUTPUT_OFFLOAD_CHARS: usize = limits::DEFAULT_TOOL_OUTPUT_OFFLOAD_CHARS;
     pub const DEFAULT_TOOL_OUTPUT_OFFLOAD_TOKENS: usize =
         limits::DEFAULT_TOOL_OUTPUT_OFFLOAD_TOKENS;
 
     pub const KEY_WARN_THRESHOLD_PCT: &'static str = "context.warnThresholdPct";
     pub const KEY_COMPACT_THRESHOLD_PCT: &'static str = "context.compactThresholdPct";
     pub const KEY_HARD_LIMIT_PCT: &'static str = "context.hardLimitPct";
-    pub const KEY_TOOL_OUTPUT_OFFLOAD_CHARS: &'static str = "context.toolOutputOffloadChars";
     pub const KEY_TOOL_OUTPUT_OFFLOAD_TOKENS: &'static str = "context.toolOutputOffloadTokens";
 
     /// Pure parse-with-defaults-and-clamping logic (data-model.md's
@@ -99,11 +95,6 @@ impl ContextSettings {
             Self::DEFAULT_COMPACT_THRESHOLD_PCT,
         );
         let hard_limit_pct_raw = parse_pct(Self::KEY_HARD_LIMIT_PCT, Self::DEFAULT_HARD_LIMIT_PCT);
-        let tool_output_offload_chars = raw
-            .get(Self::KEY_TOOL_OUTPUT_OFFLOAD_CHARS)
-            .and_then(|v| v.parse::<usize>().ok())
-            .filter(|v| *v > 0)
-            .unwrap_or(Self::DEFAULT_TOOL_OUTPUT_OFFLOAD_CHARS);
         let tool_output_offload_tokens = raw
             .get(Self::KEY_TOOL_OUTPUT_OFFLOAD_TOKENS)
             .and_then(|v| v.parse::<usize>().ok())
@@ -119,12 +110,11 @@ impl ContextSettings {
             warn_threshold_pct,
             compact_threshold_pct,
             hard_limit_pct,
-            tool_output_offload_chars,
             tool_output_offload_tokens,
         }
     }
 
-    /// No separate seeding step is needed for these five keys: an absent
+    /// No separate seeding step is needed for these four keys: an absent
     /// row simply falls back to its default inside `from_raw` above, the
     /// same lazy-default behavior `get_settings`/`update_setting` already
     /// rely on elsewhere in this codebase. A key only ever appears in the
@@ -134,7 +124,7 @@ impl ContextSettings {
         let raw = conn
             .call(|conn: &mut Connection| -> rusqlite::Result<std::collections::HashMap<String, String>> {
                 let mut stmt = conn.prepare(
-                    "SELECT key, value FROM settings WHERE key IN (?1, ?2, ?3, ?4, ?5)",
+                    "SELECT key, value FROM settings WHERE key IN (?1, ?2, ?3, ?4)",
                 )?;
                 let rows = stmt
                     .query_map(
@@ -142,7 +132,6 @@ impl ContextSettings {
                             Self::KEY_WARN_THRESHOLD_PCT,
                             Self::KEY_COMPACT_THRESHOLD_PCT,
                             Self::KEY_HARD_LIMIT_PCT,
-                            Self::KEY_TOOL_OUTPUT_OFFLOAD_CHARS,
                             Self::KEY_TOOL_OUTPUT_OFFLOAD_TOKENS,
                         ],
                         |row| {
@@ -260,7 +249,7 @@ pub async fn compute_usage(
 /// every `tool_call`/`tool_result` message beyond the most recent `keep_n`
 /// such messages has its content replaced with a placeholder — the
 /// restorable pointer text (`limits::tool_cleared_placeholder_with_pointer`)
-/// when the row's `offloaded_to` names a saved-to-disk copy, else the
+/// when the row's `payload_ref` names a `Read`-able path, else the
 /// plain `TOOL_CLEARED_PLACEHOLDER`. Plan-marked rows (`plan == true` — the
 /// plan-machine tools, `commands::agent::persist_plan_tool`, which stamps
 /// this marker onto BOTH its call and result row) are their own, stricter
@@ -269,7 +258,7 @@ pub async fn compute_usage(
 /// always-regenerated system/state prompt already carries in full. Returns
 /// the count actually cleared (both populations combined). Independent of
 /// persistence — recomputable fresh from `content_type`+order (+ each row's
-/// own `plan`/`offloaded_to`, themselves parsed once at load time by
+/// own `plan`/`payload_ref`, themselves parsed once at load time by
 /// `storage::conversations::load_history_annotated`) alone every time,
 /// which is why no "cut marker" is needed for this tier to stay correct
 /// across reloads (research.md).
@@ -278,7 +267,7 @@ pub fn apply_lightweight_clearing(history: &mut [HistoryMessage], keep_n: usize)
         .iter()
         .enumerate()
         .filter(|(_, m)| m.content_type == "tool_call" || m.content_type == "tool_result")
-        .map(|(i, m)| (i, m.plan, m.offloaded_to.clone()))
+        .map(|(i, m)| (i, m.plan, m.payload_ref.clone()))
         .collect();
 
     let plan_indices: Vec<usize> = tool_rows
@@ -304,9 +293,9 @@ pub fn apply_lightweight_clearing(history: &mut [HistoryMessage], keep_n: usize)
     };
 
     let mut cleared = 0;
-    for (i, _, offloaded_to) in &tool_rows {
+    for (i, _, payload_ref) in &tool_rows {
         if plan_to_clear.contains(i) || regular_to_clear.contains(i) {
-            let placeholder = match offloaded_to {
+            let placeholder = match payload_ref {
                 Some(path) => limits::tool_cleared_placeholder_with_pointer(path),
                 None => TOOL_CLEARED_PLACEHOLDER.to_string(),
             };
@@ -648,28 +637,28 @@ mod tests {
             content_type: content_type.to_string(),
             sequence,
             plan: false,
-            offloaded_to: None,
+            payload_ref: None,
         }
     }
 
-    /// A tool row with an explicit `plan`/`offloaded_to` — the two fields
+    /// A tool row with an explicit `plan`/`payload_ref` — the two fields
     /// `storage::conversations::load_history_annotated` parses once at load
     /// time from a real row's `content` JSON (see that module's own tests
     /// for coverage of the parsing itself); `history_message` above
-    /// deliberately defaults both to their "never a plan/offload row" state.
+    /// deliberately defaults both to their "never a plan/staged row" state.
     fn history_message_with_flags(
         content_type: &str,
         sequence: i64,
         content: &str,
         plan: bool,
-        offloaded_to: Option<&str>,
+        payload_ref: Option<&str>,
     ) -> HistoryMessage {
         HistoryMessage {
             chat: ChatMessage::user(content),
             content_type: content_type.to_string(),
             sequence,
             plan,
-            offloaded_to: offloaded_to.map(|s| s.to_string()),
+            payload_ref: payload_ref.map(|s| s.to_string()),
         }
     }
 
@@ -732,13 +721,13 @@ mod tests {
     }
 
     #[test]
-    fn cleared_row_with_offloaded_to_gets_the_restorable_pointer_placeholder() {
+    fn cleared_row_with_payload_ref_gets_the_restorable_pointer_placeholder() {
         // TOOL_KEEP_N + 1 tool_result rows -- the oldest (index 0) is the
-        // one that actually gets cleared. Its `offloaded_to` is set,
+        // one that actually gets cleared. Its `payload_ref` is set,
         // mirroring what `storage::conversations::load_history_annotated`
-        // parses out of a real row whose `detail.offloadedTo` was stamped
-        // by `commands::agent::execute_tool` (`detail["offloadedTo"] =
-        // json!(offloaded_to)`).
+        // parses out of a real row whose `detail.payloadRef` was stamped by
+        // `commands::agent::handle_general_tool_call`
+        // (`detail["payloadRef"] = json!(staged.payload_ref)`).
         let mut history: Vec<HistoryMessage> = (0..(TOOL_KEEP_N as i64 + 1))
             .map(|i| history_message("tool_result", i, &format!("result {i}")))
             .collect();
@@ -750,7 +739,7 @@ mod tests {
         assert_eq!(
             history[0].chat.text(),
             limits::tool_cleared_placeholder_with_pointer("/tmp/x.txt"),
-            "an offloaded row's placeholder must point back at the saved file, not just say it's gone"
+            "a staged row's placeholder must point back at the payload file, not just say it's gone"
         );
         for message in &history[1..] {
             assert_ne!(message.chat.text(), TOOL_CLEARED_PLACEHOLDER);
@@ -758,7 +747,7 @@ mod tests {
     }
 
     #[test]
-    fn cleared_row_without_offloaded_to_gets_the_plain_placeholder() {
+    fn cleared_row_without_payload_ref_gets_the_plain_placeholder() {
         let mut history: Vec<HistoryMessage> = (0..(TOOL_KEEP_N as i64 + 1))
             .map(|i| history_message("tool_result", i, &format!("result {i}")))
             .collect();
@@ -888,10 +877,6 @@ mod tests {
             settings.hard_limit_pct,
             ContextSettings::DEFAULT_HARD_LIMIT_PCT
         );
-        assert_eq!(
-            settings.tool_output_offload_chars,
-            ContextSettings::DEFAULT_TOOL_OUTPUT_OFFLOAD_CHARS
-        );
     }
 
     #[test]
@@ -901,18 +886,10 @@ mod tests {
             ContextSettings::KEY_WARN_THRESHOLD_PCT.to_string(),
             "not a number".to_string(),
         );
-        raw.insert(
-            ContextSettings::KEY_TOOL_OUTPUT_OFFLOAD_CHARS.to_string(),
-            "-5".to_string(),
-        );
         let settings = ContextSettings::from_raw(&raw);
         assert_eq!(
             settings.warn_threshold_pct,
             ContextSettings::DEFAULT_WARN_THRESHOLD_PCT
-        );
-        assert_eq!(
-            settings.tool_output_offload_chars,
-            ContextSettings::DEFAULT_TOOL_OUTPUT_OFFLOAD_CHARS
         );
     }
 
@@ -958,15 +935,10 @@ mod tests {
             ContextSettings::KEY_HARD_LIMIT_PCT.to_string(),
             "0.8".to_string(),
         );
-        raw.insert(
-            ContextSettings::KEY_TOOL_OUTPUT_OFFLOAD_CHARS.to_string(),
-            "1500".to_string(),
-        );
         let settings = ContextSettings::from_raw(&raw);
         assert_eq!(settings.warn_threshold_pct, 0.4);
         assert_eq!(settings.compact_threshold_pct, 0.6);
         assert_eq!(settings.hard_limit_pct, 0.8);
-        assert_eq!(settings.tool_output_offload_chars, 1500);
     }
 
     // --- threshold math (exceeds/classify_state) ---
@@ -1160,7 +1132,7 @@ mod tests {
                 content_type: "text".to_string(),
                 sequence: i,
                 plan: false,
-                offloaded_to: None,
+                payload_ref: None,
             })
             .collect();
         let selected = messages_to_summarize(&history, 2);

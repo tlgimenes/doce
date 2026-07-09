@@ -29,15 +29,21 @@ pub const TOOL_CLEARED_PLACEHOLDER: &str = "[Old tool result cleared to save con
 /// just spends window on nothing new.
 pub const PLAN_KEEP_N: usize = 2;
 
-/// Tier-1 placeholder for a cleared tool row whose full output was
-/// previously offloaded to disk (`context::offload::offload_if_oversized`
-/// stamps the resulting path into the row's persisted `detail.offloadedTo`
-/// — see `commands::agent::execute_tool`). Unlike `TOOL_CLEARED_PLACEHOLDER`,
-/// clearing here is restorable: the model can `Read` the path back into
-/// context if it turns out to still need this result, rather than the
-/// row's content being gone for good.
-pub fn tool_cleared_placeholder_with_pointer(offload_path: &str) -> String {
-    format!("[Old tool result cleared; full output saved at {offload_path} — Read it to recover]")
+/// Tier-1 placeholder for a cleared tool row whose result names a
+/// `Read`-able path — either a payload file every staged result now writes
+/// (`context::payload::stage_tool_result`, stamped into the row's persisted
+/// `detail.payloadRef`) or, for a `Read` row, the source file itself (see
+/// `commands::agent::handle_general_tool_call`'s `Read` carve-out). Unlike
+/// `TOOL_CLEARED_PLACEHOLDER`, clearing here is restorable: the model can
+/// `Read` the path back into context if it turns out to still need this
+/// result, rather than the row's content being gone for good. Deliberately
+/// says nothing about the file already containing "the full output" —
+/// unlike the offload-era version of this placeholder, that promise no
+/// longer holds for a `Read` row, whose `payloadRef` points at the
+/// original (possibly much larger) source file, not a copy of what the
+/// model saw.
+pub fn tool_cleared_placeholder_with_pointer(payload_ref: &str) -> String {
+    format!("[Old tool result cleared; recover with Read \"{payload_ref}\"]")
 }
 
 /// Messages tier 2 never summarizes away, regardless of how far back it
@@ -55,16 +61,10 @@ pub const DEFAULT_WARN_THRESHOLD_PCT: f64 = 0.5;
 pub const DEFAULT_COMPACT_THRESHOLD_PCT: f64 = 0.75;
 pub const DEFAULT_HARD_LIMIT_PCT: f64 = 0.9;
 
-/// ~3% of `CONTEXT_WINDOW_TOKENS` (2000 chars ~= 500 tokens). A single tool
-/// result over this threshold gets offloaded to disk with only a preview +
-/// pointer left inline.
-pub const DEFAULT_TOOL_OUTPUT_OFFLOAD_CHARS: usize = 2000;
-
 /// 1/16 of `CONTEXT_WINDOW_TOKENS` (= 1024 at the 16K window). A tool result whose
 /// model-facing text costs at most this many tokens is inlined whole;
 /// anything larger becomes a status reference line pointing at its payload
-/// file (2026-07-09 payload-files design). Token-denominated successor to
-/// `DEFAULT_TOOL_OUTPUT_OFFLOAD_CHARS`.
+/// file (2026-07-09 payload-files design, `context::payload::stage_tool_result`).
 pub const DEFAULT_TOOL_OUTPUT_OFFLOAD_TOKENS: usize = (CONTEXT_WINDOW_TOKENS / 16) as usize;
 
 /// `reserve` for `InferenceEngine::fit_to_context`'s per-turn call inside
@@ -110,7 +110,6 @@ mod tests {
             DEFAULT_TOOL_OUTPUT_OFFLOAD_TOKENS,
             (CONTEXT_WINDOW_TOKENS / 16) as usize
         );
-        assert!(DEFAULT_TOOL_OUTPUT_OFFLOAD_CHARS >= 1500);
         assert!(AGENT_TURN_MAX_OUTPUT_TOKENS >= CONTEXT_WINDOW_TOKENS / 16);
         // The tail reserve must comfortably cover a big plan's tail
         // (hundreds of tokens) without the combined per-turn reserve

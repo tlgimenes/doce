@@ -170,7 +170,12 @@ pub fn get_active_plan(
     active_plans: State<'_, ActivePlans>,
     conversation_id: String,
 ) -> Option<PlanSnapshot> {
-    active_plans.0.lock().unwrap().get(&conversation_id).cloned()
+    active_plans
+        .0
+        .lock()
+        .unwrap()
+        .get(&conversation_id)
+        .cloned()
 }
 
 /// Removes `conversation_id` from `ActiveGenerations` when dropped —
@@ -570,7 +575,8 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
     }
 
     fn compact(&mut self, messages: &[ChatMessage]) -> Vec<ChatMessage> {
-        crate::context::fit_turn_to_budget(self.engine, messages).unwrap_or_else(|_| messages.to_vec())
+        crate::context::fit_turn_to_budget(self.engine, messages)
+            .unwrap_or_else(|_| messages.to_vec())
     }
 
     async fn generate(&mut self, mut messages: Vec<ChatMessage>) -> String {
@@ -688,7 +694,8 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
     }
 
     fn compact(&mut self, messages: &[ChatMessage]) -> Vec<ChatMessage> {
-        crate::context::fit_turn_to_budget(self.engine, messages).unwrap_or_else(|_| messages.to_vec())
+        crate::context::fit_turn_to_budget(self.engine, messages)
+            .unwrap_or_else(|_| messages.to_vec())
     }
 
     async fn generate(&mut self, mut messages: Vec<ChatMessage>) -> String {
@@ -811,6 +818,7 @@ async fn execute_top_level_tool(
     if call.name != "Task" {
         let model_text = handle_general_tool_call(
             Some(app),
+            app.path().app_data_dir().ok(),
             conn,
             engine,
             parent_conversation_id,
@@ -972,9 +980,16 @@ async fn execute_top_level_tool(
 /// flight" the moment it starts, not only once it's already finished.
 /// `app: Option<&AppHandle>` (not mandatory, unlike the enclosing
 /// `execute_top_level_tool`) specifically so this is unit-testable without
-/// a live Tauri app.
+/// a live Tauri app. `app_data_dir` is likewise taken as an already-
+/// resolved `Option<PathBuf>` rather than derived from `app` internally —
+/// a test that needs staging (unlike one that only needs a live `app` for
+/// `persist_tool_call`/`persist_tool_result`'s emit) passes a tempdir here
+/// directly rather than standing up a whole Tauri app just to get one back
+/// out of `app.path().app_data_dir()`.
+#[allow(clippy::too_many_arguments)]
 async fn handle_general_tool_call(
     app: Option<&AppHandle>,
+    app_data_dir: Option<std::path::PathBuf>,
     conn: &tokio_rusqlite::Connection,
     engine: &InferenceEngine,
     parent_conversation_id: &str,
@@ -996,42 +1011,41 @@ async fn handle_general_tool_call(
     let outcome = dispatch::execute_async(call.clone(), cwd.map(|p| p.to_path_buf())).await;
     let outcome = crate::context::annotate_with_token_count(engine, outcome);
 
-    // 010-context-window-management/US3 (FR-011/FR-012): an oversized
-    // result gets truncated to a preview + a `Read`-able pointer before it
-    // ever enters the model's context -- the persisted `detail` still
-    // carries the full outcome for the transcript UI, only `model_text`
-    // (what the model actually sees) is substituted.
+    // 010-context-window-management/US3 (FR-011/FR-012), 2026-07-09
+    // payload-files design: every non-`Read` result is staged to a payload
+    // file (`context::payload::stage_tool_result`) -- the persisted
+    // `detail` carries the slimmed, previews-only outcome, and `model_text`
+    // is either the full result (inlined, under threshold) or a status
+    // reference line pointing at the payload file.
     let settings = crate::context::ContextSettings::load(conn)
         .await
         .unwrap_or_else(|_| crate::context::ContextSettings::from_raw(&Default::default()));
-    // The offload file must hold the ORIGINAL untruncated text: for Bash,
-    // `model_text` is already tail-biased capped and the full streams only
-    // live in `detail.outcome` -- `offload_text()` reconstructs them so the
-    // clearing pointer's "full output saved at {path}" promise is true.
-    let offload_source = outcome.offload_text();
-    let offloaded = match app.and_then(|a| a.path().app_data_dir().ok()) {
-        Some(app_data_dir) => crate::context::offload::offload_if_oversized(
-            &app_data_dir,
-            parent_conversation_id,
-            tool_call_id,
-            &offload_source,
-            settings.tool_output_offload_chars,
-        )
-        .ok(),
-        None => None,
-    };
-    let (model_text, offloaded_to) = match offloaded {
-        Some((pointer_text, Some(path))) => (pointer_text, Some(path)),
-        // No offload happened (under threshold, no app dir, or a write
-        // error): the model keeps seeing `model_text` -- the capped,
-        // model-facing copy -- NEVER the reconstructed full rendition,
-        // which for Bash could otherwise bypass the output cap whenever
-        // the offload threshold is configured above it.
-        _ => (outcome.model_text.clone(), None),
-    };
 
-    let mut detail = outcome.detail.clone();
-    detail["offloadedTo"] = serde_json::json!(offloaded_to);
+    let (model_text, detail) = if call.name == "Read" {
+        // Carve-out: never write a copy of a file we just read — the
+        // payload reference IS the source. `fs::read`'s own caps (Task 5)
+        // bound the text.
+        let mut detail = outcome.detail.clone();
+        detail["payloadRef"] = detail["filePath"].clone();
+        (outcome.model_text.clone(), detail)
+    } else {
+        match &app_data_dir {
+            Some(app_data_dir) => {
+                let staged = crate::context::payload::stage_tool_result(
+                    app_data_dir,
+                    parent_conversation_id,
+                    tool_call_id,
+                    &outcome,
+                    settings.tool_output_offload_tokens,
+                    |text| engine.count_tokens(text).unwrap_or(usize::MAX),
+                );
+                let mut detail = staged.detail;
+                detail["payloadRef"] = serde_json::json!(staged.payload_ref);
+                (staged.model_text, detail)
+            }
+            None => (outcome.model_text.clone(), outcome.detail.clone()),
+        }
+    };
 
     persist_tool_result(
         app,
@@ -1067,14 +1081,9 @@ async fn emit_context_usage_update(
     // Measure usage against the plan engine's actual seed prompt (matches the top-level loop's
     // initial system prompt), not the flat SYSTEM_PROMPT which understated usage by ~300 tokens.
     let system_prompt = plan_system_message(cwd, true);
-    if let Ok(usage) = crate::context::compute_usage(
-        conn,
-        engine,
-        conversation_id,
-        &skills_dir,
-        &system_prompt,
-    )
-    .await
+    if let Ok(usage) =
+        crate::context::compute_usage(conn, engine, conversation_id, &skills_dir, &system_prompt)
+            .await
     {
         let _ = app.emit("context-usage-update", usage);
     }
@@ -2187,6 +2196,7 @@ mod tests {
 
         let model_text = handle_general_tool_call(
             None,
+            None,
             &conn,
             &engine,
             "c1",
@@ -2203,7 +2213,11 @@ mod tests {
         // tool_name)>`, ordered by sequence — enough to confirm the
         // tool_call row landed before the tool_result row.
         let rows = all_messages(&conn, "c1").await;
-        assert_eq!(rows.len(), 2, "expected exactly a tool_call row and a tool_result row");
+        assert_eq!(
+            rows.len(),
+            2,
+            "expected exactly a tool_call row and a tool_result row"
+        );
         assert_eq!(rows[0].0, "tool_call");
         assert_eq!(rows[1].0, "tool_result");
 
@@ -2219,6 +2233,128 @@ mod tests {
         );
     }
 
+    // --- Task 3: top-level path staged through context::payload ---
+
+    #[tokio::test]
+    #[ignore]
+    async fn general_tool_result_carries_a_payload_ref_and_bounded_model_text() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_conversation(&conn, "c1").await;
+        let app_data_dir = tempfile::tempdir().unwrap();
+
+        let engine = crate::inference::InferenceEngine::load(&test_model_path(), 4)
+            .expect("model should load");
+        let call = ToolCall {
+            name: "Bash".to_string(),
+            arguments: serde_json::json!({"command": "yes x | head -5000"}),
+        };
+
+        let model_text = handle_general_tool_call(
+            None,
+            Some(app_data_dir.path().to_path_buf()),
+            &conn,
+            &engine,
+            "c1",
+            None,
+            "call1",
+            &call,
+        )
+        .await;
+
+        let (_, content_type, _, content) = latest_message(&conn, "c1").await;
+        assert_eq!(content_type, "tool_result");
+        let detail: serde_json::Value = serde_json::from_str(&content).unwrap();
+
+        let payload_ref = detail["payloadRef"]
+            .as_str()
+            .expect("payloadRef must be a path");
+        assert!(
+            std::path::Path::new(payload_ref).exists(),
+            "the payload file must actually exist on disk"
+        );
+        let written = std::fs::read_to_string(payload_ref).unwrap();
+        // The payload is `offload_text()`'s full "exit_code:/stdout:/
+        // stderr:" rendition, not bare stdout — count only the `x` lines
+        // stdout actually contributed, ignoring that framing.
+        assert_eq!(
+            written.lines().filter(|line| *line == "x").count(),
+            5000,
+            "the payload file must hold the full, untruncated stdout"
+        );
+
+        assert!(
+            model_text.starts_with("Bash: exit 0"),
+            "an oversized result must become the status reference line, got: {model_text:?}"
+        );
+        assert!(
+            model_text.contains(payload_ref),
+            "the reference line must name the payload path"
+        );
+
+        assert!(
+            detail["outcome"]["stdout"].is_null(),
+            "bulk stdout must not survive in the persisted detail"
+        );
+        assert!(
+            detail["outcome"]["stdoutPreview"].is_string(),
+            "a bounded preview must replace the bulk stdout"
+        );
+        assert!(
+            detail["outcome"]["stdoutBytes"].as_u64().is_some(),
+            "a byte count must replace the bulk stdout"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn read_tool_result_references_its_source_and_writes_no_copy() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_conversation(&conn, "c1").await;
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("notes.txt");
+        std::fs::write(&file_path, "hello world").unwrap();
+        let app_data_dir = tempfile::tempdir().unwrap();
+
+        let engine = crate::inference::InferenceEngine::load(&test_model_path(), 4)
+            .expect("model should load");
+        let call = ToolCall {
+            name: "Read".to_string(),
+            arguments: serde_json::json!({"file_path": file_path.to_str().unwrap()}),
+        };
+
+        let model_text = handle_general_tool_call(
+            None,
+            Some(app_data_dir.path().to_path_buf()),
+            &conn,
+            &engine,
+            "c1",
+            None,
+            "call1",
+            &call,
+        )
+        .await;
+
+        let (_, content_type, _, content) = latest_message(&conn, "c1").await;
+        assert_eq!(content_type, "tool_result");
+        let detail: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(
+            detail["payloadRef"].as_str(),
+            Some(file_path.to_str().unwrap()),
+            "Read's payloadRef must be the source file itself, not a copy"
+        );
+
+        assert!(
+            !app_data_dir.path().join("tool-outputs").exists(),
+            "Read must never write a payload-file copy of the file it just read"
+        );
+
+        assert_eq!(
+            model_text,
+            crate::agent::tools::fs::read(&file_path, None, None).unwrap(),
+            "model_text must be fs::read's own numbered output, unstaged"
+        );
+    }
+
     #[test]
     fn plan_snapshot_reflects_state_and_current_step() {
         use crate::agent::plan::{LoopState, Plan, PlanState, PlanStep};
@@ -2226,8 +2362,14 @@ mod tests {
         state.plan = Plan {
             goal: "g".to_string(),
             steps: vec![
-                PlanStep { description: "a".to_string(), done: true },
-                PlanStep { description: "b".to_string(), done: false },
+                PlanStep {
+                    description: "a".to_string(),
+                    done: true,
+                },
+                PlanStep {
+                    description: "b".to_string(),
+                    done: false,
+                },
             ],
         };
         state.state = LoopState::Executing { step_index: 1 };
@@ -2257,10 +2399,7 @@ mod tests {
             arguments: serde_json::json!({"goal": "g", "steps": ["a"]}),
         });
         publish_plan_update(None, &active_plans, "c1", &state);
-        assert_eq!(
-            active_plans.0.lock().unwrap().get("c1").unwrap().goal,
-            "g"
-        );
+        assert_eq!(active_plans.0.lock().unwrap().get("c1").unwrap().goal, "g");
 
         // Guard clear is exercised without an AppHandle via the map
         // directly (the emit half needs a live app; the map half is the

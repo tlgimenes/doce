@@ -18,15 +18,14 @@ pub struct ToolOutcome {
 }
 
 impl ToolOutcome {
-    /// The text an offload (`context::offload::offload_if_oversized`)
-    /// should write to disk for this outcome. For every tool but Bash,
-    /// `model_text` IS the full result. Bash is the one tool whose
-    /// `model_text` streams are already tail-biased CAPPED
-    /// (`bash::truncate_tail_biased`) while `detail.outcome` still carries
-    /// every byte -- offloading the capped copy would break the promise in
-    /// tier 1's restorable clearing pointer ("full output saved at
-    /// {path}") and in the offload pointer itself ("full output saved"),
-    /// so the full rendition is reconstructed from `detail` here.
+    /// The text `context::payload::stage_tool_result` writes to the
+    /// payload file for this outcome. For every tool but Bash, `model_text`
+    /// IS the full result. Bash is the one tool whose `model_text` streams
+    /// are already tail-biased CAPPED (`bash::truncate_tail_biased`) while
+    /// `detail.outcome` still carries every byte -- staging the capped copy
+    /// would break the promise that `Read`-ing the payload file back
+    /// recovers the *full* result, so the full rendition is reconstructed
+    /// from `detail` here.
     pub fn offload_text(&self) -> std::borrow::Cow<'_, str> {
         if self.detail["toolName"] == "Bash" {
             let outcome = &self.detail["outcome"];
@@ -41,7 +40,7 @@ impl ToolOutcome {
     }
 }
 
-/// The one rendition of a completed Bash run the model (and the offload
+/// The one rendition of a completed Bash run the model (and the payload
 /// file) ever sees -- shared by the Bash arm below (capped streams) and
 /// `ToolOutcome::offload_text` (full streams), so the two can never drift
 /// in shape.
@@ -99,7 +98,9 @@ fn wrong_key_hint(
         .iter()
         .filter(|candidate| !legal_args.contains(*candidate))
         .find(|candidate| arguments.get(**candidate).is_some())
-        .map(|candidate| format!(" (you passed \"{candidate}\", the correct key is \"{expected}\")"))
+        .map(|candidate| {
+            format!(" (you passed \"{candidate}\", the correct key is \"{expected}\")")
+        })
         .unwrap_or_default()
 }
 
@@ -149,7 +150,10 @@ const REQUIRED_STRING_ARGS: &[(&str, &[&str])] = &[
 const LEGAL_TOOL_ARGS: &[(&str, &[&str])] = &[
     ("Read", &["file_path", "offset", "limit"]),
     ("Write", &["file_path", "content"]),
-    ("Edit", &["file_path", "old_string", "new_string", "replace_all"]),
+    (
+        "Edit",
+        &["file_path", "old_string", "new_string", "replace_all"],
+    ),
     ("Bash", &["command", "timeout"]),
     ("Glob", &["pattern", "path"]),
     ("Grep", &["pattern", "path", "glob"]),
@@ -218,15 +222,32 @@ pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
         // detail.matches.length unconditionally — an absent `matches` is a
         // frontend crash, not a cosmetic gap).
         let detail = match call.name.as_str() {
-            "Glob" => json!({"toolName": "Glob", "pattern": a("pattern"), "path": a("path"), "matches": [], "outcome": {"ok": false, "error": error}}),
-            "Grep" => json!({"toolName": "Grep", "pattern": a("pattern"), "path": a("path"), "glob": a("glob"), "matches": [], "truncated": false, "skippedOversized": 0, "outcome": {"ok": false, "error": error}}),
-            "Read" => json!({"toolName": "Read", "filePath": a("file_path"), "outcome": {"ok": false, "error": error}}),
-            "Write" => json!({"toolName": "Write", "filePath": a("file_path"), "outcome": {"ok": false, "error": error}}),
-            "Edit" => json!({"toolName": "Edit", "filePath": a("file_path"), "oldString": a("old_string"), "newString": a("new_string"), "replaceAll": false, "outcome": {"ok": false, "error": error}}),
-            "Bash" => json!({"toolName": "Bash", "command": a("command"), "timeoutMs": null, "outcome": {"ok": false, "error": error}}),
-            other => json!({"toolName": other, "arguments": call.arguments, "outcome": {"ok": false, "error": error}}),
+            "Glob" => {
+                json!({"toolName": "Glob", "pattern": a("pattern"), "path": a("path"), "matches": [], "outcome": {"ok": false, "error": error}})
+            }
+            "Grep" => {
+                json!({"toolName": "Grep", "pattern": a("pattern"), "path": a("path"), "glob": a("glob"), "matches": [], "truncated": false, "skippedOversized": 0, "outcome": {"ok": false, "error": error}})
+            }
+            "Read" => {
+                json!({"toolName": "Read", "filePath": a("file_path"), "outcome": {"ok": false, "error": error}})
+            }
+            "Write" => {
+                json!({"toolName": "Write", "filePath": a("file_path"), "outcome": {"ok": false, "error": error}})
+            }
+            "Edit" => {
+                json!({"toolName": "Edit", "filePath": a("file_path"), "oldString": a("old_string"), "newString": a("new_string"), "replaceAll": false, "outcome": {"ok": false, "error": error}})
+            }
+            "Bash" => {
+                json!({"toolName": "Bash", "command": a("command"), "timeoutMs": null, "outcome": {"ok": false, "error": error}})
+            }
+            other => {
+                json!({"toolName": other, "arguments": call.arguments, "outcome": {"ok": false, "error": error}})
+            }
         };
-        return ToolOutcome { detail, model_text: error };
+        return ToolOutcome {
+            detail,
+            model_text: error,
+        };
     }
     match call.name.as_str() {
         "Read" => {
@@ -373,11 +394,14 @@ pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
             let timeout_ms = call.arguments.get("timeout").and_then(|v| v.as_u64());
             match bash::run(command, timeout_ms, cwd) {
                 // Restorable-compression: `model_text` (what the model
-                // reads, and what `offload_if_oversized` sees downstream)
-                // gets the tail-biased cap; `detail.outcome.stdout`/
-                // `stderr` keep `result`'s FULL, untruncated text so the
-                // transcript widget (and anything reading `detail` back
-                // later) never loses data the model itself didn't see.
+                // reads, and what `context::payload::stage_tool_result`
+                // checks against the threshold to decide whether this
+                // result inlines or becomes a reference line) gets the
+                // tail-biased cap; `detail.outcome.stdout`/`stderr` keep
+                // `result`'s FULL, untruncated text so the transcript
+                // widget (and the payload file, staged from
+                // `offload_text()`'s reconstruction of these two fields)
+                // never lose data the model itself didn't see.
                 Ok(result) => ToolOutcome {
                     model_text: bash_result_model_text(
                         i64::from(result.exit_code),
@@ -795,7 +819,10 @@ mod tests {
         let offload_text = result.offload_text();
         assert!(offload_text.starts_with("exit_code: 0\nstdout:\n"));
         assert!(offload_text.contains("line-0\n"));
-        assert!(offload_text.contains("line-10000\n"), "the offload text must keep every byte");
+        assert!(
+            offload_text.contains("line-10000\n"),
+            "the offload text must keep every byte"
+        );
         assert!(offload_text.contains("line-19999"));
         assert!(!offload_text.contains("bytes omitted"));
     }
@@ -804,12 +831,18 @@ mod tests {
     fn offload_text_is_model_text_for_small_bash_and_for_every_other_tool() {
         // Under the cap, Bash's reconstruction and model_text are
         // byte-identical.
-        let small = execute(&call("Bash", serde_json::json!({"command": "echo hi"})), None);
+        let small = execute(
+            &call("Bash", serde_json::json!({"command": "echo hi"})),
+            None,
+        );
         assert_eq!(small.offload_text(), small.model_text);
 
         // A failed Bash dispatch has no streams in detail.outcome --
         // model_text passes through.
-        let failed = execute(&call("Bash", serde_json::json!({"command": "rm -rf ~"})), None);
+        let failed = execute(
+            &call("Bash", serde_json::json!({"command": "rm -rf ~"})),
+            None,
+        );
         assert_eq!(failed.offload_text(), failed.model_text);
 
         // Non-Bash tools never reconstruct.
@@ -906,7 +939,10 @@ mod tests {
         // rename (destroy) the valid argument.
         for tool in ["Grep", "Glob"] {
             let result = execute(&call(tool, serde_json::json!({"path": "/tmp"})), None);
-            assert!(result.model_text.contains("pattern"), "must still name the missing key");
+            assert!(
+                result.model_text.contains("pattern"),
+                "must still name the missing key"
+            );
             assert!(
                 !result.model_text.contains("you passed"),
                 "{tool}'s legal optional `path` must not be flagged, got: {:?}",
@@ -927,7 +963,10 @@ mod tests {
     fn missing_required_arguments_get_a_schema_shaped_error_before_dispatch() {
         let result = execute(&call("Grep", serde_json::json!({})), None);
         assert!(result.model_text.starts_with("Error:"));
-        assert!(result.model_text.contains("pattern"), "must name the missing key");
+        assert!(
+            result.model_text.contains("pattern"),
+            "must name the missing key"
+        );
 
         let result = execute(&call("Edit", serde_json::json!({"file_path": "/a"})), None);
         assert!(result.model_text.contains("old_string"));

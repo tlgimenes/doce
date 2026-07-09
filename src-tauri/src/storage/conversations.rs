@@ -26,13 +26,14 @@ pub struct HistoryMessage {
     /// row under `PLAN_KEEP_N` rather than `TOOL_KEEP_N`. Always `false`
     /// for every other content type — nothing reads it for those.
     pub plan: bool,
-    /// The `detail.offloadedTo` path for a `tool_result` row whose full
-    /// output was previously offloaded to disk
-    /// (`context::offload::offload_if_oversized`), parsed the same way as
-    /// `plan`. Tier 1 uses this to clear the row to a restorable
+    /// The `detail.payloadRef` path for a `tool_result` row — the payload
+    /// file every staged result now writes
+    /// (`context::payload::stage_tool_result`), or, for a `Read` row, the
+    /// source file itself — parsed the same way as `plan`. Falls back to
+    /// the legacy `detail.offloadedTo` key for a row persisted before this
+    /// rename. Tier 1 uses this to clear the row to a restorable
     /// `Read`-able pointer instead of the plain placeholder. Always `None`
-    /// for every other content type, and for a tool row that was never
-    /// offloaded.
+    /// for every other content type, and for a tool row with neither key.
     ///
     /// Replaces this struct's former `raw_content: String` field (a review
     /// finding: keeping every row's full raw JSON around for the lifetime
@@ -41,15 +42,16 @@ pub struct HistoryMessage {
     /// more) — these two parsed facts are the only thing tier 1 actually
     /// needs out of that JSON, so they're computed once here and the
     /// string itself is dropped.
-    pub offloaded_to: Option<String>,
+    pub payload_ref: Option<String>,
 }
 
 /// Parses a tool row's persisted `detail` JSON (data-model.md) for the two
-/// flags tier 1 needs — `"plan"` and `"offloadedTo"` — once here at load
-/// time rather than keeping the raw JSON string around for `apply_
-/// lightweight_clearing` to re-parse later. `content` is only ever
-/// `detail`-shaped JSON for a `tool_call`/`tool_result` row; callers must
-/// not invoke this for any other content type.
+/// flags tier 1 needs — `"plan"` and `"payloadRef"` (falling back to the
+/// legacy `"offloadedTo"` key for a row persisted before that rename) —
+/// once here at load time rather than keeping the raw JSON string around
+/// for `apply_lightweight_clearing` to re-parse later. `content` is only
+/// ever `detail`-shaped JSON for a `tool_call`/`tool_result` row; callers
+/// must not invoke this for any other content type.
 fn parse_tool_row_flags(content: &str) -> (bool, Option<String>) {
     let parsed: Option<serde_json::Value> = serde_json::from_str(content).ok();
     let plan = parsed
@@ -57,12 +59,12 @@ fn parse_tool_row_flags(content: &str) -> (bool, Option<String>) {
         .and_then(|v| v.get("plan"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let offloaded_to = parsed
+    let payload_ref = parsed
         .as_ref()
-        .and_then(|v| v.get("offloadedTo"))
+        .and_then(|v| v.get("payloadRef").or_else(|| v.get("offloadedTo")))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    (plan, offloaded_to)
+    (plan, payload_ref)
 }
 
 /// Builds the chat-template message history for a conversation: every
@@ -153,7 +155,7 @@ pub fn load_history_annotated(
             content_type: "context_notice".to_string(),
             sequence: *splice_sequence,
             plan: false,
-            offloaded_to: None,
+            payload_ref: None,
         });
     }
 
@@ -173,8 +175,7 @@ pub fn load_history_annotated(
         // JSON -- tier 1 (`context::apply_lightweight_clearing`) reads
         // these two fields back off the resulting `HistoryMessage` rather
         // than re-parsing raw JSON itself.
-        let (plan, offloaded_to) = if content_type == "tool_call" || content_type == "tool_result"
-        {
+        let (plan, payload_ref) = if content_type == "tool_call" || content_type == "tool_result" {
             parse_tool_row_flags(&content)
         } else {
             (false, None)
@@ -225,7 +226,7 @@ pub fn load_history_annotated(
             content_type,
             sequence,
             plan,
-            offloaded_to,
+            payload_ref,
         });
     }
 
@@ -327,7 +328,12 @@ fn interrupted_tool_result_detail(
     arguments: &serde_json::Value,
     tool_call_id: &str,
 ) -> serde_json::Value {
-    let a = |key: &str| arguments.get(key).cloned().unwrap_or(serde_json::Value::Null);
+    let a = |key: &str| {
+        arguments
+            .get(key)
+            .cloned()
+            .unwrap_or(serde_json::Value::Null)
+    };
     let error = INTERRUPTED_TOOL_TEXT;
     match tool_name {
         "Read" => serde_json::json!({
@@ -773,7 +779,7 @@ mod tests {
         );
     }
 
-    // --- HistoryMessage.plan/offloaded_to: parsed once at load time from a
+    // --- HistoryMessage.plan/payload_ref: parsed once at load time from a
     // tool row's `content` JSON (replacing the former raw_content: String
     // field a review finding on this feature flagged as duplicating every
     // row's full content in memory for the lifetime of every loaded
@@ -801,12 +807,37 @@ mod tests {
         let skills_dir = empty_skills_dir();
         let history = load_history_annotated(&conn, "c1", skills_dir.path()).unwrap();
         assert_eq!(history.len(), 1);
-        assert!(history[0].plan, "the call row's own plan marker must be parsed, not defaulted to false");
-        assert_eq!(history[0].offloaded_to, None);
+        assert!(
+            history[0].plan,
+            "the call row's own plan marker must be parsed, not defaulted to false"
+        );
+        assert_eq!(history[0].payload_ref, None);
     }
 
     #[test]
-    fn a_tool_result_rows_offloaded_to_is_parsed_from_its_own_content() {
+    fn a_tool_result_rows_payload_ref_is_parsed_from_its_own_content() {
+        let conn = setup_conn();
+        insert_tool_message(
+            &conn,
+            "c1",
+            "tool",
+            "tool_result",
+            r#"{"toolName":"Bash","payloadRef":"/tmp/payload.txt"}"#,
+            0,
+            "Bash",
+            "call-1",
+            Some("preview..."),
+        );
+
+        let skills_dir = empty_skills_dir();
+        let history = load_history_annotated(&conn, "c1", skills_dir.path()).unwrap();
+        assert_eq!(history.len(), 1);
+        assert!(!history[0].plan);
+        assert_eq!(history[0].payload_ref.as_deref(), Some("/tmp/payload.txt"));
+    }
+
+    #[test]
+    fn a_tool_result_rows_payload_ref_falls_back_to_the_legacy_offloaded_to_key() {
         let conn = setup_conn();
         insert_tool_message(
             &conn,
@@ -824,7 +855,18 @@ mod tests {
         let history = load_history_annotated(&conn, "c1", skills_dir.path()).unwrap();
         assert_eq!(history.len(), 1);
         assert!(!history[0].plan);
-        assert_eq!(history[0].offloaded_to.as_deref(), Some("/tmp/offload.txt"));
+        assert_eq!(history[0].payload_ref.as_deref(), Some("/tmp/offload.txt"));
+    }
+
+    #[test]
+    fn parse_tool_row_flags_reads_payload_ref_with_offloaded_to_fallback() {
+        let (_, new_key) = parse_tool_row_flags(r#"{"payloadRef": "/p/new.txt"}"#);
+        assert_eq!(new_key.as_deref(), Some("/p/new.txt"));
+        let (_, legacy) = parse_tool_row_flags(r#"{"offloadedTo": "/p/old.txt"}"#);
+        assert_eq!(legacy.as_deref(), Some("/p/old.txt"));
+        let (_, both) =
+            parse_tool_row_flags(r#"{"payloadRef": "/p/new.txt", "offloadedTo": "/p/old.txt"}"#);
+        assert_eq!(both.as_deref(), Some("/p/new.txt"), "payloadRef wins");
     }
 
     #[test]
@@ -858,7 +900,7 @@ mod tests {
         assert_eq!(history.len(), 2);
         for message in &history {
             assert!(!message.plan);
-            assert_eq!(message.offloaded_to, None);
+            assert_eq!(message.payload_ref, None);
         }
     }
 
@@ -882,7 +924,7 @@ mod tests {
         let history = load_history_annotated(&conn, "c1", skills_dir.path()).unwrap();
         assert_eq!(history.len(), 1);
         assert!(!history[0].plan);
-        assert_eq!(history[0].offloaded_to, None);
+        assert_eq!(history[0].payload_ref, None);
     }
 
     /// No test exercises a real skill directory except the two rich-text

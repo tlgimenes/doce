@@ -21,13 +21,14 @@ pub struct StagedResult {
     pub detail: serde_json::Value,
 }
 
-// The canonical payload for this result comes from the existing
-// `ToolOutcome::offload_text()` (agent/dispatch.rs, added in 1dad370): the
-// full Bash rendition reconstructed from `detail` via the shared
-// `bash_result_model_text` helper, or a borrow of `model_text` for every
-// other tool. Do NOT write a new extraction function — update
-// `offload_text()`'s doc comment (it references `context::offload`, deleted
-// in Task 3) to reference this module instead.
+// `stage_tool_result` below sources the payload it writes from
+// `ToolOutcome::offload_text()` (agent/dispatch.rs) rather than duplicating
+// that reconstruction here: for Bash, `model_text` is already tail-biased
+// capped by the time it reaches this module, and only `detail.outcome`
+// still carries every byte, so `offload_text()` is the one place that
+// rebuilds the full rendition from `detail`. Every other tool's
+// `offload_text()` is just a borrow of `model_text`, since none of them
+// cap it.
 
 /// The status line an over-threshold result is replaced with: cheap
 /// metadata that answers "did it work / how big" without a Read round-trip.
