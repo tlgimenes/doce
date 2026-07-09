@@ -330,6 +330,23 @@ pub async fn send_message(
         .ok()
         .map(|d| d.join("transcripts"));
 
+    // Heal-on-open (2026-07-09 transcript design): chat mode's counterpart
+    // to `commands::agent::send_agent_message`'s own heal call -- this is
+    // the user-visible entry point where a chat conversation's history
+    // first loads for this turn. Repairs a stale/missing/torn transcript
+    // file once per turn-entry; best-effort, since the transcript is a
+    // derived, regenerable cache, never authoritative.
+    if let Some(dir) = transcript_dir.clone() {
+        let heal_conversation_id = conversation_id.clone();
+        let _ = conn
+            .call(move |conn: &mut Connection| -> rusqlite::Result<()> {
+                let _ =
+                    crate::context::transcript::heal_if_stale(conn, &dir, &heal_conversation_id);
+                Ok(())
+            })
+            .await;
+    }
+
     // FR-012: title comes from the first message only, no model call --
     // decided up front (an existence check, not the sequence the insert
     // below will allocate, since `storage::messages::insert` — the single

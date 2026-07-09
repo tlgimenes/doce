@@ -249,7 +249,13 @@ pub async fn compute_usage(
     // emit_context_usage_update (both built on this function) would report
     // a persistently-too-high number even after tier 1 had genuinely
     // cleared old tool results -- found via real use, not speculatively.
-    apply_lightweight_clearing(&mut history, TOOL_KEEP_N);
+    // `None` here (unlike `maybe_compact`'s own call below): this function
+    // has no `app_data_dir`/transcript path to hand a cleared row, so a
+    // row with no `payload_ref` falls back to the plain
+    // `TOOL_CLEARED_PLACEHOLDER` -- an honest, if less specific, count
+    // (this function already documents itself as "a close, honest
+    // estimate" at its callers, not a byte-exact mirror of the real seed).
+    apply_lightweight_clearing(&mut history, TOOL_KEEP_N, None);
     usage_from_history(engine, conversation_id, &history, system_prompt, &settings).await
 }
 
@@ -270,18 +276,31 @@ pub async fn compute_usage(
 /// `storage::conversations::load_history_annotated`) alone every time,
 /// which is why no "cut marker" is needed for this tier to stay correct
 /// across reloads (research.md).
-pub fn apply_lightweight_clearing(history: &mut [HistoryMessage], keep_n: usize) -> usize {
-    let tool_rows: Vec<(usize, bool, Option<String>)> = history
+///
+/// `transcript_path`, when `Some`, names this conversation's own
+/// materialized transcript (`context::transcript::transcript_path`) — the
+/// recovery route a cleared row with no `payload_ref` of its own now cites
+/// (`limits::tool_cleared_placeholder_transcript`) instead of the bare
+/// `TOOL_CLEARED_PLACEHOLDER`, since every row (staged or not) always has
+/// an entry there. A row WITH a `payload_ref` still prefers that pointer
+/// regardless — it's the more specific file (the exact staged content, not
+/// the whole conversation).
+pub fn apply_lightweight_clearing(
+    history: &mut [HistoryMessage],
+    keep_n: usize,
+    transcript_path: Option<&str>,
+) -> usize {
+    let tool_rows: Vec<(usize, bool, Option<String>, i64)> = history
         .iter()
         .enumerate()
         .filter(|(_, m)| m.content_type == "tool_call" || m.content_type == "tool_result")
-        .map(|(i, m)| (i, m.plan, m.payload_ref.clone()))
+        .map(|(i, m)| (i, m.plan, m.payload_ref.clone(), m.sequence))
         .collect();
 
     let plan_indices: Vec<usize> = tool_rows
         .iter()
-        .filter(|(_, plan, _)| *plan)
-        .map(|(i, _, _)| *i)
+        .filter(|(_, plan, _, _)| *plan)
+        .map(|(i, _, _, _)| *i)
         .collect();
     let plan_to_clear: &[usize] = if plan_indices.len() > limits::PLAN_KEEP_N {
         &plan_indices[..plan_indices.len() - limits::PLAN_KEEP_N]
@@ -291,8 +310,8 @@ pub fn apply_lightweight_clearing(history: &mut [HistoryMessage], keep_n: usize)
 
     let regular_indices: Vec<usize> = tool_rows
         .iter()
-        .filter(|(_, plan, _)| !*plan)
-        .map(|(i, _, _)| *i)
+        .filter(|(_, plan, _, _)| !*plan)
+        .map(|(i, _, _, _)| *i)
         .collect();
     let regular_to_clear: &[usize] = if regular_indices.len() > keep_n {
         &regular_indices[..regular_indices.len() - keep_n]
@@ -301,11 +320,12 @@ pub fn apply_lightweight_clearing(history: &mut [HistoryMessage], keep_n: usize)
     };
 
     let mut cleared = 0;
-    for (i, _, payload_ref) in &tool_rows {
+    for (i, _, payload_ref, sequence) in &tool_rows {
         if plan_to_clear.contains(i) || regular_to_clear.contains(i) {
-            let placeholder = match payload_ref {
-                Some(path) => limits::tool_cleared_placeholder_with_pointer(path),
-                None => TOOL_CLEARED_PLACEHOLDER.to_string(),
+            let placeholder = match (payload_ref, transcript_path) {
+                (Some(path), _) => limits::tool_cleared_placeholder_with_pointer(path),
+                (None, Some(tp)) => limits::tool_cleared_placeholder_transcript(tp, *sequence),
+                (None, None) => TOOL_CLEARED_PLACEHOLDER.to_string(),
             };
             history[*i].chat.content = MessageContent::Text(placeholder);
             cleared += 1;
@@ -442,7 +462,17 @@ pub async fn maybe_compact(
 
     let mut changed = false;
 
-    let cleared_count = apply_lightweight_clearing(&mut history, TOOL_KEEP_N);
+    // Unlike `compute_usage`, this caller has `transcript_dir` in hand, so
+    // a cleared row with no `payload_ref` of its own gets the more useful
+    // restorable placeholder (its own transcript entry) instead of the
+    // plain "gone for good" one.
+    let transcript_path = transcript_dir.as_ref().map(|dir| {
+        transcript::transcript_path(dir, conversation_id)
+            .display()
+            .to_string()
+    });
+    let cleared_count =
+        apply_lightweight_clearing(&mut history, TOOL_KEEP_N, transcript_path.as_deref());
     if cleared_count > 0 {
         changed = true;
         let plural = if cleared_count == 1 { "" } else { "s" };
@@ -681,7 +711,10 @@ mod tests {
             history_message("text", 0, "hi"),
             history_message("text", 1, "hello"),
         ];
-        assert_eq!(apply_lightweight_clearing(&mut history, TOOL_KEEP_N), 0);
+        assert_eq!(
+            apply_lightweight_clearing(&mut history, TOOL_KEEP_N, None),
+            0
+        );
         assert_eq!(history[0].chat.text(), "hi");
         assert_eq!(history[1].chat.text(), "hello");
     }
@@ -691,7 +724,10 @@ mod tests {
         let mut history: Vec<HistoryMessage> = (0..TOOL_KEEP_N as i64)
             .map(|i| history_message("tool_result", i, "result"))
             .collect();
-        assert_eq!(apply_lightweight_clearing(&mut history, TOOL_KEEP_N), 0);
+        assert_eq!(
+            apply_lightweight_clearing(&mut history, TOOL_KEEP_N, None),
+            0
+        );
         assert!(history.iter().all(|m| m.chat.text() == "result"));
     }
 
@@ -701,7 +737,7 @@ mod tests {
             .map(|i| history_message("tool_result", i, &format!("result {i}")))
             .collect();
 
-        let cleared = apply_lightweight_clearing(&mut history, TOOL_KEEP_N);
+        let cleared = apply_lightweight_clearing(&mut history, TOOL_KEEP_N, None);
         assert_eq!(cleared, 3);
 
         for message in &history[0..3] {
@@ -720,7 +756,7 @@ mod tests {
         let mut history = vec![history_message("text", 0, "old text stays")];
         history.extend((1..=5).map(|i| history_message("tool_result", i, &format!("r{}", i - 1))));
 
-        let cleared = apply_lightweight_clearing(&mut history, TOOL_KEEP_N);
+        let cleared = apply_lightweight_clearing(&mut history, TOOL_KEEP_N, None);
         assert_eq!(cleared, 5 - TOOL_KEEP_N);
         assert_eq!(history[0].chat.text(), "old text stays");
         for message in &history[1..=cleared] {
@@ -745,7 +781,7 @@ mod tests {
         history[0] =
             history_message_with_flags("tool_result", 0, "result 0", false, Some("/tmp/x.txt"));
 
-        let cleared = apply_lightweight_clearing(&mut history, TOOL_KEEP_N);
+        let cleared = apply_lightweight_clearing(&mut history, TOOL_KEEP_N, None);
         assert_eq!(cleared, 1);
         assert_eq!(
             history[0].chat.text(),
@@ -763,9 +799,63 @@ mod tests {
             .map(|i| history_message("tool_result", i, &format!("result {i}")))
             .collect();
 
-        let cleared = apply_lightweight_clearing(&mut history, TOOL_KEEP_N);
+        let cleared = apply_lightweight_clearing(&mut history, TOOL_KEEP_N, None);
         assert_eq!(cleared, 1);
         assert_eq!(history[0].chat.text(), TOOL_CLEARED_PLACEHOLDER);
+    }
+
+    #[test]
+    fn cleared_rows_without_payload_ref_cite_their_transcript_entry() {
+        // 4 tool_result rows (seq 0-3), none staged (no payload_ref) --
+        // with TOOL_KEEP_N=2 kept, rows 0 and 1 clear. When a transcript
+        // path is available, each cleared row cites ITS OWN sequence in
+        // the transcript rather than the generic "gone for good" wording.
+        let mut history: Vec<HistoryMessage> = (0..4)
+            .map(|i| history_message("tool_result", i, &format!("result {i}")))
+            .collect();
+
+        let cleared = apply_lightweight_clearing(&mut history, 2, Some("/t/c1.txt"));
+        assert_eq!(cleared, 2);
+        assert_eq!(
+            history[0].chat.text(),
+            limits::tool_cleared_placeholder_transcript("/t/c1.txt", 0)
+        );
+        assert_eq!(
+            history[1].chat.text(),
+            limits::tool_cleared_placeholder_transcript("/t/c1.txt", 1)
+        );
+        assert_eq!(history[2].chat.text(), "result 2");
+        assert_eq!(history[3].chat.text(), "result 3");
+    }
+
+    #[test]
+    fn cleared_rows_with_payload_ref_still_cite_the_payload_file() {
+        // Same shape, but the cleared rows DO carry a payload_ref -- the
+        // payload file stays the recovery route even when a transcript is
+        // also available, since it's the more specific pointer (the exact
+        // staged content, not the whole conversation).
+        let mut history: Vec<HistoryMessage> = (0..4)
+            .map(|i| {
+                history_message_with_flags(
+                    "tool_result",
+                    i,
+                    &format!("result {i}"),
+                    false,
+                    Some("/p/x.txt"),
+                )
+            })
+            .collect();
+
+        let cleared = apply_lightweight_clearing(&mut history, 2, Some("/t/c1.txt"));
+        assert_eq!(cleared, 2);
+        assert_eq!(
+            history[0].chat.text(),
+            limits::tool_cleared_placeholder_with_pointer("/p/x.txt")
+        );
+        assert_eq!(
+            history[1].chat.text(),
+            limits::tool_cleared_placeholder_with_pointer("/p/x.txt")
+        );
     }
 
     #[test]
@@ -785,7 +875,7 @@ mod tests {
         // keep_n is large enough that the ordinary TOOL_KEEP_N-style rule
         // would keep every one of these -- proving plan rows are cleared
         // by their own, stricter PLAN_KEEP_N cutoff instead.
-        let cleared = apply_lightweight_clearing(&mut history, 10);
+        let cleared = apply_lightweight_clearing(&mut history, 10, None);
         assert_eq!(cleared, 5 - limits::PLAN_KEEP_N);
         for message in &history[0..cleared] {
             assert_eq!(message.chat.text(), TOOL_CLEARED_PLACEHOLDER);
@@ -808,7 +898,7 @@ mod tests {
         // TOOL_KEEP_N (2) regular rows exist -- none of them should clear.
         // Of the 3 plan rows, only the oldest (beyond PLAN_KEEP_N=2)
         // should clear.
-        let cleared = apply_lightweight_clearing(&mut history, TOOL_KEEP_N);
+        let cleared = apply_lightweight_clearing(&mut history, TOOL_KEEP_N, None);
         assert_eq!(cleared, 1);
         assert_eq!(history[0].chat.text(), TOOL_CLEARED_PLACEHOLDER);
         assert_eq!(history[1].chat.text(), "plan 1");
@@ -841,7 +931,7 @@ mod tests {
             history_message("tool_result", 6, "genuine result 2"),
         ];
 
-        let cleared = apply_lightweight_clearing(&mut history, TOOL_KEEP_N);
+        let cleared = apply_lightweight_clearing(&mut history, TOOL_KEEP_N, None);
 
         // Regular population is exactly the 3 genuine results (TOOL_KEEP_N
         // = 2 survive, the oldest clears) -- the two plan call rows never

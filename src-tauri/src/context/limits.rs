@@ -46,6 +46,21 @@ pub fn tool_cleared_placeholder_with_pointer(payload_ref: &str) -> String {
     format!("[Old tool result cleared; recover with Read \"{payload_ref}\"]")
 }
 
+/// Tier-1 placeholder for a cleared row with no payload file of its own
+/// (a `Task`/plan/`AskUserQuestion` row, or a legacy row persisted before
+/// payload staging existed): none of those have a `payload_ref` to point
+/// `Read` at, so the conversation's own materialized transcript
+/// (`context::transcript`) is the recovery route instead -- every row,
+/// staged or not, always has an entry there. `seq` is the row's own
+/// `HistoryMessage.sequence`, matching the `[#{seq} ...]` header
+/// `transcript::render_entry` gives that same row, so the model can find
+/// the exact entry rather than having to search the whole file.
+pub fn tool_cleared_placeholder_transcript(transcript_path: &str, seq: i64) -> String {
+    format!(
+        "[Old tool result cleared; see entry #{seq} in the transcript at \"{transcript_path}\" — Read it to recover]"
+    )
+}
+
 /// Messages tier 2 never summarizes away, regardless of how far back it
 /// would otherwise reach (research.md).
 pub const PROTECTED_RECENT_MESSAGES: usize = 10;

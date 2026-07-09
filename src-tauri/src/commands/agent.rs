@@ -979,7 +979,21 @@ async fn execute_top_level_tool(
     // state is owned by the backend literal below; the seed prompt is the
     // state-free subagent union prompt (`allow_task = false`).
     let plan_state = crate::agent::plan::PlanState::default();
-    let sub_system_prompt = plan_system_message(sub_context.cwd.as_deref(), false);
+    // FR-015 isolation: the subagent's system prompt names its OWN
+    // transcript (keyed by `subagent_id`, its own conversation id), never
+    // the parent's -- a subagent's context is fresh and unrelated to the
+    // parent conversation, so its recovery pointer must stay scoped to
+    // what it can actually see.
+    let sub_transcript_path = transcript_dir.as_deref().map(|dir| {
+        crate::context::transcript::transcript_path(dir, &subagent_id)
+            .display()
+            .to_string()
+    });
+    let sub_system_prompt = plan_system_message(
+        sub_context.cwd.as_deref(),
+        false,
+        sub_transcript_path.as_deref(),
+    );
     // FR-015: a fresh, isolated context — just the system prompt plus the
     // delegated task, no parent conversation history.
     let sub_messages = vec![
@@ -1170,12 +1184,20 @@ async fn emit_context_usage_update(
     conversation_id: &str,
     cwd: Option<&std::path::Path>,
 ) {
-    let Ok(skills_dir) = app.path().app_data_dir().map(|d| d.join("skills")) else {
+    let Ok(app_data_dir) = app.path().app_data_dir() else {
         return;
     };
+    let skills_dir = app_data_dir.join("skills");
     // Measure usage against the plan engine's actual seed prompt (matches the top-level loop's
-    // initial system prompt), not the flat SYSTEM_PROMPT which understated usage by ~300 tokens.
-    let system_prompt = plan_system_message(cwd, true);
+    // initial system prompt, transcript line included), not the flat SYSTEM_PROMPT which
+    // understated usage by ~300 tokens.
+    let transcript_path = crate::context::transcript::transcript_path(
+        &app_data_dir.join("transcripts"),
+        conversation_id,
+    )
+    .display()
+    .to_string();
+    let system_prompt = plan_system_message(cwd, true, Some(&transcript_path));
     if let Ok(usage) =
         crate::context::compute_usage(conn, engine, conversation_id, &skills_dir, &system_prompt)
             .await
@@ -1225,25 +1247,43 @@ async fn persist_assistant_text_reply(
 }
 
 /// The plan engine's immutable union prompt plus the cwd line that tells
-/// the model where it's working — what seeds `initial_messages[0]` (and
-/// the pre-loop compaction budget / usage measurement). Deliberately
-/// state-free: both inputs are turn-stable (the union prompt is a cached
-/// static; a conversation's workspace can't change mid-turn), so the
-/// message this returns is byte-identical every time a given host renders
-/// it — the invariant `PromptSession`'s KV-prefix reuse depends on.
-/// `allow_task` picks the host flavor: `false` for the subagent path
-/// (FR-016's one-level nesting cap means `run_loop` rejects any `Task`
-/// call from a subagent, so its prompt must not advertise the tool at
-/// all), `true` everywhere top-level.
-fn plan_system_message(cwd: Option<&std::path::Path>, allow_task: bool) -> String {
+/// the model where it's working, plus (2026-07-09 transcript design) a
+/// line naming this host's own materialized transcript — what seeds
+/// `initial_messages[0]` (and the pre-loop compaction budget / usage
+/// measurement). Deliberately state-free: all three inputs are turn-stable
+/// (the union prompt is a cached static; a conversation's workspace and
+/// transcript path can't change mid-turn), so the message this returns is
+/// byte-identical every time a given host renders it — the invariant
+/// `PromptSession`'s KV-prefix reuse depends on. `allow_task` picks the
+/// host flavor: `false` for the subagent path (FR-016's one-level nesting
+/// cap means `run_loop` rejects any `Task` call from a subagent, so its
+/// prompt must not advertise the tool at all), `true` everywhere
+/// top-level. `transcript_path`, when `Some`, must be THIS host's own
+/// transcript — a subagent seed passes its own `subagent_id`-keyed path,
+/// never its parent's (FR-015 isolation: a subagent's context is fresh and
+/// unrelated to the parent conversation, and its recovery pointer must
+/// stay that way too). `None` (no `app_data_dir` resolvable, or a test
+/// harness with no filesystem) leaves the message byte-identical to this
+/// function's pre-transcript behavior.
+fn plan_system_message(
+    cwd: Option<&std::path::Path>,
+    allow_task: bool,
+    transcript_path: Option<&str>,
+) -> String {
     let base = crate::agent::plan::plan_system_prompt(allow_task);
-    match cwd {
+    let mut message = match cwd {
         Some(path) => format!(
             "{base}\n\nYou are currently working in the directory: {}",
             path.display()
         ),
         None => base.to_string(),
+    };
+    if let Some(path) = transcript_path {
+        message.push_str(&format!(
+            "\n\n# Transcript\nThis conversation's transcript — everything so far, including content no longer in your context — is at \"{path}\". Read it to recall earlier work."
+        ));
     }
+    message
 }
 
 /// 009-rich-chat-input/US2 (contracts/rich-chat-input.md): persists this
@@ -1407,6 +1447,25 @@ pub async fn send_agent_message(
         .ok()
         .map(|d| d.join("transcripts"));
 
+    // Heal-on-open (2026-07-09 transcript design): this is the user-visible
+    // entry point where an agent-mode conversation's history first loads
+    // for this turn -- repair a stale/missing/torn transcript file (e.g.
+    // left behind by a crash mid-write) here, once per turn-entry, not
+    // inside the per-tool-call loop below. Best-effort: a transcript is a
+    // derived, regenerable cache (never authoritative, see
+    // `context::transcript`'s own module doc), so a failure here is
+    // swallowed rather than failing the user's message.
+    if let Some(dir) = transcript_dir.clone() {
+        let heal_conversation_id = conversation_id.clone();
+        let _ = conn
+            .call(move |conn: &mut Connection| -> rusqlite::Result<()> {
+                let _ =
+                    crate::context::transcript::heal_if_stale(conn, &dir, &heal_conversation_id);
+                Ok(())
+            })
+            .await;
+    }
+
     let (next_seq, model_text_for_turn) = persist_user_turn(
         &conn,
         transcript_dir.clone(),
@@ -1525,7 +1584,15 @@ pub async fn send_agent_message(
     // isn't sufficient for agent mode (tool results can push a *later* turn
     // over budget even when the first turn was fine).
     let plan_state = crate::agent::plan::PlanState::default();
-    let system_prompt = plan_system_message(cwd.as_deref(), true);
+    // The top-level agent seed names ITS OWN conversation's transcript
+    // (contrast the subagent seed above, which names `subagent_id`'s).
+    let top_level_transcript_path = transcript_dir.as_deref().map(|dir| {
+        crate::context::transcript::transcript_path(dir, &conversation_id)
+            .display()
+            .to_string()
+    });
+    let system_prompt =
+        plan_system_message(cwd.as_deref(), true, top_level_transcript_path.as_deref());
     let usage = crate::context::maybe_compact(
         &conn,
         transcript_dir.clone(),
@@ -1701,7 +1768,11 @@ mod tests {
 
     #[test]
     fn plan_system_message_appends_the_cwd_line_when_known() {
-        let msg = plan_system_message(Some(std::path::Path::new("/Users/tester/code/doce")), true);
+        let msg = plan_system_message(
+            Some(std::path::Path::new("/Users/tester/code/doce")),
+            true,
+            None,
+        );
         assert!(msg.contains("You are currently working in the directory: /Users/tester/code/doce"));
         // Verify the prompt body is the immutable union prompt.
         let base = crate::agent::plan::plan_system_prompt(true);
@@ -1710,31 +1781,49 @@ mod tests {
 
     #[test]
     fn plan_system_message_is_unchanged_when_no_cwd_is_known() {
-        let msg = plan_system_message(None, true);
+        let msg = plan_system_message(None, true, None);
         assert_eq!(msg, crate::agent::plan::plan_system_prompt(true));
     }
 
     /// The KV-prefix invariant: what seeds `messages[0]` must be
     /// byte-identical on every render for a given host flavor — there is
-    /// no state input left to vary it (`plan_system_message` is
-    /// deliberately state-free), so consecutive turns and plan-state
+    /// no state input left to vary it beyond the (turn-stable, per-host)
+    /// cwd and transcript path, so consecutive turns and plan-state
     /// transitions can never swap the prompt out from under the session.
     #[test]
     fn plan_system_message_is_byte_stable_across_renders() {
         let cwd = std::path::Path::new("/Users/tester/code/doce");
         assert_eq!(
-            plan_system_message(Some(cwd), true),
-            plan_system_message(Some(cwd), true)
+            plan_system_message(Some(cwd), true, None),
+            plan_system_message(Some(cwd), true, None)
         );
         assert_eq!(
-            plan_system_message(Some(cwd), false),
-            plan_system_message(Some(cwd), false)
+            plan_system_message(Some(cwd), false, None),
+            plan_system_message(Some(cwd), false, None)
         );
         // The subagent flavor differs (no Task tool) but is stable too.
         assert_ne!(
-            plan_system_message(Some(cwd), true),
-            plan_system_message(Some(cwd), false)
+            plan_system_message(Some(cwd), true, None),
+            plan_system_message(Some(cwd), false, None)
         );
+    }
+
+    /// The system prompt names the conversation's own transcript file when
+    /// one is available — the model's recovery route back to content tier
+    /// 1/2 already cleared out of its live context (see
+    /// `context::limits::tool_cleared_placeholder_transcript`) — and says
+    /// nothing about a transcript at all when none is (e.g. no
+    /// `app_data_dir`, or a test harness with no filesystem). `None` must
+    /// stay byte-identical to `plan_system_message`'s pre-transcript
+    /// behavior — this is the same string `plan_system_message_is_unchanged_when_no_cwd_is_known`
+    /// already pins.
+    #[test]
+    fn system_prompt_names_the_transcript_when_given() {
+        let with = plan_system_message(None, true, Some("/t/c1.txt"));
+        assert!(with.contains("/t/c1.txt"));
+        assert!(with.contains("transcript"));
+        let without = plan_system_message(None, true, None);
+        assert!(!without.contains("transcript"));
     }
 
     // --- 004-tool-call-widgets: US3 (AskUserQuestion pause/resume) ---

@@ -322,7 +322,7 @@ fn apply_lightweight_clearing_then_summarize_against_the_real_model() {
         });
     }
 
-    let cleared = context::apply_lightweight_clearing(&mut history, 4);
+    let cleared = context::apply_lightweight_clearing(&mut history, 4, None);
     assert!(cleared > 0, "expected some tool messages to be cleared");
 
     // Real summarization call against the real model -- the whole point of
