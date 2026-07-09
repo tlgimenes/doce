@@ -22,11 +22,17 @@ export default function WriteWidget({ detail }: WriteWidgetProps) {
 
   return (
     <div
-      className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm"
+      className="overflow-hidden rounded-lg border border-emerald-500/30 bg-emerald-500/5 text-sm"
       data-testid="write-widget"
     >
-      <p className="font-mono text-xs text-muted-foreground">
-        Write <span>{detail.filePath}</span> ({detail.byteCount} bytes)
+      <p
+        className="border-b border-emerald-500/20 bg-card px-3 py-1.5 font-mono text-xs text-muted-foreground"
+        data-testid="write-header"
+      >
+        {detail.filePath}
+      </p>
+      <p className="p-3 text-xs text-muted-foreground" data-testid="write-body">
+        Write · {detail.byteCount} bytes
       </p>
     </div>
   );
