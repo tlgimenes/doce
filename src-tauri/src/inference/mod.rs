@@ -459,10 +459,17 @@ impl InferenceEngine {
             ToolCallMode::Allow => chain.push(self.tool_call_grammar_sampler(false)?),
             ToolCallMode::Require => chain.push(self.tool_call_grammar_sampler(true)?),
         }
+        // Qwen3-*-2507's own recommended sampling (model card): temp 0.7,
+        // top-p 0.8, top-k 20, min-p 0 — with presence-penalty for
+        // repetition control instead of repeat-penalty (repeat-penalty
+        // taxes the tokens JSON repeats BY DESIGN — braces, quotes, key
+        // names — and inside an active grammar it can only distort
+        // argument content).
         chain.extend([
-            LlamaSampler::penalties(64, 1.1, 0.0, 0.0),
-            LlamaSampler::top_k(40),
-            LlamaSampler::top_p(0.9, 1),
+            LlamaSampler::penalties(64, 1.0, 0.0, 1.0),
+            LlamaSampler::top_k(20),
+            LlamaSampler::top_p(0.8, 1),
+            LlamaSampler::min_p(0.0, 1),
             LlamaSampler::temp(0.7),
             LlamaSampler::dist(seed),
         ]);
