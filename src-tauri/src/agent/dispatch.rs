@@ -58,6 +58,30 @@ fn wrong_key_hint(arguments: &serde_json::Value, expected: &str, common_mistakes
         .unwrap_or_default()
 }
 
+/// A zero-match Grep whose pattern contains unescaped regex
+/// metacharacters is ambiguous between "nothing matches" and "the
+/// pattern doesn't mean what you think" — name the suspicion instead of
+/// letting an empty result read as verification.
+fn regex_literalness_hint(pattern: &str) -> Option<String> {
+    let mut prev_backslash = false;
+    for c in pattern.chars() {
+        if prev_backslash {
+            prev_backslash = false;
+            continue;
+        }
+        if c == '\\' {
+            prev_backslash = true;
+            continue;
+        }
+        if "+*?()[]{}|".contains(c) {
+            return Some(format!(
+                " Note: your pattern contains '{c}', a regex metacharacter — if you meant the literal character, escape it as '\\{c}' and search again."
+            ));
+        }
+    }
+    None
+}
+
 /// (tool, required string-typed args). The NVIDIA SLM-agents "simple
 /// format checks" applied at the boundary: a malformed call becomes a
 /// one-turn correction naming exactly what's missing, instead of each
@@ -386,7 +410,9 @@ pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
                         })
                         .collect();
                     let mut model_text = if outcome.matches.is_empty() {
-                        "No matches found".to_string()
+                        let mut text = "No matches found".to_string();
+                        text.push_str(&regex_literalness_hint(pattern).unwrap_or_default());
+                        text
                     } else {
                         outcome
                             .matches
@@ -873,7 +899,7 @@ mod tests {
             None,
         );
         assert_eq!(no_matches.detail["matches"].as_array().unwrap().len(), 0);
-        assert_eq!(no_matches.model_text, "No matches found");
+        assert!(no_matches.model_text.contains("No matches found"));
     }
 
     #[test]
@@ -919,6 +945,29 @@ mod tests {
             skipped.model_text.contains("skipped"),
             "model_text must disclose the unsearched oversized file, got: {:?}",
             skipped.model_text
+        );
+    }
+
+    #[test]
+    fn zero_match_grep_with_unescaped_metachars_hints_at_escaping() {
+        // Observed for real: the model verified its work by grepping for
+        // "compute a + b" — `+` quantifies the space, matches nothing —
+        // and trusted the empty result, reporting false success (0/20).
+        let dir = tempdir().unwrap();
+        stdfs::write(dir.path().join("f.txt"), "compute a + b now\n").unwrap();
+
+        let result = execute(
+            &call(
+                "Grep",
+                serde_json::json!({"pattern": "compute a + b", "path": dir.path().to_str().unwrap()}),
+            ),
+            None,
+        );
+        assert!(result.model_text.contains("No matches found"));
+        assert!(
+            result.model_text.contains("\\+"),
+            "must show the escaped form, got: {:?}",
+            result.model_text
         );
     }
 
