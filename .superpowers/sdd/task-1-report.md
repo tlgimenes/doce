@@ -202,3 +202,52 @@ Build note:
 
 - `npm run build` emitted Vite's existing chunk-size warning for the main
   bundle, but completed successfully.
+
+## Task 1 Re-review Fix 4
+
+### What Changed
+
+- Removed the generated `shadcn` CLI runtime package and the unused
+  `@fontsource-variable/geist` package from `package.json`, then regenerated
+  `package-lock.json` with `npm install --package-lock-only`.
+- Updated `src/components/ui/sidebar.tsx` so the primitive no longer:
+  - registers a global `keydown` listener for `Cmd/Ctrl+B`
+  - writes sidebar open state into `document.cookie`
+- Kept the existing sidebar provider API intact:
+  `defaultOpen`, controlled `open`, `onOpenChange`, mobile state, and trigger
+  toggling still work.
+- Added focused regression coverage in `src/components/ui/sidebar.test.tsx`
+  that guards against both global key listener registration and cookie writes
+  while verifying the trigger still toggles desktop sidebar state.
+
+### Verification
+
+Ran successfully:
+
+```bash
+npm test -- src/components/ui/button.test.tsx src/components/Dialog.test.tsx src/components/ui/command.test.tsx src/components/ui/sidebar.test.tsx
+npm run build
+npm run lint
+npm test
+rg "@radix-ui|radix-ui" src package.json package-lock.json
+rg '"shadcn"|@fontsource-variable/geist' package.json package-lock.json
+rg -n '\brounded(?:-[trblse]{1,2})?-xl\b|\brounded-[a-z-]*xl\b' src/components/ui
+```
+
+Results:
+
+- Focused tests: 4 files passed, 20 tests passed
+- Build: passed
+- Lint: passed
+- Full test suite: 50 files passed, 359 tests passed
+- `rg "@radix-ui|radix-ui" src package.json package-lock.json`: no matches
+  (`rg` exit code 1)
+- `rg '"shadcn"|@fontsource-variable/geist' package.json package-lock.json`:
+  no matches (`rg` exit code 1)
+- `rg -n '\brounded(?:-[trblse]{1,2})?-xl\b|\brounded-[a-z-]*xl\b' src/components/ui`:
+  no matches (`rg` exit code 1)
+
+### Notes
+
+- `npm run build` still emits the existing Vite chunk-size warning, but the
+  production build completes successfully.
