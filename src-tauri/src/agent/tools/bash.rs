@@ -8,6 +8,56 @@ pub struct BashResult {
     pub exit_code: i32,
 }
 
+/// Independent cap for each of stdout/stderr as they enter the
+/// model-facing `model_text` that `agent::dispatch`'s Bash arm builds.
+/// Tail-biased: for failures and long build/test logs the signal is at
+/// the END; the head is kept for context (the same reasoning as Grep's
+/// caps — an unbounded String from a chatty command is both a memory and
+/// a context-budget hazard).
+///
+/// Deliberately NOT applied inside `run()` / `BashResult` itself:
+/// `dispatch::execute`'s Bash arm needs the FULL, untruncated
+/// stdout/stderr to fold into `detail.outcome.stdout`/`stderr` (what the
+/// transcript UI renders and what a human — or a later `Read` — can
+/// still recover in full), and only the copy that goes into
+/// `model_text` needs to shrink. Truncating here, before `BashResult`
+/// exists, would erase the full text before it ever reached `detail` —
+/// this way there is exactly one truncation site, at the one place that
+/// already builds both `model_text` and `detail` from the same
+/// `BashResult`.
+pub const BASH_OUTPUT_MAX_BYTES: usize = 65536;
+const HEAD_KEEP_LINES: usize = 20;
+const TAIL_KEEP_LINES: usize = 200;
+
+/// Tail-biased truncation used by `dispatch::execute`'s Bash arm for the
+/// model-facing `model_text` only (see `BASH_OUTPUT_MAX_BYTES`'s doc
+/// comment for why this isn't applied inside `run()`).
+pub fn truncate_tail_biased(text: &str) -> String {
+    if text.len() <= BASH_OUTPUT_MAX_BYTES {
+        return text.to_string();
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    let head: Vec<&str> = lines.iter().take(HEAD_KEEP_LINES).copied().collect();
+    // `.min(lines.len())` guards against a pathological input with fewer
+    // than `HEAD_KEEP_LINES` lines total (e.g. one giant unterminated
+    // line over the byte cap) — without it, `.max(HEAD_KEEP_LINES)` alone
+    // could push `tail_start` past `lines.len()` and panic on the slice
+    // below.
+    let tail_start = lines
+        .len()
+        .saturating_sub(TAIL_KEEP_LINES)
+        .max(HEAD_KEEP_LINES)
+        .min(lines.len());
+    let tail: Vec<&str> = lines[tail_start..].to_vec();
+    let kept: usize = head.iter().chain(tail.iter()).map(|l| l.len() + 1).sum();
+    let omitted = text.len().saturating_sub(kept);
+    format!(
+        "{}\n... [{omitted} bytes omitted -- full output offloaded]\n{}",
+        head.join("\n"),
+        tail.join("\n")
+    )
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum BashError {
     #[error("blocked: this command matches a catastrophic, irreversible pattern and cannot be run, with no override (FR-013)")]
@@ -211,40 +261,89 @@ pub fn run(
     }
     let mut child = cmd.spawn()?;
 
+    // Drain stdout/stderr on dedicated threads as the child runs, rather
+    // than reading them only after it exits: a pipe has a small, fixed OS
+    // buffer (commonly 16-64KB) -- a command producing more than that much
+    // output before exiting blocks on write() waiting for a reader that,
+    // under the old read-after-exit design, never came until the child
+    // exited, which it never would while blocked. That's a real deadlock,
+    // not a hypothetical: a bash-cap regression test producing ~180KB of
+    // stdout (20k short lines) reproduced it directly, hanging until this
+    // function's own timeout finally killed the child. Reading
+    // concurrently is the fix; the timeout loop below only has to watch
+    // for exit/timeout, not also drain output.
+    use std::io::Read;
+    let stdout_reader = child.stdout.take().map(|mut out| {
+        std::thread::spawn(move || {
+            let mut buf = String::new();
+            let _ = out.read_to_string(&mut buf);
+            buf
+        })
+    });
+    let stderr_reader = child.stderr.take().map(|mut err| {
+        std::thread::spawn(move || {
+            let mut buf = String::new();
+            let _ = err.read_to_string(&mut buf);
+            buf
+        })
+    });
+
     // A simple poll loop rather than a dedicated timeout crate: this tool
     // is invoked from within the agent loop, which itself runs on a
     // blocking thread (spawn_blocking), so a coarse poll is an acceptable
     // trade-off for the dependency it avoids.
     let start = std::time::Instant::now();
-    let output = loop {
+    let exit_code = loop {
         if let Some(status) = child.try_wait()? {
-            let mut stdout = String::new();
-            let mut stderr = String::new();
-            use std::io::Read;
-            if let Some(mut out) = child.stdout.take() {
-                let _ = out.read_to_string(&mut stdout);
-            }
-            if let Some(mut err) = child.stderr.take() {
-                let _ = err.read_to_string(&mut stderr);
-            }
-            break BashResult {
-                stdout,
-                stderr,
-                exit_code: status.code().unwrap_or(-1),
-            };
+            break Some(status.code().unwrap_or(-1));
         }
         if start.elapsed() > timeout {
             let _ = child.kill();
-            break BashResult {
-                stdout: String::new(),
-                stderr: format!("command timed out after {}ms", timeout.as_millis()),
-                exit_code: -1,
-            };
+            // Reaps the killed child so its pipes' write ends are fully
+            // closed -- otherwise the reader threads joined just below
+            // could themselves block waiting for EOF that a lingering
+            // zombie's still-open descriptors would never deliver.
+            let _ = child.wait();
+            break None;
         }
         std::thread::sleep(Duration::from_millis(20));
     };
 
-    Ok(output)
+    // Safe to join unconditionally here: on the exit path the pipes are
+    // already at EOF (the child closed them by exiting); on the timeout
+    // path `child.wait()` above already guaranteed the same. Either way
+    // these joins return promptly, they don't reintroduce the deadlock.
+    let stdout = stdout_reader
+        .and_then(|t| t.join().ok())
+        .unwrap_or_default();
+    let stderr = stderr_reader
+        .and_then(|t| t.join().ok())
+        .unwrap_or_default();
+
+    Ok(match exit_code {
+        Some(code) => BashResult {
+            stdout,
+            stderr,
+            exit_code: code,
+        },
+        None => {
+            // Unlike the old design, partial output captured before the
+            // timeout fired is preserved rather than discarded -- it's
+            // real signal (e.g. how far a hung build/test got) that a
+            // bare "timed out" notice alone would throw away.
+            let notice = format!("command timed out after {}ms", timeout.as_millis());
+            let stderr = if stderr.is_empty() {
+                notice
+            } else {
+                format!("{stderr}\n{notice}")
+            };
+            BashResult {
+                stdout,
+                stderr,
+                exit_code: -1,
+            }
+        }
+    })
 }
 
 #[cfg(test)]

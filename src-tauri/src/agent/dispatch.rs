@@ -307,10 +307,18 @@ pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
                 .unwrap_or_default();
             let timeout_ms = call.arguments.get("timeout").and_then(|v| v.as_u64());
             match bash::run(command, timeout_ms, cwd) {
+                // Restorable-compression: `model_text` (what the model
+                // reads, and what `offload_if_oversized` sees downstream)
+                // gets the tail-biased cap; `detail.outcome.stdout`/
+                // `stderr` keep `result`'s FULL, untruncated text so the
+                // transcript widget (and anything reading `detail` back
+                // later) never loses data the model itself didn't see.
                 Ok(result) => ToolOutcome {
                     model_text: format!(
                         "exit_code: {}\nstdout:\n{}\nstderr:\n{}",
-                        result.exit_code, result.stdout, result.stderr
+                        result.exit_code,
+                        bash::truncate_tail_biased(&result.stdout),
+                        bash::truncate_tail_biased(&result.stderr),
                     ),
                     detail: json!({
                         "toolName": "Bash", "command": command, "timeoutMs": timeout_ms,
@@ -649,6 +657,70 @@ mod tests {
 
         assert_eq!(result.detail["toolName"], "Bash");
         assert_eq!(result.detail["outcome"]["ok"], false);
+    }
+
+    // --- Bash output cap (tail-biased, at the tool) ---
+
+    #[test]
+    fn us2_bash_oversized_stdout_is_tail_biased_in_model_text_but_full_in_detail() {
+        // Portable POSIX sh (bash.rs's `run()` always shells out via
+        // `/bin/sh -c`) loop producing 20k short lines -- well over
+        // BASH_OUTPUT_MAX_BYTES once joined.
+        let result = execute(
+            &call(
+                "Bash",
+                serde_json::json!({
+                    "command": "i=0; while [ $i -lt 20000 ]; do echo line-$i; i=$((i+1)); done"
+                }),
+            ),
+            None,
+        );
+
+        // The stdout section of model_text must be capped, head- and
+        // tail-preserved, with the omission disclosed.
+        let stdout_section = result
+            .model_text
+            .split("stdout:\n")
+            .nth(1)
+            .and_then(|rest| rest.split("\nstderr:\n").next())
+            .expect("model_text must have a stdout: section");
+        assert!(
+            stdout_section.len() <= bash::BASH_OUTPUT_MAX_BYTES + 1024,
+            "stdout section of model_text must be tail-biased truncated, got {} bytes",
+            stdout_section.len()
+        );
+        assert!(stdout_section.contains("line-0\n"), "head preserved");
+        assert!(stdout_section.contains("line-19999"), "tail preserved");
+        assert!(stdout_section.contains("bytes omitted"));
+
+        // detail.outcome.stdout, by contrast, must keep every byte -- the
+        // restorable-compression rule: the transcript widget (and any
+        // later re-read) must never lose data the model itself didn't
+        // see.
+        let full_stdout = result.detail["outcome"]["stdout"].as_str().unwrap();
+        assert!(
+            full_stdout.len() > bash::BASH_OUTPUT_MAX_BYTES,
+            "detail.outcome.stdout must retain the FULL untruncated output, got only {} bytes",
+            full_stdout.len()
+        );
+        assert!(full_stdout.contains("line-0\n"));
+        assert!(full_stdout.contains("line-19999"));
+    }
+
+    #[test]
+    fn bash_output_under_the_cap_is_unaffected() {
+        // Existing exact-stdout tests (us2_bash_success_produces_the_...,
+        // dispatches_bash_and_captures_denylist_rejection, etc.) already
+        // guard the ordinary path; this test names the invariant directly:
+        // small output must round-trip completely unchanged in both
+        // model_text and detail, with no omission marker at all.
+        let result = execute(
+            &call("Bash", serde_json::json!({"command": "echo hello"})),
+            None,
+        );
+        assert!(result.model_text.contains("hello"));
+        assert!(!result.model_text.contains("bytes omitted"));
+        assert_eq!(result.detail["outcome"]["stdout"], "hello\n");
     }
 
     #[test]
