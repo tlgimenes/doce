@@ -552,7 +552,7 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
         // against -- stays whatever this turn's SEED Planning prompt was,
         // for the whole turn; bounded and fail-safe regardless of which
         // state the loop later reaches mid-turn.
-        let system_text = plan_system_message(&mut self.plan_state, self.cwd);
+        let system_text = plan_system_message(&mut self.plan_state, self.cwd, true);
         if let Some(first) = messages.first_mut() {
             *first = ChatMessage::system(system_text);
         }
@@ -664,7 +664,7 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
         // Planning/Executing prompt swap and the same tool-call requirement,
         // just without ActivePlans/events (no tracker for a subagent's own
         // transcript).
-        let system_text = plan_system_message(&mut self.plan_state, self.cwd);
+        let system_text = plan_system_message(&mut self.plan_state, self.cwd, false);
         if let Some(first) = messages.first_mut() {
             *first = ChatMessage::system(system_text);
         }
@@ -851,7 +851,7 @@ async fn execute_top_level_tool(
     // loop (rather than the flat SYSTEM_PROMPT ReAct loop) — seeded here,
     // before the backend literal below takes ownership of the state.
     let mut plan_state = crate::agent::plan::PlanState::default();
-    let sub_system_prompt = plan_system_message(&mut plan_state, sub_context.cwd.as_deref());
+    let sub_system_prompt = plan_system_message(&mut plan_state, sub_context.cwd.as_deref(), false);
     // FR-015: a fresh, isolated context — just the system prompt plus the
     // delegated task, no parent conversation history.
     let sub_messages = vec![
@@ -1013,7 +1013,7 @@ async fn emit_context_usage_update(
     // Measure usage against the plan engine's actual seed prompt (matches the top-level loop's
     // initial system prompt), not the flat SYSTEM_PROMPT which understated usage by ~300 tokens.
     let mut seed_state = crate::agent::plan::PlanState::default();
-    let system_prompt = plan_system_message(&mut seed_state, cwd);
+    let system_prompt = plan_system_message(&mut seed_state, cwd, true);
     if let Ok(usage) = crate::context::compute_usage(
         conn,
         engine,
@@ -1070,12 +1070,16 @@ async fn persist_assistant_text_reply(
 /// The plan engine's state prompt plus the cwd line that tells the model
 /// always appended — used both to seed `initial_messages[0]` (and the
 /// pre-loop compaction budget) and by `RealBackend::generate`'s per-turn
-/// swap.
+/// swap. `allow_task` is forwarded to `PlanState::system_prompt` --
+/// `false` for the subagent path (FR-016's one-level nesting cap means
+/// `run_loop` rejects any `Task` call from a subagent, so its Executing
+/// prompt must not advertise the tool at all), `true` everywhere top-level.
 fn plan_system_message(
     state: &mut crate::agent::plan::PlanState,
     cwd: Option<&std::path::Path>,
+    allow_task: bool,
 ) -> String {
-    let base = state.system_prompt();
+    let base = state.system_prompt(allow_task);
     match cwd {
         Some(path) => format!(
             "{base}\n\nYou are currently working in the directory: {}",
@@ -1340,7 +1344,7 @@ pub async fn send_agent_message(
     // isn't sufficient for agent mode (tool results can push a *later* turn
     // over budget even when the first turn was fine).
     let mut plan_state = crate::agent::plan::PlanState::default();
-    let system_prompt = plan_system_message(&mut plan_state, cwd.as_deref());
+    let system_prompt = plan_system_message(&mut plan_state, cwd.as_deref(), true);
     let usage = crate::context::maybe_compact(
         &conn,
         engine,
@@ -1499,18 +1503,18 @@ mod tests {
     #[test]
     fn plan_system_message_appends_the_cwd_line_when_known() {
         let mut state = crate::agent::plan::PlanState::default();
-        let msg = plan_system_message(&mut state, Some(std::path::Path::new("/Users/tester/code/doce")));
+        let msg = plan_system_message(&mut state, Some(std::path::Path::new("/Users/tester/code/doce")), true);
         assert!(msg.contains("You are currently working in the directory: /Users/tester/code/doce"));
         // Verify the prompt body is the planning prompt
-        let base = crate::agent::plan::PlanState::default().system_prompt();
+        let base = crate::agent::plan::PlanState::default().system_prompt(true);
         assert!(msg.starts_with(&base));
     }
 
     #[test]
     fn plan_system_message_is_unchanged_when_no_cwd_is_known() {
         let mut state = crate::agent::plan::PlanState::default();
-        let msg = plan_system_message(&mut state, None);
-        let base = crate::agent::plan::PlanState::default().system_prompt();
+        let msg = plan_system_message(&mut state, None, true);
+        let base = crate::agent::plan::PlanState::default().system_prompt(true);
         assert_eq!(msg, base);
     }
 

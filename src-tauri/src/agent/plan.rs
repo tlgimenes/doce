@@ -109,7 +109,29 @@ Once you have verified the task is genuinely, completely done, call FinishTask w
 /// description alone is not self-contained by the third or fourth item in
 /// a decomposed plan (confirmed against the real model: given only its own
 /// step text with no goal attached, it hallucinated a nonexistent file).
-pub fn executing_system_prompt(goal: &str, step_description: &str) -> String {
+///
+/// `allow_task` gates whether the `Task` tool is listed at all: `run_loop`
+/// rejects ANY `Task` call from a subagent (FR-016's one-level nesting
+/// cap), so advertising it to a subagent's Executing step would just spend
+/// a guaranteed-failing turn on a call the loop is going to bounce anyway.
+/// Top-level callers pass `true`; the subagent seed passes `false`. Every
+/// other tool (and the rest of the prompt) is unaffected either way.
+pub fn executing_system_prompt(goal: &str, step_description: &str, allow_task: bool) -> String {
+    let mut tools = vec![
+        r#"{"type": "function", "function": {"name": "Read", "description": "Read a file from disk.", "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}, "offset": {"type": "number"}, "limit": {"type": "number"}}, "required": ["file_path"]}}}"#.to_string(),
+        r#"{"type": "function", "function": {"name": "Write", "description": "Create or overwrite a file.", "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}, "content": {"type": "string"}}, "required": ["file_path", "content"]}}}"#.to_string(),
+        r#"{"type": "function", "function": {"name": "Edit", "description": "Targeted in-place edit: replace old_string with new_string inside the file.", "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}, "old_string": {"type": "string"}, "new_string": {"type": "string"}, "replace_all": {"type": "boolean"}}, "required": ["file_path", "old_string", "new_string"]}}}"#.to_string(),
+        r#"{"type": "function", "function": {"name": "Bash", "description": "Run a shell command.", "parameters": {"type": "object", "properties": {"command": {"type": "string"}, "timeout": {"type": "number"}}, "required": ["command"]}}}"#.to_string(),
+        r#"{"type": "function", "function": {"name": "Grep", "description": "Search file contents with a regular expression. Omit path to search the current working directory.", "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}, "glob": {"type": "string"}}, "required": ["pattern"]}}}"#.to_string(),
+        r#"{"type": "function", "function": {"name": "Glob", "description": "Find files by name pattern. The pattern is a single wildcard expression, e.g. \"bug_*.txt\" or \"*.rs\" -- never a space-separated list of literal filenames, that matches nothing.", "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}}, "required": ["pattern"]}}}"#.to_string(),
+    ];
+    if allow_task {
+        tools.push(r#"{"type": "function", "function": {"name": "Task", "description": "Delegate substantial, self-contained work (extensive exploration, a large search, a bulky sub-investigation) to an isolated subagent instead of doing it inline. This conversation is shared across the WHOLE task, not just this step -- everything you do here stays visible to every later step too, so keep it lean: reach for Task when a piece of work would otherwise flood this shared history with exploration detail nobody later needs, and only the outcome actually matters going forward.", "parameters": {"type": "object", "properties": {"prompt": {"type": "string"}}, "required": ["prompt"]}}}"#.to_string());
+    }
+    tools.push(r#"{"type": "function", "function": {"name": "StepDone", "description": "Call this once you have actually completed the step, not when you believe you're close.", "parameters": {"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]}}}"#.to_string());
+    tools.push(r#"{"type": "function", "function": {"name": "RefuseStep", "description": "Call this if the step cannot be completed as described (unclear, blocked, or wrong). Explain why -- your reason is used to revise the plan.", "parameters": {"type": "object", "properties": {"reason": {"type": "string"}}, "required": ["reason"]}}}"#.to_string());
+    let tools_block = tools.join("\n");
+
     format!(
         r#"You are executing one step of a larger plan.
 
@@ -122,15 +144,7 @@ You may call one or more functions to assist with the user query.
 
 You are provided with function signatures within <tools></tools> XML tags:
 <tools>
-{{"type": "function", "function": {{"name": "Read", "description": "Read a file from disk.", "parameters": {{"type": "object", "properties": {{"file_path": {{"type": "string"}}, "offset": {{"type": "number"}}, "limit": {{"type": "number"}}}}, "required": ["file_path"]}}}}}}
-{{"type": "function", "function": {{"name": "Write", "description": "Create or overwrite a file.", "parameters": {{"type": "object", "properties": {{"file_path": {{"type": "string"}}, "content": {{"type": "string"}}}}, "required": ["file_path", "content"]}}}}}}
-{{"type": "function", "function": {{"name": "Edit", "description": "Targeted in-place edit: replace old_string with new_string inside the file.", "parameters": {{"type": "object", "properties": {{"file_path": {{"type": "string"}}, "old_string": {{"type": "string"}}, "new_string": {{"type": "string"}}, "replace_all": {{"type": "boolean"}}}}, "required": ["file_path", "old_string", "new_string"]}}}}}}
-{{"type": "function", "function": {{"name": "Bash", "description": "Run a shell command.", "parameters": {{"type": "object", "properties": {{"command": {{"type": "string"}}, "timeout": {{"type": "number"}}}}, "required": ["command"]}}}}}}
-{{"type": "function", "function": {{"name": "Grep", "description": "Search file contents with a regular expression. Omit path to search the current working directory.", "parameters": {{"type": "object", "properties": {{"pattern": {{"type": "string"}}, "path": {{"type": "string"}}, "glob": {{"type": "string"}}}}, "required": ["pattern"]}}}}}}
-{{"type": "function", "function": {{"name": "Glob", "description": "Find files by name pattern. The pattern is a single wildcard expression, e.g. \"bug_*.txt\" or \"*.rs\" -- never a space-separated list of literal filenames, that matches nothing.", "parameters": {{"type": "object", "properties": {{"pattern": {{"type": "string"}}, "path": {{"type": "string"}}}}, "required": ["pattern"]}}}}}}
-{{"type": "function", "function": {{"name": "Task", "description": "Delegate substantial, self-contained work (extensive exploration, a large search, a bulky sub-investigation) to an isolated subagent instead of doing it inline. This conversation is shared across the WHOLE task, not just this step -- everything you do here stays visible to every later step too, so keep it lean: reach for Task when a piece of work would otherwise flood this shared history with exploration detail nobody later needs, and only the outcome actually matters going forward.", "parameters": {{"type": "object", "properties": {{"prompt": {{"type": "string"}}}}, "required": ["prompt"]}}}}}}
-{{"type": "function", "function": {{"name": "StepDone", "description": "Call this once you have actually completed the step, not when you believe you're close.", "parameters": {{"type": "object", "properties": {{"summary": {{"type": "string"}}}}, "required": ["summary"]}}}}}}
-{{"type": "function", "function": {{"name": "RefuseStep", "description": "Call this if the step cannot be completed as described (unclear, blocked, or wrong). Explain why -- your reason is used to revise the plan.", "parameters": {{"type": "object", "properties": {{"reason": {{"type": "string"}}}}, "required": ["reason"]}}}}}}
+{tools_block}
 </tools>
 
 For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
@@ -186,8 +200,11 @@ impl PlanState {
     /// The system prompt for the current state: Planning (refusal-annotated
     /// when a step was just refused) or the per-step Executing prompt.
     /// `&mut` because rendering the Planning prompt consumes the refusal
-    /// context. The caller appends its own cwd line.
-    pub fn system_prompt(&mut self) -> String {
+    /// context. The caller appends its own cwd line. `allow_task` is
+    /// forwarded to `executing_system_prompt` (see its own doc comment) --
+    /// the Planning prompt never lists `Task` in the first place, so it's
+    /// unaffected either way.
+    pub fn system_prompt(&mut self, allow_task: bool) -> String {
         match self.state {
             LoopState::Planning => match self.refusal_context.take() {
                 Some(reason) => format!(
@@ -197,7 +214,7 @@ impl PlanState {
             },
             LoopState::Executing { step_index } => {
                 let step_desc = self.plan.steps[step_index].description.clone();
-                executing_system_prompt(&self.plan.goal, &step_desc)
+                executing_system_prompt(&self.plan.goal, &step_desc, allow_task)
             }
         }
     }
@@ -352,11 +369,27 @@ mod tests {
 
     #[test]
     fn executing_prompt_embeds_the_goal_and_step_so_it_stays_self_contained() {
-        let prompt = executing_system_prompt("ship the feature", "write the tests");
+        let prompt = executing_system_prompt("ship the feature", "write the tests", true);
         assert!(prompt.contains("ship the feature"));
         assert!(prompt.contains("write the tests"));
         assert!(prompt.contains("StepDone"));
         assert!(prompt.contains("RefuseStep"));
+    }
+
+    /// FR-016's one-level nesting cap means `run_loop` rejects ANY `Task`
+    /// call from a subagent -- so a subagent's Executing prompt must not
+    /// advertise `Task` at all, or the model wastes a guaranteed-failing
+    /// turn trying to delegate. `StepDone`/`RefuseStep` (and everything
+    /// else) must still be listed either way.
+    #[test]
+    fn executing_prompt_omits_task_when_not_allowed() {
+        let prompt = executing_system_prompt("ship the feature", "write the tests", false);
+        assert!(!prompt.contains("Task"));
+        assert!(prompt.contains("StepDone"));
+        assert!(prompt.contains("RefuseStep"));
+
+        let prompt_allowed = executing_system_prompt("ship the feature", "write the tests", true);
+        assert!(prompt_allowed.contains("Task"));
     }
 
     use crate::agent::ToolCall;
@@ -454,10 +487,10 @@ mod tests {
         ));
         assert_eq!(ps.state, LoopState::Planning);
 
-        let prompt = ps.system_prompt();
+        let prompt = ps.system_prompt(true);
         assert!(prompt.contains("the file does not exist"), "refusal reason must reach the revision prompt");
         // Consumed: the next planning prompt is clean again.
-        let prompt2 = ps.system_prompt();
+        let prompt2 = ps.system_prompt(true);
         assert!(!prompt2.contains("the file does not exist"));
     }
 
@@ -558,14 +591,14 @@ mod tests {
     #[test]
     fn system_prompt_matches_the_state() {
         let mut ps = PlanState::default();
-        assert!(ps.system_prompt().contains("planning supervisor"));
+        assert!(ps.system_prompt(true).contains("planning supervisor"));
 
         ps.handle_plan_tool(&call(
             "CreatePlan",
             serde_json::json!({"goal": "ship it", "steps": ["write tests"]}),
         ));
         ps.handle_plan_tool(&call("ResumeExecution", serde_json::json!({})));
-        let prompt = ps.system_prompt();
+        let prompt = ps.system_prompt(true);
         assert!(prompt.contains("ship it"));
         assert!(prompt.contains("write tests"));
         assert!(prompt.contains("StepDone"));

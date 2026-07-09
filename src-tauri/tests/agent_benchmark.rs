@@ -232,7 +232,7 @@ impl AgentBackend for PlanExecBackend<'_> {
                 "{}
 
 You are currently working in the directory: {}",
-                self.plan_state.system_prompt(),
+                self.plan_state.system_prompt(true),
                 self.cwd.display()
             ));
         }
