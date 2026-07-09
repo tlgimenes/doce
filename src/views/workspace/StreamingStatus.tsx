@@ -1,4 +1,16 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
+
+const SESSION_STARTED_AT_KEY = "__streamingStatusSessionStartedAt";
+
+function getSessionStartedAt(): number {
+  const root = globalThis as { [key: string]: unknown };
+  const stored = root[SESSION_STARTED_AT_KEY];
+  if (typeof stored === "number") return stored;
+
+  const now = Date.now();
+  root[SESSION_STARTED_AT_KEY] = now;
+  return now;
+}
 
 interface StreamingStatusProps {
   startedAt: number | null;
@@ -9,12 +21,7 @@ function formatElapsedMs(elapsedMs: number) {
 }
 
 export default function StreamingStatus({ startedAt }: StreamingStatusProps) {
-  const fallbackStartedAtRef = useRef<number | null>(null);
-  if (fallbackStartedAtRef.current == null) {
-    fallbackStartedAtRef.current = Date.now();
-  }
-
-  const effectiveStartedAt = startedAt ?? fallbackStartedAtRef.current;
+  const effectiveStartedAt = startedAt ?? getSessionStartedAt();
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -46,7 +53,7 @@ export default function StreamingStatus({ startedAt }: StreamingStatusProps) {
         </span>
         <span>Thinking</span>
         <span
-          className="w-[4.5ch] text-right font-mono tabular-nums"
+          className="w-[6ch] shrink-0 text-right font-mono tabular-nums"
           data-testid="agent-thinking-timer"
         >
           {formatElapsedMs(now - effectiveStartedAt)}

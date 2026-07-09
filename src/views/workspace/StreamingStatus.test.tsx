@@ -21,6 +21,22 @@ describe("StreamingStatus", () => {
     expect(screen.getByTestId("agent-thinking-timer")).toHaveClass("tabular-nums");
   });
 
+  it("persists fallback startedAt across unmount/remount within the same session", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(5_000);
+
+    const mountWithFallback = render(<StreamingStatus startedAt={null} />);
+
+    expect(screen.getByTestId("agent-thinking-timer")).toHaveTextContent("0.0s");
+
+    mountWithFallback.unmount();
+
+    vi.setSystemTime(6_400);
+    render(<StreamingStatus startedAt={null} />);
+
+    expect(screen.getByTestId("agent-thinking-timer")).toHaveTextContent("1.4s");
+  });
+
   it("ticks across the 9.9s -> 10.0s boundary without changing fixed-width classes", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(9_900);
@@ -28,8 +44,8 @@ describe("StreamingStatus", () => {
     render(<StreamingStatus startedAt={9_000} />);
 
     expect(screen.getByTestId("agent-thinking-timer")).toHaveTextContent("0.9s");
-    expect(screen.getByTestId("agent-thinking-timer")).toHaveClass("w-[4.5ch]");
-    expect(screen.getByTestId("agent-thinking-timer")).not.toHaveClass("min-w-[4.5ch]");
+    expect(screen.getByTestId("agent-thinking-timer")).toHaveClass("w-[6ch]");
+    expect(screen.getByTestId("agent-thinking-timer")).toHaveClass("shrink-0");
 
     vi.setSystemTime(9_900);
     await act(async () => {
@@ -37,23 +53,7 @@ describe("StreamingStatus", () => {
     });
 
     expect(screen.getByTestId("agent-thinking-timer")).toHaveTextContent("1.0s");
-    expect(screen.getByTestId("agent-thinking-timer")).toHaveClass("w-[4.5ch]");
-    expect(screen.getByTestId("agent-thinking-timer")).not.toHaveClass("min-w-[4.5ch]");
-  });
-
-  it("falls back to the mount time when no user-message timestamp is available", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(5_000);
-
-    render(<StreamingStatus startedAt={null} />);
-
-    expect(screen.getByTestId("agent-thinking-timer")).toHaveTextContent("0.0s");
-
-    vi.setSystemTime(5_800);
-    await act(async () => {
-      vi.advanceTimersByTime(100);
-    });
-
-    expect(screen.getByTestId("agent-thinking-timer")).toHaveTextContent("0.9s");
+    expect(screen.getByTestId("agent-thinking-timer")).toHaveClass("w-[6ch]");
+    expect(screen.getByTestId("agent-thinking-timer")).toHaveClass("shrink-0");
   });
 });
