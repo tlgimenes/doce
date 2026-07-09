@@ -296,7 +296,10 @@ interface MarkdownPreviewProps {
 
 export default function MarkdownPreview({ children, className, testId }: MarkdownPreviewProps) {
   return (
-    <div className={cn("prose prose-sm dark:prose-invert max-w-none", className)} data-testid={testId}>
+    <div
+      className={cn("prose prose-sm dark:prose-invert max-w-none", className)}
+      data-testid={testId}
+    >
       <ReactMarkdown>{children}</ReactMarkdown>
     </div>
   );
@@ -375,13 +378,13 @@ import UserMessageBubble from "@/components/UserMessageBubble";
 Replace the entire `if (m.role === "user")` branch with:
 
 ```tsx
-  if (m.role === "user") {
-    return (
-      <div className="mb-6" data-testid="chat-message" role="group" aria-label="You said">
-        <UserMessageBubble message={m} />
-      </div>
-    );
-  }
+if (m.role === "user") {
+  return (
+    <div className="mb-6" data-testid="chat-message" role="group" aria-label="You said">
+      <UserMessageBubble message={m} />
+    </div>
+  );
+}
 ```
 
 - [ ] **Step 6: Run focused tests**
@@ -799,73 +802,71 @@ git commit -m "feat(workspace): render transcript turns"
 Append these tests inside the existing `describe("Workspace (006-chat-empty-state: conversationId-driven agent view)")` block in `src/views/workspace/Workspace.test.tsx`:
 
 ```tsx
-  it("renders user messages as sticky turn anchors that own following assistant rows", async () => {
-    vi.mocked(commands.listMessages).mockResolvedValue([
-      messageFixture("u1", "first request", 1),
-      {
-        id: "a1",
-        conversationId: "conv-1",
-        role: "assistant",
-        contentType: "text",
-        content: "first answer",
-        toolName: null,
-        createdAt: 2,
-        durationMs: null,
-        tokenCount: null,
-      },
-      messageFixture("u2", "second request", 3),
-      {
-        id: "a2",
-        conversationId: "conv-1",
-        role: "assistant",
-        contentType: "text",
-        content: "second answer",
-        toolName: null,
-        createdAt: 4,
-        durationMs: null,
-        tokenCount: null,
-      },
-    ]);
+it("renders user messages as sticky turn anchors that own following assistant rows", async () => {
+  vi.mocked(commands.listMessages).mockResolvedValue([
+    messageFixture("u1", "first request", 1),
+    {
+      id: "a1",
+      conversationId: "conv-1",
+      role: "assistant",
+      contentType: "text",
+      content: "first answer",
+      toolName: null,
+      createdAt: 2,
+      durationMs: null,
+      tokenCount: null,
+    },
+    messageFixture("u2", "second request", 3),
+    {
+      id: "a2",
+      conversationId: "conv-1",
+      role: "assistant",
+      contentType: "text",
+      content: "second answer",
+      toolName: null,
+      createdAt: 4,
+      durationMs: null,
+      tokenCount: null,
+    },
+  ]);
 
-    render(<Workspace conversationId="conv-1" />);
+  render(<Workspace conversationId="conv-1" />);
 
-    await screen.findByText("second answer");
+  await screen.findByText("second answer");
 
-    const turns = screen.getAllByTestId("transcript-turn");
-    expect(turns).toHaveLength(2);
-    expect(turns[0]).toHaveTextContent("first request");
-    expect(turns[0]).toHaveTextContent("first answer");
-    expect(turns[0]).not.toHaveTextContent("second request");
-    expect(turns[1]).toHaveTextContent("second request");
-    expect(turns[1]).toHaveTextContent("second answer");
-    expect(document.querySelectorAll('[data-sticky-user-message="true"]')).toHaveLength(2);
-  });
+  const turns = screen.getAllByTestId("transcript-turn");
+  expect(turns).toHaveLength(2);
+  expect(turns[0]).toHaveTextContent("first request");
+  expect(turns[0]).toHaveTextContent("first answer");
+  expect(turns[0]).not.toHaveTextContent("second request");
+  expect(turns[1]).toHaveTextContent("second request");
+  expect(turns[1]).toHaveTextContent("second answer");
+  expect(document.querySelectorAll('[data-sticky-user-message="true"]')).toHaveLength(2);
+});
 
-  it("keeps the transcript content wrapper sticky-safe and makes the latest turn viewport-height", async () => {
-    vi.mocked(commands.listMessages).mockResolvedValue([messageFixture("u1", "latest request", 1)]);
+it("keeps the transcript content wrapper sticky-safe and makes the latest turn viewport-height", async () => {
+  vi.mocked(commands.listMessages).mockResolvedValue([messageFixture("u1", "latest request", 1)]);
 
-    render(<Workspace conversationId="conv-1" />);
+  render(<Workspace conversationId="conv-1" />);
 
-    await screen.findByText("latest request");
+  await screen.findByText("latest request");
 
-    expect(screen.getByTestId("workspace-scroll-container")).toHaveClass("[container-type:size]");
-    expect(screen.getByTestId("workspace-transcript-content")).toHaveClass("overflow-x-clip");
-    expect(screen.getByTestId("last-transcript-turn-viewport")).toHaveClass("min-h-[100cqh]");
-  });
+  expect(screen.getByTestId("workspace-scroll-container")).toHaveClass("[container-type:size]");
+  expect(screen.getByTestId("workspace-transcript-content")).toHaveClass("overflow-x-clip");
+  expect(screen.getByTestId("last-transcript-turn-viewport")).toHaveClass("min-h-[100cqh]");
+});
 ```
 
 Then update the existing pending Bash test by adding this assertion after `expect(screen.getByTestId("bash-command")).toHaveTextContent("cargo test --lib");`:
 
 ```tsx
-    expect(status.closest('[data-testid="transcript-turn"]')).toHaveTextContent("run the tests");
+expect(status.closest('[data-testid="transcript-turn"]')).toHaveTextContent("run the tests");
 ```
 
 Update the existing pending Task test by adding this assertion after `expect(status).toHaveTextContent(/running/i);`:
 
 ```tsx
-    expect(status.closest('[data-testid="transcript-turn"]')).toHaveTextContent(
-      "investigate the bug",
-    );
+expect(status.closest('[data-testid="transcript-turn"]')).toHaveTextContent("investigate the bug");
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -895,13 +896,11 @@ import { groupTranscriptTurns } from "@/views/workspace/transcriptTurns";
 In `Workspace.tsx`, after the declaration whose left side is `const activeTurnStartedAt =`, add:
 
 ```tsx
-  const transcriptTurns = useMemo(() => groupTranscriptTurns(messages), [messages]);
-  const previousTurns = transcriptTurns.slice(0, -1);
-  const lastTurn = transcriptTurns.at(-1) ?? null;
-  const pendingTurnWidget: PendingTurnWidget | null =
-    pendingToolCall?.kind === "bash" || pendingToolCall?.kind === "task"
-      ? pendingToolCall
-      : null;
+const transcriptTurns = useMemo(() => groupTranscriptTurns(messages), [messages]);
+const previousTurns = transcriptTurns.slice(0, -1);
+const lastTurn = transcriptTurns.at(-1) ?? null;
+const pendingTurnWidget: PendingTurnWidget | null =
+  pendingToolCall?.kind === "bash" || pendingToolCall?.kind === "task" ? pendingToolCall : null;
 ```
 
 - [ ] **Step 5: Replace the flat transcript map**
@@ -909,81 +908,63 @@ In `Workspace.tsx`, after the declaration whose left side is `const activeTurnSt
 In `Workspace.tsx`, replace the current `StickToBottom` scroll body content:
 
 ```tsx
-              <div ref={contentRef} className="mx-auto max-w-3xl">
-                {messages.map((m) => (
-                  <MessageContent
-                    key={m.id}
-                    message={m}
-                    showTimer={
-                      m.role === "assistant" && m.contentType === "text" && m.durationMs != null
-                    }
-                  />
-                ))}
-                {(pendingToolCall?.kind === "bash" || pendingToolCall?.kind === "task") && (
-                  <div
-                    className="mb-6"
-                    data-testid="chat-message"
-                    role="group"
-                    aria-label="doce replied"
-                  >
-                    {pendingToolCall.kind === "bash" && (
-                      <BashWidget detail={pendingToolCall.detail} />
-                    )}
-                    {pendingToolCall.kind === "task" && (
-                      <TaskWidget detail={pendingToolCall.detail} />
-                    )}
-                  </div>
-                )}
-                {error && (
-                  <div
-                    className="mb-6 rounded-lg bg-destructive/10 p-3 text-sm text-destructive"
-                    data-testid="workspace-error"
-                  >
-                    {error}
-                  </div>
-                )}
-              </div>
+<div ref={contentRef} className="mx-auto max-w-3xl">
+  {messages.map((m) => (
+    <MessageContent
+      key={m.id}
+      message={m}
+      showTimer={m.role === "assistant" && m.contentType === "text" && m.durationMs != null}
+    />
+  ))}
+  {(pendingToolCall?.kind === "bash" || pendingToolCall?.kind === "task") && (
+    <div className="mb-6" data-testid="chat-message" role="group" aria-label="doce replied">
+      {pendingToolCall.kind === "bash" && <BashWidget detail={pendingToolCall.detail} />}
+      {pendingToolCall.kind === "task" && <TaskWidget detail={pendingToolCall.detail} />}
+    </div>
+  )}
+  {error && (
+    <div
+      className="mb-6 rounded-lg bg-destructive/10 p-3 text-sm text-destructive"
+      data-testid="workspace-error"
+    >
+      {error}
+    </div>
+  )}
+</div>
 ```
 
 with:
 
 ```tsx
-              <div
-                ref={contentRef}
-                className="overflow-x-clip"
-                data-testid="workspace-transcript-content"
-              >
-                <div className="mx-auto max-w-3xl">
-                  {previousTurns.map((turn) => (
-                    <TranscriptTurn key={turn.id} turn={turn} />
-                  ))}
-                </div>
-                {lastTurn ? (
-                  <div
-                    className="mx-auto min-h-[100cqh] max-w-3xl"
-                    data-testid="last-transcript-turn-viewport"
-                  >
-                    <TranscriptTurn
-                      key={lastTurn.id}
-                      turn={lastTurn}
-                      isLastTurn
-                      pendingWidget={pendingTurnWidget}
-                      error={error}
-                    />
-                  </div>
-                ) : (
-                  error && (
-                    <div className="mx-auto max-w-3xl">
-                      <div
-                        className="mb-6 rounded-lg bg-destructive/10 p-3 text-sm text-destructive"
-                        data-testid="workspace-error"
-                      >
-                        {error}
-                      </div>
-                    </div>
-                  )
-                )}
-              </div>
+<div ref={contentRef} className="overflow-x-clip" data-testid="workspace-transcript-content">
+  <div className="mx-auto max-w-3xl">
+    {previousTurns.map((turn) => (
+      <TranscriptTurn key={turn.id} turn={turn} />
+    ))}
+  </div>
+  {lastTurn ? (
+    <div className="mx-auto min-h-[100cqh] max-w-3xl" data-testid="last-transcript-turn-viewport">
+      <TranscriptTurn
+        key={lastTurn.id}
+        turn={lastTurn}
+        isLastTurn
+        pendingWidget={pendingTurnWidget}
+        error={error}
+      />
+    </div>
+  ) : (
+    error && (
+      <div className="mx-auto max-w-3xl">
+        <div
+          className="mb-6 rounded-lg bg-destructive/10 p-3 text-sm text-destructive"
+          data-testid="workspace-error"
+        >
+          {error}
+        </div>
+      </div>
+    )
+  )}
+</div>
 ```
 
 - [ ] **Step 6: Add size-container support to the scroll container**
@@ -991,13 +972,13 @@ with:
 In the same file, change the scroll container class from:
 
 ```tsx
-              className="h-full overflow-y-auto p-4"
+className = "h-full overflow-y-auto p-4";
 ```
 
 to:
 
 ```tsx
-              className="h-full overflow-y-auto p-4 [container-type:size]"
+className = "h-full overflow-y-auto p-4 [container-type:size]";
 ```
 
 - [ ] **Step 7: Remove unused imports**
