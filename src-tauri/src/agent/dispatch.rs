@@ -117,7 +117,13 @@ fn validate_required_args(call: &ToolCall) -> Option<String> {
 /// taken exactly as given.
 pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
     if let Some(error) = validate_required_args(call) {
-        let a = |key: &str| call.arguments.get(key).cloned().unwrap_or(serde_json::Value::Null);
+        let a = |key: &str| {
+            call.arguments
+                .get(key)
+                .filter(|v| v.is_string())
+                .cloned()
+                .unwrap_or(serde_json::Value::Null)
+        };
         // Widget-safe minimal shapes: each known tool's detail must satisfy
         // its typed widget's required fields (SearchResultsWidget reads
         // detail.matches.length unconditionally — an absent `matches` is a
@@ -709,6 +715,20 @@ mod tests {
         }
         let result = execute(&call("Read", serde_json::json!({})), None);
         assert!(result.detail["filePath"].is_null());
+
+        // Wrong-TYPE values must not be echoed raw: an object-valued arg
+        // rendered as a JSX child crashes React ("Objects are not valid
+        // as a React child").
+        let result = execute(
+            &call("Glob", serde_json::json!({"pattern": {"nested": "*.rs"}})),
+            None,
+        );
+        assert!(result.model_text.starts_with("Error:"));
+        assert!(
+            result.detail["pattern"].is_null(),
+            "non-string args must echo as null, got {}",
+            result.detail
+        );
     }
 
     // --- 004-tool-call-widgets: US4 (Read/Write/Glob/Grep widgets) ---
