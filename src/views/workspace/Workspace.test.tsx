@@ -10,8 +10,7 @@ type TestDocument = Document & {
   startViewTransition?: (callback: () => void) => unknown;
 };
 
-const originalStartViewTransition = (document as TestDocument)
-  .startViewTransition;
+const originalStartViewTransition = (document as TestDocument).startViewTransition;
 
 vi.mock("@/lib/ipc", async (importOriginal) => {
   // Partial mock: `commands`/`events` are fully replaced, but
@@ -86,9 +85,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     // No model loaded in these unit tests — ContextUsageGauge's
     // getContextUsage call is expected to fail and swallow the error,
     // leaving the gauge simply unrendered.
-    vi.mocked(commands.getContextUsage).mockRejectedValue(
-      new Error("No model loaded"),
-    );
+    vi.mocked(commands.getContextUsage).mockRejectedValue(new Error("No model loaded"));
     vi.mocked(commands.listSkills).mockResolvedValue([]);
     // Streaming (UI refactor): no live events fire by default in these unit
     // tests -- each test that specifically exercises streaming updates
@@ -166,23 +163,18 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     render(<Workspace conversationId="conv-1" />);
 
     await waitFor(() =>
-      expect(screen.getByTestId("token-meter")).toHaveTextContent(
-        "0.5s · ↓ 15.6k tokens",
-      ),
+      expect(screen.getByTestId("token-meter")).toHaveTextContent("0.5s · ↓ 15.6k tokens"),
     );
   });
 
   it("fills the shell content area instead of forcing viewport height", async () => {
     render(<Workspace conversationId="conv-1" />);
 
-    const root = screen.getByTestId("workspace-scroll-container").parentElement
-      ?.parentElement;
+    const root = screen.getByTestId("workspace-scroll-container").parentElement?.parentElement;
     expect(root).not.toBeNull();
     expect(root!).toHaveClass("h-full");
     expect(root!).not.toHaveClass("h-dvh");
-    await waitFor(() =>
-      expect(commands.listMessages).toHaveBeenCalledWith("conv-1"),
-    );
+    await waitFor(() => expect(commands.listMessages).toHaveBeenCalledWith("conv-1"));
   });
 
   it("notifies when active messages refresh so the app can mark the conversation seen", async () => {
@@ -191,9 +183,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
       { ...messageFixture("m1", "hello"), conversationId: "c1" },
     ]);
 
-    render(
-      <Workspace conversationId="c1" onConversationSeen={onConversationSeen} />,
-    );
+    render(<Workspace conversationId="c1" onConversationSeen={onConversationSeen} />);
 
     await waitFor(() => expect(onConversationSeen).toHaveBeenCalledWith("c1"));
   });
@@ -212,16 +202,9 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
       ]);
     const onConversationSeen = vi.fn();
 
-    render(
-      <Workspace
-        conversationId="conv-1"
-        onConversationSeen={onConversationSeen}
-      />,
-    );
+    render(<Workspace conversationId="conv-1" onConversationSeen={onConversationSeen} />);
     await screen.findByText("first message");
-    await waitFor(() =>
-      expect(onConversationSeen).toHaveBeenCalledWith("conv-1"),
-    );
+    await waitFor(() => expect(onConversationSeen).toHaveBeenCalledWith("conv-1"));
     onConversationSeen.mockClear();
 
     firePersisted({ conversationId: "conv-1" });
@@ -331,23 +314,13 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     const secondSeenCallback = vi.fn();
 
     const { rerender } = render(
-      <Workspace
-        conversationId="conv-1"
-        onConversationSeen={firstSeenCallback}
-      />,
+      <Workspace conversationId="conv-1" onConversationSeen={firstSeenCallback} />,
     );
     await screen.findByText("first message");
-    await waitFor(() =>
-      expect(events.onAgentMessagePersisted).toHaveBeenCalledTimes(1),
-    );
+    await waitFor(() => expect(events.onAgentMessagePersisted).toHaveBeenCalledTimes(1));
 
     firstSeenCallback.mockClear();
-    rerender(
-      <Workspace
-        conversationId="conv-1"
-        onConversationSeen={secondSeenCallback}
-      />,
-    );
+    rerender(<Workspace conversationId="conv-1" onConversationSeen={secondSeenCallback} />);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(commands.listMessages).toHaveBeenCalledTimes(1);
@@ -406,22 +379,12 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
 
     const onConversationSeen = vi.fn();
 
-    render(
-      <Workspace
-        conversationId="conv-1"
-        onConversationSeen={onConversationSeen}
-      />,
-    );
+    render(<Workspace conversationId="conv-1" onConversationSeen={onConversationSeen} />);
     await screen.findByTestId("agent-input");
-    await waitFor(() =>
-      expect(onConversationSeen).toHaveBeenCalledWith("conv-1"),
-    );
+    await waitFor(() => expect(onConversationSeen).toHaveBeenCalledWith("conv-1"));
     onConversationSeen.mockClear();
 
-    await userEvent.type(
-      screen.getByTestId("agent-input"),
-      "list the files here",
-    );
+    await userEvent.type(screen.getByTestId("agent-input"), "list the files here");
     await userEvent.click(screen.getByTestId("agent-send"));
 
     const status = await screen.findByTestId("agent-thinking");
@@ -505,15 +468,10 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
 
     render(<Workspace conversationId="conv-1" />);
     await screen.findByTestId("agent-input");
-    await userEvent.type(
-      screen.getByTestId("agent-input"),
-      "list the files here",
-    );
+    await userEvent.type(screen.getByTestId("agent-input"), "list the files here");
     await userEvent.click(screen.getByTestId("agent-send"));
 
-    await waitFor(() =>
-      expect(screen.getByTestId("agent-thinking")).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByTestId("agent-thinking")).toBeInTheDocument());
 
     // The live event fires mid-turn -- the promise itself is still pending.
     firePersisted({ conversationId: "conv-1" });
@@ -528,10 +486,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
 
     resolveAgent("Found 2 files.");
     await waitFor(() => {
-      expect(screen.getByTestId("agent-input")).toHaveAttribute(
-        "contenteditable",
-        "true",
-      );
+      expect(screen.getByTestId("agent-input")).toHaveAttribute("contenteditable", "true");
     });
   });
 
@@ -551,9 +506,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
 
     // Give any (incorrect) refetch a chance to happen, then confirm it didn't.
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(vi.mocked(commands.listMessages).mock.calls.length).toBe(
-      callsBefore,
-    );
+    expect(vi.mocked(commands.listMessages).mock.calls.length).toBe(callsBefore);
   });
 
   // --- Regression: a pending AskUserQuestion must be answerable, not a
@@ -659,9 +612,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     await userEvent.click(editable);
     await userEvent.type(editable, "actually, do both{Enter}");
 
-    expect(commands.answerUserQuestion).toHaveBeenCalledWith("q1", [
-      "actually, do both",
-    ]);
+    expect(commands.answerUserQuestion).toHaveBeenCalledWith("q1", ["actually, do both"]);
   });
 
   it('shows a pending Bash widget (not "Working…") when the latest message is an unfinished Bash tool_call', async () => {
@@ -695,9 +646,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
 
     const status = await screen.findByTestId("bash-status");
     expect(status).toHaveTextContent(/running/i);
-    expect(screen.getByTestId("bash-command")).toHaveTextContent(
-      "cargo test --lib",
-    );
+    expect(screen.getByTestId("bash-command")).toHaveTextContent("cargo test --lib");
     expect(screen.queryByTestId("agent-thinking")).not.toBeInTheDocument();
   });
 
@@ -772,13 +721,8 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
 
     render(<Workspace conversationId="conv-1" />);
 
-    expect(await screen.findByTestId("agent-thinking")).toHaveTextContent(
-      "Thinking",
-    );
-    expect(screen.getByTestId("agent-input")).toHaveAttribute(
-      "contenteditable",
-      "false",
-    );
+    expect(await screen.findByTestId("agent-thinking")).toHaveTextContent("Thinking");
+    expect(screen.getByTestId("agent-input")).toHaveAttribute("contenteditable", "false");
   });
 
   it("keeps the composer blocked after a reload while the backend reports the turn still active, even with no trailing tool_call (generation phase)", async () => {
@@ -787,18 +731,13 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     // tool_result — the longest phases with local inference), only the
     // backend's ActiveGenerations knows a turn is live; a reload wipes
     // every in-memory frontend flag.
-    vi.mocked(commands.listMessages).mockResolvedValue([
-      messageFixture("u1", "find the needle"),
-    ]);
+    vi.mocked(commands.listMessages).mockResolvedValue([messageFixture("u1", "find the needle")]);
     vi.mocked(commands.isGenerationActive).mockResolvedValue(true);
 
     render(<Workspace conversationId="conv-1" />);
 
     await screen.findByTestId("agent-thinking");
-    expect(screen.getByTestId("agent-input")).toHaveAttribute(
-      "contenteditable",
-      "false",
-    );
+    expect(screen.getByTestId("agent-input")).toHaveAttribute("contenteditable", "false");
   });
 
   it("starts the streaming chron from the latest persisted user message during a backend-active reload", async () => {
@@ -810,9 +749,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
 
     render(<Workspace conversationId="conv-1" />);
 
-    expect(await screen.findByTestId("agent-thinking-timer")).toHaveTextContent(
-      "2.0s",
-    );
+    expect(await screen.findByTestId("agent-thinking-timer")).toHaveTextContent("2.0s");
     nowSpy.mockRestore();
   });
 
@@ -867,15 +804,11 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
 
     render(<Workspace conversationId="conv-1" />);
 
-    expect(await screen.findByTestId("agent-thinking-timer")).toHaveTextContent(
-      "3.0s",
-    );
+    expect(await screen.findByTestId("agent-thinking-timer")).toHaveTextContent("3.0s");
     firePersisted({ conversationId: "conv-1" });
 
     await waitFor(() =>
-      expect(screen.getByTestId("agent-thinking-timer")).toHaveTextContent(
-        "3.0s",
-      ),
+      expect(screen.getByTestId("agent-thinking-timer")).toHaveTextContent("3.0s"),
     );
     nowSpy.mockRestore();
   });
@@ -885,9 +818,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
 
     render(<Workspace conversationId="conv-1" />);
 
-    expect(await screen.findByTestId("workspace-composer-shell")).toHaveClass(
-      "border-t",
-    );
+    expect(await screen.findByTestId("workspace-composer-shell")).toHaveClass("border-t");
     expect(screen.queryByTestId("agent-thinking")).not.toBeInTheDocument();
   });
 
@@ -937,9 +868,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
 
     // Crosses the paste-collapse threshold — produces a real pastedText
     // chip, matching RichInput's own US2 test's paste-simulation pattern.
-    const pastedBlock = Array.from({ length: 15 }, (_, i) => `line-${i}`).join(
-      "\n",
-    );
+    const pastedBlock = Array.from({ length: 15 }, (_, i) => `line-${i}`).join("\n");
     fireEvent.paste(input, {
       clipboardData: { items: [], getData: () => pastedBlock },
     });
@@ -948,14 +877,12 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     await userEvent.click(screen.getByTestId("agent-send"));
 
     await waitFor(() => expect(commands.sendAgentMessage).toHaveBeenCalled());
-    const [, , richContentArg] = vi.mocked(commands.sendAgentMessage).mock
-      .calls[0];
+    const [, , richContentArg] = vi.mocked(commands.sendAgentMessage).mock.calls[0];
     expect(richContentArg).toBeDefined();
     const parsed = JSON.parse(richContentArg as string);
     expect(
       parsed.segments.some(
-        (s: { type: string; text?: string }) =>
-          s.type === "pastedText" && s.text === pastedBlock,
+        (s: { type: string; text?: string }) => s.type === "pastedText" && s.text === pastedBlock,
       ),
     ).toBe(true);
   });
@@ -990,11 +917,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     await waitFor(() => {
       expect(screen.getByText("first task")).toBeInTheDocument();
       expect(screen.getByTestId("agent-thinking")).toBeInTheDocument();
-      expect(commands.sendAgentMessage).toHaveBeenCalledWith(
-        "conv-1",
-        "first task",
-        undefined,
-      );
+      expect(commands.sendAgentMessage).toHaveBeenCalledWith("conv-1", "first task", undefined);
       expect(onConsumed).toHaveBeenCalledWith("conv-1");
     });
 
@@ -1016,10 +939,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
 
     resolveSend("done");
     await waitFor(() => {
-      expect(screen.getByTestId("agent-input")).toHaveAttribute(
-        "contenteditable",
-        "true",
-      );
+      expect(screen.getByTestId("agent-input")).toHaveAttribute("contenteditable", "true");
     });
   });
 
@@ -1070,10 +990,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
 
     resolveSend("done");
     await waitFor(() => {
-      expect(screen.getByTestId("agent-input")).toHaveAttribute(
-        "contenteditable",
-        "true",
-      );
+      expect(screen.getByTestId("agent-input")).toHaveAttribute("contenteditable", "true");
     });
   });
 
@@ -1103,11 +1020,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     await userEvent.type(screen.getByTestId("agent-input"), "first task");
     await userEvent.click(screen.getByTestId("agent-send"));
     await waitFor(() => {
-      expect(commands.sendAgentMessage).toHaveBeenCalledWith(
-        "conv-1",
-        "first task",
-        undefined,
-      );
+      expect(commands.sendAgentMessage).toHaveBeenCalledWith("conv-1", "first task", undefined);
       expect(screen.getByTestId("agent-thinking")).toBeInTheDocument();
     });
 
@@ -1148,10 +1061,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
 
     resolvePendingSend("pending done");
     await waitFor(() => {
-      expect(screen.getByTestId("agent-input")).toHaveAttribute(
-        "contenteditable",
-        "true",
-      );
+      expect(screen.getByTestId("agent-input")).toHaveAttribute("contenteditable", "true");
     });
   });
 
@@ -1195,17 +1105,12 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
 
     resolveSend("done");
     await waitFor(() => {
-      expect(screen.getByTestId("agent-input")).toHaveAttribute(
-        "contenteditable",
-        "true",
-      );
+      expect(screen.getByTestId("agent-input")).toHaveAttribute("contenteditable", "true");
     });
   });
 
   it("surfaces an error when a pending initial turn send fails", async () => {
-    vi.mocked(commands.sendAgentMessage).mockRejectedValue(
-      new Error("pending send failed"),
-    );
+    vi.mocked(commands.sendAgentMessage).mockRejectedValue(new Error("pending send failed"));
 
     render(
       <Workspace
@@ -1215,9 +1120,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     );
 
     await waitFor(() => {
-      expect(screen.getByTestId("workspace-error")).toHaveTextContent(
-        "pending send failed",
-      );
+      expect(screen.getByTestId("workspace-error")).toHaveTextContent("pending send failed");
     });
   });
 
@@ -1247,9 +1150,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
       ]);
 
     const { rerender } = render(<Workspace conversationId="conv-1" />);
-    await waitFor(() =>
-      expect(commands.listMessages).toHaveBeenCalledWith("conv-1"),
-    );
+    await waitFor(() => expect(commands.listMessages).toHaveBeenCalledWith("conv-1"));
 
     rerender(<Workspace conversationId="conv-2" />);
     await waitFor(() => {
@@ -1278,14 +1179,10 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
       );
 
     const { rerender } = render(<Workspace conversationId="conv-1" />);
-    await waitFor(() =>
-      expect(commands.listMessages).toHaveBeenCalledWith("conv-1"),
-    );
+    await waitFor(() => expect(commands.listMessages).toHaveBeenCalledWith("conv-1"));
 
     rerender(<Workspace conversationId="conv-2" />);
-    await waitFor(() =>
-      expect(commands.listMessages).toHaveBeenCalledWith("conv-2"),
-    );
+    await waitFor(() => expect(commands.listMessages).toHaveBeenCalledWith("conv-2"));
 
     resolveConv2Messages([
       {
@@ -1322,9 +1219,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
   });
 
   it("ignores stale /compact refresh results after switching conversations", async () => {
-    let resolveCompact!: (
-      usage: Awaited<ReturnType<typeof commands.compactConversation>>,
-    ) => void;
+    let resolveCompact!: (usage: Awaited<ReturnType<typeof commands.compactConversation>>) => void;
     let resolveStaleCompactMessages!: (
       messages: Awaited<ReturnType<typeof commands.listMessages>>,
     ) => void;
@@ -1334,40 +1229,36 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
         resolveCompact = resolve;
       }),
     );
-    vi.mocked(commands.listMessages).mockImplementation(
-      (requestedConversationId) => {
-        if (requestedConversationId === "conv-1") {
-          conv1ListCalls += 1;
-          if (conv1ListCalls === 1) return Promise.resolve([]);
-          return new Promise((resolve) => {
-            resolveStaleCompactMessages = resolve;
-          });
-        }
+    vi.mocked(commands.listMessages).mockImplementation((requestedConversationId) => {
+      if (requestedConversationId === "conv-1") {
+        conv1ListCalls += 1;
+        if (conv1ListCalls === 1) return Promise.resolve([]);
+        return new Promise((resolve) => {
+          resolveStaleCompactMessages = resolve;
+        });
+      }
 
-        return Promise.resolve([
-          {
-            id: "m2",
-            conversationId: "conv-2",
-            role: "user",
-            contentType: "text",
-            content: "second workspace",
-            toolName: null,
-            createdAt: 2,
-            durationMs: null,
-            tokenCount: null,
-          },
-        ]);
-      },
-    );
+      return Promise.resolve([
+        {
+          id: "m2",
+          conversationId: "conv-2",
+          role: "user",
+          contentType: "text",
+          content: "second workspace",
+          toolName: null,
+          createdAt: 2,
+          durationMs: null,
+          tokenCount: null,
+        },
+      ]);
+    });
 
     const { rerender } = render(<Workspace conversationId="conv-1" />);
     await screen.findByTestId("agent-input");
 
     await userEvent.type(screen.getByTestId("agent-input"), "/compact");
     await userEvent.click(screen.getByTestId("agent-send"));
-    await waitFor(() =>
-      expect(commands.compactConversation).toHaveBeenCalledWith("conv-1"),
-    );
+    await waitFor(() => expect(commands.compactConversation).toHaveBeenCalledWith("conv-1"));
 
     resolveCompact({
       conversationId: "conv-1",
@@ -1375,9 +1266,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
       tokenBudget: 2048,
       state: "justCompacted",
     });
-    await waitFor(() =>
-      expect(commands.listMessages).toHaveBeenCalledWith("conv-1"),
-    );
+    await waitFor(() => expect(commands.listMessages).toHaveBeenCalledWith("conv-1"));
 
     rerender(<Workspace conversationId="conv-2" />);
     await screen.findByText("second workspace");
@@ -1406,9 +1295,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
   });
 
   it("does not notify when a /compact refresh completes after keyed unmount", async () => {
-    let resolveCompact!: (
-      usage: Awaited<ReturnType<typeof commands.compactConversation>>,
-    ) => void;
+    let resolveCompact!: (usage: Awaited<ReturnType<typeof commands.compactConversation>>) => void;
     let resolveStaleCompactMessages!: (
       messages: Awaited<ReturnType<typeof commands.listMessages>>,
     ) => void;
@@ -1419,50 +1306,40 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
         resolveCompact = resolve;
       }),
     );
-    vi.mocked(commands.listMessages).mockImplementation(
-      (requestedConversationId) => {
-        if (requestedConversationId === "conv-1") {
-          conv1ListCalls += 1;
-          if (conv1ListCalls === 1) return Promise.resolve([]);
-          return new Promise((resolve) => {
-            resolveStaleCompactMessages = resolve;
-          });
-        }
+    vi.mocked(commands.listMessages).mockImplementation((requestedConversationId) => {
+      if (requestedConversationId === "conv-1") {
+        conv1ListCalls += 1;
+        if (conv1ListCalls === 1) return Promise.resolve([]);
+        return new Promise((resolve) => {
+          resolveStaleCompactMessages = resolve;
+        });
+      }
 
-        return Promise.resolve([
-          {
-            id: "m2",
-            conversationId: "conv-2",
-            role: "user",
-            contentType: "text",
-            content: "second workspace",
-            toolName: null,
-            createdAt: 2,
-            durationMs: null,
-            tokenCount: null,
-          },
-        ]);
-      },
-    );
+      return Promise.resolve([
+        {
+          id: "m2",
+          conversationId: "conv-2",
+          role: "user",
+          contentType: "text",
+          content: "second workspace",
+          toolName: null,
+          createdAt: 2,
+          durationMs: null,
+          tokenCount: null,
+        },
+      ]);
+    });
 
     const { rerender } = render(
-      <Workspace
-        key="conv-1"
-        conversationId="conv-1"
-        onConversationSeen={onConversationSeen}
-      />,
+      <Workspace key="conv-1" conversationId="conv-1" onConversationSeen={onConversationSeen} />,
     );
     await screen.findByTestId("agent-input");
-    await waitFor(() =>
-      expect(onConversationSeen).toHaveBeenCalledWith("conv-1"),
-    );
+    await waitFor(() => expect(onConversationSeen).toHaveBeenCalledWith("conv-1"));
     onConversationSeen.mockClear();
 
     await userEvent.type(screen.getByTestId("agent-input"), "/compact");
     await userEvent.click(screen.getByTestId("agent-send"));
-    await waitFor(() =>
-      expect(commands.compactConversation).toHaveBeenCalledWith("conv-1"),
-    );
+    await waitFor(() => expect(commands.compactConversation).toHaveBeenCalledWith("conv-1"));
 
     resolveCompact({
       conversationId: "conv-1",
@@ -1473,11 +1350,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     await waitFor(() => expect(conv1ListCalls).toBe(2));
 
     rerender(
-      <Workspace
-        key="conv-2"
-        conversationId="conv-2"
-        onConversationSeen={onConversationSeen}
-      />,
+      <Workspace key="conv-2" conversationId="conv-2" onConversationSeen={onConversationSeen} />,
     );
     await screen.findByText("second workspace");
     onConversationSeen.mockClear();
@@ -1545,18 +1418,14 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     await userEvent.type(screen.getByTestId("agent-input"), "/compact");
     await userEvent.click(screen.getByTestId("agent-send"));
 
-    await waitFor(() =>
-      expect(commands.compactConversation).toHaveBeenCalledWith("conv-1"),
-    );
+    await waitFor(() => expect(commands.compactConversation).toHaveBeenCalledWith("conv-1"));
     expect(await screen.findByTestId("context-notice")).toHaveTextContent(
       "StrictMode compact refresh",
     );
   });
 
   it("refreshes a /compact result after returning to the same conversation before completion", async () => {
-    let resolveCompact!: (
-      usage: Awaited<ReturnType<typeof commands.compactConversation>>,
-    ) => void;
+    let resolveCompact!: (usage: Awaited<ReturnType<typeof commands.compactConversation>>) => void;
     let compactFinished = false;
     const onConversationSeen = vi.fn();
 
@@ -1565,66 +1434,54 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
         resolveCompact = resolve;
       }),
     );
-    vi.mocked(commands.listMessages).mockImplementation(
-      (requestedConversationId) => {
-        if (requestedConversationId === "conv-2") {
-          return Promise.resolve([
-            {
-              id: "m2",
-              conversationId: "conv-2",
-              role: "user",
-              contentType: "text",
-              content: "second workspace",
-              toolName: null,
-              createdAt: 2,
-              durationMs: null,
-              tokenCount: null,
-            },
-          ]);
-        }
-
-        if (!compactFinished) return Promise.resolve([]);
+    vi.mocked(commands.listMessages).mockImplementation((requestedConversationId) => {
+      if (requestedConversationId === "conv-2") {
         return Promise.resolve([
           {
-            id: "late-compact",
-            conversationId: "conv-1",
-            role: "assistant",
-            contentType: "context_notice",
-            content: JSON.stringify({
-              kind: "summarized",
-              summary: "old summary",
-              notice: "late compact notice",
-            }),
+            id: "m2",
+            conversationId: "conv-2",
+            role: "user",
+            contentType: "text",
+            content: "second workspace",
             toolName: null,
-            createdAt: 3,
+            createdAt: 2,
             durationMs: null,
             tokenCount: null,
           },
         ]);
-      },
-    );
+      }
+
+      if (!compactFinished) return Promise.resolve([]);
+      return Promise.resolve([
+        {
+          id: "late-compact",
+          conversationId: "conv-1",
+          role: "assistant",
+          contentType: "context_notice",
+          content: JSON.stringify({
+            kind: "summarized",
+            summary: "old summary",
+            notice: "late compact notice",
+          }),
+          toolName: null,
+          createdAt: 3,
+          durationMs: null,
+          tokenCount: null,
+        },
+      ]);
+    });
 
     const { rerender } = render(
-      <Workspace
-        key="conv-1"
-        conversationId="conv-1"
-        onConversationSeen={onConversationSeen}
-      />,
+      <Workspace key="conv-1" conversationId="conv-1" onConversationSeen={onConversationSeen} />,
     );
     await screen.findByTestId("agent-input");
 
     await userEvent.type(screen.getByTestId("agent-input"), "/compact");
     await userEvent.click(screen.getByTestId("agent-send"));
-    await waitFor(() =>
-      expect(commands.compactConversation).toHaveBeenCalledWith("conv-1"),
-    );
+    await waitFor(() => expect(commands.compactConversation).toHaveBeenCalledWith("conv-1"));
 
     rerender(
-      <Workspace
-        key="conv-2"
-        conversationId="conv-2"
-        onConversationSeen={onConversationSeen}
-      />,
+      <Workspace key="conv-2" conversationId="conv-2" onConversationSeen={onConversationSeen} />,
     );
     await screen.findByText("second workspace");
 
@@ -1646,9 +1503,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
       state: "justCompacted",
     });
 
-    expect(await screen.findByTestId("context-notice")).toHaveTextContent(
-      "late compact notice",
-    );
+    expect(await screen.findByTestId("context-notice")).toHaveTextContent("late compact notice");
     expect(onConversationSeen).toHaveBeenCalledWith("conv-1");
   });
 
@@ -1659,36 +1514,32 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
         rejectCompact = reject;
       }),
     );
-    vi.mocked(commands.listMessages).mockImplementation(
-      (requestedConversationId) => {
-        if (requestedConversationId === "conv-2") {
-          return Promise.resolve([
-            {
-              id: "m2",
-              conversationId: "conv-2",
-              role: "user",
-              contentType: "text",
-              content: "second workspace",
-              toolName: null,
-              createdAt: 2,
-              durationMs: null,
-              tokenCount: null,
-            },
-          ]);
-        }
+    vi.mocked(commands.listMessages).mockImplementation((requestedConversationId) => {
+      if (requestedConversationId === "conv-2") {
+        return Promise.resolve([
+          {
+            id: "m2",
+            conversationId: "conv-2",
+            role: "user",
+            contentType: "text",
+            content: "second workspace",
+            toolName: null,
+            createdAt: 2,
+            durationMs: null,
+            tokenCount: null,
+          },
+        ]);
+      }
 
-        return Promise.resolve([]);
-      },
-    );
+      return Promise.resolve([]);
+    });
 
     const { rerender } = render(<Workspace conversationId="conv-1" />);
     await screen.findByTestId("agent-input");
 
     await userEvent.type(screen.getByTestId("agent-input"), "/compact");
     await userEvent.click(screen.getByTestId("agent-send"));
-    await waitFor(() =>
-      expect(commands.compactConversation).toHaveBeenCalledWith("conv-1"),
-    );
+    await waitFor(() => expect(commands.compactConversation).toHaveBeenCalledWith("conv-1"));
 
     rerender(<Workspace conversationId="conv-2" />);
     await screen.findByText("second workspace");
@@ -1726,36 +1577,24 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     const { rerender } = render(<Workspace conversationId="conv-1" />);
     await screen.findByTestId("agent-input");
 
-    await userEvent.type(
-      screen.getByTestId("agent-input"),
-      "first workspace task",
-    );
+    await userEvent.type(screen.getByTestId("agent-input"), "first workspace task");
     await userEvent.click(screen.getByTestId("agent-send"));
 
     await waitFor(() => {
       expect(screen.getByTestId("agent-thinking")).toBeInTheDocument();
-      expect(screen.getByTestId("agent-input")).toHaveAttribute(
-        "contenteditable",
-        "false",
-      );
+      expect(screen.getByTestId("agent-input")).toHaveAttribute("contenteditable", "false");
     });
 
     rerender(<Workspace conversationId="conv-2" />);
     await screen.findByText("second workspace");
 
-    expect(screen.getByTestId("agent-input")).toHaveAttribute(
-      "contenteditable",
-      "true",
-    );
+    expect(screen.getByTestId("agent-input")).toHaveAttribute("contenteditable", "true");
     expect(screen.queryByText("first workspace task")).not.toBeInTheDocument();
 
     resolveSend("old conversation done");
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(screen.getByTestId("agent-input")).toHaveAttribute(
-      "contenteditable",
-      "true",
-    );
+    expect(screen.getByTestId("agent-input")).toHaveAttribute("contenteditable", "true");
     expect(screen.getByText("second workspace")).toBeInTheDocument();
     expect(screen.queryByText("first workspace task")).not.toBeInTheDocument();
   });
@@ -1772,49 +1611,38 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
         resolveSend = resolve;
       }),
     );
-    vi.mocked(commands.listMessages).mockImplementation(
-      (requestedConversationId) => {
-        if (requestedConversationId === "conv-1") {
-          conv1ListCalls += 1;
-          if (conv1ListCalls === 1) return Promise.resolve([]);
-          return new Promise((resolve) => {
-            resolveFinalMessages = resolve;
-          });
-        }
+    vi.mocked(commands.listMessages).mockImplementation((requestedConversationId) => {
+      if (requestedConversationId === "conv-1") {
+        conv1ListCalls += 1;
+        if (conv1ListCalls === 1) return Promise.resolve([]);
+        return new Promise((resolve) => {
+          resolveFinalMessages = resolve;
+        });
+      }
 
-        return Promise.resolve([
-          {
-            id: "m2",
-            conversationId: "conv-2",
-            role: "user",
-            contentType: "text",
-            content: "second workspace",
-            toolName: null,
-            createdAt: 2,
-            durationMs: null,
-            tokenCount: null,
-          },
-        ]);
-      },
-    );
+      return Promise.resolve([
+        {
+          id: "m2",
+          conversationId: "conv-2",
+          role: "user",
+          contentType: "text",
+          content: "second workspace",
+          toolName: null,
+          createdAt: 2,
+          durationMs: null,
+          tokenCount: null,
+        },
+      ]);
+    });
 
     const { rerender } = render(
-      <Workspace
-        key="conv-1"
-        conversationId="conv-1"
-        onConversationSeen={onConversationSeen}
-      />,
+      <Workspace key="conv-1" conversationId="conv-1" onConversationSeen={onConversationSeen} />,
     );
     await screen.findByTestId("agent-input");
-    await waitFor(() =>
-      expect(onConversationSeen).toHaveBeenCalledWith("conv-1"),
-    );
+    await waitFor(() => expect(onConversationSeen).toHaveBeenCalledWith("conv-1"));
     onConversationSeen.mockClear();
 
-    await userEvent.type(
-      screen.getByTestId("agent-input"),
-      "first workspace task",
-    );
+    await userEvent.type(screen.getByTestId("agent-input"), "first workspace task");
     await userEvent.click(screen.getByTestId("agent-send"));
     await waitFor(() => {
       expect(commands.sendAgentMessage).toHaveBeenCalledWith(
@@ -1828,11 +1656,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     await waitFor(() => expect(conv1ListCalls).toBe(2));
 
     rerender(
-      <Workspace
-        key="conv-2"
-        conversationId="conv-2"
-        onConversationSeen={onConversationSeen}
-      />,
+      <Workspace key="conv-2" conversationId="conv-2" onConversationSeen={onConversationSeen} />,
     );
     await screen.findByText("second workspace");
     onConversationSeen.mockClear();
@@ -1876,11 +1700,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     await userEvent.click(screen.getByTestId("agent-send"));
 
     await waitFor(() =>
-      expect(commands.sendAgentMessage).toHaveBeenCalledWith(
-        "conv-1",
-        "strict task",
-        undefined,
-      ),
+      expect(commands.sendAgentMessage).toHaveBeenCalledWith("conv-1", "strict task", undefined),
     );
     expect(await screen.findByText("strict reply")).toBeInTheDocument();
     expect(screen.queryByTestId("agent-thinking")).not.toBeInTheDocument();
@@ -1896,67 +1716,53 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
         resolveSend = resolve;
       }),
     );
-    vi.mocked(commands.listMessages).mockImplementation(
-      (requestedConversationId) => {
-        if (requestedConversationId === "conv-2") {
-          return Promise.resolve([
-            {
-              id: "m2",
-              conversationId: "conv-2",
-              role: "user",
-              contentType: "text",
-              content: "second workspace",
-              toolName: null,
-              createdAt: 2,
-              durationMs: null,
-              tokenCount: null,
-            },
-          ]);
-        }
-
-        if (!sendFinished) return Promise.resolve([]);
+    vi.mocked(commands.listMessages).mockImplementation((requestedConversationId) => {
+      if (requestedConversationId === "conv-2") {
         return Promise.resolve([
-          messageFixture("u1", "late task"),
           {
-            id: "a1",
-            conversationId: "conv-1",
-            role: "assistant",
+            id: "m2",
+            conversationId: "conv-2",
+            role: "user",
             contentType: "text",
-            content: "late reply",
+            content: "second workspace",
             toolName: null,
-            createdAt: 3,
+            createdAt: 2,
             durationMs: null,
             tokenCount: null,
           },
         ]);
-      },
-    );
+      }
+
+      if (!sendFinished) return Promise.resolve([]);
+      return Promise.resolve([
+        messageFixture("u1", "late task"),
+        {
+          id: "a1",
+          conversationId: "conv-1",
+          role: "assistant",
+          contentType: "text",
+          content: "late reply",
+          toolName: null,
+          createdAt: 3,
+          durationMs: null,
+          tokenCount: null,
+        },
+      ]);
+    });
 
     const { rerender } = render(
-      <Workspace
-        key="conv-1"
-        conversationId="conv-1"
-        onConversationSeen={onConversationSeen}
-      />,
+      <Workspace key="conv-1" conversationId="conv-1" onConversationSeen={onConversationSeen} />,
     );
     await screen.findByTestId("agent-input");
 
     await userEvent.type(screen.getByTestId("agent-input"), "late task");
     await userEvent.click(screen.getByTestId("agent-send"));
     await waitFor(() =>
-      expect(commands.sendAgentMessage).toHaveBeenCalledWith(
-        "conv-1",
-        "late task",
-        undefined,
-      ),
+      expect(commands.sendAgentMessage).toHaveBeenCalledWith("conv-1", "late task", undefined),
     );
 
     rerender(
-      <Workspace
-        key="conv-2"
-        conversationId="conv-2"
-        onConversationSeen={onConversationSeen}
-      />,
+      <Workspace key="conv-2" conversationId="conv-2" onConversationSeen={onConversationSeen} />,
     );
     await screen.findByText("second workspace");
 
@@ -1979,42 +1785,35 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
 
   it("keeps the original conversation disabled across remounts while its send is still pending", async () => {
     let resolveSend!: (value: string) => void;
-    vi.mocked(commands.listMessages).mockImplementation(
-      (requestedConversationId) => {
-        if (requestedConversationId === "conv-2") {
-          return Promise.resolve([
-            {
-              id: "m2",
-              conversationId: "conv-2",
-              role: "user",
-              contentType: "text",
-              content: "second workspace",
-              toolName: null,
-              createdAt: 2,
-              durationMs: null,
-              tokenCount: null,
-            },
-          ]);
-        }
+    vi.mocked(commands.listMessages).mockImplementation((requestedConversationId) => {
+      if (requestedConversationId === "conv-2") {
+        return Promise.resolve([
+          {
+            id: "m2",
+            conversationId: "conv-2",
+            role: "user",
+            contentType: "text",
+            content: "second workspace",
+            toolName: null,
+            createdAt: 2,
+            durationMs: null,
+            tokenCount: null,
+          },
+        ]);
+      }
 
-        return Promise.resolve([]);
-      },
-    );
+      return Promise.resolve([]);
+    });
     vi.mocked(commands.sendAgentMessage).mockReturnValue(
       new Promise((resolve) => {
         resolveSend = resolve;
       }),
     );
 
-    const { rerender } = render(
-      <Workspace key="conv-1" conversationId="conv-1" />,
-    );
+    const { rerender } = render(<Workspace key="conv-1" conversationId="conv-1" />);
     await screen.findByTestId("agent-input");
 
-    await userEvent.type(
-      screen.getByTestId("agent-input"),
-      "first workspace task",
-    );
+    await userEvent.type(screen.getByTestId("agent-input"), "first workspace task");
     await userEvent.click(screen.getByTestId("agent-send"));
 
     await waitFor(() => {
@@ -2023,25 +1822,16 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
         "first workspace task",
         undefined,
       );
-      expect(screen.getByTestId("agent-input")).toHaveAttribute(
-        "contenteditable",
-        "false",
-      );
+      expect(screen.getByTestId("agent-input")).toHaveAttribute("contenteditable", "false");
     });
 
     rerender(<Workspace key="conv-2" conversationId="conv-2" />);
     await screen.findByText("second workspace");
-    expect(screen.getByTestId("agent-input")).toHaveAttribute(
-      "contenteditable",
-      "true",
-    );
+    expect(screen.getByTestId("agent-input")).toHaveAttribute("contenteditable", "true");
 
     rerender(<Workspace key="conv-1-return" conversationId="conv-1" />);
     await waitFor(() => {
-      expect(screen.getByTestId("agent-input")).toHaveAttribute(
-        "contenteditable",
-        "false",
-      );
+      expect(screen.getByTestId("agent-input")).toHaveAttribute("contenteditable", "false");
       expect(screen.getByTestId("agent-thinking")).toBeInTheDocument();
     });
 
@@ -2050,17 +1840,12 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
 
     resolveSend("first send done");
     await waitFor(() => {
-      expect(screen.getByTestId("agent-input")).toHaveAttribute(
-        "contenteditable",
-        "true",
-      );
+      expect(screen.getByTestId("agent-input")).toHaveAttribute("contenteditable", "true");
     });
   });
 
   it("shows an error instead of hanging if sending fails", async () => {
-    vi.mocked(commands.sendAgentMessage).mockRejectedValue(
-      new Error("inference crashed"),
-    );
+    vi.mocked(commands.sendAgentMessage).mockRejectedValue(new Error("inference crashed"));
 
     render(<Workspace conversationId="conv-1" />);
     await screen.findByTestId("agent-input");
@@ -2068,9 +1853,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     await userEvent.click(screen.getByTestId("agent-send"));
 
     await waitFor(() => {
-      expect(screen.getByTestId("workspace-error")).toHaveTextContent(
-        "inference crashed",
-      );
+      expect(screen.getByTestId("workspace-error")).toHaveTextContent("inference crashed");
     });
   });
 
@@ -2082,14 +1865,10 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
   // clicking it hands off to the library's scrollToBottom.
 
   it("shows the scroll-to-bottom button after scrolling up and hides it again near the bottom", async () => {
-    vi.mocked(commands.listMessages).mockResolvedValueOnce([
-      messageFixture("m1", "first message"),
-    ]);
+    vi.mocked(commands.listMessages).mockResolvedValueOnce([messageFixture("m1", "first message")]);
 
     render(<Workspace conversationId="conv-1" />);
-    const scrollContainer = await screen.findByTestId(
-      "workspace-scroll-container",
-    );
+    const scrollContainer = await screen.findByTestId("workspace-scroll-container");
     await screen.findByText("first message");
 
     expect(screen.queryByTestId("scroll-to-bottom")).not.toBeInTheDocument();
@@ -2106,10 +1885,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     fireEvent.scroll(scrollContainer);
 
     await waitFor(() =>
-      expect(screen.getByTestId("scroll-to-bottom")).toHaveClass(
-        "left-1/2",
-        "-translate-x-1/2",
-      ),
+      expect(screen.getByTestId("scroll-to-bottom")).toHaveClass("left-1/2", "-translate-x-1/2"),
     );
 
     // Scrolling back to within the library's near-bottom threshold re-pins
@@ -2117,20 +1893,14 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     scrollContainer.scrollTop = 680;
     fireEvent.scroll(scrollContainer);
 
-    await waitFor(() =>
-      expect(screen.queryByTestId("scroll-to-bottom")).not.toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.queryByTestId("scroll-to-bottom")).not.toBeInTheDocument());
   });
 
   it("scrolls to bottom and hides the scroll-to-bottom button when clicked", async () => {
-    vi.mocked(commands.listMessages).mockResolvedValueOnce([
-      messageFixture("m1", "first message"),
-    ]);
+    vi.mocked(commands.listMessages).mockResolvedValueOnce([messageFixture("m1", "first message")]);
 
     render(<Workspace conversationId="conv-1" />);
-    const scrollContainer = await screen.findByTestId(
-      "workspace-scroll-container",
-    );
+    const scrollContainer = await screen.findByTestId("workspace-scroll-container");
     await screen.findByText("first message");
 
     setScrollMetrics(scrollContainer, {
@@ -2143,22 +1913,15 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     fireEvent.scroll(scrollContainer);
     await waitFor(() => screen.getByTestId("scroll-to-bottom"));
 
-    await userEvent.click(
-      screen.getByRole("button", { name: "Scroll to bottom" }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: "Scroll to bottom" }));
 
     // The library's spring animation converges asymptotically (a real
     // browser clamps scrollTop to integers; the jsdom metrics mock
     // doesn't), so assert "back at the bottom" rather than an exact px.
-    await waitFor(
-      () => expect(scrollContainer.scrollTop).toBeGreaterThanOrEqual(695),
-      {
-        timeout: 4000,
-      },
-    );
-    await waitFor(() =>
-      expect(screen.queryByTestId("scroll-to-bottom")).not.toBeInTheDocument(),
-    );
+    await waitFor(() => expect(scrollContainer.scrollTop).toBeGreaterThanOrEqual(695), {
+      timeout: 4000,
+    });
+    await waitFor(() => expect(screen.queryByTestId("scroll-to-bottom")).not.toBeInTheDocument());
   });
 
   it("always scrolls back to the bottom when the user sends a message, even after the sticky lock escaped", async () => {
@@ -2173,14 +1936,10 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     // this conversation in the module-level send-in-flight Set for the
     // rest of the file, which must not block other tests' "conv-1" sends.
     vi.mocked(commands.sendAgentMessage).mockReturnValue(new Promise(() => {}));
-    vi.mocked(commands.listMessages).mockResolvedValueOnce([
-      messageFixture("m1", "first message"),
-    ]);
+    vi.mocked(commands.listMessages).mockResolvedValueOnce([messageFixture("m1", "first message")]);
 
     render(<Workspace conversationId="conv-scroll-send" />);
-    const scrollContainer = await screen.findByTestId(
-      "workspace-scroll-container",
-    );
+    const scrollContainer = await screen.findByTestId("workspace-scroll-container");
     await screen.findByText("first message");
 
     // Escape the lock: bottom baseline, then an upward scroll (a stray
@@ -2199,12 +1958,9 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     await userEvent.click(input);
     await userEvent.type(input, "follow up{Enter}");
 
-    await waitFor(
-      () => expect(scrollContainer.scrollTop).toBeGreaterThanOrEqual(695),
-      {
-        timeout: 4000,
-      },
-    );
+    await waitFor(() => expect(scrollContainer.scrollTop).toBeGreaterThanOrEqual(695), {
+      timeout: 4000,
+    });
   });
 
   it("hides the scroll-to-bottom button when switching conversations", async () => {
@@ -2221,9 +1977,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
       ]);
 
     const { rerender } = render(<Workspace conversationId="conv-1" />);
-    const scrollContainer = await screen.findByTestId(
-      "workspace-scroll-container",
-    );
+    const scrollContainer = await screen.findByTestId("workspace-scroll-container");
     await screen.findByText("first workspace");
 
     setScrollMetrics(scrollContainer, {
@@ -2234,9 +1988,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     fireEvent.scroll(scrollContainer);
     scrollContainer.scrollTop = 200;
     fireEvent.scroll(scrollContainer);
-    await waitFor(() =>
-      expect(screen.getByTestId("scroll-to-bottom")).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByTestId("scroll-to-bottom")).toBeInTheDocument());
 
     rerender(<Workspace conversationId="conv-2" />);
 
@@ -2275,24 +2027,15 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
 
     const onConversationSeen = vi.fn();
 
-    render(
-      <Workspace
-        conversationId="conv-1"
-        onConversationSeen={onConversationSeen}
-      />,
-    );
+    render(<Workspace conversationId="conv-1" onConversationSeen={onConversationSeen} />);
     await screen.findByTestId("agent-input");
-    await waitFor(() =>
-      expect(onConversationSeen).toHaveBeenCalledWith("conv-1"),
-    );
+    await waitFor(() => expect(onConversationSeen).toHaveBeenCalledWith("conv-1"));
     onConversationSeen.mockClear();
 
     await userEvent.type(screen.getByTestId("agent-input"), "/compact");
     await userEvent.click(screen.getByTestId("agent-send"));
 
-    await waitFor(() =>
-      expect(commands.compactConversation).toHaveBeenCalledWith("conv-1"),
-    );
+    await waitFor(() => expect(commands.compactConversation).toHaveBeenCalledWith("conv-1"));
     expect(commands.sendAgentMessage).not.toHaveBeenCalled();
     expect(await screen.findByTestId("context-notice")).toHaveTextContent(
       "Conversation condensed to save space",

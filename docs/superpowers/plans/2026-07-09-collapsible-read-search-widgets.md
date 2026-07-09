@@ -49,9 +49,11 @@
 ### Task 1: Extend MIME Detection for Native Read Previews
 
 **Files:**
+
 - Modify: `src-tauri/src/commands/attachments.rs`
 
 **Interfaces:**
+
 - Consumes: `read_attached_file(path: String) -> Result<AttachedFile, String>`
 - Produces: `detect_mime_type(path: &Path) -> String` mappings for `.svg`, `.mp4`, `.webm`, `.ogg`, `.mov`, `.mp3`, `.wav`, `.m4a`, and `.flac`
 
@@ -148,10 +150,12 @@ Expected: one commit containing only `src-tauri/src/commands/attachments.rs`.
 ### Task 2: Add Shared `ToolDisclosure`
 
 **Files:**
+
 - Create: `src/views/chat/tool-widgets/ToolDisclosure.tsx`
 - Create: `src/views/chat/tool-widgets/ToolDisclosure.test.tsx`
 
 **Interfaces:**
+
 - Produces: `ToolDisclosure(props: ToolDisclosureProps): JSX.Element`
 - `ToolDisclosureProps.summary: React.ReactNode`
 - `ToolDisclosureProps.children: React.ReactNode`
@@ -311,11 +315,13 @@ Expected: one commit containing only the shared disclosure component and test.
 ### Task 3: Extract Reusable Markdown Preview
 
 **Files:**
+
 - Create: `src/components/MarkdownPreview.tsx`
 - Modify: `src/components/MessageContent.tsx`
 - Modify: `src/components/MessageContent.test.tsx`
 
 **Interfaces:**
+
 - Produces: `MarkdownPreview({ children, className }: { children: string; className?: string })`
 - Consumes: `ReactMarkdown`
 - Later tasks import `MarkdownPreview` for markdown file previews.
@@ -325,20 +331,20 @@ Expected: one commit containing only the shared disclosure component and test.
 In `src/components/MessageContent.test.tsx`, add this test after `renders a text assistant message as markdown, with Timer only when showTimer is true`:
 
 ```tsx
-  it("continues to render markdown after the markdown renderer is shared", () => {
-    render(
-      <MessageContent
-        message={baseMessage({
-          contentType: "text",
-          content: "## Heading\n\n- one\n- two",
-        })}
-      />,
-    );
+it("continues to render markdown after the markdown renderer is shared", () => {
+  render(
+    <MessageContent
+      message={baseMessage({
+        contentType: "text",
+        content: "## Heading\n\n- one\n- two",
+      })}
+    />,
+  );
 
-    expect(screen.getByRole("heading", { level: 2, name: "Heading" })).toBeInTheDocument();
-    expect(screen.getByText("one")).toBeInTheDocument();
-    expect(screen.getByText("two")).toBeInTheDocument();
-  });
+  expect(screen.getByRole("heading", { level: 2, name: "Heading" })).toBeInTheDocument();
+  expect(screen.getByText("one")).toBeInTheDocument();
+  expect(screen.getByText("two")).toBeInTheDocument();
+});
 ```
 
 - [ ] **Step 2: Run test before extraction**
@@ -390,53 +396,55 @@ import MarkdownPreview from "@/components/MarkdownPreview";
 Replace the current user-message bubble wrapper:
 
 ```tsx
-        <div className="prose prose-sm dark:prose-invert max-w-none rounded-lg bg-muted p-3 text-foreground">
-          {/* 009-rich-chat-input, US2 (T026): a rich_text user message (a
+<div className="prose prose-sm dark:prose-invert max-w-none rounded-lg bg-muted p-3 text-foreground">
+  {/* 009-rich-chat-input, US2 (T026): a rich_text user message (a
               paste-collapse chip, and eventually attachment/skill chips)
               dispatches to UserMessageContent, mirroring this file's existing
               tool_result -> ToolWidget dispatch — every other user message
               (contentType 'text', today's only other case) renders exactly as
               it always has. */}
-          {m.contentType === "rich_text" ? (
-            <UserMessageContent content={m.content} />
-          ) : (
-            <ReactMarkdown>{m.content}</ReactMarkdown>
-          )}
-        </div>
+  {m.contentType === "rich_text" ? (
+    <UserMessageContent content={m.content} />
+  ) : (
+    <ReactMarkdown>{m.content}</ReactMarkdown>
+  )}
+</div>
 ```
 
 with:
 
 ```tsx
-        {m.contentType === "rich_text" ? (
-          <div className="prose prose-sm dark:prose-invert max-w-none rounded-lg bg-muted p-3 text-foreground">
-            {/* 009-rich-chat-input, US2 (T026): a rich_text user message (a
+{
+  m.contentType === "rich_text" ? (
+    <div className="prose prose-sm dark:prose-invert max-w-none rounded-lg bg-muted p-3 text-foreground">
+      {/* 009-rich-chat-input, US2 (T026): a rich_text user message (a
                 paste-collapse chip, and eventually attachment/skill chips)
                 dispatches to UserMessageContent, mirroring this file's existing
                 tool_result -> ToolWidget dispatch — every other user message
                 (contentType 'text', today's only other case) renders exactly as
                 it always has. */}
-            <UserMessageContent content={m.content} />
-          </div>
-        ) : (
-          <MarkdownPreview className="rounded-lg bg-muted p-3 text-foreground">
-            {m.content}
-          </MarkdownPreview>
-        )}
+      <UserMessageContent content={m.content} />
+    </div>
+  ) : (
+    <MarkdownPreview className="rounded-lg bg-muted p-3 text-foreground">
+      {m.content}
+    </MarkdownPreview>
+  );
+}
 ```
 
 Replace the assistant-message text wrapper:
 
 ```tsx
-      <div className="prose prose-sm dark:prose-invert max-w-none">
-        <ReactMarkdown>{m.content}</ReactMarkdown>
-      </div>
+<div className="prose prose-sm dark:prose-invert max-w-none">
+  <ReactMarkdown>{m.content}</ReactMarkdown>
+</div>
 ```
 
 with:
 
 ```tsx
-      <MarkdownPreview>{m.content}</MarkdownPreview>
+<MarkdownPreview>{m.content}</MarkdownPreview>
 ```
 
 - [ ] **Step 5: Run message content tests**
@@ -465,12 +473,14 @@ Expected: one commit containing only the markdown helper and `MessageContent` us
 ### Task 4: Add `ReadPreview` and Convert `ReadWidget`
 
 **Files:**
+
 - Create: `src/views/chat/tool-widgets/ReadPreview.tsx`
 - Create: `src/views/chat/tool-widgets/ReadPreview.test.tsx`
 - Modify: `src/views/chat/tool-widgets/ReadWidget.tsx`
 - Modify: `src/views/chat/tool-widgets/ReadWidget.test.tsx`
 
 **Interfaces:**
+
 - Consumes: `ToolDisclosure` from Task 2.
 - Consumes: `MarkdownPreview` from Task 3.
 - Consumes: `commands.readAttachedFile(path: string)`.
@@ -578,9 +588,7 @@ describe("ReadPreview", () => {
   it("renders preview unavailable for unsupported file types", () => {
     render(<ReadPreview detail={readDetail("/tmp/archive.zip")} />);
 
-    expect(screen.getByTestId("read-preview-unavailable")).toHaveTextContent(
-      "Preview unavailable",
-    );
+    expect(screen.getByTestId("read-preview-unavailable")).toHaveTextContent("Preview unavailable");
     expect(commands.readAttachedFile).not.toHaveBeenCalled();
   });
 
@@ -1044,10 +1052,12 @@ Expected: one commit containing only Read preview and Read widget files.
 ### Task 5: Convert Grep/Glob to `ToolDisclosure`
 
 **Files:**
+
 - Modify: `src/views/chat/tool-widgets/SearchResultsWidget.tsx`
 - Modify: `src/views/chat/tool-widgets/SearchResultsWidget.test.tsx`
 
 **Interfaces:**
+
 - Consumes: `ToolDisclosure` from Task 2.
 - Consumes: `GlobDetail`, `GrepDetail`.
 - Produces: non-interrupted `SearchResultsWidget` results collapsed by default.
@@ -1212,10 +1222,9 @@ export default function SearchResultsWidget({ detail }: SearchResultsWidgetProps
   }
 
   const count = detail.matches.length;
-  const countLabel = isGrep
-    ? `${count} ${count === 1 ? "match" : "matches"}`
-    : `${count} files`;
-  const tokenLabel = detail.tokenCount != null ? ` · ${formatTokenCount(detail.tokenCount)} tok` : "";
+  const countLabel = isGrep ? `${count} ${count === 1 ? "match" : "matches"}` : `${count} files`;
+  const tokenLabel =
+    detail.tokenCount != null ? ` · ${formatTokenCount(detail.tokenCount)} tok` : "";
 
   return (
     <ToolDisclosure
@@ -1318,10 +1327,12 @@ Expected: one commit containing only `SearchResultsWidget.tsx` and its test.
 ### Task 6: Update Widget Gallery Examples
 
 **Files:**
+
 - Modify: `src/views/design-system/WidgetGallery.tsx`
 - Modify: `src/views/design-system/WidgetGallery.test.tsx`
 
 **Interfaces:**
+
 - Consumes: updated `ReadWidget` and `SearchResultsWidget`.
 - Produces: gallery labels/copy that describe collapsed/expandable behavior.
 
@@ -1383,46 +1394,43 @@ Expected: FAIL because the gallery still uses old labels/descriptions.
 In `src/views/design-system/WidgetGallery.tsx`, replace the current Read `<Section>` block with:
 
 ```tsx
-        <Section
-          title="Read"
-          description="A collapsed file-reference card with inline expandable preview."
-        >
-          <Example label="Text read">
-            <ReadWidget
-              detail={{
-                toolName: "Read",
-                filePath: "src/agent/dispatch.rs",
-                offset: null,
-                limit: null,
-                outcome: { ok: true, content: "pub fn execute(...", truncated: false },
-                tokenCount: 312,
-              }}
-            />
-          </Example>
-          <Example label="Native preview candidate">
-            <ReadWidget
-              detail={{
-                toolName: "Read",
-                filePath: "diagram.svg",
-                offset: null,
-                limit: null,
-                outcome: { ok: true, content: "(binary preview candidate)", truncated: false },
-                tokenCount: 2048,
-              }}
-            />
-          </Example>
-          <Example label="Failure">
-            <ReadWidget
-              detail={{
-                toolName: "Read",
-                filePath: "does/not/exist.txt",
-                offset: null,
-                limit: null,
-                outcome: { ok: false, error: "No such file or directory (os error 2)" },
-              }}
-            />
-          </Example>
-        </Section>
+<Section title="Read" description="A collapsed file-reference card with inline expandable preview.">
+  <Example label="Text read">
+    <ReadWidget
+      detail={{
+        toolName: "Read",
+        filePath: "src/agent/dispatch.rs",
+        offset: null,
+        limit: null,
+        outcome: { ok: true, content: "pub fn execute(...", truncated: false },
+        tokenCount: 312,
+      }}
+    />
+  </Example>
+  <Example label="Native preview candidate">
+    <ReadWidget
+      detail={{
+        toolName: "Read",
+        filePath: "diagram.svg",
+        offset: null,
+        limit: null,
+        outcome: { ok: true, content: "(binary preview candidate)", truncated: false },
+        tokenCount: 2048,
+      }}
+    />
+  </Example>
+  <Example label="Failure">
+    <ReadWidget
+      detail={{
+        toolName: "Read",
+        filePath: "does/not/exist.txt",
+        offset: null,
+        limit: null,
+        outcome: { ok: false, error: "No such file or directory (os error 2)" },
+      }}
+    />
+  </Example>
+</Section>
 ```
 
 - [ ] **Step 4: Update Search gallery section description and labels**
@@ -1430,7 +1438,7 @@ In `src/views/design-system/WidgetGallery.tsx`, replace the current Read `<Secti
 In the Search section of `src/views/design-system/WidgetGallery.tsx`, change the `<Section>` description to:
 
 ```tsx
-          description="Collapsed search summaries with inline expandable result lists."
+description = "Collapsed search summaries with inline expandable result lists.";
 ```
 
 Change the Glob labels:
@@ -1483,12 +1491,14 @@ Expected: one commit containing only gallery files.
 ### Task 7: Final Verification
 
 **Files:**
+
 - Verify: frontend TypeScript project
 - Verify: focused widget tests
 - Verify: attachment command tests
 - Verify: full frontend test suite
 
 **Interfaces:**
+
 - Consumes all prior task outputs.
 - Produces verified implementation with no additional code changes unless a verification failure points to a task-owned defect.
 

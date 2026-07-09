@@ -94,9 +94,7 @@ describe("ReadPreview", () => {
   it("renders preview unavailable for unsupported file types", () => {
     render(<ReadPreview detail={readDetail("/tmp/archive.zip")} />);
 
-    expect(screen.getByTestId("read-preview-unavailable")).toHaveTextContent(
-      "Preview unavailable",
-    );
+    expect(screen.getByTestId("read-preview-unavailable")).toHaveTextContent("Preview unavailable");
     expect(commands.readAttachedFile).not.toHaveBeenCalled();
   });
 

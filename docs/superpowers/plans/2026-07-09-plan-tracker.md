@@ -27,9 +27,11 @@
 ### Task 1: `PlanState` — the promoted state machine
 
 **Files:**
+
 - Modify: `src-tauri/src/agent/plan.rs`
 
 **Interfaces:**
+
 - Consumes: existing `Plan`, `PlanStep`, `LoopState`, `PLANNING_SYSTEM_PROMPT`, `executing_system_prompt` (same file); `crate::agent::ToolCall`.
 - Produces (later tasks rely on these exact signatures):
   - `pub const PLAN_TOOL_NAMES: [&str; 5]`
@@ -391,9 +393,11 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ### Task 2: Benchmark embeds the lib's `PlanState`
 
 **Files:**
+
 - Modify: `src-tauri/tests/agent_benchmark.rs` (the `PlanExecBackend` struct, its `AgentBackend` impl, its `next_undone_step` impl block, and `run_planned_benchmark_task`/`report_plan` field accesses)
 
 **Interfaces:**
+
 - Consumes: `doce_lib::agent::plan::PlanState` from Task 1 (exact signatures listed there).
 - Produces: nothing new — compile-time proof of unification.
 
@@ -513,11 +517,13 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ### Task 3: Live plan surface — `ActivePlans`, `PlanUpdate` event, `get_active_plan`
 
 **Files:**
+
 - Modify: `src-tauri/src/commands/agent.rs` (new types + helper + command + tests)
 - Modify: `src-tauri/src/commands/mod.rs` (register command + event)
 - Modify: `src-tauri/src/lib.rs` (`.manage(ActivePlans::default())`)
 
 **Interfaces:**
+
 - Consumes: `PlanState` (Task 1).
 - Produces (Task 4 and the frontend rely on these):
   - `pub struct ActivePlans(pub std::sync::Mutex<std::collections::HashMap<String, PlanSnapshot>>)` (managed state)
@@ -758,9 +764,11 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ### Task 4: Production runs the plan engine
 
 **Files:**
+
 - Modify: `src-tauri/src/commands/agent.rs` (`RealBackend` struct + `generate` + `execute_tool`, `send_agent_message` wiring, new `persist_plan_tool` helper + test)
 
 **Interfaces:**
+
 - Consumes: `PlanState` (Task 1); `ActivePlans`/`publish_plan_update`/`ActivePlanGuard` (Task 3); existing `persist_tool_call_and_result`, `execute_top_level_tool`.
 - Produces: plan tool rows persisted with a `"plan": true` detail marker (the frontend's skip signal, Task 5); `send_agent_message` seeds and swaps state-driven system prompts.
 
@@ -1006,11 +1014,13 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ### Task 5: Frontend plumbing — ipc types + transcript invisibility
 
 **Files:**
+
 - Modify: `src/lib/ipc.ts` (types, command wrapper, event wrapper, `isPlanToolResult`)
 - Modify: `src/components/MessageContent.tsx` (skip plan rows)
 - Test: `src/components/MessageContent.test.tsx`
 
 **Interfaces:**
+
 - Consumes: backend command `get_active_plan` + event `plan-update` (Task 3 shapes).
 - Produces (PlanTracker and tests rely on):
   - `interface PlanStepSnapshot { description: string; done: boolean }`
@@ -1025,51 +1035,51 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 Append to `src/components/MessageContent.test.tsx` (match the file's existing fixture style — read its first fixture before writing):
 
 ```tsx
-  it("renders nothing for plan-machine tool rows (plan activity is tracker-only)", () => {
-    const planCall = {
-      id: "pc1",
-      conversationId: "c1",
-      role: "assistant",
-      contentType: "tool_call",
-      content: JSON.stringify({ arguments: { goal: "g", steps: ["a"] } }),
+it("renders nothing for plan-machine tool rows (plan activity is tracker-only)", () => {
+  const planCall = {
+    id: "pc1",
+    conversationId: "c1",
+    role: "assistant",
+    contentType: "tool_call",
+    content: JSON.stringify({ arguments: { goal: "g", steps: ["a"] } }),
+    toolName: "CreatePlan",
+    createdAt: 1,
+    durationMs: null,
+    tokenCount: null,
+  } as const;
+  const planResult = {
+    ...planCall,
+    id: "pr1",
+    role: "tool",
+    contentType: "tool_result",
+    content: JSON.stringify({
       toolName: "CreatePlan",
-      createdAt: 1,
-      durationMs: null,
-      tokenCount: null,
-    } as const;
-    const planResult = {
-      ...planCall,
-      id: "pr1",
-      role: "tool",
-      contentType: "tool_result",
-      content: JSON.stringify({
-        toolName: "CreatePlan",
-        arguments: { goal: "g", steps: ["a"] },
-        plan: true,
-        outcome: { ok: true, text: "Plan created with 1 steps." },
-      }),
-    } as const;
-    // A state-gated rejection carries a REGULAR tool name but the plan
-    // marker — it must be skipped by the marker, not the name.
-    const gatedRejection = {
-      ...planResult,
-      id: "pr2",
+      arguments: { goal: "g", steps: ["a"] },
+      plan: true,
+      outcome: { ok: true, text: "Plan created with 1 steps." },
+    }),
+  } as const;
+  // A state-gated rejection carries a REGULAR tool name but the plan
+  // marker — it must be skipped by the marker, not the name.
+  const gatedRejection = {
+    ...planResult,
+    id: "pr2",
+    toolName: "Write",
+    content: JSON.stringify({
       toolName: "Write",
-      content: JSON.stringify({
-        toolName: "Write",
-        arguments: {},
-        plan: true,
-        outcome: { ok: false, text: "Error: Write is not available in the current phase" },
-      }),
-    } as const;
+      arguments: {},
+      plan: true,
+      outcome: { ok: false, text: "Error: Write is not available in the current phase" },
+    }),
+  } as const;
 
-    const { container: c1 } = render(<MessageContent message={planCall} />);
-    const { container: c2 } = render(<MessageContent message={planResult} />);
-    const { container: c3 } = render(<MessageContent message={gatedRejection} />);
-    expect(c1).toBeEmptyDOMElement();
-    expect(c2).toBeEmptyDOMElement();
-    expect(c3).toBeEmptyDOMElement();
-  });
+  const { container: c1 } = render(<MessageContent message={planCall} />);
+  const { container: c2 } = render(<MessageContent message={planResult} />);
+  const { container: c3 } = render(<MessageContent message={gatedRejection} />);
+  expect(c1).toBeEmptyDOMElement();
+  expect(c2).toBeEmptyDOMElement();
+  expect(c3).toBeEmptyDOMElement();
+});
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1135,19 +1145,19 @@ export function isPlanToolRow(content: string, toolName: string | null): boolean
 In `src/components/MessageContent.tsx`, import `isPlanToolRow` from `@/lib/ipc` and add the skip immediately BEFORE the existing `if (m.contentType === "tool_call")` block:
 
 ```tsx
-  // Plan-machine rows are tracker-only (spec: plan activity is invisible
-  // in the transcript) — skipped by tool name for the five plan tools and
-  // by the persisted `"plan": true` marker for state-gated rejections that
-  // carry a regular tool's name.
-  if (
-    (m.contentType === "tool_call" || m.contentType === "tool_result") &&
-    isPlanToolRow(m.content, m.toolName)
-  ) {
-    return null;
-  }
+// Plan-machine rows are tracker-only (spec: plan activity is invisible
+// in the transcript) — skipped by tool name for the five plan tools and
+// by the persisted `"plan": true` marker for state-gated rejections that
+// carry a regular tool's name.
+if (
+  (m.contentType === "tool_call" || m.contentType === "tool_result") &&
+  isPlanToolRow(m.content, m.toolName)
+) {
+  return null;
+}
 ```
 
-(Note: `isPlanToolRow` on a `tool_call` row's content — `{"arguments": ...}` — finds no marker, so the name check does the work there; that's fine because gated rejections' *call* rows carry the regular tool's name, and tool_call rows render nothing anyway.)
+(Note: `isPlanToolRow` on a `tool_call` row's content — `{"arguments": ...}` — finds no marker, so the name check does the work there; that's fine because gated rejections' _call_ rows carry the regular tool's name, and tool_call rows render nothing anyway.)
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -1168,10 +1178,12 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ### Task 6: `PlanTracker` component
 
 **Files:**
+
 - Create: `src/views/workspace/PlanTracker.tsx`
 - Test: `src/views/workspace/PlanTracker.test.tsx`
 
 **Interfaces:**
+
 - Consumes: `commands.getActivePlan`, `events.onPlanUpdate`, `PlanSnapshot` (Task 5).
 - Produces: `export default function PlanTracker({ conversationId }: { conversationId: string })`. Testids: `plan-tracker`, `plan-card`, `plan-step`, `plan-done-collapsed`, `plan-more`, `plan-rail`, `plan-dot`, `plan-chip`.
 
@@ -1274,9 +1286,7 @@ describe("PlanTracker", () => {
     // Fading: still mounted with the leaving style…
     expect(screen.getByTestId("plan-tracker")).toHaveClass("opacity-0");
     // …then gone.
-    await waitFor(() =>
-      expect(screen.queryByTestId("plan-tracker")).not.toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.queryByTestId("plan-tracker")).not.toBeInTheDocument());
   });
 
   it("collapses completed steps and caps pending once the plan exceeds 6 steps", async () => {
@@ -1445,10 +1455,7 @@ export default function PlanTracker({ conversationId }: PlanTrackerProps) {
     >
       {/* Full card: shown when the container is wide enough for the
           gutter (>= 64rem), or when the rail was tapped open. */}
-      <div
-        className={cn("hidden @5xl:block", expanded && "block")}
-        data-testid="plan-card"
-      >
+      <div className={cn("hidden @5xl:block", expanded && "block")} data-testid="plan-card">
         <PlanCard plan={plan} doneCount={doneCount} />
       </div>
       {/* Collapsed rail: numbered dots (the selected mockup), only below
@@ -1588,11 +1595,13 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ### Task 7: Workspace integration
 
 **Files:**
+
 - Modify: `src/views/workspace/Workspace.tsx` (render PlanTracker, make the surface a container)
 - Modify: `src/views/workspace/Workspace.test.tsx` (mock additions + integration test)
 - Modify: `src/App.test.tsx` (mock additions — it renders Workspace)
 
 **Interfaces:**
+
 - Consumes: `PlanTracker` (Task 6); `commands.getActivePlan` / `events.onPlanUpdate` (Task 5).
 - Produces: the tracker lives inside the `StickToBottom` wrapper, sibling of the scroll element and the scroll-to-bottom button.
 
@@ -1604,51 +1613,49 @@ In `src/views/workspace/Workspace.test.tsx`:
 2. Add to the suite's `beforeEach`:
 
 ```tsx
-    vi.mocked(commands.getActivePlan).mockResolvedValue(null);
-    vi.mocked(events.onPlanUpdate).mockResolvedValue(() => {});
+vi.mocked(commands.getActivePlan).mockResolvedValue(null);
+vi.mocked(events.onPlanUpdate).mockResolvedValue(() => {});
 ```
 
 3. Append the test:
 
 ```tsx
-  it("shows the plan tracker over the transcript while a plan is active and clears it when the turn ends", async () => {
-    let firePlanUpdate!: (p: import("@/lib/ipc").PlanUpdatePayload) => void;
-    vi.mocked(events.onPlanUpdate).mockImplementation(async (cb) => {
-      firePlanUpdate = cb;
-      return () => {};
-    });
-
-    render(<Workspace conversationId="conv-1" />);
-    await screen.findByTestId("agent-input");
-    expect(screen.queryByTestId("plan-tracker")).not.toBeInTheDocument();
-
-    act(() =>
-      firePlanUpdate({
-        conversationId: "conv-1",
-        plan: {
-          goal: "Fix the bugs",
-          steps: [
-            { description: "find them", done: true },
-            { description: "fix them", done: false },
-          ],
-          currentStepIndex: 1,
-        },
-      }),
-    );
-
-    const tracker = await screen.findByTestId("plan-tracker");
-    // Inside the scroll wrapper (StickToBottom's relative container), as
-    // an overlay sibling of the scroll element — not inside the transcript.
-    expect(tracker.parentElement).toBe(
-      screen.getByTestId("workspace-scroll-container").parentElement,
-    );
-    expect(screen.getByTestId("plan-card")).toHaveTextContent("1/2");
-
-    act(() => firePlanUpdate({ conversationId: "conv-1", plan: null }));
-    await waitFor(() =>
-      expect(screen.queryByTestId("plan-tracker")).not.toBeInTheDocument(),
-    );
+it("shows the plan tracker over the transcript while a plan is active and clears it when the turn ends", async () => {
+  let firePlanUpdate!: (p: import("@/lib/ipc").PlanUpdatePayload) => void;
+  vi.mocked(events.onPlanUpdate).mockImplementation(async (cb) => {
+    firePlanUpdate = cb;
+    return () => {};
   });
+
+  render(<Workspace conversationId="conv-1" />);
+  await screen.findByTestId("agent-input");
+  expect(screen.queryByTestId("plan-tracker")).not.toBeInTheDocument();
+
+  act(() =>
+    firePlanUpdate({
+      conversationId: "conv-1",
+      plan: {
+        goal: "Fix the bugs",
+        steps: [
+          { description: "find them", done: true },
+          { description: "fix them", done: false },
+        ],
+        currentStepIndex: 1,
+      },
+    }),
+  );
+
+  const tracker = await screen.findByTestId("plan-tracker");
+  // Inside the scroll wrapper (StickToBottom's relative container), as
+  // an overlay sibling of the scroll element — not inside the transcript.
+  expect(tracker.parentElement).toBe(
+    screen.getByTestId("workspace-scroll-container").parentElement,
+  );
+  expect(screen.getByTestId("plan-card")).toHaveTextContent("1/2");
+
+  act(() => firePlanUpdate({ conversationId: "conv-1", plan: null }));
+  await waitFor(() => expect(screen.queryByTestId("plan-tracker")).not.toBeInTheDocument());
+});
 ```
 
 (`act` is no longer imported in this file after the autoscroll refactor — re-add it to the `@testing-library/react` import.)
@@ -1656,8 +1663,8 @@ In `src/views/workspace/Workspace.test.tsx`:
 4. In `src/App.test.tsx`, the `vi.mock("@/lib/ipc", ...)` factory (top of file) lists `commands` and `events` objects explicitly. Add `getActivePlan: vi.fn(),` to `commands` (after `isGenerationActive`) and `onPlanUpdate: vi.fn(),` to `events` (after `onAgentMessagePersisted`), and in the suite's `beforeEach`:
 
 ```tsx
-    vi.mocked(commands.getActivePlan).mockResolvedValue(null);
-    vi.mocked(events.onPlanUpdate).mockResolvedValue(() => {});
+vi.mocked(commands.getActivePlan).mockResolvedValue(null);
+vi.mocked(events.onPlanUpdate).mockResolvedValue(() => {});
 ```
 
 - [ ] **Step 2: Run the new test to verify it fails**
@@ -1673,13 +1680,13 @@ In `src/views/workspace/Workspace.tsx`:
 2. Make the chat surface a named container — on the `<StickToBottom ...>` element extend the className:
 
 ```tsx
-        className="@container relative min-h-0 flex-1"
+className = "@container relative min-h-0 flex-1";
 ```
 
 3. Inside the render-prop fragment, after the scroll-to-bottom `{!isAtBottom && (...)}` block (sibling of the scroll div), add:
 
 ```tsx
-            <PlanTracker conversationId={conversationId} />
+<PlanTracker conversationId={conversationId} />
 ```
 
 - [ ] **Step 4: Run the full frontend suite**

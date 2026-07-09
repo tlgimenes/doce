@@ -41,18 +41,10 @@ interface MessageContentProps {
  * ordinary text/rich-text/context rows render through the shared message
  * components below.
  */
-export default function MessageContent({
-  message: m,
-  showTimer = false,
-}: MessageContentProps) {
+export default function MessageContent({ message: m, showTimer = false }: MessageContentProps) {
   if (m.role === "user") {
     return (
-      <div
-        className="mb-6"
-        data-testid="chat-message"
-        role="group"
-        aria-label="You said"
-      >
+      <div className="mb-6" data-testid="chat-message" role="group" aria-label="You said">
         {m.contentType === "rich_text" ? (
           <div className="prose prose-sm dark:prose-invert max-w-none rounded-lg bg-muted p-3 text-foreground">
             {/* 009-rich-chat-input, US2 (T026): a rich_text user message (a
@@ -73,10 +65,7 @@ export default function MessageContent({
             meter, arrow-directioned the same way (↑ sent/uploaded, ↓
             received/downloaded — see the assistant-side meter below). */}
         {m.tokenCount != null && (
-          <p
-            className="mt-1 text-xs text-muted-foreground"
-            data-testid="token-meter"
-          >
+          <p className="mt-1 text-xs text-muted-foreground" data-testid="token-meter">
             ↑ {formatTokenCount(m.tokenCount)} tokens
           </p>
         )}
@@ -109,12 +98,7 @@ export default function MessageContent({
   if (m.contentType === "tool_result") {
     const detail = parseToolResultDetail(m.content, m.toolName);
     return (
-      <div
-        className="mb-6"
-        data-testid="chat-message"
-        role="group"
-        aria-label="doce replied"
-      >
+      <div className="mb-6" data-testid="chat-message" role="group" aria-label="doce replied">
         <ToolWidget detail={detail} />
       </div>
     );
@@ -162,21 +146,11 @@ export default function MessageContent({
     m.contentType === "text" && (showAssistantDuration || m.tokenCount != null);
 
   return (
-    <div
-      className="mb-6"
-      data-testid="chat-message"
-      role="group"
-      aria-label="doce replied"
-    >
+    <div className="mb-6" data-testid="chat-message" role="group" aria-label="doce replied">
       <MarkdownPreview>{m.content}</MarkdownPreview>
       {showAssistantMetadata && (
-        <p
-          className="mt-1 text-xs text-muted-foreground"
-          data-testid="token-meter"
-        >
-          {showAssistantDuration && (
-            <Timer createdAt={m.createdAt} durationMs={m.durationMs} />
-          )}
+        <p className="mt-1 text-xs text-muted-foreground" data-testid="token-meter">
+          {showAssistantDuration && <Timer createdAt={m.createdAt} durationMs={m.durationMs} />}
           {/* 010-context-window-management (UI refactor): output tokens
               for this reply, combined with the elapsed-time chron on the
               same line — mirrors Claude Code's own status line ("3m 51s ·
@@ -200,11 +174,7 @@ export default function MessageContent({
 // (a plain `string` can't be excluded from a specific literal case). The
 // cast is sound because `parseToolResultDetail` only ever tags an object
 // with a known `toolName` after already validating it matches that shape.
-function ToolWidget({
-  detail,
-}: {
-  detail: ToolResultDetail | UnknownToolDetail;
-}) {
+function ToolWidget({ detail }: { detail: ToolResultDetail | UnknownToolDetail }) {
   if (detail.toolName === "Edit") {
     return <EditDiffWidget detail={detail as EditDetail} />;
   }

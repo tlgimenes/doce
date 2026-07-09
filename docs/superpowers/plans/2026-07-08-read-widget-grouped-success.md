@@ -37,10 +37,12 @@
 ### Task 1: Group `ReadWidget` Successful States
 
 **Files:**
+
 - Modify: `src/views/chat/tool-widgets/ReadWidget.test.tsx`
 - Modify: `src/views/chat/tool-widgets/ReadWidget.tsx`
 
 **Interfaces:**
+
 - Consumes: `ReadDetail` from `src/lib/ipc.ts`, including `outcome`, `offloadedTo?: string | null`, and `tokenCount?: number`.
 - Consumes: `formatByteCount(bytes: number): string`.
 - Consumes: `formatTokenCount(count: number): string`.
@@ -90,9 +92,7 @@ describe("ReadWidget (004-tool-call-widgets, US4)", () => {
 
     expect(screen.queryByTestId("read-truncated")).not.toBeInTheDocument();
     expect(screen.queryByText("Output truncated")).not.toBeInTheDocument();
-    expect(screen.getByTestId("read-widget")).toHaveTextContent(
-      "Read /tmp/big.txt · 16B · 42 tok",
-    );
+    expect(screen.getByTestId("read-widget")).toHaveTextContent("Read /tmp/big.txt · 16B · 42 tok");
   });
 
   it("renders byte metadata and omits only the token segment for older rows without tokenCount", () => {
@@ -247,10 +247,12 @@ Expected: one commit containing only `ReadWidget.tsx` and `ReadWidget.test.tsx`.
 ### Task 2: Update `WidgetGallery` Read Examples
 
 **Files:**
+
 - Modify: `src/views/design-system/WidgetGallery.test.tsx`
 - Modify: `src/views/design-system/WidgetGallery.tsx`
 
 **Interfaces:**
+
 - Consumes: `ReadWidget` from Task 1.
 - Produces: Read gallery examples named `Standard read`, `Offloaded read`, and `Failure`, with no separate `Truncated` example.
 
@@ -305,47 +307,44 @@ Expected: FAIL because the Read section still uses the old description and examp
 In `src/views/design-system/WidgetGallery.tsx`, replace the current Read `<Section>` block with:
 
 ```tsx
-        <Section
-          title="Read"
-          description="A minimal file-reference card. Standard / offloaded / failure."
-        >
-          <Example label="Standard read">
-            <ReadWidget
-              detail={{
-                toolName: "Read",
-                filePath: "src/agent/dispatch.rs",
-                offset: null,
-                limit: null,
-                outcome: { ok: true, content: "pub fn execute(...", truncated: false },
-                tokenCount: 312,
-              }}
-            />
-          </Example>
-          <Example label="Offloaded read">
-            <ReadWidget
-              detail={{
-                toolName: "Read",
-                filePath: "bug_00.txt",
-                offset: null,
-                limit: null,
-                outcome: { ok: true, content: "(truncated preview)", truncated: true },
-                tokenCount: 2048,
-                offloadedTo: "/tmp/doce/tool-outputs/c1/call-1.txt",
-              }}
-            />
-          </Example>
-          <Example label="Failure">
-            <ReadWidget
-              detail={{
-                toolName: "Read",
-                filePath: "does/not/exist.txt",
-                offset: null,
-                limit: null,
-                outcome: { ok: false, error: "No such file or directory (os error 2)" },
-              }}
-            />
-          </Example>
-        </Section>
+<Section title="Read" description="A minimal file-reference card. Standard / offloaded / failure.">
+  <Example label="Standard read">
+    <ReadWidget
+      detail={{
+        toolName: "Read",
+        filePath: "src/agent/dispatch.rs",
+        offset: null,
+        limit: null,
+        outcome: { ok: true, content: "pub fn execute(...", truncated: false },
+        tokenCount: 312,
+      }}
+    />
+  </Example>
+  <Example label="Offloaded read">
+    <ReadWidget
+      detail={{
+        toolName: "Read",
+        filePath: "bug_00.txt",
+        offset: null,
+        limit: null,
+        outcome: { ok: true, content: "(truncated preview)", truncated: true },
+        tokenCount: 2048,
+        offloadedTo: "/tmp/doce/tool-outputs/c1/call-1.txt",
+      }}
+    />
+  </Example>
+  <Example label="Failure">
+    <ReadWidget
+      detail={{
+        toolName: "Read",
+        filePath: "does/not/exist.txt",
+        offset: null,
+        limit: null,
+        outcome: { ok: false, error: "No such file or directory (os error 2)" },
+      }}
+    />
+  </Example>
+</Section>
 ```
 
 - [ ] **Step 4: Run the gallery test and verify it passes**
@@ -384,11 +383,13 @@ Expected: one commit containing only `WidgetGallery.tsx` and `WidgetGallery.test
 ### Task 3: Verify Token-Count Backend Guardrails and Frontend Type Safety
 
 **Files:**
+
 - Verify: `src-tauri/src/context/mod.rs`
 - Verify: `src-tauri/src/commands/agent.rs`
 - Verify: frontend TypeScript project
 
 **Interfaces:**
+
 - Consumes: existing `context::annotate_with_token_count(engine, outcome) -> ToolOutcome`.
 - Consumes: existing `wants_token_count("Read") == true` guard.
 - Produces: verified implementation with no backend data-model changes.

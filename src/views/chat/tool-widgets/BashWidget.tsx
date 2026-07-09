@@ -23,10 +23,7 @@ export default function BashWidget({ detail }: BashWidgetProps) {
   // Pending branch: outcome absent means the command is still running
   if (!detail.outcome) {
     return (
-      <div
-        className="overflow-hidden rounded-lg border border-border"
-        data-testid="bash-widget"
-      >
+      <div className="overflow-hidden rounded-lg border border-border" data-testid="bash-widget">
         <div
           className="flex items-center border-b border-border px-3 py-1.5 font-mono text-xs text-sky-600 dark:text-sky-400"
           data-testid="bash-status"

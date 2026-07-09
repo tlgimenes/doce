@@ -58,9 +58,7 @@ describe("ContextUsageGauge (010-context-window-management, UI refactor)", () =>
       state: "justCompacted",
     });
     render(<ContextUsageGauge conversationId="c1" />);
-    expect(await screen.findByTestId("context-usage-tooltip")).toHaveTextContent(
-      "just compacted",
-    );
+    expect(await screen.findByTestId("context-usage-tooltip")).toHaveTextContent("just compacted");
   });
 
   it("silently swallows a getContextUsage failure (e.g. no model loaded yet)", async () => {

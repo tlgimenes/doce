@@ -52,10 +52,12 @@
 ### Task 1: Add `StreamingStatus`
 
 **Files:**
+
 - Create: `src/views/workspace/StreamingStatus.tsx`
 - Create: `src/views/workspace/StreamingStatus.test.tsx`
 
 **Interfaces:**
+
 - Produces: `StreamingStatus({ startedAt }: { startedAt: number | null }): JSX.Element`
 - Produces test ids:
   - `agent-thinking`
@@ -227,10 +229,12 @@ Expected: one commit containing only the new component and its test.
 ### Task 2: Move Generic Thinking Status Above Composer
 
 **Files:**
+
 - Modify: `src/views/workspace/Workspace.tsx`
 - Modify: `src/views/workspace/Workspace.test.tsx`
 
 **Interfaces:**
+
 - Consumes: `StreamingStatus({ startedAt }: { startedAt: number | null })`
 - Produces: `agent-thinking` outside transcript `chat-message` rows and immediately before `workspace-composer-shell`
 - Keeps `workspace-composer-shell` and `agent-input` test ids unchanged.
@@ -250,81 +254,81 @@ function expectElementBefore(first: HTMLElement, second: HTMLElement) {
 In the existing test named `sends a task and shows a thinking state until the real (non-streamed) reply returns`, replace:
 
 ```tsx
-    await waitFor(() =>
-      expect(screen.getByTestId("agent-thinking")).toBeInTheDocument(),
-    );
+await waitFor(() => expect(screen.getByTestId("agent-thinking")).toBeInTheDocument());
 ```
 
 with:
 
 ```tsx
-    const status = await screen.findByTestId("agent-thinking");
-    const composerShell = screen.getByTestId("workspace-composer-shell");
-    expect(status).toHaveTextContent("Thinking");
-    expect(status).not.toHaveTextContent("Working");
-    expect(status.closest('[data-testid="chat-message"]')).toBeNull();
-    expectElementBefore(status, composerShell);
-    expect(status).toHaveClass("border-b");
-    expect(composerShell).not.toHaveClass("border-t");
+const status = await screen.findByTestId("agent-thinking");
+const composerShell = screen.getByTestId("workspace-composer-shell");
+expect(status).toHaveTextContent("Thinking");
+expect(status).not.toHaveTextContent("Working");
+expect(status.closest('[data-testid="chat-message"]')).toBeNull();
+expectElementBefore(status, composerShell);
+expect(status).toHaveClass("border-b");
+expect(composerShell).not.toHaveClass("border-t");
 ```
 
 After the existing test named `keeps the composer blocked after a reload while the backend reports the turn still active, even with no trailing tool_call (generation phase)`, add these tests:
 
 ```tsx
-  it("starts the streaming chron from the latest persisted user message during a backend-active reload", async () => {
-    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(6_000);
-    vi.mocked(commands.listMessages).mockResolvedValue([messageFixture("u1", "find the needle", 4_000)]);
-    vi.mocked(commands.isGenerationActive).mockResolvedValue(true);
+it("starts the streaming chron from the latest persisted user message during a backend-active reload", async () => {
+  const nowSpy = vi.spyOn(Date, "now").mockReturnValue(6_000);
+  vi.mocked(commands.listMessages).mockResolvedValue([
+    messageFixture("u1", "find the needle", 4_000),
+  ]);
+  vi.mocked(commands.isGenerationActive).mockResolvedValue(true);
 
-    render(<Workspace conversationId="conv-1" />);
+  render(<Workspace conversationId="conv-1" />);
 
-    expect(await screen.findByTestId("agent-thinking-timer")).toHaveTextContent("2.0s");
-    nowSpy.mockRestore();
-  });
+  expect(await screen.findByTestId("agent-thinking-timer")).toHaveTextContent("2.0s");
+  nowSpy.mockRestore();
+});
 
-  it("does not reset the streaming chron when an unpaired non-dedicated tool call appears", async () => {
-    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(4_000);
-    vi.mocked(commands.listMessages).mockResolvedValue([
-      {
-        id: "u1",
-        conversationId: "conv-1",
-        role: "user",
-        contentType: "text",
-        content: "find the needle",
-        toolName: null,
-        createdAt: 1_000,
-        durationMs: null,
-        tokenCount: null,
-      },
-      {
-        id: "tc1",
-        conversationId: "conv-1",
-        role: "assistant",
-        contentType: "tool_call",
-        content: JSON.stringify({
-          arguments: { pattern: "needle", path: "/tmp" },
-        }),
-        toolName: "Grep",
-        createdAt: 3_000,
-        durationMs: null,
-        tokenCount: null,
-      },
-    ]);
+it("does not reset the streaming chron when an unpaired non-dedicated tool call appears", async () => {
+  const nowSpy = vi.spyOn(Date, "now").mockReturnValue(4_000);
+  vi.mocked(commands.listMessages).mockResolvedValue([
+    {
+      id: "u1",
+      conversationId: "conv-1",
+      role: "user",
+      contentType: "text",
+      content: "find the needle",
+      toolName: null,
+      createdAt: 1_000,
+      durationMs: null,
+      tokenCount: null,
+    },
+    {
+      id: "tc1",
+      conversationId: "conv-1",
+      role: "assistant",
+      contentType: "tool_call",
+      content: JSON.stringify({
+        arguments: { pattern: "needle", path: "/tmp" },
+      }),
+      toolName: "Grep",
+      createdAt: 3_000,
+      durationMs: null,
+      tokenCount: null,
+    },
+  ]);
 
-    render(<Workspace conversationId="conv-1" />);
+  render(<Workspace conversationId="conv-1" />);
 
-    expect(await screen.findByTestId("agent-thinking-timer")).toHaveTextContent("3.0s");
-    nowSpy.mockRestore();
-  });
+  expect(await screen.findByTestId("agent-thinking-timer")).toHaveTextContent("3.0s");
+  nowSpy.mockRestore();
+});
 
-  it("keeps the composer divider when the streaming status is hidden", async () => {
-    vi.mocked(commands.listMessages).mockResolvedValue([]);
+it("keeps the composer divider when the streaming status is hidden", async () => {
+  vi.mocked(commands.listMessages).mockResolvedValue([]);
 
-    render(<Workspace conversationId="conv-1" />);
+  render(<Workspace conversationId="conv-1" />);
 
-    expect(await screen.findByTestId("workspace-composer-shell")).toHaveClass("border-t");
-    expect(screen.queryByTestId("agent-thinking")).not.toBeInTheDocument();
-  });
+  expect(await screen.findByTestId("workspace-composer-shell")).toHaveClass("border-t");
+  expect(screen.queryByTestId("agent-thinking")).not.toBeInTheDocument();
+});
 ```
 
 In the existing test named `blocks the composer and shows Working… when the latest message is an unfinished tool_call with no dedicated pending widget (e.g. Grep)`, change the test name to:
@@ -336,13 +340,13 @@ In the existing test named `blocks the composer and shows Working… when the la
 and replace:
 
 ```tsx
-    await screen.findByTestId("agent-thinking");
+await screen.findByTestId("agent-thinking");
 ```
 
 with:
 
 ```tsx
-    expect(await screen.findByTestId("agent-thinking")).toHaveTextContent("Thinking");
+expect(await screen.findByTestId("agent-thinking")).toHaveTextContent("Thinking");
 ```
 
 - [ ] **Step 2: Run Workspace tests and verify they fail**
@@ -382,97 +386,97 @@ function getLatestUserMessageCreatedAt(messages: Message[]): number | null {
 In `Workspace`, after:
 
 ```tsx
-  const [thinking, setThinking] = useState(false);
+const [thinking, setThinking] = useState(false);
 ```
 
 add:
 
 ```tsx
-  const [optimisticTurnStartedAt, setOptimisticTurnStartedAt] = useState<number | null>(null);
+const [optimisticTurnStartedAt, setOptimisticTurnStartedAt] = useState<number | null>(null);
 ```
 
 In the conversation-change effect that currently does:
 
 ```tsx
-    setMessages([]);
-    setThinking(false);
-    setError(null);
-    setBackendTurnActive(false);
+setMessages([]);
+setThinking(false);
+setError(null);
+setBackendTurnActive(false);
 ```
 
 change it to:
 
 ```tsx
-    setMessages([]);
-    setThinking(false);
-    setOptimisticTurnStartedAt(null);
-    setError(null);
-    setBackendTurnActive(false);
+setMessages([]);
+setThinking(false);
+setOptimisticTurnStartedAt(null);
+setError(null);
+setBackendTurnActive(false);
 ```
 
 In `send`, replace the optimistic message block:
 
 ```tsx
-      setError(null);
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `u-${Date.now()}`,
-          conversationId,
-          role: "user",
-          contentType: richContent ? "rich_text" : "text",
-          content: richContent ? JSON.stringify(richContent) : content,
-          toolName: null,
-          createdAt: Date.now(),
-          durationMs: null,
-          // Not known until reload -- these are optimistic/synthetic
-          // messages, not the real persisted row (which does get a real
-          // token_count via a backend follow-up update).
-          tokenCount: null,
-        },
-      ]);
-      setThinking(true);
+setError(null);
+setMessages((prev) => [
+  ...prev,
+  {
+    id: `u-${Date.now()}`,
+    conversationId,
+    role: "user",
+    contentType: richContent ? "rich_text" : "text",
+    content: richContent ? JSON.stringify(richContent) : content,
+    toolName: null,
+    createdAt: Date.now(),
+    durationMs: null,
+    // Not known until reload -- these are optimistic/synthetic
+    // messages, not the real persisted row (which does get a real
+    // token_count via a backend follow-up update).
+    tokenCount: null,
+  },
+]);
+setThinking(true);
 ```
 
 with:
 
 ```tsx
-      const submittedAt = Date.now();
-      setError(null);
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `u-${submittedAt}`,
-          conversationId,
-          role: "user",
-          contentType: richContent ? "rich_text" : "text",
-          content: richContent ? JSON.stringify(richContent) : content,
-          toolName: null,
-          createdAt: submittedAt,
-          durationMs: null,
-          // Not known until reload -- these are optimistic/synthetic
-          // messages, not the real persisted row (which does get a real
-          // token_count via a backend follow-up update).
-          tokenCount: null,
-        },
-      ]);
-      setOptimisticTurnStartedAt(submittedAt);
-      setThinking(true);
+const submittedAt = Date.now();
+setError(null);
+setMessages((prev) => [
+  ...prev,
+  {
+    id: `u-${submittedAt}`,
+    conversationId,
+    role: "user",
+    contentType: richContent ? "rich_text" : "text",
+    content: richContent ? JSON.stringify(richContent) : content,
+    toolName: null,
+    createdAt: submittedAt,
+    durationMs: null,
+    // Not known until reload -- these are optimistic/synthetic
+    // messages, not the real persisted row (which does get a real
+    // token_count via a backend follow-up update).
+    tokenCount: null,
+  },
+]);
+setOptimisticTurnStartedAt(submittedAt);
+setThinking(true);
 ```
 
 In the `finally` block, replace:
 
 ```tsx
-              setThinking(false);
-              dispatchedInitialTurnRef.current = null;
+setThinking(false);
+dispatchedInitialTurnRef.current = null;
 ```
 
 with:
 
 ```tsx
-              setThinking(false);
-              setOptimisticTurnStartedAt(null);
-              dispatchedInitialTurnRef.current = null;
+setThinking(false);
+setOptimisticTurnStartedAt(null);
+dispatchedInitialTurnRef.current = null;
 ```
 
 - [ ] **Step 5: Derive the generic status visibility and start timestamp**
@@ -480,20 +484,20 @@ with:
 After:
 
 ```tsx
-  const turnInFlight = sendInFlight || backendTurnActive;
-  const showThinking = thinking || turnInFlight;
+const turnInFlight = sendInFlight || backendTurnActive;
+const showThinking = thinking || turnInFlight;
 ```
 
 add:
 
 ```tsx
-  const latestUserMessageCreatedAt = useMemo(
-    () => getLatestUserMessageCreatedAt(messages),
-    [messages],
-  );
-  const showGenericStreamingStatus =
-    pendingToolCall?.kind === "other" || (!pendingToolCall && showThinking);
-  const activeTurnStartedAt = optimisticTurnStartedAt ?? latestUserMessageCreatedAt;
+const latestUserMessageCreatedAt = useMemo(
+  () => getLatestUserMessageCreatedAt(messages),
+  [messages],
+);
+const showGenericStreamingStatus =
+  pendingToolCall?.kind === "other" || (!pendingToolCall && showThinking);
+const activeTurnStartedAt = optimisticTurnStartedAt ?? latestUserMessageCreatedAt;
 ```
 
 - [ ] **Step 6: Move the generic status out of the transcript and above the composer**
@@ -501,61 +505,44 @@ add:
 In the `StickToBottom` transcript content, replace the full conditional that currently renders `agent-thinking`:
 
 ```tsx
-                {pendingToolCall?.kind === "bash" ||
-                pendingToolCall?.kind === "task" ? (
-                  <div
-                    className="mb-6"
-                    data-testid="chat-message"
-                    role="group"
-                    aria-label="doce replied"
-                  >
-                    {pendingToolCall.kind === "bash" && (
-                      <BashWidget detail={pendingToolCall.detail} />
-                    )}
-                    {pendingToolCall.kind === "task" && (
-                      <TaskWidget detail={pendingToolCall.detail} />
-                    )}
-                  </div>
-                ) : (
-                  // "other" shows the indicator even when `thinking`/
-                  // send-in-flight were wiped by a reload — the trailing
-                  // unpaired tool_call itself is the proof a turn is running.
-                  (pendingToolCall?.kind === "other" ||
-                    (!pendingToolCall && showThinking)) && (
-                    <p
-                      className="text-sm text-muted-foreground"
-                      data-testid="agent-thinking"
-                    >
-                      Working…
-                    </p>
-                  )
-                )}
+{
+  pendingToolCall?.kind === "bash" || pendingToolCall?.kind === "task" ? (
+    <div className="mb-6" data-testid="chat-message" role="group" aria-label="doce replied">
+      {pendingToolCall.kind === "bash" && <BashWidget detail={pendingToolCall.detail} />}
+      {pendingToolCall.kind === "task" && <TaskWidget detail={pendingToolCall.detail} />}
+    </div>
+  ) : (
+    // "other" shows the indicator even when `thinking`/
+    // send-in-flight were wiped by a reload — the trailing
+    // unpaired tool_call itself is the proof a turn is running.
+    (pendingToolCall?.kind === "other" || (!pendingToolCall && showThinking)) && (
+      <p className="text-sm text-muted-foreground" data-testid="agent-thinking">
+        Working…
+      </p>
+    )
+  );
+}
 ```
 
 with:
 
 ```tsx
-                {(pendingToolCall?.kind === "bash" || pendingToolCall?.kind === "task") && (
-                  <div
-                    className="mb-6"
-                    data-testid="chat-message"
-                    role="group"
-                    aria-label="doce replied"
-                  >
-                    {pendingToolCall.kind === "bash" && (
-                      <BashWidget detail={pendingToolCall.detail} />
-                    )}
-                    {pendingToolCall.kind === "task" && (
-                      <TaskWidget detail={pendingToolCall.detail} />
-                    )}
-                  </div>
-                )}
+{
+  (pendingToolCall?.kind === "bash" || pendingToolCall?.kind === "task") && (
+    <div className="mb-6" data-testid="chat-message" role="group" aria-label="doce replied">
+      {pendingToolCall.kind === "bash" && <BashWidget detail={pendingToolCall.detail} />}
+      {pendingToolCall.kind === "task" && <TaskWidget detail={pendingToolCall.detail} />}
+    </div>
+  );
+}
 ```
 
 After the closing `</StickToBottom>` and before the composer shell `<div data-testid="workspace-composer-shell">`, add:
 
 ```tsx
-      {showGenericStreamingStatus && <StreamingStatus startedAt={activeTurnStartedAt} />}
+{
+  showGenericStreamingStatus && <StreamingStatus startedAt={activeTurnStartedAt} />;
+}
 ```
 
 Then replace the composer shell opening:
@@ -615,6 +602,7 @@ Expected: one commit containing only `Workspace` and its test.
 ### Task 3: Final Verification
 
 **Files:**
+
 - Verify: `src/views/workspace/StreamingStatus.tsx`
 - Verify: `src/views/workspace/Workspace.tsx`
 - Verify: frontend TypeScript project
@@ -622,6 +610,7 @@ Expected: one commit containing only `Workspace` and its test.
 - Verify: full frontend suite
 
 **Interfaces:**
+
 - Consumes all prior task outputs.
 - Produces verified implementation with no additional code changes unless a verification failure points to a task-owned defect.
 
@@ -683,4 +672,3 @@ Expected: no uncommitted task files. If this command shows unrelated files, repo
 - [ ] Composer remains disabled during active turns and pending tool calls.
 - [ ] No backend timing schema changes were made.
 - [ ] Sidebar conversation state label remains unchanged.
-

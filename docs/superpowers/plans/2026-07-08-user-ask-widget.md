@@ -21,10 +21,12 @@
 ### Task 1: Create `UserAskWidget`
 
 **Files:**
+
 - Create: `src/views/chat/tool-widgets/UserAskWidget.tsx`
 - Create: `src/views/chat/tool-widgets/UserAskWidget.test.tsx`
 
 **Interfaces:**
+
 - Consumes: `commands.answerUserQuestion(questionId: string, answer: string[]): Promise<void>` and `type AskUserQuestionDetail` from `@/lib/ipc`; default-exported `RichInput` from `@/views/chat/rich-input/RichInput` (props used: `onSubmit: (content: string, richContent?: RichMessageContent) => void`, `skillsEnabled: boolean`, `disabled: boolean`, `placeholder: string`, `inputTestId?: string`, `submitTestId?: string`); `Button` from `@/components/ui/button` (`variant`, `size`, `disabled`, `onClick`, `title`, `data-testid`, `aria-label`, `className`); `XIcon` from `@phosphor-icons/react`.
 - Produces: default-exported `UserAskWidget({ detail, initialMode }: { detail: AskUserQuestionDetail; initialMode?: "options" | "text" })`. `data-testid`s: `user-ask-widget` (outer container, either mode), `question-close`, `multi-select-indicator`, `question-submit`, `question-back-to-options`, `question-answer-input`, `question-answer-send`. This is the component Task 3 renders in `Workspace.tsx`'s composer slot, and the component Task 4 previews (via `initialMode`) in `WidgetGallery.tsx`.
 
@@ -311,10 +313,12 @@ git commit -m "feat(widgets): add UserAskWidget for live AskUserQuestion prompts
 ### Task 2: Simplify `AskUserQuestionWidget` to answered-only, add wording heuristic
 
 **Files:**
+
 - Modify: `src/views/chat/tool-widgets/AskUserQuestionWidget.tsx`
 - Modify: `src/views/chat/tool-widgets/AskUserQuestionWidget.test.tsx`
 
 **Interfaces:**
+
 - Consumes: `type AskUserQuestionDetail` from `@/lib/ipc` only (no `commands`, no `Button`, no local state — this component becomes a pure read-only render).
 - Produces: default-exported `AskUserQuestionWidget({ detail }: { detail: AskUserQuestionDetail })`, unchanged signature, now rendering only the "already answered" state (`data-testid="question-answered"`) with `"You chose: ..."` or `"You replied: ..."` text. `MessageContent.tsx` (`src/components/MessageContent.tsx:169`) is the only caller and needs no changes — it already only invokes this with a resolved (non-null `answer`) detail.
 
@@ -451,10 +455,12 @@ git commit -m "refactor(widgets): shrink AskUserQuestionWidget to the read-only 
 ### Task 3: Wire `UserAskWidget` into `Workspace.tsx`'s composer slot
 
 **Files:**
+
 - Modify: `src/views/workspace/Workspace.tsx`
 - Modify: `src/views/workspace/Workspace.test.tsx`
 
 **Interfaces:**
+
 - Consumes: `UserAskWidget` (Task 1) default export, `{ detail: AskUserQuestionDetail }`. Removes the `AskUserQuestionWidget` import (Workspace.tsx no longer renders it anywhere).
 - Produces: `Workspace.tsx`'s composer shell (`data-testid="workspace-composer-shell"`) renders `UserAskWidget` in place of `RichInput` while `pendingQuestion` is truthy; the message-list pending block (`data-testid="chat-message"`) no longer renders anything for a pending question (only Bash/Task).
 
@@ -463,158 +469,158 @@ git commit -m "refactor(widgets): shrink AskUserQuestionWidget to the read-only 
 In `src/views/workspace/Workspace.test.tsx`, replace the existing test (currently at line 396) with two tests. Find:
 
 ```tsx
-  it('shows the pending question widget (not "Working…") when the latest message is an unanswered AskUserQuestion tool_call, and answering it calls answerUserQuestion', async () => {
-    vi.mocked(commands.listMessages).mockResolvedValue([
-      {
-        id: "u1",
-        conversationId: "conv-1",
-        role: "user",
-        contentType: "text",
-        content: "ask me something",
-        toolName: null,
-        createdAt: 1,
-        durationMs: null,
-        tokenCount: null,
-      },
-      {
-        id: "tc1",
-        conversationId: "conv-1",
-        role: "assistant",
-        contentType: "tool_call",
-        content: JSON.stringify({
-          arguments: {
-            header: "Quick check",
-            question: "What would you like to do?",
-            options: [{ label: "A" }, { label: "B" }],
-            multiSelect: false,
-            questionId: "q1",
-          },
-        }),
-        toolName: "AskUserQuestion",
-        createdAt: 2,
-        durationMs: null,
-        tokenCount: null,
-      },
-    ]);
-    // send_agent_message's own promise never resolves in this test -- it's
-    // genuinely still blocked server-side, exactly like the real bug.
-    vi.mocked(commands.sendAgentMessage).mockReturnValue(new Promise(() => {}));
+it('shows the pending question widget (not "Working…") when the latest message is an unanswered AskUserQuestion tool_call, and answering it calls answerUserQuestion', async () => {
+  vi.mocked(commands.listMessages).mockResolvedValue([
+    {
+      id: "u1",
+      conversationId: "conv-1",
+      role: "user",
+      contentType: "text",
+      content: "ask me something",
+      toolName: null,
+      createdAt: 1,
+      durationMs: null,
+      tokenCount: null,
+    },
+    {
+      id: "tc1",
+      conversationId: "conv-1",
+      role: "assistant",
+      contentType: "tool_call",
+      content: JSON.stringify({
+        arguments: {
+          header: "Quick check",
+          question: "What would you like to do?",
+          options: [{ label: "A" }, { label: "B" }],
+          multiSelect: false,
+          questionId: "q1",
+        },
+      }),
+      toolName: "AskUserQuestion",
+      createdAt: 2,
+      durationMs: null,
+      tokenCount: null,
+    },
+  ]);
+  // send_agent_message's own promise never resolves in this test -- it's
+  // genuinely still blocked server-side, exactly like the real bug.
+  vi.mocked(commands.sendAgentMessage).mockReturnValue(new Promise(() => {}));
 
-    render(<Workspace conversationId="conv-1" />);
+  render(<Workspace conversationId="conv-1" />);
 
-    const widget = await screen.findByTestId("question-widget");
-    expect(widget).toHaveTextContent("What would you like to do?");
-    expect(screen.queryByTestId("agent-thinking")).not.toBeInTheDocument();
-    // The composer must not accept a new message while this is pending --
-    // that's exactly how a second message ("e?") got queued up behind the
-    // same stuck lock in the real incident.
-    expect(screen.getByTestId("agent-input")).toHaveAttribute("contenteditable", "false");
+  const widget = await screen.findByTestId("question-widget");
+  expect(widget).toHaveTextContent("What would you like to do?");
+  expect(screen.queryByTestId("agent-thinking")).not.toBeInTheDocument();
+  // The composer must not accept a new message while this is pending --
+  // that's exactly how a second message ("e?") got queued up behind the
+  // same stuck lock in the real incident.
+  expect(screen.getByTestId("agent-input")).toHaveAttribute("contenteditable", "false");
 
-    await userEvent.click(screen.getByText("A"));
-    expect(commands.answerUserQuestion).toHaveBeenCalledWith("q1", ["A"]);
-  });
+  await userEvent.click(screen.getByText("A"));
+  expect(commands.answerUserQuestion).toHaveBeenCalledWith("q1", ["A"]);
+});
 ```
 
 Replace it with:
 
 ```tsx
-  it('shows the pending question widget in the composer slot (not "Working…", not the normal chat input) when the latest message is an unanswered AskUserQuestion tool_call, and answering it calls answerUserQuestion', async () => {
-    vi.mocked(commands.listMessages).mockResolvedValue([
-      {
-        id: "u1",
-        conversationId: "conv-1",
-        role: "user",
-        contentType: "text",
-        content: "ask me something",
-        toolName: null,
-        createdAt: 1,
-        durationMs: null,
-        tokenCount: null,
-      },
-      {
-        id: "tc1",
-        conversationId: "conv-1",
-        role: "assistant",
-        contentType: "tool_call",
-        content: JSON.stringify({
-          arguments: {
-            header: "Quick check",
-            question: "What would you like to do?",
-            options: [{ label: "A" }, { label: "B" }],
-            multiSelect: false,
-            questionId: "q1",
-          },
-        }),
-        toolName: "AskUserQuestion",
-        createdAt: 2,
-        durationMs: null,
-        tokenCount: null,
-      },
-    ]);
-    // send_agent_message's own promise never resolves in this test -- it's
-    // genuinely still blocked server-side, exactly like the real bug.
-    vi.mocked(commands.sendAgentMessage).mockReturnValue(new Promise(() => {}));
+it('shows the pending question widget in the composer slot (not "Working…", not the normal chat input) when the latest message is an unanswered AskUserQuestion tool_call, and answering it calls answerUserQuestion', async () => {
+  vi.mocked(commands.listMessages).mockResolvedValue([
+    {
+      id: "u1",
+      conversationId: "conv-1",
+      role: "user",
+      contentType: "text",
+      content: "ask me something",
+      toolName: null,
+      createdAt: 1,
+      durationMs: null,
+      tokenCount: null,
+    },
+    {
+      id: "tc1",
+      conversationId: "conv-1",
+      role: "assistant",
+      contentType: "tool_call",
+      content: JSON.stringify({
+        arguments: {
+          header: "Quick check",
+          question: "What would you like to do?",
+          options: [{ label: "A" }, { label: "B" }],
+          multiSelect: false,
+          questionId: "q1",
+        },
+      }),
+      toolName: "AskUserQuestion",
+      createdAt: 2,
+      durationMs: null,
+      tokenCount: null,
+    },
+  ]);
+  // send_agent_message's own promise never resolves in this test -- it's
+  // genuinely still blocked server-side, exactly like the real bug.
+  vi.mocked(commands.sendAgentMessage).mockReturnValue(new Promise(() => {}));
 
-    render(<Workspace conversationId="conv-1" />);
+  render(<Workspace conversationId="conv-1" />);
 
-    const widget = await screen.findByTestId("user-ask-widget");
-    expect(widget).toHaveTextContent("What would you like to do?");
-    expect(screen.queryByTestId("agent-thinking")).not.toBeInTheDocument();
-    // The normal composer is replaced entirely, not merely disabled -- the
-    // question widget sits in its place instead.
-    expect(screen.queryByTestId("agent-input")).not.toBeInTheDocument();
+  const widget = await screen.findByTestId("user-ask-widget");
+  expect(widget).toHaveTextContent("What would you like to do?");
+  expect(screen.queryByTestId("agent-thinking")).not.toBeInTheDocument();
+  // The normal composer is replaced entirely, not merely disabled -- the
+  // question widget sits in its place instead.
+  expect(screen.queryByTestId("agent-input")).not.toBeInTheDocument();
 
-    await userEvent.click(screen.getByText("A"));
-    expect(commands.answerUserQuestion).toHaveBeenCalledWith("q1", ["A"]);
-  });
+  await userEvent.click(screen.getByText("A"));
+  expect(commands.answerUserQuestion).toHaveBeenCalledWith("q1", ["A"]);
+});
 
-  it("closing the pending question widget reveals a free-text composer whose submission answers the question", async () => {
-    vi.mocked(commands.listMessages).mockResolvedValue([
-      {
-        id: "u1",
-        conversationId: "conv-1",
-        role: "user",
-        contentType: "text",
-        content: "ask me something",
-        toolName: null,
-        createdAt: 1,
-        durationMs: null,
-        tokenCount: null,
-      },
-      {
-        id: "tc1",
-        conversationId: "conv-1",
-        role: "assistant",
-        contentType: "tool_call",
-        content: JSON.stringify({
-          arguments: {
-            header: "Quick check",
-            question: "What would you like to do?",
-            options: [{ label: "A" }, { label: "B" }],
-            multiSelect: false,
-            questionId: "q1",
-          },
-        }),
-        toolName: "AskUserQuestion",
-        createdAt: 2,
-        durationMs: null,
-        tokenCount: null,
-      },
-    ]);
-    vi.mocked(commands.sendAgentMessage).mockReturnValue(new Promise(() => {}));
-    vi.mocked(commands.answerUserQuestion).mockResolvedValue(undefined);
+it("closing the pending question widget reveals a free-text composer whose submission answers the question", async () => {
+  vi.mocked(commands.listMessages).mockResolvedValue([
+    {
+      id: "u1",
+      conversationId: "conv-1",
+      role: "user",
+      contentType: "text",
+      content: "ask me something",
+      toolName: null,
+      createdAt: 1,
+      durationMs: null,
+      tokenCount: null,
+    },
+    {
+      id: "tc1",
+      conversationId: "conv-1",
+      role: "assistant",
+      contentType: "tool_call",
+      content: JSON.stringify({
+        arguments: {
+          header: "Quick check",
+          question: "What would you like to do?",
+          options: [{ label: "A" }, { label: "B" }],
+          multiSelect: false,
+          questionId: "q1",
+        },
+      }),
+      toolName: "AskUserQuestion",
+      createdAt: 2,
+      durationMs: null,
+      tokenCount: null,
+    },
+  ]);
+  vi.mocked(commands.sendAgentMessage).mockReturnValue(new Promise(() => {}));
+  vi.mocked(commands.answerUserQuestion).mockResolvedValue(undefined);
 
-    render(<Workspace conversationId="conv-1" />);
+  render(<Workspace conversationId="conv-1" />);
 
-    await screen.findByTestId("user-ask-widget");
-    await userEvent.click(screen.getByTestId("question-close"));
+  await screen.findByTestId("user-ask-widget");
+  await userEvent.click(screen.getByTestId("question-close"));
 
-    const editable = screen.getByTestId("question-answer-input");
-    await userEvent.click(editable);
-    await userEvent.type(editable, "actually, do both{Enter}");
+  const editable = screen.getByTestId("question-answer-input");
+  await userEvent.click(editable);
+  await userEvent.type(editable, "actually, do both{Enter}");
 
-    expect(commands.answerUserQuestion).toHaveBeenCalledWith("q1", ["actually, do both"]);
-  });
+  expect(commands.answerUserQuestion).toHaveBeenCalledWith("q1", ["actually, do both"]);
+});
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -641,47 +647,41 @@ import UserAskWidget from "@/views/chat/tool-widgets/UserAskWidget";
 Find:
 
 ```tsx
-            {pendingToolCall ? (
-              <div
-                className="mb-6"
-                data-testid="chat-message"
-                role="group"
-                aria-label="doce replied"
-              >
-                {pendingQuestion && <AskUserQuestionWidget detail={pendingQuestion} />}
-                {pendingToolCall.kind === "bash" && <BashWidget detail={pendingToolCall.detail} />}
-                {pendingToolCall.kind === "task" && <TaskWidget detail={pendingToolCall.detail} />}
-              </div>
-            ) : (
-              showThinking && (
-                <p className="text-sm text-muted-foreground" data-testid="agent-thinking">
-                  Working…
-                </p>
-              )
-            )}
+{
+  pendingToolCall ? (
+    <div className="mb-6" data-testid="chat-message" role="group" aria-label="doce replied">
+      {pendingQuestion && <AskUserQuestionWidget detail={pendingQuestion} />}
+      {pendingToolCall.kind === "bash" && <BashWidget detail={pendingToolCall.detail} />}
+      {pendingToolCall.kind === "task" && <TaskWidget detail={pendingToolCall.detail} />}
+    </div>
+  ) : (
+    showThinking && (
+      <p className="text-sm text-muted-foreground" data-testid="agent-thinking">
+        Working…
+      </p>
+    )
+  );
+}
 ```
 
 Replace with:
 
 ```tsx
-            {pendingToolCall && pendingToolCall.kind !== "question" ? (
-              <div
-                className="mb-6"
-                data-testid="chat-message"
-                role="group"
-                aria-label="doce replied"
-              >
-                {pendingToolCall.kind === "bash" && <BashWidget detail={pendingToolCall.detail} />}
-                {pendingToolCall.kind === "task" && <TaskWidget detail={pendingToolCall.detail} />}
-              </div>
-            ) : (
-              !pendingToolCall &&
-              showThinking && (
-                <p className="text-sm text-muted-foreground" data-testid="agent-thinking">
-                  Working…
-                </p>
-              )
-            )}
+{
+  pendingToolCall && pendingToolCall.kind !== "question" ? (
+    <div className="mb-6" data-testid="chat-message" role="group" aria-label="doce replied">
+      {pendingToolCall.kind === "bash" && <BashWidget detail={pendingToolCall.detail} />}
+      {pendingToolCall.kind === "task" && <TaskWidget detail={pendingToolCall.detail} />}
+    </div>
+  ) : (
+    !pendingToolCall &&
+    showThinking && (
+      <p className="text-sm text-muted-foreground" data-testid="agent-thinking">
+        Working…
+      </p>
+    )
+  );
+}
 ```
 
 (A pending question now renders nothing in the message list at all — Step 5 moves it to the composer. Without the added `!pendingToolCall &&` guard, a pending question would incorrectly fall into the `showThinking` branch and show "Working…".)
@@ -691,37 +691,39 @@ Replace with:
 Find:
 
 ```tsx
-        <RichInput
-          onSubmit={(content, richContent) => {
-            send(content, richContent);
-          }}
-          skillsEnabled={true}
-          disabled={sendInFlight || pendingToolCall !== null}
-          placeholder="Describe a task…"
-          inputTestId="agent-input"
-          submitTestId="agent-send"
-          contextGauge={<ContextUsageGauge conversationId={conversationId} />}
-        />
+<RichInput
+  onSubmit={(content, richContent) => {
+    send(content, richContent);
+  }}
+  skillsEnabled={true}
+  disabled={sendInFlight || pendingToolCall !== null}
+  placeholder="Describe a task…"
+  inputTestId="agent-input"
+  submitTestId="agent-send"
+  contextGauge={<ContextUsageGauge conversationId={conversationId} />}
+/>
 ```
 
 Replace with:
 
 ```tsx
-        {pendingQuestion ? (
-          <UserAskWidget detail={pendingQuestion} />
-        ) : (
-          <RichInput
-            onSubmit={(content, richContent) => {
-              send(content, richContent);
-            }}
-            skillsEnabled={true}
-            disabled={sendInFlight || pendingToolCall !== null}
-            placeholder="Describe a task…"
-            inputTestId="agent-input"
-            submitTestId="agent-send"
-            contextGauge={<ContextUsageGauge conversationId={conversationId} />}
-          />
-        )}
+{
+  pendingQuestion ? (
+    <UserAskWidget detail={pendingQuestion} />
+  ) : (
+    <RichInput
+      onSubmit={(content, richContent) => {
+        send(content, richContent);
+      }}
+      skillsEnabled={true}
+      disabled={sendInFlight || pendingToolCall !== null}
+      placeholder="Describe a task…"
+      inputTestId="agent-input"
+      submitTestId="agent-send"
+      contextGauge={<ContextUsageGauge conversationId={conversationId} />}
+    />
+  );
+}
 ```
 
 - [ ] **Step 6: Run the test to verify it passes**
@@ -746,9 +748,11 @@ git commit -m "feat(workspace): render UserAskWidget in the composer slot for pe
 ### Task 4: Update `WidgetGallery` examples
 
 **Files:**
+
 - Modify: `src/views/design-system/WidgetGallery.tsx`
 
 **Interfaces:**
+
 - Consumes: `UserAskWidget` (Task 1, including its `initialMode` prop) and `AskUserQuestionWidget` (Task 2, unchanged answered-state usage).
 - Produces: no new exports — this is a visual catalog page with no dedicated test file (confirmed: no `WidgetGallery.test.tsx` exists in this repo).
 
@@ -772,136 +776,136 @@ import UserAskWidget from "@/views/chat/tool-widgets/UserAskWidget";
 Find:
 
 ```tsx
-        <Section
-          title="AskUserQuestion"
-          description="An interactive pause/resume prompt. Single-select answers on click; multi-select accumulates + confirms. Read-only once answered."
-        >
-          <Example label="Pending, single-select">
-            <AskUserQuestionWidget
-              detail={{
-                toolName: "AskUserQuestion",
-                questionId: "design-system-preview-1",
-                header: "Ambiguous request",
-                question: "Which config file should this apply to?",
-                options: [
-                  { label: "tauri.conf.json", description: "The app's own config" },
-                  { label: "vite.config.ts", description: "The dev server config" },
-                ],
-                multiSelect: false,
-                answer: null,
-              }}
-            />
-          </Example>
-          <Example label="Pending, multi-select">
-            <AskUserQuestionWidget
-              detail={{
-                toolName: "AskUserQuestion",
-                questionId: "design-system-preview-2",
-                header: "",
-                question: "Which tiers should the rerun cover?",
-                options: [
-                  { label: "Tier 1", description: "" },
-                  { label: "Tier 4", description: "" },
-                  { label: "Tier 4 planned", description: "" },
-                ],
-                multiSelect: true,
-                answer: null,
-              }}
-            />
-          </Example>
-          <Example label="Answered">
-            <AskUserQuestionWidget
-              detail={{
-                toolName: "AskUserQuestion",
-                questionId: "design-system-preview-3",
-                header: "",
-                question: "Rerun now or wait?",
-                options: [
-                  { label: "Rerun now", description: "" },
-                  { label: "Wait", description: "" },
-                ],
-                multiSelect: false,
-                answer: ["Rerun now"],
-              }}
-            />
-          </Example>
-        </Section>
+<Section
+  title="AskUserQuestion"
+  description="An interactive pause/resume prompt. Single-select answers on click; multi-select accumulates + confirms. Read-only once answered."
+>
+  <Example label="Pending, single-select">
+    <AskUserQuestionWidget
+      detail={{
+        toolName: "AskUserQuestion",
+        questionId: "design-system-preview-1",
+        header: "Ambiguous request",
+        question: "Which config file should this apply to?",
+        options: [
+          { label: "tauri.conf.json", description: "The app's own config" },
+          { label: "vite.config.ts", description: "The dev server config" },
+        ],
+        multiSelect: false,
+        answer: null,
+      }}
+    />
+  </Example>
+  <Example label="Pending, multi-select">
+    <AskUserQuestionWidget
+      detail={{
+        toolName: "AskUserQuestion",
+        questionId: "design-system-preview-2",
+        header: "",
+        question: "Which tiers should the rerun cover?",
+        options: [
+          { label: "Tier 1", description: "" },
+          { label: "Tier 4", description: "" },
+          { label: "Tier 4 planned", description: "" },
+        ],
+        multiSelect: true,
+        answer: null,
+      }}
+    />
+  </Example>
+  <Example label="Answered">
+    <AskUserQuestionWidget
+      detail={{
+        toolName: "AskUserQuestion",
+        questionId: "design-system-preview-3",
+        header: "",
+        question: "Rerun now or wait?",
+        options: [
+          { label: "Rerun now", description: "" },
+          { label: "Wait", description: "" },
+        ],
+        multiSelect: false,
+        answer: ["Rerun now"],
+      }}
+    />
+  </Example>
+</Section>
 ```
 
 Replace with:
 
 ```tsx
-        <Section
-          title="AskUserQuestion"
-          description="An interactive pause/resume prompt, rendered in the composer slot while pending. Single-select answers on click; multi-select accumulates + confirms; closing it (✕) reveals a free-text fallback. Read-only once answered."
-        >
-          <Example label="Pending, single-select">
-            <UserAskWidget
-              detail={{
-                toolName: "AskUserQuestion",
-                questionId: "design-system-preview-1",
-                header: "Ambiguous request",
-                question: "Which config file should this apply to?",
-                options: [
-                  { label: "tauri.conf.json", description: "The app's own config" },
-                  { label: "vite.config.ts", description: "The dev server config" },
-                ],
-                multiSelect: false,
-                answer: null,
-              }}
-            />
-          </Example>
-          <Example label="Pending, multi-select">
-            <UserAskWidget
-              detail={{
-                toolName: "AskUserQuestion",
-                questionId: "design-system-preview-2",
-                header: "",
-                question: "Which tiers should the rerun cover?",
-                options: [
-                  { label: "Tier 1", description: "" },
-                  { label: "Tier 4", description: "" },
-                  { label: "Tier 4 planned", description: "" },
-                ],
-                multiSelect: true,
-                answer: null,
-              }}
-            />
-          </Example>
-          <Example label="Pending, free-text fallback">
-            <UserAskWidget
-              initialMode="text"
-              detail={{
-                toolName: "AskUserQuestion",
-                questionId: "design-system-preview-4",
-                header: "",
-                question: "Rerun now or wait?",
-                options: [
-                  { label: "Rerun now", description: "" },
-                  { label: "Wait", description: "" },
-                ],
-                multiSelect: false,
-                answer: null,
-              }}
-            />
-          </Example>
-          <Example label="Answered">
-            <AskUserQuestionWidget
-              detail={{
-                toolName: "AskUserQuestion",
-                questionId: "design-system-preview-3",
-                header: "",
-                question: "Rerun now or wait?",
-                options: [
-                  { label: "Rerun now", description: "" },
-                  { label: "Wait", description: "" },
-                ],
-                multiSelect: false,
-                answer: ["Rerun now"],
-              }}
-            />
-          </Example>
-        </Section>
+<Section
+  title="AskUserQuestion"
+  description="An interactive pause/resume prompt, rendered in the composer slot while pending. Single-select answers on click; multi-select accumulates + confirms; closing it (✕) reveals a free-text fallback. Read-only once answered."
+>
+  <Example label="Pending, single-select">
+    <UserAskWidget
+      detail={{
+        toolName: "AskUserQuestion",
+        questionId: "design-system-preview-1",
+        header: "Ambiguous request",
+        question: "Which config file should this apply to?",
+        options: [
+          { label: "tauri.conf.json", description: "The app's own config" },
+          { label: "vite.config.ts", description: "The dev server config" },
+        ],
+        multiSelect: false,
+        answer: null,
+      }}
+    />
+  </Example>
+  <Example label="Pending, multi-select">
+    <UserAskWidget
+      detail={{
+        toolName: "AskUserQuestion",
+        questionId: "design-system-preview-2",
+        header: "",
+        question: "Which tiers should the rerun cover?",
+        options: [
+          { label: "Tier 1", description: "" },
+          { label: "Tier 4", description: "" },
+          { label: "Tier 4 planned", description: "" },
+        ],
+        multiSelect: true,
+        answer: null,
+      }}
+    />
+  </Example>
+  <Example label="Pending, free-text fallback">
+    <UserAskWidget
+      initialMode="text"
+      detail={{
+        toolName: "AskUserQuestion",
+        questionId: "design-system-preview-4",
+        header: "",
+        question: "Rerun now or wait?",
+        options: [
+          { label: "Rerun now", description: "" },
+          { label: "Wait", description: "" },
+        ],
+        multiSelect: false,
+        answer: null,
+      }}
+    />
+  </Example>
+  <Example label="Answered">
+    <AskUserQuestionWidget
+      detail={{
+        toolName: "AskUserQuestion",
+        questionId: "design-system-preview-3",
+        header: "",
+        question: "Rerun now or wait?",
+        options: [
+          { label: "Rerun now", description: "" },
+          { label: "Wait", description: "" },
+        ],
+        multiSelect: false,
+        answer: ["Rerun now"],
+      }}
+    />
+  </Example>
+</Section>
 ```
 
 - [ ] **Step 3: Run the full frontend test suite to check for regressions**
@@ -926,9 +930,11 @@ git commit -m "feat(design-system): preview UserAskWidget's pending and free-tex
 ### Task 5: Update the `tool-call-widgets` e2e spec
 
 **Files:**
+
 - Modify: `tests/e2e/specs/tool-call-widgets.spec.ts`
 
 **Interfaces:**
+
 - Consumes: the `data-testid="user-ask-widget"` and `data-testid="agent-input"` contracts established in Tasks 1 and 3.
 - Produces: no exports — an assertion-only update.
 
@@ -939,33 +945,33 @@ This spec drives a real built Tauri app against a real model (`tests/e2e/run-e2e
 In `tests/e2e/specs/tool-call-widgets.spec.ts`, find:
 
 ```ts
-    const widget = await browser.$("[data-testid='question-widget']");
-    await widget.waitForExist({ timeout: 60000 });
-    expect(await widget.getText()).toContain("Which color do you prefer?");
+const widget = await browser.$("[data-testid='question-widget']");
+await widget.waitForExist({ timeout: 60000 });
+expect(await widget.getText()).toContain("Which color do you prefer?");
 
-    // The regression itself: the composer must refuse a new message while
-    // genuinely paused here, since typing one would just queue up stuck
-    // behind the same lock rather than doing anything.
-    expect(await agentInput.getAttribute("contenteditable")).toBe("false");
+// The regression itself: the composer must refuse a new message while
+// genuinely paused here, since typing one would just queue up stuck
+// behind the same lock rather than doing anything.
+expect(await agentInput.getAttribute("contenteditable")).toBe("false");
 
-    await (await widget.$("button=Red")).click();
+await (await widget.$("button=Red")).click();
 ```
 
 Replace with:
 
 ```ts
-    const widget = await browser.$("[data-testid='user-ask-widget']");
-    await widget.waitForExist({ timeout: 60000 });
-    expect(await widget.getText()).toContain("Which color do you prefer?");
+const widget = await browser.$("[data-testid='user-ask-widget']");
+await widget.waitForExist({ timeout: 60000 });
+expect(await widget.getText()).toContain("Which color do you prefer?");
 
-    // The regression itself: the composer must be fully replaced by the
-    // question widget while genuinely paused here, not merely disabled --
-    // typing into a still-present-but-disabled input would queue a message
-    // up stuck behind the same lock rather than doing anything.
-    const composerInputWhilePending = await browser.$("[data-testid='agent-input']");
-    expect(await composerInputWhilePending.isExisting()).toBe(false);
+// The regression itself: the composer must be fully replaced by the
+// question widget while genuinely paused here, not merely disabled --
+// typing into a still-present-but-disabled input would queue a message
+// up stuck behind the same lock rather than doing anything.
+const composerInputWhilePending = await browser.$("[data-testid='agent-input']");
+expect(await composerInputWhilePending.isExisting()).toBe(false);
 
-    await (await widget.$("button=Red")).click();
+await (await widget.$("button=Red")).click();
 ```
 
 (`agentInput`, captured earlier in the test from `startWorkspaceConversationViaComposer`'s return value, is still used for its one remaining call — `await agentInput.setValue(...)` a few lines above this block, sending the message that triggers the `AskUserQuestion` tool call — so it's not left unused.)

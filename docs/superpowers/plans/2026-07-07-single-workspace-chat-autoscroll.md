@@ -451,38 +451,38 @@ with:
 In `src/views/chat/rich-input/extensions/skill-mention.tsx`, replace:
 
 ```ts
-        // Chat.tsx/Workspace.tsx's `isCompactCommand`), not a skill mention
+// Chat.tsx/Workspace.tsx's `isCompactCommand`), not a skill mention
 ```
 
 with:
 
 ```ts
-        // Workspace's `isCompactCommand`), not a skill mention
+// Workspace's `isCompactCommand`), not a skill mention
 ```
 
 In `src/views/chat/rich-input/RichInput.tsx`, replace the extension-registration comment:
 
 ```ts
-      // `skillsEnabled` is effectively static per mounted `RichInput`
-      // instance in this app (`EmptyState`/`Workspace` always pass `true`,
-      // `Chat` always passes `false` — none of the three call sites flips
-      // it after mounting), so there is no real prop-change case to handle,
-      // and omitting the extension entirely when disabled is strictly
-      // stronger than a runtime no-op: `commands.listSkills()` (FR-011's
-      // "no picker, no request") is *structurally* unreachable rather than
-      // reachable-but-gated, and `/` in `Chat.tsx`'s composer never even
-      // registers a suggestion plugin to intercept it.
+// `skillsEnabled` is effectively static per mounted `RichInput`
+// instance in this app (`EmptyState`/`Workspace` always pass `true`,
+// `Chat` always passes `false` — none of the three call sites flips
+// it after mounting), so there is no real prop-change case to handle,
+// and omitting the extension entirely when disabled is strictly
+// stronger than a runtime no-op: `commands.listSkills()` (FR-011's
+// "no picker, no request") is *structurally* unreachable rather than
+// reachable-but-gated, and `/` in `Chat.tsx`'s composer never even
+// registers a suggestion plugin to intercept it.
 ```
 
 with:
 
 ```ts
-      // `skillsEnabled` is effectively static per mounted `RichInput`
-      // instance in this app (`EmptyState` and `Workspace` pass `true`), so
-      // there is no real prop-change case to handle. Omitting the extension
-      // entirely when disabled is stronger than a runtime no-op:
-      // `commands.listSkills()` is structurally unreachable when skills are
-      // disabled.
+// `skillsEnabled` is effectively static per mounted `RichInput`
+// instance in this app (`EmptyState` and `Workspace` pass `true`), so
+// there is no real prop-change case to handle. Omitting the extension
+// entirely when disabled is stronger than a runtime no-op:
+// `commands.listSkills()` is structurally unreachable when skills are
+// disabled.
 ```
 
 In `src/views/chat/rich-input/RichInput.test.tsx`, replace the file comment:
@@ -972,14 +972,7 @@ Expected: FAIL because `workspace-scroll-container` does not exist and no autosc
 In `src/views/workspace/Workspace.tsx`, update the React import:
 
 ```ts
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 ```
 
 Add these helpers above `interface WorkspaceProps`:

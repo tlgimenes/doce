@@ -24,11 +24,13 @@
 ### Task 1: Redesign `UserAskWidget`'s shell, options module, and interaction (no motion yet)
 
 **Files:**
+
 - Modify: `src/views/chat/tool-widgets/UserAskWidget.tsx`
 - Modify: `src/views/chat/tool-widgets/UserAskWidget.test.tsx`
 - Modify: `src/views/workspace/Workspace.test.tsx:396-444` (the single-select pending-question test, which directly depends on this task's interaction change)
 
 **Interfaces:**
+
 - Consumes: `Button` (`@/components/ui/button`, variants `"primary"`/`"ghost"`, sizes `"icon-sm"`), `cn` (`@/lib/cn`), `commands.answerUserQuestion(questionId: string, answer: string[]): Promise<void>` and `type AskUserQuestionDetail`/`type QuestionOption` (`@/lib/ipc`), `RichInput` (unchanged), `ArrowLeftIcon`/`CheckIcon`/`PaperPlaneRightIcon`/`XIcon` (`@phosphor-icons/react`).
 - Produces: `UserAskWidget`'s default export signature is unchanged (`{ detail: AskUserQuestionDetail; initialMode?: "options" | "text" }`) — `WidgetGallery.tsx` and `Workspace.tsx` need no changes. New/changed `data-testid`s: `user-ask-widget` (now on the unboxed root, not a bordered box), `question-close`, `question-back-to-options` (now an icon-only button), `question-submit` (now always rendered, both select modes, `aria-label="Send answer"`). Removed: `data-testid="multi-select-indicator"` (element deleted entirely). This is the interface Task 2 builds motion on top of.
 
@@ -449,6 +451,7 @@ git commit -m "feat(widgets): redesign UserAskWidget with real radio/checkbox ro
 ### Task 2: Add view-transition motion (composer arrival + mode switch)
 
 **Files:**
+
 - Modify: `src/styles/theme.css`
 - Modify: `src/views/chat/tool-widgets/UserAskWidget.tsx`
 - Modify: `src/views/chat/tool-widgets/UserAskWidget.test.tsx`
@@ -456,8 +459,9 @@ git commit -m "feat(widgets): redesign UserAskWidget with real radio/checkbox ro
 - Modify: `src/views/workspace/Workspace.test.tsx`
 
 **Interfaces:**
+
 - Consumes: `runViewTransition(update: () => void): void` from `src/lib/viewTransition.ts` (existing, already used by `App.tsx` for conversation switches; falls back to calling `update()` directly when `document.startViewTransition` is unsupported — this is already true in the jsdom test environment, so no test needs a real browser).
-- Produces: no new exports. `UserAskWidget`'s and `Workspace.tsx`'s external behavior is unchanged except for *how* the composer swap and mode switch visually transition — same DOM content, same test ids, same props.
+- Produces: no new exports. `UserAskWidget`'s and `Workspace.tsx`'s external behavior is unchanged except for _how_ the composer swap and mode switch visually transition — same DOM content, same test ids, same props.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -494,58 +498,58 @@ const originalStartViewTransition = (document as TestDocument).startViewTransiti
 Then find the file's `describe` block's `beforeEach` (the one that sets up `vi.clearAllMocks()` or similar at the top of the main `describe`) and add a matching `afterEach` immediately after it — if you're unsure exactly where the main `describe`'s setup block ends, add this as its own top-level statement right after the `describe("Workspace", () => {` opening line, before the first `it(...)`:
 
 ```tsx
-  afterEach(() => {
-    if (originalStartViewTransition) {
-      Object.defineProperty(document, "startViewTransition", {
-        configurable: true,
-        writable: true,
-        value: originalStartViewTransition,
-      });
-    } else {
-      Object.defineProperty(document, "startViewTransition", {
-        configurable: true,
-        writable: true,
-        value: undefined,
-      });
-    }
-  });
+afterEach(() => {
+  if (originalStartViewTransition) {
+    Object.defineProperty(document, "startViewTransition", {
+      configurable: true,
+      writable: true,
+      value: originalStartViewTransition,
+    });
+  } else {
+    Object.defineProperty(document, "startViewTransition", {
+      configurable: true,
+      writable: true,
+      value: undefined,
+    });
+  }
+});
 ```
 
 Now add a new test. Find the test `"notifies when an agent-message-persisted event refreshes active messages"` and insert this new test immediately after it:
 
 ```tsx
-  it("wraps the agent-message-persisted refresh in a view transition when the document supports it", async () => {
-    const startViewTransition = vi.fn((callback: () => void) => {
-      callback();
-      return {};
-    });
-    Object.defineProperty(document, "startViewTransition", {
-      configurable: true,
-      writable: true,
-      value: startViewTransition,
-    });
-
-    let firePersisted!: (p: { conversationId: string }) => void;
-    vi.mocked(events.onAgentMessagePersisted).mockImplementation(async (cb) => {
-      firePersisted = cb;
-      return () => {};
-    });
-    vi.mocked(commands.listMessages)
-      .mockResolvedValueOnce([messageFixture("m1", "first message")])
-      .mockResolvedValueOnce([
-        messageFixture("m1", "first message"),
-        messageFixture("m2", "second message", 2),
-      ]);
-
-    render(<Workspace conversationId="conv-1" />);
-    await screen.findByText("first message");
-    startViewTransition.mockClear();
-
-    firePersisted({ conversationId: "conv-1" });
-    await screen.findByText("second message");
-
-    expect(startViewTransition).toHaveBeenCalledTimes(1);
+it("wraps the agent-message-persisted refresh in a view transition when the document supports it", async () => {
+  const startViewTransition = vi.fn((callback: () => void) => {
+    callback();
+    return {};
   });
+  Object.defineProperty(document, "startViewTransition", {
+    configurable: true,
+    writable: true,
+    value: startViewTransition,
+  });
+
+  let firePersisted!: (p: { conversationId: string }) => void;
+  vi.mocked(events.onAgentMessagePersisted).mockImplementation(async (cb) => {
+    firePersisted = cb;
+    return () => {};
+  });
+  vi.mocked(commands.listMessages)
+    .mockResolvedValueOnce([messageFixture("m1", "first message")])
+    .mockResolvedValueOnce([
+      messageFixture("m1", "first message"),
+      messageFixture("m2", "second message", 2),
+    ]);
+
+  render(<Workspace conversationId="conv-1" />);
+  await screen.findByText("first message");
+  startViewTransition.mockClear();
+
+  firePersisted({ conversationId: "conv-1" });
+  await screen.findByText("second message");
+
+  expect(startViewTransition).toHaveBeenCalledTimes(1);
+});
 ```
 
 In `src/views/chat/tool-widgets/UserAskWidget.test.tsx`, add the same view-transition scaffolding. Find:
@@ -579,46 +583,46 @@ const originalStartViewTransition = (document as TestDocument).startViewTransiti
 Find `beforeEach(() => { vi.clearAllMocks(); });` inside the `describe("UserAskWidget", ...)` block and add a matching `afterEach` right after it:
 
 ```tsx
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
+beforeEach(() => {
+  vi.clearAllMocks();
+});
 
-  afterEach(() => {
-    if (originalStartViewTransition) {
-      Object.defineProperty(document, "startViewTransition", {
-        configurable: true,
-        writable: true,
-        value: originalStartViewTransition,
-      });
-    } else {
-      Object.defineProperty(document, "startViewTransition", {
-        configurable: true,
-        writable: true,
-        value: undefined,
-      });
-    }
-  });
+afterEach(() => {
+  if (originalStartViewTransition) {
+    Object.defineProperty(document, "startViewTransition", {
+      configurable: true,
+      writable: true,
+      value: originalStartViewTransition,
+    });
+  } else {
+    Object.defineProperty(document, "startViewTransition", {
+      configurable: true,
+      writable: true,
+      value: undefined,
+    });
+  }
+});
 ```
 
 Then add a new test at the end of the `describe` block, just before its closing `});`:
 
 ```tsx
-  it("starts a view transition when switching from options to free text, if supported", async () => {
-    const startViewTransition = vi.fn((callback: () => void) => {
-      callback();
-      return {};
-    });
-    Object.defineProperty(document, "startViewTransition", {
-      configurable: true,
-      writable: true,
-      value: startViewTransition,
-    });
-
-    render(<UserAskWidget detail={SINGLE} />);
-    await userEvent.click(screen.getByTestId("question-close"));
-
-    expect(startViewTransition).toHaveBeenCalledTimes(1);
+it("starts a view transition when switching from options to free text, if supported", async () => {
+  const startViewTransition = vi.fn((callback: () => void) => {
+    callback();
+    return {};
   });
+  Object.defineProperty(document, "startViewTransition", {
+    configurable: true,
+    writable: true,
+    value: startViewTransition,
+  });
+
+  render(<UserAskWidget detail={SINGLE} />);
+  await userEvent.click(screen.getByTestId("question-close"));
+
+  expect(startViewTransition).toHaveBeenCalledTimes(1);
+});
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -640,7 +644,6 @@ In `src/styles/theme.css`, find the existing `chat-composer` group definition:
 Add immediately after it:
 
 ```css
-
 ::view-transition-group(user-ask-module) {
   animation-duration: 180ms;
   animation-timing-function: cubic-bezier(0.2, 0, 0, 1);
@@ -703,32 +706,32 @@ import { runViewTransition } from "@/lib/viewTransition";
 Then find `refreshMessages`'s definition:
 
 ```tsx
-  const refreshMessages = useCallback(async () => {
-    const targetConversationId = conversationId;
-    const loadedMessages = await commands.listMessages(targetConversationId);
-    if (!isMountedRef.current || currentConversationIdRef.current !== targetConversationId) return;
+const refreshMessages = useCallback(async () => {
+  const targetConversationId = conversationId;
+  const loadedMessages = await commands.listMessages(targetConversationId);
+  if (!isMountedRef.current || currentConversationIdRef.current !== targetConversationId) return;
 
-    setMessages(loadedMessages);
-    onConversationSeenRef.current?.(targetConversationId);
-  }, [conversationId]);
+  setMessages(loadedMessages);
+  onConversationSeenRef.current?.(targetConversationId);
+}, [conversationId]);
 ```
 
 Replace with:
 
 ```tsx
-  const refreshMessages = useCallback(async () => {
-    const targetConversationId = conversationId;
-    const loadedMessages = await commands.listMessages(targetConversationId);
-    if (!isMountedRef.current || currentConversationIdRef.current !== targetConversationId) return;
+const refreshMessages = useCallback(async () => {
+  const targetConversationId = conversationId;
+  const loadedMessages = await commands.listMessages(targetConversationId);
+  if (!isMountedRef.current || currentConversationIdRef.current !== targetConversationId) return;
 
-    runViewTransition(() => {
-      setMessages(loadedMessages);
-      onConversationSeenRef.current?.(targetConversationId);
-    });
-  }, [conversationId]);
+  runViewTransition(() => {
+    setMessages(loadedMessages);
+    onConversationSeenRef.current?.(targetConversationId);
+  });
+}, [conversationId]);
 ```
 
-(`refreshMessages` is called from the `onAgentMessagePersisted` listener, the cross-tab `subscribeToConversationRefresh` listener, and after `/compact`/send resolves — every one of those is a moment `pendingQuestion` could flip, so this single wrap point covers the composer-level arrival in both directions, question appearing and question resolving. It is a *different* function from the raw `setMessages` calls in the conversation-switch effect further down the file — those are intentionally left alone; `App.tsx` already wraps conversation switching in its own, coarser-grained transition.)
+(`refreshMessages` is called from the `onAgentMessagePersisted` listener, the cross-tab `subscribeToConversationRefresh` listener, and after `/compact`/send resolves — every one of those is a moment `pendingQuestion` could flip, so this single wrap point covers the composer-level arrival in both directions, question appearing and question resolving. It is a _different_ function from the raw `setMessages` calls in the conversation-switch effect further down the file — those are intentionally left alone; `App.tsx` already wraps conversation switching in its own, coarser-grained transition.)
 
 - [ ] **Step 5: Wrap the mode switch in `runViewTransition` and add the shared view-transition-name**
 
@@ -979,6 +982,6 @@ git commit -m "feat(widgets): animate UserAskWidget's composer arrival and mode 
 
 ## Self-Review Notes
 
-- **Spec coverage:** Section 1 (shell/header unification) → Task 1 Step 3. Section 2 (options module) → Task 1 Step 3. Section 3 (submit button + interaction change) → Task 1 Step 3. Section 4 (motion) → Task 2. Section 5 (accessibility: `role`, `aria-checked`, `aria-labelledby`, always-visible descriptions) → Task 1 Step 3, verified by Task 1's new tests. Testing section's specific call-outs (removed `multi-select-indicator`, updated `Workspace.test.tsx` assertions, no new unit tests for transition *mechanics* beyond asserting `startViewTransition` was invoked) → covered by both tasks' test steps.
+- **Spec coverage:** Section 1 (shell/header unification) → Task 1 Step 3. Section 2 (options module) → Task 1 Step 3. Section 3 (submit button + interaction change) → Task 1 Step 3. Section 4 (motion) → Task 2. Section 5 (accessibility: `role`, `aria-checked`, `aria-labelledby`, always-visible descriptions) → Task 1 Step 3, verified by Task 1's new tests. Testing section's specific call-outs (removed `multi-select-indicator`, updated `Workspace.test.tsx` assertions, no new unit tests for transition _mechanics_ beyond asserting `startViewTransition` was invoked) → covered by both tasks' test steps.
 - **Type consistency:** `UserAskWidgetProps` (`{ detail: AskUserQuestionDetail; initialMode?: Mode }`) is unchanged across both tasks. `commands.answerUserQuestion(questionId: string, answer: string[])` is called identically in Task 1's component and asserted identically in both tasks' tests. `runViewTransition(update: () => void): void`'s signature (from the existing, untouched `src/lib/viewTransition.ts`) matches its usage in both `Workspace.tsx` and `UserAskWidget.tsx` in Task 2.
 - **No placeholders:** every step shows complete, runnable code — no "TBD" or "similar to Task N" shortcuts. Task 2 Step 5 replaces `UserAskWidget.tsx`'s full contents outright (rather than a fragile targeted diff around a reindented block) so there's no ambiguity about the file's final state.

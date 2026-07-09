@@ -56,7 +56,10 @@ function Section({
  */
 export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
   return (
-    <div className="flex h-full flex-col overflow-y-auto bg-background" data-testid="widget-gallery">
+    <div
+      className="flex h-full flex-col overflow-y-auto bg-background"
+      data-testid="widget-gallery"
+    >
       <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-background/95 px-6 py-3 backdrop-blur">
         <div>
           <h1 className="text-base font-semibold">Widget gallery</h1>
@@ -184,7 +187,12 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
                 toolName: "Bash",
                 command: "cargo test --lib",
                 timeoutMs: null,
-                outcome: { ok: true, exitCode: 0, stdout: "test result: ok. 202 passed", stderr: "" },
+                outcome: {
+                  ok: true,
+                  exitCode: 0,
+                  stdout: "test result: ok. 202 passed",
+                  stderr: "",
+                },
                 tokenCount: 89,
               }}
             />

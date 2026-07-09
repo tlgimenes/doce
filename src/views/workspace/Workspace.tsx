@@ -1,11 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { ArrowDownIcon } from "@phosphor-icons/react";
 import { StickToBottom, type StickToBottomContext } from "use-stick-to-bottom";
 import MessageContent from "@/components/MessageContent";
@@ -47,11 +40,7 @@ import type { PendingInitialTurn } from "@/views/workspace/pendingInitialTurn";
  */
 function isQuestionPending(messages: Message[]): boolean {
   const latest = messages[messages.length - 1];
-  if (
-    latest?.contentType !== "tool_call" ||
-    latest.toolName !== "AskUserQuestion"
-  )
-    return false;
+  if (latest?.contentType !== "tool_call" || latest.toolName !== "AskUserQuestion") return false;
   return parseAskUserQuestionCallDetail(latest.content) !== null;
 }
 
@@ -164,9 +153,7 @@ export default function Workspace({
   const messagesRef = useRef<Message[]>(messages);
   messagesRef.current = messages;
   const [thinking, setThinking] = useState(false);
-  const [optimisticTurnStartedAt, setOptimisticTurnStartedAt] = useState<
-    number | null
-  >(null);
+  const [optimisticTurnStartedAt, setOptimisticTurnStartedAt] = useState<number | null>(null);
   // The backend's reload-proof "a turn is genuinely running" signal
   // (ActiveGenerations, via is_generation_active). `sendInFlight` and
   // `thinking` are in-memory webview state a reload wipes; during the
@@ -196,10 +183,7 @@ export default function Workspace({
     const targetConversationId = conversationId;
     void Promise.resolve(commands.isGenerationActive(targetConversationId))
       .then((active) => {
-        if (
-          isMountedRef.current &&
-          currentConversationIdRef.current === targetConversationId
-        ) {
+        if (isMountedRef.current && currentConversationIdRef.current === targetConversationId) {
           setBackendTurnActive(Boolean(active));
         }
       })
@@ -212,11 +196,7 @@ export default function Workspace({
     const targetConversationId = conversationId;
     syncBackendTurnActive();
     const loadedMessages = await commands.listMessages(targetConversationId);
-    if (
-      !isMountedRef.current ||
-      currentConversationIdRef.current !== targetConversationId
-    )
-      return;
+    if (!isMountedRef.current || currentConversationIdRef.current !== targetConversationId) return;
 
     const questionPendingBefore = isQuestionPending(messagesRef.current);
     const questionPendingAfter = isQuestionPending(loadedMessages);
@@ -260,13 +240,9 @@ export default function Workspace({
     syncBackendTurnActive();
     dispatchedInitialTurnRef.current = null;
     commands.listMessages(conversationId).then((loadedMessages) => {
-      if (cancelled || currentConversationIdRef.current !== conversationId)
-        return;
+      if (cancelled || currentConversationIdRef.current !== conversationId) return;
 
-      if (
-        loadedMessages.length === 0 &&
-        dispatchedInitialTurnRef.current === conversationId
-      ) {
+      if (loadedMessages.length === 0 && dispatchedInitialTurnRef.current === conversationId) {
         setMessages((prev) => (prev.length > 0 ? prev : loadedMessages));
         onConversationSeenRef.current?.(conversationId);
         return;
@@ -332,8 +308,7 @@ export default function Workspace({
     }
     return { kind: "other" as const };
   }, [messages]);
-  const pendingQuestion =
-    pendingToolCall?.kind === "question" ? pendingToolCall.detail : null;
+  const pendingQuestion = pendingToolCall?.kind === "question" ? pendingToolCall.detail : null;
   const turnInFlight = sendInFlight || backendTurnActive;
   const showThinking = thinking || turnInFlight;
   const latestUserMessageCreatedAt = useMemo(
@@ -342,8 +317,7 @@ export default function Workspace({
   );
   const showGenericStreamingStatus =
     pendingToolCall?.kind === "other" || (!pendingToolCall && showThinking);
-  const activeTurnStartedAtCandidate =
-    optimisticTurnStartedAt ?? latestUserMessageCreatedAt;
+  const activeTurnStartedAtCandidate = optimisticTurnStartedAt ?? latestUserMessageCreatedAt;
 
   if (!showGenericStreamingStatus) {
     genericStatusFallbackStartedAtRef.current = null;
@@ -354,7 +328,7 @@ export default function Workspace({
   }
 
   const activeTurnStartedAt = showGenericStreamingStatus
-    ? activeTurnStartedAtCandidate ?? genericStatusFallbackStartedAtRef.current
+    ? (activeTurnStartedAtCandidate ?? genericStatusFallbackStartedAtRef.current)
     : null;
 
   const send = useCallback(
@@ -368,10 +342,7 @@ export default function Workspace({
           setError(null);
           try {
             const usage = await commands.compactConversation(conversationId);
-            if (
-              !isMountedRef.current ||
-              currentConversationIdRef.current !== conversationId
-            ) {
+            if (!isMountedRef.current || currentConversationIdRef.current !== conversationId) {
               requestConversationRefresh(conversationId, {
                 contextUsage: usage,
               });
@@ -381,10 +352,7 @@ export default function Workspace({
             useContextUsageStore.getState().setUsage(usage);
             await refreshMessages();
           } catch (e) {
-            if (
-              isMountedRef.current &&
-              currentConversationIdRef.current === conversationId
-            ) {
+            if (isMountedRef.current && currentConversationIdRef.current === conversationId) {
               setError(String(e));
             }
           }
@@ -405,8 +373,7 @@ export default function Workspace({
       // persist and then hang right alongside it. A pending AskUserQuestion
       // is answerable via its widget; a pending Bash/Task just has to run
       // its course.
-      if ((!content.trim() && !richContent) || turnInFlight || pendingToolCall)
-        return false;
+      if ((!content.trim() && !richContent) || turnInFlight || pendingToolCall) return false;
       if (!markSendInFlight(conversationId)) return false;
 
       const submittedAt = Date.now();
@@ -452,18 +419,12 @@ export default function Workspace({
             richContent ? JSON.stringify(richContent) : undefined,
           );
         } catch (e) {
-          if (
-            isMountedRef.current &&
-            currentConversationIdRef.current === conversationId
-          ) {
+          if (isMountedRef.current && currentConversationIdRef.current === conversationId) {
             setError(String(e));
           }
         } finally {
           clearSendInFlight(conversationId);
-          if (
-            isMountedRef.current &&
-            currentConversationIdRef.current === conversationId
-          ) {
+          if (isMountedRef.current && currentConversationIdRef.current === conversationId) {
             setThinking(false);
             setOptimisticTurnStartedAt(null);
             dispatchedInitialTurnRef.current = null;
@@ -486,10 +447,7 @@ export default function Workspace({
     if (pendingInitialTurn.conversationId !== conversationId) return;
     if (consumedInitialTurnRef.current === conversationId) return;
 
-    const dispatched = send(
-      pendingInitialTurn.content,
-      pendingInitialTurn.richContent,
-    );
+    const dispatched = send(pendingInitialTurn.content, pendingInitialTurn.richContent);
     if (!dispatched) return;
 
     consumedInitialTurnRef.current = conversationId;
@@ -528,14 +486,11 @@ export default function Workspace({
                     key={m.id}
                     message={m}
                     showTimer={
-                      m.role === "assistant" &&
-                      m.contentType === "text" &&
-                      m.durationMs != null
+                      m.role === "assistant" && m.contentType === "text" && m.durationMs != null
                     }
                   />
                 ))}
-                {(pendingToolCall?.kind === "bash" ||
-                  pendingToolCall?.kind === "task") && (
+                {(pendingToolCall?.kind === "bash" || pendingToolCall?.kind === "task") && (
                   <div
                     className="mb-6"
                     data-testid="chat-message"
@@ -576,9 +531,7 @@ export default function Workspace({
           </>
         )}
       </StickToBottom>
-      {showGenericStreamingStatus && (
-        <StreamingStatus startedAt={activeTurnStartedAt} />
-      )}
+      {showGenericStreamingStatus && <StreamingStatus startedAt={activeTurnStartedAt} />}
       <div
         className={cn(
           "p-4 [view-transition-name:chat-composer]",

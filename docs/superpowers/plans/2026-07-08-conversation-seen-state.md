@@ -44,6 +44,7 @@
 ### Task 1: Add `last_seen_at` Migration
 
 **Files:**
+
 - Create: `src-tauri/src/storage/migrations/0008_conversation_last_seen_at.sql`
 - Modify: `src-tauri/src/storage/migrations.rs`
 
@@ -155,6 +156,7 @@ git commit -m "feat: add conversation seen timestamp"
 ### Task 2: Expose `last_seen_at` and Add Mark-Seen Command
 
 **Files:**
+
 - Modify: `src-tauri/src/commands/conversations.rs`
 - Modify: `src-tauri/src/agent/subagent.rs`
 - Modify: `src-tauri/src/commands/mod.rs`
@@ -379,6 +381,7 @@ git commit -m "feat: expose conversation seen state"
 ### Task 3: Update Frontend IPC Types
 
 **Files:**
+
 - Modify: `src/lib/ipc.ts`
 - Modify: `src/lib/bindings.ts`
 
@@ -445,6 +448,7 @@ git commit -m "feat: type conversation seen state"
 ### Task 4: Render Unseen Sidebar Titles
 
 **Files:**
+
 - Modify: `src/views/chat/ConversationList.tsx`
 - Modify: `src/views/chat/ConversationList.test.tsx`
 
@@ -553,7 +557,7 @@ className={cn(
 Also reuse `isActive` in the row class:
 
 ```tsx
-isActive ? "bg-background" : "bg-transparent border-0 shadow-none hover:bg-background/70"
+isActive ? "bg-background" : "bg-transparent border-0 shadow-none hover:bg-background/70";
 ```
 
 - [ ] **Step 5: Run sidebar tests**
@@ -578,6 +582,7 @@ git commit -m "feat: bold unseen conversation titles"
 ### Task 5: Mark Conversations Seen on Open and While Active
 
 **Files:**
+
 - Modify: `src/App.tsx`
 - Modify: `src/views/workspace/Workspace.tsx`
 - Modify: `src/App.test.tsx`
@@ -621,9 +626,7 @@ In `src/views/workspace/Workspace.test.tsx`, render `Workspace` with a spy prop:
 ```tsx
 it("notifies when active messages refresh so the app can mark the conversation seen", async () => {
   const onConversationSeen = vi.fn();
-  vi.mocked(commands.listMessages).mockResolvedValue([
-    userMessage({ id: "m1", content: "hello" }),
-  ]);
+  vi.mocked(commands.listMessages).mockResolvedValue([userMessage({ id: "m1", content: "hello" })]);
 
   render(<Workspace conversationId="c1" onConversationSeen={onConversationSeen} />);
 
@@ -758,6 +761,7 @@ git commit -m "feat: mark active conversations seen"
 ### Task 6: Final Verification
 
 **Files:**
+
 - All files changed above.
 
 - [ ] **Step 1: Run frontend tests**

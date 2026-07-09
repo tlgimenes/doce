@@ -20,11 +20,7 @@ function baseMessage(overrides: Partial<Message>): Message {
 
 describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
   it("renders a user message as a plain markdown bubble", () => {
-    render(
-      <MessageContent
-        message={baseMessage({ role: "user", content: "hi there" })}
-      />,
-    );
+    render(<MessageContent message={baseMessage({ role: "user", content: "hi there" })} />);
     expect(screen.getByText("hi there")).toBeInTheDocument();
   });
 
@@ -65,16 +61,12 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
       />,
     );
 
-    expect(screen.getByTestId("token-meter")).toHaveTextContent(
-      "0.5s · ↓ 15.6k tokens",
-    );
+    expect(screen.getByTestId("token-meter")).toHaveTextContent("0.5s · ↓ 15.6k tokens");
   });
 
   it("shows only assistant duration when tokens are unavailable for a completed text reply", () => {
     render(
-      <MessageContent
-        message={baseMessage({ contentType: "text", content: "the answer" })}
-      />,
+      <MessageContent message={baseMessage({ contentType: "text", content: "the answer" })} />,
     );
 
     expect(screen.getByTestId("token-meter")).toHaveTextContent("0.5s");
@@ -122,9 +114,7 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
       />,
     );
 
-    expect(
-      screen.getByRole("heading", { level: 2, name: "Heading" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Heading" })).toBeInTheDocument();
     expect(screen.getByText("one")).toBeInTheDocument();
     expect(screen.getByText("two")).toBeInTheDocument();
   });
@@ -174,11 +164,7 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
   });
 
   it("renders an error message distinctly", () => {
-    render(
-      <MessageContent
-        message={baseMessage({ contentType: "error", content: "boom" })}
-      />,
-    );
+    render(<MessageContent message={baseMessage({ contentType: "error", content: "boom" })} />);
     expect(screen.getByText("boom")).toBeInTheDocument();
   });
 
@@ -263,9 +249,7 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
     );
     const notice = screen.getByTestId("context-notice");
     expect(notice).toHaveAttribute("data-notice-kind", "cleared");
-    expect(notice).toHaveTextContent(
-      "3 old tool results cleared to save space",
-    );
+    expect(notice).toHaveTextContent("3 old tool results cleared to save space");
   });
 
   it("renders a 'summarized' notice as a more visible bubble", () => {
@@ -295,9 +279,7 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
         })}
       />,
     );
-    expect(screen.getByTestId("context-notice")).toHaveTextContent(
-      "not valid json",
-    );
+    expect(screen.getByTestId("context-notice")).toHaveTextContent("not valid json");
   });
 
   it("renders nothing for plan-machine tool rows (plan activity is tracker-only)", () => {
@@ -343,9 +325,7 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
 
     const { container: c1 } = render(<MessageContent message={planCall} />);
     const { container: c2 } = render(<MessageContent message={planResult} />);
-    const { container: c3 } = render(
-      <MessageContent message={gatedRejection} />,
-    );
+    const { container: c3 } = render(<MessageContent message={gatedRejection} />);
     expect(c1).toBeEmptyDOMElement();
     expect(c2).toBeEmptyDOMElement();
     expect(c3).toBeEmptyDOMElement();

@@ -14,7 +14,12 @@ export interface KeyboardShortcutProps extends HTMLAttributes<HTMLSpanElement> {
 
 export function KeyboardKey({ children, className }: KeyboardKeyProps) {
   return (
-    <kbd className={cn("rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-xs", className)}>
+    <kbd
+      className={cn(
+        "rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-xs",
+        className,
+      )}
+    >
       {children}
     </kbd>
   );

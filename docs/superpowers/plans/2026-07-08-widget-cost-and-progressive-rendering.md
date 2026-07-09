@@ -4,7 +4,7 @@
 
 **Goal:** Add real token/byte cost badges to the `Read`/`Bash`/`Grep`/`Glob` tool-call widgets, and make `Bash`/`Task` render a live "pending/running" state instead of staying invisible until they finish.
 
-**Architecture:** Backend: one shared helper (`context::annotate_with_token_count`) tags a tool result's `detail` JSON with its real tokenizer count before persistence; a `tool_call` row is now persisted *before* execution (not bundled with the result afterward) for the general tool path and for `Task`, mirroring `AskUserQuestion`'s existing early-persist pattern — this is what makes a live pending state possible at all. Frontend: two new detail-shape parsers read a still-pending `tool_call` row's raw arguments into a "pending" version of the widget's own detail type; `Workspace.tsx`'s existing `pendingQuestion` derivation generalizes to cover `Bash`/`Task` too.
+**Architecture:** Backend: one shared helper (`context::annotate_with_token_count`) tags a tool result's `detail` JSON with its real tokenizer count before persistence; a `tool_call` row is now persisted _before_ execution (not bundled with the result afterward) for the general tool path and for `Task`, mirroring `AskUserQuestion`'s existing early-persist pattern — this is what makes a live pending state possible at all. Frontend: two new detail-shape parsers read a still-pending `tool_call` row's raw arguments into a "pending" version of the widget's own detail type; `Workspace.tsx`'s existing `pendingQuestion` derivation generalizes to cover `Bash`/`Task` too.
 
 **Tech Stack:** Rust (Tauri backend, `src-tauri/`), TypeScript/React (frontend, `src/`), Vitest, `cargo test`.
 
@@ -23,10 +23,12 @@ Every task's requirements implicitly include this section.
 ## Task 1: Backend — token-count annotation helper
 
 **Files:**
+
 - Modify: `src-tauri/src/context/mod.rs`
 - Test: `src-tauri/src/context/mod.rs` (inline `#[cfg(test)] mod tests`, already present at line 487)
 
 **Interfaces:**
+
 - Produces: `pub fn annotate_with_token_count(engine: &InferenceEngine, outcome: ToolOutcome) -> ToolOutcome` — used by Task 2 and Task 3.
 
 - [ ] **Step 1: Write the failing tests**
@@ -141,9 +143,11 @@ git commit -m "feat(context): add real token-count annotation for tool results"
 ## Task 2: Backend — wire token-count annotation into `SubagentBackend`
 
 **Files:**
+
 - Modify: `src-tauri/src/commands/agent.rs`
 
 **Interfaces:**
+
 - Consumes: `context::annotate_with_token_count(engine, outcome) -> ToolOutcome` (Task 1).
 
 This is the simpler of the two call sites — `SubagentBackend::execute_tool` has no offload logic to interleave with, just a single `dispatch::execute` call followed by persistence.
@@ -265,9 +269,11 @@ git commit -m "feat(agent): annotate subagent tool results with token count"
 ## Task 3: Backend — early `tool_call` persist + token annotation for the general top-level tool path
 
 **Files:**
+
 - Modify: `src-tauri/src/commands/agent.rs`
 
 **Interfaces:**
+
 - Consumes: `context::annotate_with_token_count` (Task 1), existing `persist_tool_call`/`persist_tool_result`.
 - Produces: `async fn handle_general_tool_call(app: Option<&AppHandle>, conn: &tokio_rusqlite::Connection, engine: &InferenceEngine, parent_conversation_id: &str, cwd: Option<&std::path::Path>, tool_call_id: &str, call: &ToolCall) -> String` — used by `execute_top_level_tool` (this task) and directly by the test below.
 
@@ -506,9 +512,11 @@ git commit -m "refactor(agent): persist a tool_call row before execution, not af
 ## Task 4: Backend — early `tool_call` persist for the `Task` branch
 
 **Files:**
+
 - Modify: `src-tauri/src/commands/agent.rs`
 
 **Interfaces:**
+
 - Consumes: existing `persist_tool_call`/`persist_tool_result`.
 
 Unlike Task 3, this doesn't unlock new unit-test coverage on its own — `execute_top_level_tool`'s `Task` branch needs a real loaded model for the nested `run_loop` call regardless of how persistence is split, matching this file's existing, already-documented constraint. The existing persistence-shape test (`task_delegation_persists_a_complete_status_on_the_parent_and_keeps_subagent_activity_isolated`) gets updated to simulate the new two-call pattern instead of the old bundled one, so it still documents (and would catch a regression in) the exact shape `execute_top_level_tool` is expected to produce.
@@ -674,10 +682,12 @@ git commit -m "refactor(agent): persist Task's tool_call row before spawning the
 ## Task 5: Frontend — extend `ipc.ts` types and add pending-detail parsers
 
 **Files:**
+
 - Modify: `src/lib/ipc.ts`
 - Create: `src/lib/ipc.test.ts`
 
 **Interfaces:**
+
 - Produces: `parsePendingBashCallDetail(content: string): BashDetail | null`, `parsePendingTaskCallDetail(content: string): TaskDetail | null` — used by Task 9 (`Workspace.tsx`).
 - Produces: `ReadDetail.tokenCount?: number`, `BashDetail.tokenCount?: number`, `BashDetail.outcome?: BashOutcome` (now optional), `GrepDetail.tokenCount?: number`, `GlobDetail.tokenCount?: number` — used by Task 6, 7, 8.
 
@@ -909,12 +919,14 @@ git commit -m "feat(ipc): add pending tool_call parsers and tokenCount fields"
 ## Task 6: Frontend — `ReadWidget` cost badge
 
 **Files:**
+
 - Modify: `src/views/chat/tool-widgets/ReadWidget.tsx`
 - Modify: `src/views/chat/tool-widgets/ReadWidget.test.tsx`
 - Create: `src/lib/formatByteCount.ts`
 - Create: `src/lib/formatByteCount.test.ts`
 
 **Interfaces:**
+
 - Consumes: `ReadDetail.tokenCount` (Task 5), `formatTokenCount` (`src/lib/formatTokenCount.ts`, already exists).
 - Produces: `formatByteCount(bytes: number): string` — used here and by Task 8 (`BashWidget`).
 
@@ -1050,10 +1062,12 @@ git commit -m "feat(widgets): show a byte/token cost badge on ReadWidget"
 ## Task 7: Frontend — `SearchResultsWidget` cost badge (Glob/Grep)
 
 **Files:**
+
 - Modify: `src/views/chat/tool-widgets/SearchResultsWidget.tsx`
 - Modify: `src/views/chat/tool-widgets/SearchResultsWidget.test.tsx`
 
 **Interfaces:**
+
 - Consumes: `GlobDetail.tokenCount`/`GrepDetail.tokenCount` (Task 5), `formatTokenCount`.
 
 Only a token badge here, not bytes — Glob/Grep results are match lists, not a single content blob, so there's no single meaningful "byte size" the way there is for Read/Bash.
@@ -1103,18 +1117,18 @@ import { formatTokenCount } from "@/lib/formatTokenCount";
 Find the header line (currently):
 
 ```tsx
-      <p className="mb-1 font-mono text-xs text-muted-foreground">
-        {detail.toolName} {detail.pattern}
-      </p>
+<p className="mb-1 font-mono text-xs text-muted-foreground">
+  {detail.toolName} {detail.pattern}
+</p>
 ```
 
 Replace with:
 
 ```tsx
-      <p className="mb-1 font-mono text-xs text-muted-foreground">
-        {detail.toolName} {detail.pattern}
-        {detail.tokenCount != null && <span> · {formatTokenCount(detail.tokenCount)} tok</span>}
-      </p>
+<p className="mb-1 font-mono text-xs text-muted-foreground">
+  {detail.toolName} {detail.pattern}
+  {detail.tokenCount != null && <span> · {formatTokenCount(detail.tokenCount)} tok</span>}
+</p>
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -1139,10 +1153,12 @@ git commit -m "feat(widgets): show a token cost badge on SearchResultsWidget"
 ## Task 8: Frontend — `BashWidget` cost badge and pending/running state
 
 **Files:**
+
 - Modify: `src/views/chat/tool-widgets/BashWidget.tsx`
 - Modify: `src/views/chat/tool-widgets/BashWidget.test.tsx`
 
 **Interfaces:**
+
 - Consumes: `BashDetail.tokenCount`, `BashDetail.outcome` (now optional) (Task 5), `formatTokenCount`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -1270,10 +1286,12 @@ git commit -m "feat(widgets): add BashWidget pending state and cost badge"
 ## Task 9: Frontend — generalize `Workspace.tsx`'s pending-tool-call rendering to Bash/Task
 
 **Files:**
+
 - Modify: `src/views/workspace/Workspace.tsx`
 - Modify: `src/views/workspace/Workspace.test.tsx`
 
 **Interfaces:**
+
 - Consumes: `parsePendingBashCallDetail`, `parsePendingTaskCallDetail` (Task 5), `BashWidget` (Task 8), `TaskWidget` (unchanged).
 
 - [ ] **Step 1: Write the failing tests**
@@ -1429,46 +1447,47 @@ import {
 Find the `pendingQuestion` derivation (currently):
 
 ```typescript
-  const pendingQuestion = useMemo(() => {
-    const latest = messages[messages.length - 1];
-    if (latest?.contentType === "tool_call" && latest.toolName === "AskUserQuestion") {
-      return parseAskUserQuestionCallDetail(latest.content);
-    }
-    return null;
-  }, [messages]);
+const pendingQuestion = useMemo(() => {
+  const latest = messages[messages.length - 1];
+  if (latest?.contentType === "tool_call" && latest.toolName === "AskUserQuestion") {
+    return parseAskUserQuestionCallDetail(latest.content);
+  }
+  return null;
+}, [messages]);
 ```
 
 Replace with a broader `pendingToolCall` that still exposes `pendingQuestion` under its original name (every existing reference to `pendingQuestion` elsewhere in this file — the composer-disable check, the autoscroll effect's dependency array, etc. — stays unchanged):
 
 ```typescript
-  // Generalizes the same "latest message is an unpaired tool_call" signal
-  // AskUserQuestion has always used (sequence ordering guarantees a
-  // tool_result can only ever land immediately after its tool_call, so
-  // this is a reliable "still in flight" check for any tool) to also cover
-  // Bash/Task — the two tools slow enough for a live pending state to
-  // matter (010-context-window-management follow-up: widget cost badges +
-  // progressive rendering design doc).
-  const pendingToolCall = useMemo(() => {
-    const latest = messages[messages.length - 1];
-    if (latest?.contentType !== "tool_call") return null;
-    if (latest.toolName === "AskUserQuestion") {
-      const detail = parseAskUserQuestionCallDetail(latest.content);
-      return detail ? { kind: "question" as const, detail } : null;
-    }
-    if (latest.toolName === "Bash") {
-      const detail = parsePendingBashCallDetail(latest.content);
-      return detail ? { kind: "bash" as const, detail } : null;
-    }
-    if (latest.toolName === "Task") {
-      const detail = parsePendingTaskCallDetail(latest.content);
-      return detail ? { kind: "task" as const, detail } : null;
-    }
-    return null;
-  }, [messages]);
-  const pendingQuestion = pendingToolCall?.kind === "question" ? pendingToolCall.detail : null;
+// Generalizes the same "latest message is an unpaired tool_call" signal
+// AskUserQuestion has always used (sequence ordering guarantees a
+// tool_result can only ever land immediately after its tool_call, so
+// this is a reliable "still in flight" check for any tool) to also cover
+// Bash/Task — the two tools slow enough for a live pending state to
+// matter (010-context-window-management follow-up: widget cost badges +
+// progressive rendering design doc).
+const pendingToolCall = useMemo(() => {
+  const latest = messages[messages.length - 1];
+  if (latest?.contentType !== "tool_call") return null;
+  if (latest.toolName === "AskUserQuestion") {
+    const detail = parseAskUserQuestionCallDetail(latest.content);
+    return detail ? { kind: "question" as const, detail } : null;
+  }
+  if (latest.toolName === "Bash") {
+    const detail = parsePendingBashCallDetail(latest.content);
+    return detail ? { kind: "bash" as const, detail } : null;
+  }
+  if (latest.toolName === "Task") {
+    const detail = parsePendingTaskCallDetail(latest.content);
+    return detail ? { kind: "task" as const, detail } : null;
+  }
+  return null;
+}, [messages]);
+const pendingQuestion = pendingToolCall?.kind === "question" ? pendingToolCall.detail : null;
 ```
 
 Now find every other reference to `pendingQuestion` in the file and replace it with `pendingToolCall` for the "is something pending" checks, while keeping `pendingQuestion` for the question-specific render. Search: `grep -n "pendingQuestion" src/views/workspace/Workspace.tsx` and, for each match outside the derivation itself:
+
 - `[messages, pendingQuestion, scheduleScrollToTranscriptBottom, showThinking]` (the autoscroll effect's deps) → change `pendingQuestion` to `pendingToolCall`.
 - `if ((!content.trim() && !richContent) || sendInFlight || pendingQuestion) return false;` (the send-blocking check) → change `pendingQuestion` to `pendingToolCall`.
 - `disabled={sendInFlight || pendingQuestion !== null}` (the composer's disabled prop) → change `pendingQuestion` to `pendingToolCall`.
@@ -1476,47 +1495,41 @@ Now find every other reference to `pendingQuestion` in the file and replace it w
 Finally, find the render block (currently):
 
 ```tsx
-            {pendingQuestion ? (
-              <div
-                className="mb-6"
-                data-testid="chat-message"
-                role="group"
-                aria-label="doce replied"
-              >
-                <AskUserQuestionWidget detail={pendingQuestion} />
-              </div>
-            ) : (
-              showThinking && (
-                <p className="text-sm text-muted-foreground" data-testid="agent-thinking">
-                  Working…
-                </p>
-              )
-            )}
+{
+  pendingQuestion ? (
+    <div className="mb-6" data-testid="chat-message" role="group" aria-label="doce replied">
+      <AskUserQuestionWidget detail={pendingQuestion} />
+    </div>
+  ) : (
+    showThinking && (
+      <p className="text-sm text-muted-foreground" data-testid="agent-thinking">
+        Working…
+      </p>
+    )
+  );
+}
 ```
 
 Replace with:
 
 ```tsx
-            {pendingToolCall ? (
-              <div
-                className="mb-6"
-                data-testid="chat-message"
-                role="group"
-                aria-label="doce replied"
-              >
-                {pendingToolCall.kind === "question" && (
-                  <AskUserQuestionWidget detail={pendingToolCall.detail} />
-                )}
-                {pendingToolCall.kind === "bash" && <BashWidget detail={pendingToolCall.detail} />}
-                {pendingToolCall.kind === "task" && <TaskWidget detail={pendingToolCall.detail} />}
-              </div>
-            ) : (
-              showThinking && (
-                <p className="text-sm text-muted-foreground" data-testid="agent-thinking">
-                  Working…
-                </p>
-              )
-            )}
+{
+  pendingToolCall ? (
+    <div className="mb-6" data-testid="chat-message" role="group" aria-label="doce replied">
+      {pendingToolCall.kind === "question" && (
+        <AskUserQuestionWidget detail={pendingToolCall.detail} />
+      )}
+      {pendingToolCall.kind === "bash" && <BashWidget detail={pendingToolCall.detail} />}
+      {pendingToolCall.kind === "task" && <TaskWidget detail={pendingToolCall.detail} />}
+    </div>
+  ) : (
+    showThinking && (
+      <p className="text-sm text-muted-foreground" data-testid="agent-thinking">
+        Working…
+      </p>
+    )
+  );
+}
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -1541,9 +1554,11 @@ git commit -m "feat(workspace): render a live pending state for Bash and Task to
 ## Task 10: Frontend — `WidgetGallery` updates
 
 **Files:**
+
 - Modify: `src/views/design-system/WidgetGallery.tsx`
 
 **Interfaces:**
+
 - Consumes: everything from Tasks 5–9 (`tokenCount` fields, `BashDetail.outcome` optionality).
 
 No new test file — `WidgetGallery` has no dedicated test today (it's a hand-populated reference page, not behavior under test); this task is verified by `tsc -b` (type-correctness of the new sample data) and a manual look in the running app.
@@ -1553,135 +1568,135 @@ No new test file — `WidgetGallery` has no dedicated test today (it's a hand-po
 In `src/views/design-system/WidgetGallery.tsx`, find the Read "Success" example:
 
 ```tsx
-          <Example label="Success">
-            <ReadWidget
-              detail={{
-                toolName: "Read",
-                filePath: "src/agent/dispatch.rs",
-                offset: null,
-                limit: null,
-                outcome: { ok: true, content: "pub fn execute(...", truncated: false },
-              }}
-            />
-          </Example>
+<Example label="Success">
+  <ReadWidget
+    detail={{
+      toolName: "Read",
+      filePath: "src/agent/dispatch.rs",
+      offset: null,
+      limit: null,
+      outcome: { ok: true, content: "pub fn execute(...", truncated: false },
+    }}
+  />
+</Example>
 ```
 
 Add `tokenCount: 312,` right after `outcome: { ... },`:
 
 ```tsx
-          <Example label="Success">
-            <ReadWidget
-              detail={{
-                toolName: "Read",
-                filePath: "src/agent/dispatch.rs",
-                offset: null,
-                limit: null,
-                outcome: { ok: true, content: "pub fn execute(...", truncated: false },
-                tokenCount: 312,
-              }}
-            />
-          </Example>
+<Example label="Success">
+  <ReadWidget
+    detail={{
+      toolName: "Read",
+      filePath: "src/agent/dispatch.rs",
+      offset: null,
+      limit: null,
+      outcome: { ok: true, content: "pub fn execute(...", truncated: false },
+      tokenCount: 312,
+    }}
+  />
+</Example>
 ```
 
 Find the Bash "Success (exit 0)" example:
 
 ```tsx
-          <Example label="Success (exit 0)">
-            <BashWidget
-              detail={{
-                toolName: "Bash",
-                command: "cargo test --lib",
-                timeoutMs: null,
-                outcome: { ok: true, exitCode: 0, stdout: "test result: ok. 202 passed", stderr: "" },
-              }}
-            />
-          </Example>
+<Example label="Success (exit 0)">
+  <BashWidget
+    detail={{
+      toolName: "Bash",
+      command: "cargo test --lib",
+      timeoutMs: null,
+      outcome: { ok: true, exitCode: 0, stdout: "test result: ok. 202 passed", stderr: "" },
+    }}
+  />
+</Example>
 ```
 
 Add `tokenCount: 89,` after the `outcome` line:
 
 ```tsx
-          <Example label="Success (exit 0)">
-            <BashWidget
-              detail={{
-                toolName: "Bash",
-                command: "cargo test --lib",
-                timeoutMs: null,
-                outcome: { ok: true, exitCode: 0, stdout: "test result: ok. 202 passed", stderr: "" },
-                tokenCount: 89,
-              }}
-            />
-          </Example>
+<Example label="Success (exit 0)">
+  <BashWidget
+    detail={{
+      toolName: "Bash",
+      command: "cargo test --lib",
+      timeoutMs: null,
+      outcome: { ok: true, exitCode: 0, stdout: "test result: ok. 202 passed", stderr: "" },
+      tokenCount: 89,
+    }}
+  />
+</Example>
 ```
 
 Find the Glob "with matches" example:
 
 ```tsx
-          <Example label="Glob, with matches">
-            <SearchResultsWidget
-              detail={{
-                toolName: "Glob",
-                pattern: "bug_*.txt",
-                path: ".",
-                matches: ["bug_00.txt", "bug_01.txt", "bug_02.txt"],
-              }}
-            />
-          </Example>
+<Example label="Glob, with matches">
+  <SearchResultsWidget
+    detail={{
+      toolName: "Glob",
+      pattern: "bug_*.txt",
+      path: ".",
+      matches: ["bug_00.txt", "bug_01.txt", "bug_02.txt"],
+    }}
+  />
+</Example>
 ```
 
 Add `tokenCount: 24,`:
 
 ```tsx
-          <Example label="Glob, with matches">
-            <SearchResultsWidget
-              detail={{
-                toolName: "Glob",
-                pattern: "bug_*.txt",
-                path: ".",
-                matches: ["bug_00.txt", "bug_01.txt", "bug_02.txt"],
-                tokenCount: 24,
-              }}
-            />
-          </Example>
+<Example label="Glob, with matches">
+  <SearchResultsWidget
+    detail={{
+      toolName: "Glob",
+      pattern: "bug_*.txt",
+      path: ".",
+      matches: ["bug_00.txt", "bug_01.txt", "bug_02.txt"],
+      tokenCount: 24,
+    }}
+  />
+</Example>
 ```
 
 Find the Grep "with matches" example:
 
 ```tsx
-          <Example label="Grep, with matches">
-            <SearchResultsWidget
-              detail={{
-                toolName: "Grep",
-                pattern: "// BUG:",
-                path: ".",
-                glob: null,
-                matches: [
-                  { path: "bug_00.txt", lineNumber: 1, line: "// BUG: this should compute a + b" },
-                  { path: "bug_01.txt", lineNumber: 1, line: "// BUG: this should compute a + b" },
-                ],
-              }}
-            />
-          </Example>
+<Example label="Grep, with matches">
+  <SearchResultsWidget
+    detail={{
+      toolName: "Grep",
+      pattern: "// BUG:",
+      path: ".",
+      glob: null,
+      matches: [
+        { path: "bug_00.txt", lineNumber: 1, line: "// BUG: this should compute a + b" },
+        { path: "bug_01.txt", lineNumber: 1, line: "// BUG: this should compute a + b" },
+      ],
+    }}
+  />
+</Example>
 ```
 
 Add `tokenCount: 51,`:
 
 ```tsx
-          <Example label="Grep, with matches">
-            <SearchResultsWidget
-              detail={{
-                toolName: "Grep",
-                pattern: "// BUG:",
-                path: ".",
-                glob: null,
-                matches: [
-                  { path: "bug_00.txt", lineNumber: 1, line: "// BUG: this should compute a + b" },
-                  { path: "bug_01.txt", lineNumber: 1, line: "// BUG: this should compute a + b" },
-                ],
-                tokenCount: 51,
-              }}
-            />
-          </Example>
+<Example label="Grep, with matches">
+  <SearchResultsWidget
+    detail={{
+      toolName: "Grep",
+      pattern: "// BUG:",
+      path: ".",
+      glob: null,
+      matches: [
+        { path: "bug_00.txt", lineNumber: 1, line: "// BUG: this should compute a + b" },
+        { path: "bug_01.txt", lineNumber: 1, line: "// BUG: this should compute a + b" },
+      ],
+      tokenCount: 51,
+    }}
+  />
+</Example>
 ```
 
 - [ ] **Step 2: Add pending examples for Bash and Task**
@@ -1730,16 +1745,16 @@ Add a new `Example` between the last one and `</Section>`:
 Find the Task `Section`'s "Running" example (already exists — it's the one thing that already demonstrates this state, since `state: "running"` was always a valid value even though production never produced it):
 
 ```tsx
-          <Example label="Running">
-            <TaskWidget
-              detail={{
-                toolName: "Task",
-                prompt: "Investigate why tier4 scores 0/20 and report the root cause",
-                subagentConversationId: "design-system-preview",
-                state: "running",
-              }}
-            />
-          </Example>
+<Example label="Running">
+  <TaskWidget
+    detail={{
+      toolName: "Task",
+      prompt: "Investigate why tier4 scores 0/20 and report the root cause",
+      subagentConversationId: "design-system-preview",
+      state: "running",
+    }}
+  />
+</Example>
 ```
 
 No change needed here — leave as-is (it already correctly demonstrates the now-real "running" state).

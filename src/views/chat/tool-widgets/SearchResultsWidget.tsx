@@ -28,10 +28,9 @@ export default function SearchResultsWidget({ detail }: SearchResultsWidgetProps
   }
 
   const count = detail.matches.length;
-  const countLabel = isGrep
-    ? `${count} ${count === 1 ? "match" : "matches"}`
-    : `${count} files`;
-  const tokenLabel = detail.tokenCount != null ? ` · ${formatTokenCount(detail.tokenCount)} tok` : "";
+  const countLabel = isGrep ? `${count} ${count === 1 ? "match" : "matches"}` : `${count} files`;
+  const tokenLabel =
+    detail.tokenCount != null ? ` · ${formatTokenCount(detail.tokenCount)} tok` : "";
 
   return (
     <ToolDisclosure

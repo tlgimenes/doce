@@ -46,6 +46,7 @@
 ### Task 1: Topbar Portal Primitives
 
 **Files:**
+
 - Create: `src/components/Topbar.tsx`
 - Create: `src/components/Topbar.test.tsx`
 
@@ -236,10 +237,7 @@ export function TopbarHost({ target, className, children }: TopbarHostProps) {
   return (
     <div
       ref={ref}
-      className={cn(
-        "flex h-10 shrink-0 select-none items-center bg-transparent",
-        className,
-      )}
+      className={cn("flex h-10 shrink-0 select-none items-center bg-transparent", className)}
       data-tauri-drag-region
       data-testid={`topbar-${target}`}
       onMouseDown={startDrag}
@@ -249,13 +247,7 @@ export function TopbarHost({ target, className, children }: TopbarHostProps) {
   );
 }
 
-export function TopbarPortal({
-  target,
-  children,
-}: {
-  target: TopbarTarget;
-  children: ReactNode;
-}) {
+export function TopbarPortal({ target, children }: { target: TopbarTarget; children: ReactNode }) {
   const { hosts } = useTopbarContext();
   const host = hosts[target];
   if (!host) return null;
@@ -287,6 +279,7 @@ git commit -m "feat: add shared topbar portal primitives"
 ### Task 2: App Shell Hosts And Sidebar Body Refactor
 
 **Files:**
+
 - Modify: `src/App.tsx`
 - Modify: `src/App.test.tsx`
 - Modify: `src/views/chat/ConversationList.tsx`
@@ -297,20 +290,20 @@ git commit -m "feat: add shared topbar portal primitives"
 In `src/App.test.tsx`, add this test inside the first `describe(...)` block after `marks the main content pane as the chat-surface view transition target`:
 
 ```tsx
-  it("renders shared sidebar and main topbars while the empty state keeps the main topbar blank", async () => {
-    render(<App />);
-    await waitForReady();
+it("renders shared sidebar and main topbars while the empty state keeps the main topbar blank", async () => {
+  render(<App />);
+  await waitForReady();
 
-    const sidebarTopbar = screen.getByTestId("topbar-sidebar");
-    const mainTopbar = screen.getByTestId("topbar-main");
+  const sidebarTopbar = screen.getByTestId("topbar-sidebar");
+  const mainTopbar = screen.getByTestId("topbar-main");
 
-    expect(sidebarTopbar).toHaveClass("h-10", "shrink-0");
-    expect(mainTopbar).toHaveClass("h-10", "shrink-0");
-    expect(sidebarTopbar).toHaveAttribute("data-tauri-drag-region");
-    expect(mainTopbar).toHaveAttribute("data-tauri-drag-region");
-    expect(mainTopbar).toBeEmptyDOMElement();
-    expect(screen.getByTestId("empty-state-input")).toBeInTheDocument();
-  });
+  expect(sidebarTopbar).toHaveClass("h-10", "shrink-0");
+  expect(mainTopbar).toHaveClass("h-10", "shrink-0");
+  expect(sidebarTopbar).toHaveAttribute("data-tauri-drag-region");
+  expect(mainTopbar).toHaveAttribute("data-tauri-drag-region");
+  expect(mainTopbar).toBeEmptyDOMElement();
+  expect(screen.getByTestId("empty-state-input")).toBeInTheDocument();
+});
 ```
 
 - [ ] **Step 2: Update the sidebar affordance test to describe the new body boundary**
@@ -415,73 +408,73 @@ Then replace the entire `return (` block at the end of `App` with this complete
 structure:
 
 ```tsx
-  return (
-    <TopbarProvider>
-      <div className="flex h-dvh">
-        <div className="flex w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar">
-          <TopbarHost target="sidebar" className="px-2" />
-          <ConversationList
-            ref={conversationListRef}
-            activeId={activeConversation?.id ?? null}
-            onSelect={(conversation) => {
-              setShowSettings(false);
-              setPendingInitialTurn(null);
-              setActiveConversation(conversation);
-              markSeen(conversation.id);
-            }}
-            onNewConversation={() => {
-              setShowSettings(false);
-              setPendingInitialTurn(null);
-              setActiveConversation(null);
-            }}
-            onOpenSettings={() => setShowSettings(true)}
-            onArchive={(conversationId) => {
-              if (activeConversation?.id !== conversationId) return;
-              setShowSettings(false);
-              setPendingInitialTurn(null);
-              setActiveConversation(null);
-            }}
-          />
-        </div>
-        <div className="flex min-w-0 flex-1 flex-col">
-          <TopbarHost target="main" className="px-4" />
-          <div
-            className="min-h-0 flex-1 [view-transition-name:chat-surface]"
-            data-testid="app-content-pane"
-          >
-            {showWidgetGallery ? (
-              <WidgetGallery onClose={() => setShowWidgetGallery(false)} />
-            ) : showSettings ? (
-              <Settings onClose={() => setShowSettings(false)} />
-            ) : activeConversation ? (
-              <Workspace
-                key={activeConversation.id}
-                conversationId={activeConversation.id}
-                pendingInitialTurn={
-                  pendingInitialTurn?.conversationId === activeConversation.id
-                    ? pendingInitialTurn
-                    : null
-                }
-                onPendingInitialTurnConsumed={(conversationId) =>
-                  setPendingInitialTurn((prev) =>
-                    prev?.conversationId === conversationId ? null : prev,
-                  )
-                }
-                onConversationSeen={markSeen}
-              />
-            ) : (
-              <EmptyState onConversationCreated={activateConversation} />
-            )}
-          </div>
-        </div>
-        <ShortcutsDialog
-          open={showShortcutsDialog}
-          onClose={() => setShowShortcutsDialog(false)}
-          shortcuts={shortcuts}
+return (
+  <TopbarProvider>
+    <div className="flex h-dvh">
+      <div className="flex w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar">
+        <TopbarHost target="sidebar" className="px-2" />
+        <ConversationList
+          ref={conversationListRef}
+          activeId={activeConversation?.id ?? null}
+          onSelect={(conversation) => {
+            setShowSettings(false);
+            setPendingInitialTurn(null);
+            setActiveConversation(conversation);
+            markSeen(conversation.id);
+          }}
+          onNewConversation={() => {
+            setShowSettings(false);
+            setPendingInitialTurn(null);
+            setActiveConversation(null);
+          }}
+          onOpenSettings={() => setShowSettings(true)}
+          onArchive={(conversationId) => {
+            if (activeConversation?.id !== conversationId) return;
+            setShowSettings(false);
+            setPendingInitialTurn(null);
+            setActiveConversation(null);
+          }}
         />
       </div>
-    </TopbarProvider>
-  );
+      <div className="flex min-w-0 flex-1 flex-col">
+        <TopbarHost target="main" className="px-4" />
+        <div
+          className="min-h-0 flex-1 [view-transition-name:chat-surface]"
+          data-testid="app-content-pane"
+        >
+          {showWidgetGallery ? (
+            <WidgetGallery onClose={() => setShowWidgetGallery(false)} />
+          ) : showSettings ? (
+            <Settings onClose={() => setShowSettings(false)} />
+          ) : activeConversation ? (
+            <Workspace
+              key={activeConversation.id}
+              conversationId={activeConversation.id}
+              pendingInitialTurn={
+                pendingInitialTurn?.conversationId === activeConversation.id
+                  ? pendingInitialTurn
+                  : null
+              }
+              onPendingInitialTurnConsumed={(conversationId) =>
+                setPendingInitialTurn((prev) =>
+                  prev?.conversationId === conversationId ? null : prev,
+                )
+              }
+              onConversationSeen={markSeen}
+            />
+          ) : (
+            <EmptyState onConversationCreated={activateConversation} />
+          )}
+        </div>
+      </div>
+      <ShortcutsDialog
+        open={showShortcutsDialog}
+        onClose={() => setShowShortcutsDialog(false)}
+        shortcuts={shortcuts}
+      />
+    </div>
+  </TopbarProvider>
+);
 ```
 
 - [ ] **Step 6: Run the targeted tests to verify they pass**
@@ -518,6 +511,7 @@ git commit -m "feat: add shared shell topbar hosts"
 ### Task 3: Workspace Topbar Content And Composer Gauge Move
 
 **Files:**
+
 - Create: `src/views/workspace/WorkspaceTopbar.tsx`
 - Create: `src/views/workspace/WorkspaceTopbar.test.tsx`
 - Modify: `src/views/workspace/Workspace.tsx`
@@ -596,9 +590,7 @@ describe("WorkspaceTopbar", () => {
 
     expect(await screen.findByTestId("workspace-topbar")).toBeInTheDocument();
     expect(screen.getByTestId("topbar-main")).toHaveTextContent("Design shared topbar");
-    expect(screen.getByTestId("workspace-topbar-title")).toHaveTextContent(
-      "Design shared topbar",
-    );
+    expect(screen.getByTestId("workspace-topbar-title")).toHaveTextContent("Design shared topbar");
     await waitFor(() =>
       expect(screen.getByTestId("workspace-topbar-path")).toHaveTextContent("~/code/doce"),
     );
@@ -727,54 +719,54 @@ Expected: PASS, 2 tests.
 In `src/App.test.tsx`, add this test after the empty-topbar test from Task 2:
 
 ```tsx
-  it("renders active conversation metadata in the main topbar and keeps the composer free of context chrome", async () => {
-    const conversation = {
-      id: "c-topbar",
-      workspaceId: "ws-code",
-      title: "Shared topbar plan",
+it("renders active conversation metadata in the main topbar and keeps the composer free of context chrome", async () => {
+  const conversation = {
+    id: "c-topbar",
+    workspaceId: "ws-code",
+    title: "Shared topbar plan",
+    createdAt: 1,
+    updatedAt: 1,
+    lastSeenAt: 1,
+    status: "done" as const,
+  };
+  vi.mocked(commands.listConversations).mockResolvedValue([conversation]);
+  vi.mocked(commands.listWorkspaces).mockResolvedValue([
+    {
+      id: "ws-code",
+      path: "/Users/tester/code/doce",
+      displayName: "doce",
       createdAt: 1,
-      updatedAt: 1,
-      lastSeenAt: 1,
-      status: "done" as const,
-    };
-    vi.mocked(commands.listConversations).mockResolvedValue([conversation]);
-    vi.mocked(commands.listWorkspaces).mockResolvedValue([
-      {
-        id: "ws-code",
-        path: "/Users/tester/code/doce",
-        displayName: "doce",
-        createdAt: 1,
-        lastOpenedAt: 1,
-      },
-    ]);
-    vi.mocked(commands.getContextUsage).mockResolvedValue({
-      conversationId: "c-topbar",
-      tokensUsed: 256,
-      tokenBudget: 1024,
-      state: "normal",
-    });
-
-    render(<App />);
-
-    await userEvent.click(await screen.findByText("Shared topbar plan"));
-
-    const mainTopbar = screen.getByTestId("topbar-main");
-    expect(await within(mainTopbar).findByTestId("workspace-topbar-title")).toHaveTextContent(
-      "Shared topbar plan",
-    );
-    await waitFor(() =>
-      expect(within(mainTopbar).getByTestId("workspace-topbar-path")).toHaveTextContent(
-        "~/code/doce",
-      ),
-    );
-    expect(await within(mainTopbar).findByTestId("context-usage-gauge")).toHaveAttribute(
-      "aria-label",
-      expect.stringContaining("25%"),
-    );
-
-    const composer = screen.getByTestId("workspace-composer-shell");
-    expect(within(composer).queryByTestId("context-usage-gauge")).not.toBeInTheDocument();
+      lastOpenedAt: 1,
+    },
+  ]);
+  vi.mocked(commands.getContextUsage).mockResolvedValue({
+    conversationId: "c-topbar",
+    tokensUsed: 256,
+    tokenBudget: 1024,
+    state: "normal",
   });
+
+  render(<App />);
+
+  await userEvent.click(await screen.findByText("Shared topbar plan"));
+
+  const mainTopbar = screen.getByTestId("topbar-main");
+  expect(await within(mainTopbar).findByTestId("workspace-topbar-title")).toHaveTextContent(
+    "Shared topbar plan",
+  );
+  await waitFor(() =>
+    expect(within(mainTopbar).getByTestId("workspace-topbar-path")).toHaveTextContent(
+      "~/code/doce",
+    ),
+  );
+  expect(await within(mainTopbar).findByTestId("context-usage-gauge")).toHaveAttribute(
+    "aria-label",
+    expect.stringContaining("25%"),
+  );
+
+  const composer = screen.getByTestId("workspace-composer-shell");
+  expect(within(composer).queryByTestId("context-usage-gauge")).not.toBeInTheDocument();
+});
 ```
 
 - [ ] **Step 6: Run the App integration test to verify it fails**
@@ -921,6 +913,7 @@ git commit -m "feat: show conversation metadata in shared topbar"
 ### Task 4: Final Regression Pass
 
 **Files:**
+
 - Verify only unless failures expose a required small fix.
 
 - [ ] **Step 1: Run the focused frontend test set**
