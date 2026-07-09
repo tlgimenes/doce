@@ -55,7 +55,8 @@ describe("Dialog", () => {
 
   it("keeps generated ui radii at 8px-or-less across src/components/ui", () => {
     const uiDir = "src/components/ui";
-    const roundedXlPattern = /\brounded(?:-[trblse]{1,2})?-xl\b|\brounded-[a-z-]*xl\b/;
+    const roundedXlPattern =
+      /\brounded(?:-[trblse]{1,2})?-(?:xl|[2-9]xl)\b|\brounded-[a-z-]*(?:xl|[2-9]xl)\b/;
 
     for (const entry of readdirSync(uiDir)) {
       if (!entry.endsWith(".tsx") && !entry.endsWith(".ts")) {

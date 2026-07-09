@@ -251,3 +251,37 @@ Results:
 
 - `npm run build` still emits the existing Vite chunk-size warning, but the
   production build completes successfully.
+
+## Task 1 Re-review Fix 5
+
+### What Changed
+
+- Replaced the remaining generated `rounded-4xl` badge radius with
+  `rounded-lg`.
+- Expanded the generated UI radius guard in `src/components/Dialog.test.tsx`
+  so it catches numeric large radius utilities such as `rounded-2xl`,
+  `rounded-3xl`, and `rounded-4xl`, not only `rounded-xl`.
+
+### Verification
+
+Ran successfully:
+
+```bash
+npm test -- src/components/Dialog.test.tsx src/components/ui/button.test.tsx src/components/ui/command.test.tsx src/components/ui/sidebar.test.tsx
+npm run build
+npm run lint
+npm test
+rg "@radix-ui|radix-ui" src package.json package-lock.json
+rg '"shadcn"|@fontsource-variable/geist' package.json package-lock.json
+rg -n '\brounded(?:-[trblse]{1,2})?-(?:xl|[2-9]xl)\b|\brounded-[a-z-]*(?:xl|[2-9]xl)\b' src/components/ui
+```
+
+Results:
+
+- Focused tests: 4 files passed, 20 tests passed
+- Build: passed, with Vite's existing chunk-size warning
+- Lint: passed
+- Full test suite: 50 files passed, 359 tests passed
+- Radix grep: no matches (`rg` exit code 1)
+- CLI/font dependency grep: no matches (`rg` exit code 1)
+- Strict radius grep: no matches (`rg` exit code 1)
