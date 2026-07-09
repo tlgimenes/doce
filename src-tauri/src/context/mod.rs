@@ -20,6 +20,7 @@
 
 pub mod limits;
 pub mod payload;
+pub mod transcript;
 
 use crate::agent::dispatch::ToolOutcome;
 use crate::inference::{ChatMessage, InferenceEngine, MessageContent};
