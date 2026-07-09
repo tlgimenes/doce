@@ -79,9 +79,9 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
       <div className="flex flex-col gap-10 px-6 py-6">
         <Section
           title="Read"
-          description="A minimal file-reference card. Standard / offloaded / failure."
+          description="A collapsed file-reference card with inline expandable preview."
         >
-          <Example label="Standard read">
+          <Example label="Text read">
             <ReadWidget
               detail={{
                 toolName: "Read",
@@ -93,16 +93,15 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
               }}
             />
           </Example>
-          <Example label="Offloaded read">
+          <Example label="Native preview candidate">
             <ReadWidget
               detail={{
                 toolName: "Read",
-                filePath: "bug_00.txt",
+                filePath: "diagram.svg",
                 offset: null,
                 limit: null,
-                outcome: { ok: true, content: "(truncated preview)", truncated: true },
+                outcome: { ok: true, content: "(binary preview candidate)", truncated: false },
                 tokenCount: 2048,
-                offloadedTo: "/tmp/doce/tool-outputs/c1/call-1.txt",
               }}
             />
           </Example>
@@ -239,9 +238,9 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
 
         <Section
           title="Glob / Grep"
-          description="A match list, not an undifferentiated data dump. Filenames for Glob, file:line:content for Grep."
+          description="Collapsed search summaries with inline expandable result lists."
         >
-          <Example label="Glob, with matches">
+          <Example label="Glob, with files">
             <SearchResultsWidget
               detail={{
                 toolName: "Glob",
@@ -252,7 +251,7 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
               }}
             />
           </Example>
-          <Example label="Glob, no matches">
+          <Example label="Glob, no files">
             <SearchResultsWidget
               detail={{ toolName: "Glob", pattern: "*.nonexistent", path: ".", matches: [] }}
             />

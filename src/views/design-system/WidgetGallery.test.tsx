@@ -10,20 +10,27 @@ describe("WidgetGallery", () => {
     expect(screen.getByTestId("widget-gallery")).not.toHaveClass("h-dvh");
   });
 
-  it("documents Read as grouped successful reads rather than separate truncated state", () => {
+  it("documents Read as collapsed expandable previews", () => {
     render(<WidgetGallery onClose={vi.fn()} />);
 
     expect(
-      screen.getByText("A minimal file-reference card. Standard / offloaded / failure."),
+      screen.getByText("A collapsed file-reference card with inline expandable preview."),
     ).toBeInTheDocument();
-    expect(screen.getByText("Standard read")).toBeInTheDocument();
-    expect(screen.getByText("Offloaded read")).toBeInTheDocument();
+    expect(screen.getByText("Text read")).toBeInTheDocument();
+    expect(screen.getByText("Native preview candidate")).toBeInTheDocument();
+    expect(screen.queryByText("Offloaded read")).not.toBeInTheDocument();
     expect(screen.queryByText("Truncated")).not.toBeInTheDocument();
-    expect(screen.queryByText("Offloaded (large file)")).not.toBeInTheDocument();
+  });
+
+  it("documents search widgets as collapsed expandable result lists", () => {
+    render(<WidgetGallery onClose={vi.fn()} />);
+
     expect(
-      screen.queryByText(
-        "A file-reference card, not a raw content dump. Success / truncated / offloaded / failure.",
-      ),
-    ).not.toBeInTheDocument();
+      screen.getByText("Collapsed search summaries with inline expandable result lists."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Glob, with files")).toBeInTheDocument();
+    expect(screen.getByText("Glob, no files")).toBeInTheDocument();
+    expect(screen.getByText("Grep, with matches")).toBeInTheDocument();
+    expect(screen.getByText("Grep, no matches")).toBeInTheDocument();
   });
 });
