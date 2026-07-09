@@ -445,6 +445,38 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     expect(await screen.findByTestId("search-panel")).toBeInTheDocument();
   });
 
+  it("keeps the shortcuts dialog reachable from the app shell and blocks Cmd+F until it closes", async () => {
+    render(<App />);
+    await waitForReady();
+
+    await userEvent.click(screen.getByTestId("open-shortcuts-dialog"));
+    expect(await screen.findByTestId("shortcuts-dialog")).toBeInTheDocument();
+
+    pressCmd("f");
+    expect(screen.queryByTestId("search-panel")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId("close-shortcuts-dialog"));
+    await waitFor(() => expect(screen.queryByTestId("shortcuts-dialog")).not.toBeInTheDocument());
+
+    pressCmd("f");
+    expect(await screen.findByTestId("search-panel")).toBeInTheDocument();
+  });
+
+  it("keeps Cmd+K routed to an open command-center state until Task 4 adds its close path", async () => {
+    render(<App />);
+    await waitForReady();
+
+    pressCmd("k");
+    pressCmd("k");
+    pressCmd("f");
+
+    expect(screen.queryByTestId("search-panel")).not.toBeInTheDocument();
+
+    await userEvent.keyboard("{Escape}");
+    pressCmd("f");
+    expect(await screen.findByTestId("search-panel")).toBeInTheDocument();
+  });
+
   it("Cmd+F opens conversation search in a dialog", async () => {
     render(<App />);
     await waitForReady();

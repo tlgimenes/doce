@@ -93,3 +93,92 @@ Result:
 ## Concerns
 
 - No blocking concerns. `Cmd+K` now routes to app-owned command-center state, but the visible command-center surface remains deferred to Task 4 as intended.
+
+## Review fixes: shortcut reachability and command-center open semantics
+
+### What I changed
+
+- Added an app-shell entry point in `src/App.tsx`: a sidebar topbar button (`data-testid="open-shortcuts-dialog"`) that opens the existing `ShortcutsDialog`.
+- Kept the change app-owned and small: no Task 4 command-center UI was introduced.
+- Changed `openCommandCenter` from a toggle to an idempotent open (`setShowCommandCenter(true)`).
+- Added a minimal hidden-state close path for the interim Task 4 gap: pressing `Escape` clears `showCommandCenter`.
+- Cleared the hidden command-center state before opening the visible search or shortcuts surfaces so the app cannot stay stuck behind an invisible gate.
+- Restored active App-level coverage for:
+  - shortcuts dialog reachability from the shell
+  - shortcut blocking while that dialog is open
+  - dialog dismissal and resumed `Cmd+F` behavior
+  - idempotent `Cmd+K` routing while the command-center UI remains deferred
+
+### TDD evidence
+
+#### RED
+
+Command:
+
+```bash
+npm test -- src/App.test.tsx
+```
+
+Result:
+
+- Exit code: `1`
+- `2` failing tests
+- Failure 1: `open-shortcuts-dialog` did not exist, so the shortcuts dialog was unreachable from the app shell
+- Failure 2: after pressing `Cmd+K` twice, `Cmd+F` opened `search-panel`, proving `openCommandCenter` was still toggling closed
+
+#### GREEN
+
+Command:
+
+```bash
+npm test -- src/App.test.tsx
+```
+
+Result:
+
+- Exit code: `0`
+- `Test Files  1 passed (1)`
+- `Tests  21 passed | 1 skipped (22)`
+
+### Verification commands and exact results
+
+1. Required Task 2 regression suite:
+
+```bash
+npm test -- src/lib/shortcuts.test.ts src/views/chat/ConversationList.test.tsx
+```
+
+Result:
+
+- Exit code: `0`
+- `Test Files  2 passed (2)`
+- `Tests  16 passed (16)`
+
+2. Required App shortcut routing suite:
+
+```bash
+npm test -- src/App.test.tsx
+```
+
+Result:
+
+- Exit code: `0`
+- `Test Files  1 passed (1)`
+- `Tests  21 passed | 1 skipped (22)`
+
+3. Build verification:
+
+```bash
+npm run build
+```
+
+Result:
+
+- Exit code: `0`
+- `tsc -b && vite build` completed successfully
+- Existing Vite chunk-size warning remains: `Some chunks are larger than 500 kB after minification`
+
+### Files changed for this review fix
+
+- `src/App.tsx`
+- `src/App.test.tsx`

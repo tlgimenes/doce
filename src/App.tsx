@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { KeyboardIcon } from "lucide-react";
 import Dialog from "@/components/Dialog";
 import { TopbarHost, TopbarProvider } from "@/components/Topbar";
+import { Button } from "@/components/ui/button";
 import Onboarding from "@/views/onboarding/Onboarding";
 import ConversationList, { type ConversationListHandle } from "@/views/chat/ConversationList";
 import EmptyState from "@/views/chat/EmptyState";
@@ -87,8 +89,14 @@ export default function App() {
   }, []);
 
   const openSearch = useCallback(() => {
+    setShowCommandCenter(false);
     setShowSearch(true);
     commands.listConversations().then(setSearchRecentConversations).catch(console.error);
+  }, []);
+
+  const openShortcutsDialog = useCallback(() => {
+    setShowCommandCenter(false);
+    setShowShortcutsDialog(true);
   }, []);
 
   // 005-keyboard-shortcuts: the app's first global (not input-scoped)
@@ -115,7 +123,7 @@ export default function App() {
           openSearch();
         },
         openCommandCenter: () => {
-          setShowCommandCenter((prev) => !prev);
+          setShowCommandCenter(true);
         },
         toggleWidgetGallery: () => {
           setShowWidgetGallery((prev) => !prev);
@@ -126,6 +134,11 @@ export default function App() {
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape" && showCommandCenter) {
+        e.preventDefault();
+        setShowCommandCenter(false);
+        return;
+      }
       const match = shortcuts.find((s) => s.metaKey === e.metaKey && e.key.toLowerCase() === s.key);
       if (!match) return;
       // FR-009 / Task 2: once an app-owned surface is open, only Cmd+K may
@@ -202,7 +215,20 @@ export default function App() {
     <TopbarProvider>
       <div className="flex h-dvh">
         <div className="flex w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar">
-          <TopbarHost target="sidebar" className="px-2" />
+          <TopbarHost target="sidebar" className="px-2">
+            <div className="flex w-full items-center justify-end" data-topbar-no-drag>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="text-sidebar-foreground/70 hover:bg-sidebar-foreground/8 hover:text-sidebar-foreground"
+                onClick={openShortcutsDialog}
+                data-testid="open-shortcuts-dialog"
+                aria-label="Keyboard shortcuts"
+              >
+                <KeyboardIcon size={14} />
+              </Button>
+            </div>
+          </TopbarHost>
           <ConversationList
             ref={conversationListRef}
             activeId={activeConversation?.id ?? null}
