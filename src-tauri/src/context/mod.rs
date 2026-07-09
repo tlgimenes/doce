@@ -13,7 +13,10 @@
 //! `inference::InferenceEngine::generate`'s own lack of a unit test) needs an
 //! actually-loaded GGUF model to construct, unavailable in `cargo test`.
 //! Their correctness is exercised by `quickstart.md`'s manual validation
-//! pass against the real app instead.
+//! pass against the real app instead. Where a real function needs a pure
+//! core unit-tested on its own, that core is split out (`fit_turn_to_budget`
+//! /`fit_to_budget`; `summarize_and_persist`/`messages_to_summarize`), the
+//! same way each time.
 
 pub mod limits;
 pub mod offload;
@@ -241,35 +244,131 @@ pub async fn compute_usage(
     usage_from_history(engine, conversation_id, &history, system_prompt, &settings).await
 }
 
+/// The `"plan"`/`"offloadedTo"` flags tier 1 needs out of a tool row's
+/// `raw_content` JSON (data-model.md's `detail` shape) — parsed once per
+/// row rather than once per flag.
+struct ToolRowFlags {
+    plan: bool,
+    offloaded_to: Option<String>,
+}
+
+fn parse_tool_row_flags(raw_content: &str) -> ToolRowFlags {
+    let parsed: Option<serde_json::Value> = serde_json::from_str(raw_content).ok();
+    let plan = parsed
+        .as_ref()
+        .and_then(|v| v.get("plan"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let offloaded_to = parsed
+        .as_ref()
+        .and_then(|v| v.get("offloadedTo"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    ToolRowFlags { plan, offloaded_to }
+}
+
 /// Tier 1: a pure, idempotent, load-time transform. Walking oldest-to-newest,
 /// every `tool_call`/`tool_result` message beyond the most recent `keep_n`
-/// such messages has its content replaced with a fixed placeholder. Returns
-/// the count actually cleared. Independent of persistence — recomputable
-/// fresh from `content_type`+order alone every time, which is why no
-/// "cut marker" is needed for this tier to stay correct across reloads
-/// (research.md).
+/// such messages has its content replaced with a placeholder — the
+/// restorable pointer text (`limits::tool_cleared_placeholder_with_pointer`)
+/// when the row's `detail.offloadedTo` names a saved-to-disk copy, else the
+/// plain `TOOL_CLEARED_PLACEHOLDER`. Plan-marked rows (`detail.plan ==
+/// true` — the plan-machine tools, `commands::agent::persist_plan_tool`)
+/// are their own, stricter population: cleared beyond the most recent
+/// `limits::PLAN_KEEP_N` regardless of `keep_n`, since a plan row only
+/// ever echoes state the always-regenerated system/state prompt already
+/// carries in full. Returns the count actually cleared (both populations
+/// combined). Independent of persistence — recomputable fresh from
+/// `content_type`+order (+ each row's own `raw_content`) alone every time,
+/// which is why no "cut marker" is needed for this tier to stay correct
+/// across reloads (research.md).
 pub fn apply_lightweight_clearing(history: &mut [HistoryMessage], keep_n: usize) -> usize {
-    let tool_indices: Vec<usize> = history
+    let tool_rows: Vec<(usize, ToolRowFlags)> = history
         .iter()
         .enumerate()
         .filter(|(_, m)| m.content_type == "tool_call" || m.content_type == "tool_result")
-        .map(|(i, _)| i)
+        .map(|(i, m)| (i, parse_tool_row_flags(&m.raw_content)))
         .collect();
 
-    if tool_indices.len() <= keep_n {
-        return 0;
-    }
+    let plan_indices: Vec<usize> = tool_rows
+        .iter()
+        .filter(|(_, flags)| flags.plan)
+        .map(|(i, _)| *i)
+        .collect();
+    let plan_to_clear: &[usize] = if plan_indices.len() > limits::PLAN_KEEP_N {
+        &plan_indices[..plan_indices.len() - limits::PLAN_KEEP_N]
+    } else {
+        &[]
+    };
 
-    let to_clear = &tool_indices[..tool_indices.len() - keep_n];
-    for &i in to_clear {
-        history[i].chat.content = MessageContent::Text(TOOL_CLEARED_PLACEHOLDER.to_string());
+    let regular_indices: Vec<usize> = tool_rows
+        .iter()
+        .filter(|(_, flags)| !flags.plan)
+        .map(|(i, _)| *i)
+        .collect();
+    let regular_to_clear: &[usize] = if regular_indices.len() > keep_n {
+        &regular_indices[..regular_indices.len() - keep_n]
+    } else {
+        &[]
+    };
+
+    let mut cleared = 0;
+    for (i, flags) in &tool_rows {
+        if plan_to_clear.contains(i) || regular_to_clear.contains(i) {
+            let placeholder = match &flags.offloaded_to {
+                Some(path) => limits::tool_cleared_placeholder_with_pointer(path),
+                None => TOOL_CLEARED_PLACEHOLDER.to_string(),
+            };
+            history[*i].chat.content = MessageContent::Text(placeholder);
+            cleared += 1;
+        }
     }
-    to_clear.len()
+    cleared
+}
+
+/// True for a `HistoryMessage` that is a genuine user-authored turn (a
+/// `text`/`rich_text` row with role `"user"`) — deliberately distinct from
+/// a `tool_result` row, which also reconstructs with `chat.role == "user"`
+/// (see `ChatMessage::tool_result`'s own doc comment) but is never "the
+/// task statement".
+fn is_genuine_user_message(message: &HistoryMessage) -> bool {
+    message.chat.role == "user"
+        && (message.content_type == "text" || message.content_type == "rich_text")
+}
+
+/// The pure span-selection logic behind tier 2: everything in `history`
+/// except the most recent `protected_recent` messages, *and* except the
+/// first genuine user message (the task statement) — OpenHands' "keep-
+/// first" behavior, applied here because a summarization pass is
+/// generative, lossy compression by a small model, the riskiest single
+/// step in the whole compaction pipeline; it must never be the thing that
+/// makes the model forget what it was asked to do. Split out from
+/// `summarize_and_persist` (which needs a real `InferenceEngine` — this
+/// file's own testability note at the top) purely so this part is
+/// unit-testable on its own, the same split `fit_turn_to_budget`/
+/// `fit_to_budget` already established.
+fn messages_to_summarize(
+    history: &[HistoryMessage],
+    protected_recent: usize,
+) -> Vec<&HistoryMessage> {
+    if history.len() <= protected_recent {
+        return Vec::new();
+    }
+    let recent_cutoff = history.len() - protected_recent;
+    let first_user_index = history.iter().position(is_genuine_user_message);
+
+    history[..recent_cutoff]
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| Some(*i) != first_user_index)
+        .map(|(_, m)| m)
+        .collect()
 }
 
 /// Tier 2: summarizes everything except the most recent `protected_recent`
-/// messages via a real `generate()` call against the same loaded model, and
-/// persists the result as a `context_notice` row (`kind:"summarized"`) that
+/// messages and the first user message (`messages_to_summarize`) via a real
+/// `generate()` call against the same loaded model, and persists the result
+/// as a `context_notice` row (`kind:"summarized"`) that
 /// `load_history_annotated` will splice in on every subsequent load.
 /// Returns `Ok(None)` (no-op) when there's nothing eligible to summarize.
 pub async fn summarize_and_persist(
@@ -279,11 +378,11 @@ pub async fn summarize_and_persist(
     history: &[HistoryMessage],
     protected_recent: usize,
 ) -> Result<Option<String>, String> {
-    if history.len() <= protected_recent {
+    let to_summarize = messages_to_summarize(history, protected_recent);
+    if to_summarize.is_empty() {
         return Ok(None);
     }
 
-    let to_summarize = &history[..history.len() - protected_recent];
     let mut messages = vec![ChatMessage::system(SUMMARIZATION_PROMPT)];
     messages.extend(to_summarize.iter().map(|m| m.chat.clone()));
 
@@ -547,6 +646,24 @@ mod tests {
             chat: ChatMessage::user(content),
             content_type: content_type.to_string(),
             sequence,
+            raw_content: String::new(),
+        }
+    }
+
+    /// A `tool_result` row carrying real `raw_content` JSON (the persisted
+    /// `detail` blob) — for exercising tier 1's `"plan"`/`"offloadedTo"`
+    /// parsing, which `history_message` above deliberately leaves empty.
+    fn history_message_with_raw_content(
+        content_type: &str,
+        sequence: i64,
+        content: &str,
+        raw_content: &str,
+    ) -> HistoryMessage {
+        HistoryMessage {
+            chat: ChatMessage::user(content),
+            content_type: content_type.to_string(),
+            sequence,
+            raw_content: raw_content.to_string(),
         }
     }
 
@@ -606,6 +723,102 @@ mod tests {
         for message in &history[cleared + 1..] {
             assert_ne!(message.chat.text(), TOOL_CLEARED_PLACEHOLDER);
         }
+    }
+
+    #[test]
+    fn cleared_row_with_offloaded_to_gets_the_restorable_pointer_placeholder() {
+        // TOOL_KEEP_N + 1 tool_result rows -- the oldest (index 0) is the
+        // one that actually gets cleared. Its raw_content JSON carries
+        // offloadedTo, seeded exactly as `commands::agent::execute_tool`
+        // persists it (`detail["offloadedTo"] = json!(offloaded_to)`).
+        let mut history: Vec<HistoryMessage> = (0..(TOOL_KEEP_N as i64 + 1))
+            .map(|i| history_message("tool_result", i, &format!("result {i}")))
+            .collect();
+        history[0] = history_message_with_raw_content(
+            "tool_result",
+            0,
+            "result 0",
+            &serde_json::json!({"offloadedTo": "/tmp/x.txt"}).to_string(),
+        );
+
+        let cleared = apply_lightweight_clearing(&mut history, TOOL_KEEP_N);
+        assert_eq!(cleared, 1);
+        assert_eq!(
+            history[0].chat.text(),
+            limits::tool_cleared_placeholder_with_pointer("/tmp/x.txt"),
+            "an offloaded row's placeholder must point back at the saved file, not just say it's gone"
+        );
+        for message in &history[1..] {
+            assert_ne!(message.chat.text(), TOOL_CLEARED_PLACEHOLDER);
+        }
+    }
+
+    #[test]
+    fn cleared_row_without_offloaded_to_gets_the_plain_placeholder() {
+        let mut history: Vec<HistoryMessage> = (0..(TOOL_KEEP_N as i64 + 1))
+            .map(|i| {
+                history_message_with_raw_content(
+                    "tool_result",
+                    i,
+                    &format!("result {i}"),
+                    &serde_json::json!({"offloadedTo": null}).to_string(),
+                )
+            })
+            .collect();
+
+        let cleared = apply_lightweight_clearing(&mut history, TOOL_KEEP_N);
+        assert_eq!(cleared, 1);
+        assert_eq!(history[0].chat.text(), TOOL_CLEARED_PLACEHOLDER);
+    }
+
+    #[test]
+    fn plan_rows_clear_beyond_the_most_recent_two_even_when_keep_n_would_keep_them_all() {
+        let plan_detail = serde_json::json!({"plan": true}).to_string();
+        let mut history: Vec<HistoryMessage> = (0..5)
+            .map(|i| {
+                history_message_with_raw_content(
+                    "tool_result",
+                    i,
+                    &format!("plan result {i}"),
+                    &plan_detail,
+                )
+            })
+            .collect();
+
+        // keep_n is large enough that the ordinary TOOL_KEEP_N-style rule
+        // would keep every one of these -- proving plan rows are cleared
+        // by their own, stricter PLAN_KEEP_N cutoff instead.
+        let cleared = apply_lightweight_clearing(&mut history, 10);
+        assert_eq!(cleared, 5 - limits::PLAN_KEEP_N);
+        for message in &history[0..cleared] {
+            assert_eq!(message.chat.text(), TOOL_CLEARED_PLACEHOLDER);
+        }
+        for (i, message) in history.iter().enumerate().skip(cleared) {
+            assert_eq!(message.chat.text(), format!("plan result {i}"));
+        }
+    }
+
+    #[test]
+    fn plan_rows_and_regular_tool_rows_are_cleared_independently() {
+        let plan_detail = serde_json::json!({"plan": true}).to_string();
+        let mut history = vec![
+            history_message_with_raw_content("tool_result", 0, "plan 0", &plan_detail),
+            history_message_with_raw_content("tool_result", 1, "plan 1", &plan_detail),
+            history_message_with_raw_content("tool_result", 2, "plan 2", &plan_detail),
+            history_message("tool_result", 3, "regular 0"),
+            history_message("tool_result", 4, "regular 1"),
+        ];
+
+        // TOOL_KEEP_N (2) regular rows exist -- none of them should clear.
+        // Of the 3 plan rows, only the oldest (beyond PLAN_KEEP_N=2)
+        // should clear.
+        let cleared = apply_lightweight_clearing(&mut history, TOOL_KEEP_N);
+        assert_eq!(cleared, 1);
+        assert_eq!(history[0].chat.text(), TOOL_CLEARED_PLACEHOLDER);
+        assert_eq!(history[1].chat.text(), "plan 1");
+        assert_eq!(history[2].chat.text(), "plan 2");
+        assert_eq!(history[3].chat.text(), "regular 0");
+        assert_eq!(history[4].chat.text(), "regular 1");
     }
 
     // apply_lightweight_clearing_in_memory/compact_in_memory's own former
@@ -827,5 +1040,80 @@ mod tests {
         let merged = merge_token_count(detail, 312);
         assert_eq!(merged["tokenCount"], 312);
         assert_eq!(merged["filePath"], "/tmp/x.txt");
+    }
+
+    // --- messages_to_summarize (tier 2's summarization-input selection) ---
+    //
+    // `summarize_and_persist` itself needs a real `InferenceEngine` (this
+    // file's own testability note at the top), so per the
+    // `fit_turn_to_budget`/`fit_to_budget` precedent, the pure
+    // span-selection logic is pulled out into `messages_to_summarize` so
+    // it's unit-testable on its own.
+
+    #[test]
+    fn messages_to_summarize_is_empty_at_or_under_the_protected_window() {
+        let history = vec![history_message("text", 0, "task statement")];
+        assert!(messages_to_summarize(&history, PROTECTED_RECENT_MESSAGES).is_empty());
+    }
+
+    #[test]
+    fn messages_to_summarize_excludes_the_most_recent_protected_messages() {
+        // All assistant-authored -- no genuine user message exists in this
+        // history at all, so only the protected-recent-window exclusion is
+        // under test here (the separate first-user-message pin has its own
+        // dedicated test below).
+        let history: Vec<HistoryMessage> = (0..5)
+            .map(|i| HistoryMessage {
+                chat: ChatMessage::assistant(format!("m{i}")),
+                content_type: "text".to_string(),
+                sequence: i,
+                raw_content: String::new(),
+            })
+            .collect();
+        let selected = messages_to_summarize(&history, 2);
+        let texts: Vec<String> = selected.iter().map(|m| m.chat.text()).collect();
+        assert_eq!(texts, vec!["m0", "m1", "m2"]);
+    }
+
+    #[test]
+    fn messages_to_summarize_always_excludes_the_first_user_message() {
+        // protected_recent=2 would otherwise summarize indices [0..4) --
+        // "task statement", m1, m2 -- but the first user message (the
+        // task statement) must never enter the summarized span: a
+        // summarization pass is generative, lossy compression by a small
+        // model, and losing the task statement to it would be
+        // unrecoverable (OpenHands' "keep-first" behavior).
+        let mut history = vec![history_message("text", 0, "task statement")];
+        history.extend((1..6).map(|i| history_message("text", i, &format!("m{i}"))));
+
+        let selected = messages_to_summarize(&history, 2);
+        let texts: Vec<String> = selected.iter().map(|m| m.chat.text()).collect();
+        assert_eq!(
+            texts,
+            vec!["m1", "m2", "m3"],
+            "the first user message must survive outside the summarized span"
+        );
+    }
+
+    #[test]
+    fn messages_to_summarize_does_not_mistake_a_leading_tool_result_for_the_first_user_message() {
+        // Defensive: `ChatMessage::tool_result` also reconstructs with
+        // role "user" (see its own doc comment), but a tool_result row is
+        // never "the task statement" and must not be pinned as if it were
+        // -- the pin must instead land on "task statement", the real first
+        // user message, excluding it (and only it) from the result.
+        let history = vec![
+            history_message("tool_result", 0, "tool output"),
+            history_message("text", 1, "task statement"),
+            history_message("text", 2, "m1"),
+            history_message("text", 3, "m2"),
+        ];
+        let selected = messages_to_summarize(&history, 1);
+        let texts: Vec<String> = selected.iter().map(|m| m.chat.text()).collect();
+        assert_eq!(
+            texts,
+            vec!["tool output", "m1"],
+            "only a genuine text/rich_text user row can be the pinned first user message"
+        );
     }
 }

@@ -16,6 +16,15 @@ pub struct HistoryMessage {
     pub chat: ChatMessage,
     pub content_type: String,
     pub sequence: i64,
+    /// The row's raw, unprocessed `content` column value. For `tool_call`/
+    /// `tool_result` rows this is the persisted JSON `detail` blob
+    /// (data-model.md) — `chat`'s own reconstruction above discards it in
+    /// favor of the plain model-facing text (`model_text`), so anything
+    /// that needs the richer JSON back (010-context-window-management
+    /// tier 1's `"plan"`/`"offloadedTo"` flags) has to read it from here
+    /// instead. Not meaningful for other content types (plain text,
+    /// spliced `context_notice`) — nothing reads it for those.
+    pub raw_content: String,
 }
 
 /// Builds the chat-template message history for a conversation: every
@@ -105,6 +114,7 @@ pub fn load_history_annotated(
             chat: ChatMessage::system(summary.clone()),
             content_type: "context_notice".to_string(),
             sequence: *splice_sequence,
+            raw_content: String::new(),
         });
     }
 
@@ -118,6 +128,11 @@ pub fn load_history_annotated(
                 continue;
             }
         }
+
+        // Preserved before `content` is consumed/moved below -- tier 1
+        // (`context::apply_lightweight_clearing`) reads this back to find
+        // a tool_result row's `"plan"`/`"offloadedTo"` detail flags.
+        let raw_content = content.clone();
 
         // 010-context-window-management (structured tool calls): a
         // `tool_call`/`tool_result` row reconstructs into the same
@@ -163,6 +178,7 @@ pub fn load_history_annotated(
             chat,
             content_type,
             sequence,
+            raw_content,
         });
     }
 

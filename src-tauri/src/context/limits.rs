@@ -20,6 +20,26 @@ pub const TOOL_KEEP_N: usize = 2;
 
 pub const TOOL_CLEARED_PLACEHOLDER: &str = "[Old tool result cleared to save context space]";
 
+/// Beyond this many plan-marked tool rows (`detail.plan == true` — the
+/// five plan-machine tools plus state-gated rejections, see
+/// `commands::agent::persist_plan_tool`), the oldest are cleared by tier 1
+/// -- independent of, and far stricter than, `TOOL_KEEP_N`. A plan row
+/// only ever echoes state the always-regenerated system/state prompt
+/// already carries in full, so keeping more than a couple of them around
+/// just spends window on nothing new.
+pub const PLAN_KEEP_N: usize = 2;
+
+/// Tier-1 placeholder for a cleared tool row whose full output was
+/// previously offloaded to disk (`context::offload::offload_if_oversized`
+/// stamps the resulting path into the row's persisted `detail.offloadedTo`
+/// — see `commands::agent::execute_tool`). Unlike `TOOL_CLEARED_PLACEHOLDER`,
+/// clearing here is restorable: the model can `Read` the path back into
+/// context if it turns out to still need this result, rather than the
+/// row's content being gone for good.
+pub fn tool_cleared_placeholder_with_pointer(offload_path: &str) -> String {
+    format!("[Old tool result cleared; full output saved at {offload_path} — Read it to recover]")
+}
+
 /// Messages tier 2 never summarizes away, regardless of how far back it
 /// would otherwise reach (research.md).
 pub const PROTECTED_RECENT_MESSAGES: usize = 10;
