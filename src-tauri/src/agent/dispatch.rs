@@ -58,6 +58,56 @@ fn wrong_key_hint(arguments: &serde_json::Value, expected: &str, common_mistakes
         .unwrap_or_default()
 }
 
+/// (tool, required string-typed args). The NVIDIA SLM-agents "simple
+/// format checks" applied at the boundary: a malformed call becomes a
+/// one-turn correction naming exactly what's missing, instead of each
+/// tool arm improvising (the model was observed repeating a wrong key
+/// six times without self-correcting when the error didn't name it).
+const REQUIRED_STRING_ARGS: &[(&str, &[&str])] = &[
+    ("Read", &["file_path"]),
+    ("Write", &["file_path", "content"]),
+    ("Edit", &["file_path", "old_string", "new_string"]),
+    ("Bash", &["command"]),
+    ("Glob", &["pattern"]),
+    ("Grep", &["pattern"]),
+];
+
+/// Checked as the first thing `execute()` does, ahead of every per-tool
+/// arm: generalizes `wrong_key_hint` from the 3 tools that used to call it
+/// by hand to all 6 built-in tools with required string arguments, and
+/// additionally catches a required argument present under the right key
+/// but the wrong JSON type (a bare `None` from `.as_str()` couldn't tell
+/// "missing" apart from "wrong type" — this can).
+fn validate_required_args(call: &ToolCall) -> Option<String> {
+    let (_, required) = REQUIRED_STRING_ARGS
+        .iter()
+        .find(|(name, _)| *name == call.name)?;
+    let problems: Vec<String> = required
+        .iter()
+        .filter_map(|key| match call.arguments.get(*key) {
+            None => {
+                let hint = wrong_key_hint(
+                    &call.arguments,
+                    key,
+                    &["file", "path", "filepath", "filename", "text", "cmd"],
+                );
+                Some(format!("missing required \"{key}\" (a string){hint}"))
+            }
+            Some(v) if !v.is_string() => Some(format!("\"{key}\" must be a string")),
+            Some(_) => None,
+        })
+        .collect();
+    if problems.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "Error: invalid {} arguments: {}. Re-issue the call with the corrected arguments.",
+            call.name,
+            problems.join("; ")
+        ))
+    }
+}
+
 /// Executes a parsed `ToolCall` against the real built-in tools (FR-009).
 /// `cwd` is the conversation's workspace path, if it has one
 /// (007-workspace-cwd-resolution) — used only to resolve *relative* paths
@@ -66,15 +116,21 @@ fn wrong_key_hint(arguments: &serde_json::Value, expected: &str, common_mistakes
 /// requirement, unchanged by this feature) — an absolute path is always
 /// taken exactly as given.
 pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
+    if let Some(error) = validate_required_args(call) {
+        return ToolOutcome {
+            detail: json!({"toolName": call.name, "arguments": call.arguments, "outcome": {"ok": false, "error": error}}),
+            model_text: error,
+        };
+    }
     match call.name.as_str() {
         "Read" => {
-            let Some(path) = call.arguments.get("file_path").and_then(|v| v.as_str()) else {
-                let hint = wrong_key_hint(&call.arguments, "file_path", &["file", "path", "filepath", "filename"]);
-                return ToolOutcome {
-                    model_text: format!("Error: Read requires a file_path argument{hint}"),
-                    detail: json!({"toolName": "Read", "filePath": null, "outcome": {"ok": false, "error": format!("missing file_path argument{hint}")}}),
-                };
-            };
+            // validate_required_args already guaranteed file_path is present
+            // and a string.
+            let path = call
+                .arguments
+                .get("file_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
             let offset = call
                 .arguments
                 .get("offset")
@@ -115,16 +171,18 @@ pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
             }
         }
         "Write" => {
-            let (Some(path), Some(content)) = (
-                call.arguments.get("file_path").and_then(|v| v.as_str()),
-                call.arguments.get("content").and_then(|v| v.as_str()),
-            ) else {
-                let hint = wrong_key_hint(&call.arguments, "file_path", &["file", "path", "filepath", "filename"]);
-                return ToolOutcome {
-                    model_text: format!("Error: Write requires file_path and content arguments{hint}"),
-                    detail: json!({"toolName": "Write", "filePath": null, "outcome": {"ok": false, "error": format!("missing file_path or content argument{hint}")}}),
-                };
-            };
+            // validate_required_args already guaranteed file_path and
+            // content are present and strings.
+            let path = call
+                .arguments
+                .get("file_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let content = call
+                .arguments
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
             let resolved = resolve_against(cwd, &PathBuf::from(path));
             match fs::write(&resolved, content) {
                 Ok(()) => ToolOutcome {
@@ -151,19 +209,23 @@ pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
             }
         }
         "Edit" => {
-            let (Some(path), Some(old_string), Some(new_string)) = (
-                call.arguments.get("file_path").and_then(|v| v.as_str()),
-                call.arguments.get("old_string").and_then(|v| v.as_str()),
-                call.arguments.get("new_string").and_then(|v| v.as_str()),
-            ) else {
-                let hint = wrong_key_hint(&call.arguments, "file_path", &["file", "path", "filepath", "filename"]);
-                return ToolOutcome {
-                    model_text: format!(
-                        "Error: Edit requires file_path, old_string, and new_string arguments{hint}"
-                    ),
-                    detail: json!({"toolName": "Edit", "filePath": null, "outcome": {"ok": false, "error": format!("missing required argument{hint}")}}),
-                };
-            };
+            // validate_required_args already guaranteed file_path,
+            // old_string, and new_string are present and strings.
+            let path = call
+                .arguments
+                .get("file_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let old_string = call
+                .arguments
+                .get("old_string")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let new_string = call
+                .arguments
+                .get("new_string")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
             let replace_all = call
                 .arguments
                 .get("replace_all")
@@ -195,12 +257,13 @@ pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
             }
         }
         "Bash" => {
-            let Some(command) = call.arguments.get("command").and_then(|v| v.as_str()) else {
-                return ToolOutcome {
-                    model_text: "Error: Bash requires a command argument".to_string(),
-                    detail: json!({"toolName": "Bash", "command": null, "outcome": {"ok": false, "error": "missing command argument"}}),
-                };
-            };
+            // validate_required_args already guaranteed command is present
+            // and a string.
+            let command = call
+                .arguments
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
             let timeout_ms = call.arguments.get("timeout").and_then(|v| v.as_u64());
             match bash::run(command, timeout_ms, cwd) {
                 Ok(result) => ToolOutcome {
@@ -229,12 +292,13 @@ pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
             }
         }
         "Glob" => {
-            let Some(pattern) = call.arguments.get("pattern").and_then(|v| v.as_str()) else {
-                return ToolOutcome {
-                    model_text: "Error: Glob requires a pattern argument".to_string(),
-                    detail: json!({"toolName": "Glob", "pattern": null, "path": null, "matches": []}),
-                };
-            };
+            // validate_required_args already guaranteed pattern is present
+            // and a string.
+            let pattern = call
+                .arguments
+                .get("pattern")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
             let base =
                 resolve_optional_base(cwd, call.arguments.get("path").and_then(|v| v.as_str()));
             match search::glob_search(pattern, &base) {
@@ -281,12 +345,13 @@ pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
             }
         }
         "Grep" => {
-            let Some(pattern) = call.arguments.get("pattern").and_then(|v| v.as_str()) else {
-                return ToolOutcome {
-                    model_text: "Error: Grep requires a pattern argument".to_string(),
-                    detail: json!({"toolName": "Grep", "pattern": null, "path": null, "glob": null, "matches": []}),
-                };
-            };
+            // validate_required_args already guaranteed pattern is present
+            // and a string.
+            let pattern = call
+                .arguments
+                .get("pattern")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
             let base =
                 resolve_optional_base(cwd, call.arguments.get("path").and_then(|v| v.as_str()));
             let glob_filter = call.arguments.get("glob").and_then(|v| v.as_str());
@@ -597,6 +662,25 @@ mod tests {
             "expected a hint naming both the wrong key and the correct one, got: {:?}",
             result.model_text
         );
+    }
+
+    #[test]
+    fn missing_required_arguments_get_a_schema_shaped_error_before_dispatch() {
+        let result = execute(&call("Grep", serde_json::json!({})), None);
+        assert!(result.model_text.starts_with("Error:"));
+        assert!(result.model_text.contains("pattern"), "must name the missing key");
+
+        let result = execute(&call("Edit", serde_json::json!({"file_path": "/a"})), None);
+        assert!(result.model_text.contains("old_string"));
+        assert!(result.model_text.contains("new_string"));
+    }
+
+    #[test]
+    fn wrong_type_arguments_get_named() {
+        let result = execute(&call("Read", serde_json::json!({"file_path": 42})), None);
+        assert!(result.model_text.starts_with("Error:"));
+        assert!(result.model_text.contains("file_path"));
+        assert!(result.model_text.contains("string"));
     }
 
     // --- 004-tool-call-widgets: US4 (Read/Write/Glob/Grep widgets) ---
