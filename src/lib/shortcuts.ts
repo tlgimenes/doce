@@ -11,7 +11,7 @@ export interface ShortcutHandlers {
   focusInput: () => void;
   newConversation: () => void;
   openSearch: () => void;
-  toggleShortcutsDialog: () => void;
+  openCommandCenter: () => void;
   toggleWidgetGallery: () => void;
 }
 
@@ -23,42 +23,42 @@ export function buildShortcuts(handlers: ShortcutHandlers): Shortcut[] {
   return [
     {
       id: "focus-input",
-      combo: "⌘L",
+      combo: "Cmd+L",
       metaKey: true,
       key: "l",
-      description: "Focus the message input",
+      description: "Focus composer",
       action: handlers.focusInput,
     },
     {
       id: "new-conversation",
-      combo: "⌘N",
+      combo: "Cmd+N",
       metaKey: true,
       key: "n",
-      description: "Start a new conversation",
+      description: "New Agent",
       action: handlers.newConversation,
     },
     {
       id: "search-conversations",
-      combo: "⌘F",
+      combo: "Cmd+F",
       metaKey: true,
       key: "f",
-      description: "Open conversation search",
+      description: "Search conversations",
       action: handlers.openSearch,
     },
     {
-      id: "show-shortcuts",
-      combo: "⌘K",
+      id: "open-command-center",
+      combo: "Cmd+K",
       metaKey: true,
       key: "k",
-      description: "Show keyboard shortcuts",
-      action: handlers.toggleShortcutsDialog,
+      description: "Open command center",
+      action: handlers.openCommandCenter,
     },
     {
       id: "show-widget-gallery",
-      combo: "⌘D",
+      combo: "Cmd+D",
       metaKey: true,
       key: "d",
-      description: "Show the widget gallery",
+      description: "Open widget gallery",
       action: handlers.toggleWidgetGallery,
     },
   ];

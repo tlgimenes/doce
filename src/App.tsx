@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Dialog from "@/components/Dialog";
 import { TopbarHost, TopbarProvider } from "@/components/Topbar";
 import Onboarding from "@/views/onboarding/Onboarding";
 import ConversationList, { type ConversationListHandle } from "@/views/chat/ConversationList";
 import EmptyState from "@/views/chat/EmptyState";
+import SearchPanel from "@/views/chat/SearchPanel";
 import Workspace from "@/views/workspace/Workspace";
 import Settings from "@/views/settings/Settings";
 import ShortcutsDialog from "@/views/shortcuts/ShortcutsDialog";
@@ -64,9 +66,12 @@ export default function App() {
   const [ready, setReady] = useState<boolean | null>(null);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const [pendingInitialTurn, setPendingInitialTurn] = useState<PendingInitialTurn | null>(null);
+  const [showSearch, setShowSearch] = useState(false);
+  const [showCommandCenter, setShowCommandCenter] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showShortcutsDialog, setShowShortcutsDialog] = useState(false);
   const [showWidgetGallery, setShowWidgetGallery] = useState(false);
+  const [searchRecentConversations, setSearchRecentConversations] = useState<Conversation[]>([]);
   const [emptyStateAutoFocusToken, setEmptyStateAutoFocusToken] = useState<number | null>(null);
   const conversationListRef = useRef<ConversationListHandle>(null);
 
@@ -79,6 +84,11 @@ export default function App() {
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  const openSearch = useCallback(() => {
+    setShowSearch(true);
+    commands.listConversations().then(setSearchRecentConversations).catch(console.error);
   }, []);
 
   // 005-keyboard-shortcuts: the app's first global (not input-scoped)
@@ -102,32 +112,33 @@ export default function App() {
           conversationListRef.current?.createNew();
         },
         openSearch: () => {
-          conversationListRef.current?.openSearch();
+          openSearch();
         },
-        toggleShortcutsDialog: () => {
-          setShowShortcutsDialog((prev) => !prev);
+        openCommandCenter: () => {
+          setShowCommandCenter((prev) => !prev);
         },
         toggleWidgetGallery: () => {
           setShowWidgetGallery((prev) => !prev);
         },
       }),
-    [activeConversation],
+    [activeConversation, openSearch],
   );
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       const match = shortcuts.find((s) => s.metaKey === e.metaKey && e.key.toLowerCase() === s.key);
       if (!match) return;
-      // FR-009: while the shortcuts dialog is open, only the shortcut that
-      // toggles it may act — Cmd+L/Cmd+N must not reach the conversation.
-      if (showShortcutsDialog && match.id !== "show-shortcuts") return;
+      // FR-009 / Task 2: once an app-owned surface is open, only Cmd+K may
+      // continue through the global handler until that surface yields.
+      if (showShortcutsDialog && match.id !== "open-command-center") return;
+      if (showCommandCenter && match.id !== "open-command-center") return;
       e.preventDefault();
       match.action();
     }
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [shortcuts, showShortcutsDialog]);
+  }, [shortcuts, showCommandCenter, showShortcutsDialog]);
 
   // US5/FR-026: the scheduler's priority is evaluated dynamically at pickup
   // time against whichever conversation is currently focused — every view
@@ -156,6 +167,25 @@ export default function App() {
       return hasSameConversationData(current, next) ? current : next;
     });
   }, []);
+
+  const openConversationFromSearch = useCallback(
+    async (conversationId: string) => {
+      const recentConversation = searchRecentConversations.find((c) => c.id === conversationId);
+      const allConversations = recentConversation
+        ? searchRecentConversations
+        : await commands.listConversations();
+      const conversation = allConversations.find((c) => c.id === conversationId);
+
+      if (!conversation) return;
+
+      setShowSearch(false);
+      setShowSettings(false);
+      setPendingInitialTurn(null);
+      setActiveConversation(conversation);
+      markSeen(conversation.id);
+    },
+    [markSeen, searchRecentConversations],
+  );
 
   const activateConversation = (conversation: Conversation, initialTurn?: PendingInitialTurn) => {
     runViewTransition(() => {
@@ -188,6 +218,7 @@ export default function App() {
               setActiveConversation(null);
               setEmptyStateAutoFocusToken((current) => (current ?? 0) + 1);
             }}
+            onOpenSearch={() => openSearch()}
             onOpenSettings={() => setShowSettings(true)}
             onActiveConversationChange={syncActiveConversation}
             onArchive={(conversationId) => {
@@ -244,6 +275,14 @@ export default function App() {
           onClose={() => setShowShortcutsDialog(false)}
           shortcuts={shortcuts}
         />
+        <Dialog open={showSearch} onClose={() => setShowSearch(false)}>
+          <SearchPanel
+            recentConversations={searchRecentConversations}
+            onSelect={(conversationId) => {
+              void openConversationFromSearch(conversationId);
+            }}
+          />
+        </Dialog>
       </div>
     </TopbarProvider>
   );

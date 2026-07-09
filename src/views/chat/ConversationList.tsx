@@ -10,12 +10,10 @@ import {
 } from "react";
 import { MagnifyingGlassIcon, GearIcon, PlusIcon, TrashIcon } from "@phosphor-icons/react";
 import { homeDir } from "@tauri-apps/api/path";
-import Dialog from "@/components/Dialog";
 import { Button } from "@/components/ui/button";
 import { KeyboardShortcut } from "@/components/ui/KeyboardShortcut";
 import { cn } from "@/lib/cn";
 import { commands, type Conversation, type ConversationStatus, type Workspace } from "@/lib/ipc";
-import SearchPanel from "./SearchPanel";
 import {
   formatConversationRelativeTime,
   getConversationWorkspaceLabel,
@@ -26,6 +24,7 @@ interface ConversationListProps {
   activeId: string | null;
   onSelect: (conversation: Conversation) => void;
   onNewConversation: () => void;
+  onOpenSearch: () => void;
   onOpenSettings: () => void;
   onActiveConversationChange?: (conversation: Conversation) => void;
   onArchive?: (conversationId: string) => void;
@@ -36,7 +35,6 @@ interface ConversationListProps {
 // not a duplicate (research.md § 3).
 export interface ConversationListHandle {
   createNew: () => void;
-  openSearch: () => void;
 }
 
 const STATUS_COLOR: Record<ConversationStatus, string> = {
@@ -69,6 +67,7 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
       activeId,
       onSelect,
       onNewConversation,
+      onOpenSearch,
       onOpenSettings,
       onActiveConversationChange,
       onArchive,
@@ -78,7 +77,6 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
     const [conversations, setConversations] = useState<Conversation[]>([]);
     const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
     const [homePath, setHomePath] = useState<string | null>(null);
-    const [searching, setSearching] = useState(false);
 
     const refresh = useCallback(() => {
       commands.listConversations().then(setConversations);
@@ -163,10 +161,10 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
     };
 
     const openSearch = () => {
-      setSearching(true);
+      onOpenSearch();
     };
 
-    useImperativeHandle(ref, () => ({ createNew, openSearch }));
+    useImperativeHandle(ref, () => ({ createNew }));
 
     return (
       <div
@@ -283,23 +281,6 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
             );
           })}
         </div>
-        <Dialog open={searching} onClose={() => setSearching(false)}>
-          <SearchPanel
-            recentConversations={conversations}
-            onSelect={(id) => {
-              // Search results only carry the id (commands.searchConversations
-              // returns a slimmer SearchResult, not a full Conversation) —
-              // look it up in the already-loaded list rather than changing
-              // onSelect's shape just for this one caller.
-              const conversation = conversations.find((c) => c.id === id);
-              if (conversation) {
-                markConversationSeenLocally(conversation.id);
-                onSelect(conversation);
-              }
-              setSearching(false);
-            }}
-          />
-        </Dialog>
       </div>
     );
   },

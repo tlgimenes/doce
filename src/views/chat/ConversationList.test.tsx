@@ -61,6 +61,7 @@ describe("ConversationList", () => {
         activeId={null}
         onSelect={vi.fn()}
         onNewConversation={vi.fn()}
+        onOpenSearch={vi.fn()}
         onOpenSettings={vi.fn()}
       />,
     );
@@ -93,6 +94,7 @@ describe("ConversationList", () => {
         activeId={null}
         onSelect={onSelect}
         onNewConversation={vi.fn()}
+        onOpenSearch={vi.fn()}
         onOpenSettings={vi.fn()}
       />,
     );
@@ -119,6 +121,7 @@ describe("ConversationList", () => {
         activeId={null}
         onSelect={vi.fn()}
         onNewConversation={vi.fn()}
+        onOpenSearch={vi.fn()}
         onOpenSettings={vi.fn()}
       />,
     );
@@ -147,6 +150,7 @@ describe("ConversationList", () => {
         activeId="active"
         onSelect={vi.fn()}
         onNewConversation={vi.fn()}
+        onOpenSearch={vi.fn()}
         onOpenSettings={vi.fn()}
       />,
     );
@@ -187,6 +191,7 @@ describe("ConversationList", () => {
           activeId={activeId}
           onSelect={(conversation) => setActiveId(conversation.id)}
           onNewConversation={vi.fn()}
+          onOpenSearch={vi.fn()}
           onOpenSettings={vi.fn()}
         />
       );
@@ -222,6 +227,7 @@ describe("ConversationList", () => {
         activeId="selected"
         onSelect={vi.fn()}
         onNewConversation={vi.fn()}
+        onOpenSearch={vi.fn()}
         onOpenSettings={vi.fn()}
       />,
     );
@@ -250,6 +256,7 @@ describe("ConversationList", () => {
         activeId={null}
         onSelect={onSelect}
         onNewConversation={vi.fn()}
+        onOpenSearch={vi.fn()}
         onOpenSettings={vi.fn()}
       />,
     );
@@ -285,6 +292,7 @@ describe("ConversationList", () => {
         activeId="selected"
         onSelect={vi.fn()}
         onNewConversation={vi.fn()}
+        onOpenSearch={vi.fn()}
         onOpenSettings={vi.fn()}
       />,
     );
@@ -326,6 +334,7 @@ describe("ConversationList", () => {
           activeId="active"
           onSelect={vi.fn()}
           onNewConversation={vi.fn()}
+          onOpenSearch={vi.fn()}
           onOpenSettings={vi.fn()}
         />,
       );
@@ -355,6 +364,7 @@ describe("ConversationList", () => {
           activeId={null}
           onSelect={vi.fn()}
           onNewConversation={vi.fn()}
+          onOpenSearch={vi.fn()}
           onOpenSettings={vi.fn()}
         />,
       );
@@ -375,6 +385,7 @@ describe("ConversationList", () => {
         activeId={null}
         onSelect={vi.fn()}
         onNewConversation={onNewConversation}
+        onOpenSearch={vi.fn()}
         onOpenSettings={vi.fn()}
       />,
     );
@@ -395,6 +406,7 @@ describe("ConversationList", () => {
         activeId={null}
         onSelect={vi.fn()}
         onNewConversation={onNewConversation}
+        onOpenSearch={vi.fn()}
         onOpenSettings={vi.fn()}
       />,
     );
@@ -405,14 +417,16 @@ describe("ConversationList", () => {
     expect(onNewConversation).toHaveBeenCalledTimes(1);
   });
 
-  it("renders sidebar actions at the top of the sidebar body while search opens in a dialog", async () => {
+  it("renders sidebar actions at the top of the sidebar body and routes Search through onOpenSearch", async () => {
     vi.mocked(commands.listConversations).mockResolvedValue([]);
+    const onOpenSearch = vi.fn();
 
     render(
       <ConversationList
         activeId={null}
         onSelect={vi.fn()}
         onNewConversation={vi.fn()}
+        onOpenSearch={onOpenSearch}
         onOpenSettings={vi.fn()}
       />,
     );
@@ -424,49 +438,27 @@ describe("ConversationList", () => {
 
     await userEvent.click(screen.getByTestId("open-search"));
 
-    const searchPanel = screen.getByTestId("search-panel");
-    expect(searchPanel.closest('[data-testid="app-dialog-content"]')).toBeInTheDocument();
+    expect(onOpenSearch).toHaveBeenCalledTimes(1);
     expect(sidebar.firstElementChild).toBe(actions);
     expect(actions).toBeInTheDocument();
   });
 
-  it("shows recent conversations in search and selects them through the full conversation path", async () => {
-    const oldConversation = {
-      id: "old",
-      workspaceId: null,
-      title: "Older task",
-      createdAt: 1,
-      updatedAt: 1,
-      lastSeenAt: 1,
-      status: "done" as const,
-    };
-    const recentConversation = {
-      id: "recent",
-      workspaceId: null,
-      title: "Recent task",
-      createdAt: 2,
-      updatedAt: 3,
-      lastSeenAt: 3,
-      status: "done" as const,
-    };
-    vi.mocked(commands.listConversations).mockResolvedValue([oldConversation, recentConversation]);
-    const onSelect = vi.fn();
+  it("does not expose openSearch via the imperative handle", async () => {
+    vi.mocked(commands.listConversations).mockResolvedValue([]);
+    const ref = createRef<ConversationListHandle>();
 
     render(
       <ConversationList
+        ref={ref}
         activeId={null}
-        onSelect={onSelect}
+        onSelect={vi.fn()}
         onNewConversation={vi.fn()}
+        onOpenSearch={vi.fn()}
         onOpenSettings={vi.fn()}
       />,
     );
 
-    await userEvent.click(await screen.findByTestId("open-search"));
-
-    const rows = screen.getAllByTestId("search-result");
-    expect(rows[0]).toHaveTextContent("Recent task");
-
-    await userEvent.click(rows[0]);
-    expect(onSelect).toHaveBeenCalledWith(recentConversation);
+    await waitFor(() => expect(ref.current).not.toBeNull());
+    expect(ref.current).toEqual({ createNew: expect.any(Function) });
   });
 });

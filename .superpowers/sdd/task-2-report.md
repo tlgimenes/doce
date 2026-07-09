@@ -1,83 +1,95 @@
-# Task 2 Report: `context/payload.rs` — Payload-file staging
+# Task 2 Report
 
-## Implementation Summary
+## What I implemented
 
-Created a new module `context/payload.rs` that stages every tool result through a payload file on disk while deciding whether the model sees the full result or a status reference line based on token count.
+- Added `src/lib/shortcuts.test.ts` and updated `src/lib/shortcuts.ts` so the shortcut registry now owns:
+  - `openCommandCenter(): void`
+  - `open-command-center` on `Cmd+K`
+  - `Cmd+F` remaining dedicated to conversation search
+- Moved app-owned surface state into `src/App.tsx`:
+  - `showSearch`
+  - `showCommandCenter`
+  - existing `showShortcutsDialog`
+  - existing `showSettings`
+  - existing `showWidgetGallery`
+- Moved the search dialog surface out of `src/views/chat/ConversationList.tsx` and into `src/App.tsx`, while keeping sidebar Search and `Cmd+F` opening the same search panel.
+- Added `ConversationListProps.onOpenSearch` and removed the imperative `openSearch()` handle so `ConversationList` reports search intent upward instead of owning the dialog locally.
+- Updated the global keydown gate in `App` so app-owned surfaces block other shortcuts unless the matched shortcut is `open-command-center`.
+- Added the required skipped app-level test in `src/App.test.tsx` with the exact Task 2 body.
 
-## TDD Evidence
+## TDD evidence
 
-### RED (Test Failures)
-```
-$ cargo test --lib context::payload
+### RED
 
-error[E0425]: cannot find function `stage_tool_result` in this scope
-  --> src/context/payload.rs:25:22
-   |
-25 |         let staged = stage_tool_result(
-   |                      ^^^^^^^^^^^^^^^^^ not found in this scope
-...
-error: could not compile `doce` (lib test) due to 5 previous errors
-```
+Command:
 
-### GREEN (Test Passes)
-```
-$ cargo test --lib context::payload
-
-running 5 tests
-test context::payload::tests::write_failure_falls_back_to_a_bounded_preview_with_no_payload_ref ... ok
-test context::payload::tests::small_result_inlines_but_still_writes_the_payload_file ... ok
-test context::payload::tests::oversized_result_becomes_a_status_reference_line ... ok
-test context::payload::tests::oversized_bash_reference_line_carries_exit_code_and_sizes ... ok
-test context::payload::tests::bash_payload_is_full_stdout_and_stderr_from_detail_and_detail_is_slimmed ... ok
-
-test result: ok. 5 passed; 0 failed; 0 ignored
+```bash
+npm test -- src/lib/shortcuts.test.ts
 ```
 
-## Files Changed
+Result:
 
-1. **Created:** `src-tauri/src/context/payload.rs` (276 lines)
-   - `StagedResult` struct
-   - `reference_line()` function — generates status line metadata for oversized results
-   - `slim_detail()` function — replaces bulk Bash output in detail with previews + byte counts
-   - `stage_tool_result()` function — orchestrates payload writing and decision logic
-   - 5 passing unit tests covering:
-     - Small results that inline but still write payload files
-     - Oversized results that become reference lines
-     - Bash-specific handling (full output from detail, slimmed detail)
-     - Oversized Bash reference lines with exit codes and sizes
-     - Write-failure fallback with bounded preview
+- Exit code: `1`
+- `src/lib/shortcuts.test.ts` failed `2` tests
+- Failure 1: `open-command-center` shortcut was `undefined`
+- Failure 2: `search-conversations` still exposed the old `⌘F` / `Open conversation search` metadata instead of the Task 2 values
 
-2. **Modified:** `src-tauri/src/context/mod.rs`
-   - Added `pub mod payload;` declaration
+### GREEN
 
-## Self-Review Findings
+Command:
 
-1. **Correct use of `offload_text()`**: Leveraged the existing `ToolOutcome::offload_text()` method as specified in the brief, which:
-   - For Bash: reconstructs the full output from `detail.outcome` (stdout + stderr)
-   - For other tools: borrows `model_text`
-   - This is exactly the right payload source.
+```bash
+npm test -- src/lib/shortcuts.test.ts
+```
 
-2. **Proper detail slimming**: The `slim_detail()` function correctly replaces bulk stdout/stderr in Bash outcomes with:
-   - Byte counts (`stdoutBytes`, `stderrBytes`)
-   - Bounded previews (`stdoutPreview`, `stderrPreview`) at `DETAIL_PREVIEW_CHARS` (2000 chars)
-   - Non-Bash details pass through unchanged
+Result:
 
-3. **Invariant enforcement**: The implementation maintains the invariant that unbounded text never enters the model's window, even in the write-failure fallback (bounded to `PREVIEW_CHARS` + error message).
+- Exit code: `0`
+- `Test Files  1 passed (1)`
+- `Tests  2 passed (2)`
 
-4. **Path handling**: Payload files are written to `<app_data_dir>/tool-outputs/<conversation_id>/<tool_call_id>.txt` with absolute paths returned in `payload_ref`.
+## What I tested and exact results
 
-5. **Test coverage**: All five test scenarios from the brief pass, exercising:
-   - Normal flow (inline small, file large)
-   - Bash-specific flow (detail slimming)
-   - Error path (write failure fallback)
+1. Required Task 2 verification:
+
+```bash
+npm test -- src/lib/shortcuts.test.ts src/views/chat/ConversationList.test.tsx
+```
+
+Result:
+
+- Exit code: `0`
+- `Test Files  2 passed (2)`
+- `Tests  16 passed (16)`
+
+2. Focused app-shell regression coverage for the new state wiring:
+
+```bash
+npm test -- src/App.test.tsx
+```
+
+Result:
+
+- Exit code: `0`
+- `Test Files  1 passed (1)`
+- `Tests  19 passed | 1 skipped (20)`
+
+## Files changed
+
+- `src/lib/shortcuts.ts`
+- `src/lib/shortcuts.test.ts`
+- `src/App.tsx`
+- `src/App.test.tsx`
+- `src/views/chat/ConversationList.tsx`
+- `src/views/chat/ConversationList.test.tsx`
+
+## Self-review findings
+
+- Search ownership is now at the app shell boundary, but the existing search panel behavior remains intact for both sidebar Search and `Cmd+F`.
+- `ConversationList` stayed scoped to sidebar concerns; it no longer owns a modal surface.
+- I kept backend commands, storage behavior, and Tauri IPC contracts unchanged.
+- I deliberately made `openCommandCenter` toggle the app-owned boolean while Task 4 UI is absent, so `Cmd+K` cannot leave the global shortcut gate stuck in an invisible open state.
 
 ## Concerns
 
-**Re: `offload_text()` doc comment:** The brief notes that the doc comment references `context::offload` (which is deleted in Task 3) and suggests updating it to reference this module. However, since `offload_if_oversized` still exists until Task 3, the current doc comment is still truthful — it correctly describes what `offload_text()` does for the old module. Left unchanged to avoid breaking its truth until the cutover. Task 3 should address this update when retiring `offload.rs`.
-
-## Verification
-
-- All 5 context::payload tests pass
-- Full test suite passes (298 tests)
-- Code formatted with cargo fmt
-- Commit: `7c787a6` with message "feat(context): payload-file staging for every data-tool result"
+- No blocking concerns. `Cmd+K` now routes to app-owned command-center state, but the visible command-center surface remains deferred to Task 4 as intended.

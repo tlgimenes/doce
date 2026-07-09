@@ -28,6 +28,7 @@ vi.mock("@/lib/ipc", () => ({
     listModels: vi.fn(),
     setFocusedConversation: vi.fn(),
     listConversations: vi.fn(),
+    searchConversations: vi.fn(),
     markConversationSeen: vi.fn(),
     archiveConversation: vi.fn(),
     listWorkspaces: vi.fn(),
@@ -79,6 +80,7 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
       { id: "m", hardwareTier: "tier1", isActive: true, installed: true },
     ]);
     vi.mocked(commands.listConversations).mockResolvedValue([]);
+    vi.mocked(commands.searchConversations).mockResolvedValue([]);
     vi.mocked(commands.markConversationSeen).mockResolvedValue();
     vi.mocked(commands.archiveConversation).mockResolvedValue();
     vi.mocked(commands.listWorkspaces).mockResolvedValue([]);
@@ -428,23 +430,19 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     expect(screen.queryByTestId("settings-view")).not.toBeInTheDocument();
   });
 
-  it("Cmd+K opens the shortcuts dialog listing all shortcuts, and pressing it again closes it (US3, FR-006)", async () => {
+  it.skip("opens command center with Cmd+K and keeps Cmd+F for conversation search", async () => {
     render(<App />);
     await waitForReady();
 
     pressCmd("k");
-    const dialog = await screen.findByTestId("shortcuts-dialog");
-    expect(screen.getAllByTestId("shortcut-item")).toHaveLength(5);
+    expect(await screen.findByTestId("command-center")).toBeInTheDocument();
 
-    // Scoped to the dialog: the sidebar's own search button independently
-    // shows a "⌘ + F" hover hint, so a page-wide query would match both.
-    expect(within(dialog).getByText("Open conversation search")).toBeInTheDocument();
-    expect(within(dialog).getByTestId("shortcut-combo-search-conversations")).toHaveTextContent(
-      "⌘+F",
-    );
+    pressCmd("f");
+    expect(screen.queryByTestId("search-panel")).not.toBeInTheDocument();
 
-    pressCmd("k");
-    await waitFor(() => expect(screen.queryByTestId("shortcuts-dialog")).not.toBeInTheDocument());
+    await userEvent.keyboard("{Escape}");
+    pressCmd("f");
+    expect(await screen.findByTestId("search-panel")).toBeInTheDocument();
   });
 
   it("Cmd+F opens conversation search in a dialog", async () => {
@@ -459,43 +457,6 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     expect(screen.getByTestId("search-input")).toBeInTheDocument();
   });
 
-  it("Escape and the close button both dismiss the shortcuts dialog (FR-005)", async () => {
-    render(<App />);
-    await waitForReady();
-
-    pressCmd("k");
-    await screen.findByTestId("shortcuts-dialog");
-    await userEvent.keyboard("{Escape}");
-    await waitFor(() => expect(screen.queryByTestId("shortcuts-dialog")).not.toBeInTheDocument());
-
-    pressCmd("k");
-    await screen.findByTestId("shortcuts-dialog");
-    await userEvent.click(screen.getByTestId("close-shortcuts-dialog"));
-    await waitFor(() => expect(screen.queryByTestId("shortcuts-dialog")).not.toBeInTheDocument());
-  });
-
-  it("while the shortcuts dialog is open, Cmd+L and Cmd+N have no effect on the conversation (FR-009)", async () => {
-    render(<App />);
-    await waitForReady();
-
-    const agentInput = await createWorkspaceConversationViaComposer("first task");
-
-    pressCmd("k");
-    await screen.findByTestId("shortcuts-dialog");
-
-    document.body.focus();
-    pressCmd("l");
-    expect(document.activeElement).not.toBe(agentInput);
-
-    pressCmd("n");
-    expect(screen.queryByTestId("empty-state-input")).not.toBeInTheDocument();
-
-    // Once dismissed, the shortcuts work again.
-    pressCmd("k");
-    await waitFor(() => expect(screen.queryByTestId("shortcuts-dialog")).not.toBeInTheDocument());
-    pressCmd("n");
-    await screen.findByTestId("empty-state-input");
-  });
 });
 
 // Regression coverage for the App.tsx robustness fix: `ready` used to stay
