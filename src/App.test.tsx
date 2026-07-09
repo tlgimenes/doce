@@ -430,6 +430,22 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     expect(screen.queryByTestId("settings-view")).not.toBeInTheDocument();
   });
 
+  it("clears the hidden command-center latch when Settings takes over so Cmd+F works after close", async () => {
+    render(<App />);
+    await waitForReady();
+
+    pressCmd("k");
+
+    await userEvent.click(await screen.findByTestId("open-settings"));
+    expect(await screen.findByTestId("settings-view")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId("close-settings"));
+    await waitFor(() => expect(screen.queryByTestId("settings-view")).not.toBeInTheDocument());
+
+    pressCmd("f");
+    expect(await screen.findByTestId("search-panel")).toBeInTheDocument();
+  });
+
   it.skip("opens command center with Cmd+K and keeps Cmd+F for conversation search", async () => {
     render(<App />);
     await waitForReady();

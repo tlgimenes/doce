@@ -182,3 +182,91 @@ Result:
 
 - `src/App.tsx`
 - `src/App.test.tsx`
+
+## Re-review fix: clear the hidden command-center latch on settings and other app-owned takeovers
+
+### What I changed
+
+- Added `clearCommandCenterLatch()` in `src/App.tsx` so the interim Task 2 `showCommandCenter` state yields through one shared helper instead of ad hoc clears.
+- Routed search, shortcuts dialog, settings, widget gallery, and workspace/empty-state takeovers through that helper so visible app-owned surfaces are not blocked behind invisible command-center state.
+- Kept `openCommandCenter` idempotent as `setShowCommandCenter(true)`.
+- Added focused App coverage for the settings regression path:
+  - `Cmd+K`
+  - open Settings
+  - close Settings
+  - `Cmd+F` opens search again
+- Preserved the existing skipped future Task 3/4 integration test.
+
+### TDD evidence
+
+#### RED
+
+Command:
+
+```bash
+npm test -- src/App.test.tsx
+```
+
+Result:
+
+- Exit code: `1`
+- `Test Files  1 failed (1)`
+- `Tests  1 failed | 21 passed | 1 skipped (23)`
+- Failure: `search-panel` was not found after `Cmd+K -> Settings -> close Settings -> Cmd+F`, proving the hidden command-center gate stayed latched through the settings transition
+
+#### GREEN
+
+Command:
+
+```bash
+npm test -- src/App.test.tsx
+```
+
+Result:
+
+- Exit code: `0`
+- `Test Files  1 passed (1)`
+- `Tests  22 passed | 1 skipped (23)`
+
+### Verification commands and exact results
+
+1. Required App shortcut routing suite:
+
+```bash
+npm test -- src/App.test.tsx
+```
+
+Result:
+
+- Exit code: `0`
+- `Test Files  1 passed (1)`
+- `Tests  22 passed | 1 skipped (23)`
+
+2. Required Task 2 regression suite:
+
+```bash
+npm test -- src/lib/shortcuts.test.ts src/views/chat/ConversationList.test.tsx
+```
+
+Result:
+
+- Exit code: `0`
+- `Test Files  2 passed (2)`
+- `Tests  16 passed (16)`
+
+3. Build verification:
+
+```bash
+npm run build
+```
+
+Result:
+
+- Exit code: `0`
+- `tsc -b && vite build` completed successfully
+- Existing Vite chunk-size warning remains: `Some chunks are larger than 500 kB after minification`
+
+### Files changed for this re-review fix
+
+- `src/App.tsx`
+- `src/App.test.tsx`

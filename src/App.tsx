@@ -88,16 +88,25 @@ export default function App() {
     };
   }, []);
 
-  const openSearch = useCallback(() => {
+  const clearCommandCenterLatch = useCallback(() => {
     setShowCommandCenter(false);
-    setShowSearch(true);
-    commands.listConversations().then(setSearchRecentConversations).catch(console.error);
   }, []);
 
+  const openSearch = useCallback(() => {
+    clearCommandCenterLatch();
+    setShowSearch(true);
+    commands.listConversations().then(setSearchRecentConversations).catch(console.error);
+  }, [clearCommandCenterLatch]);
+
   const openShortcutsDialog = useCallback(() => {
-    setShowCommandCenter(false);
+    clearCommandCenterLatch();
     setShowShortcutsDialog(true);
-  }, []);
+  }, [clearCommandCenterLatch]);
+
+  const openSettings = useCallback(() => {
+    clearCommandCenterLatch();
+    setShowSettings(true);
+  }, [clearCommandCenterLatch]);
 
   // 005-keyboard-shortcuts: the app's first global (not input-scoped)
   // keyboard shortcuts. One shared registry (lib/shortcuts.ts) drives both
@@ -126,10 +135,11 @@ export default function App() {
           setShowCommandCenter(true);
         },
         toggleWidgetGallery: () => {
+          clearCommandCenterLatch();
           setShowWidgetGallery((prev) => !prev);
         },
       }),
-    [activeConversation, openSearch],
+    [activeConversation, clearCommandCenterLatch, openSearch],
   );
 
   useEffect(() => {
@@ -191,16 +201,18 @@ export default function App() {
 
       if (!conversation) return;
 
+      clearCommandCenterLatch();
       setShowSearch(false);
       setShowSettings(false);
       setPendingInitialTurn(null);
       setActiveConversation(conversation);
       markSeen(conversation.id);
     },
-    [markSeen, searchRecentConversations],
+    [clearCommandCenterLatch, markSeen, searchRecentConversations],
   );
 
   const activateConversation = (conversation: Conversation, initialTurn?: PendingInitialTurn) => {
+    clearCommandCenterLatch();
     runViewTransition(() => {
       setShowSettings(false);
       setPendingInitialTurn(initialTurn ?? null);
@@ -233,22 +245,25 @@ export default function App() {
             ref={conversationListRef}
             activeId={activeConversation?.id ?? null}
             onSelect={(conversation) => {
+              clearCommandCenterLatch();
               setShowSettings(false);
               setPendingInitialTurn(null);
               setActiveConversation(conversation);
               markSeen(conversation.id);
             }}
             onNewConversation={() => {
+              clearCommandCenterLatch();
               setShowSettings(false);
               setPendingInitialTurn(null);
               setActiveConversation(null);
               setEmptyStateAutoFocusToken((current) => (current ?? 0) + 1);
             }}
             onOpenSearch={() => openSearch()}
-            onOpenSettings={() => setShowSettings(true)}
+            onOpenSettings={openSettings}
             onActiveConversationChange={syncActiveConversation}
             onArchive={(conversationId) => {
               if (activeConversation?.id !== conversationId) return;
+              clearCommandCenterLatch();
               setShowSettings(false);
               setPendingInitialTurn(null);
               setActiveConversation(null);
