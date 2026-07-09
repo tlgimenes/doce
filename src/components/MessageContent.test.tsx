@@ -20,14 +20,22 @@ function baseMessage(overrides: Partial<Message>): Message {
 
 describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
   it("renders a user message as a plain markdown bubble", () => {
-    render(<MessageContent message={baseMessage({ role: "user", content: "hi there" })} />);
+    render(
+      <MessageContent
+        message={baseMessage({ role: "user", content: "hi there" })}
+      />,
+    );
     expect(screen.getByText("hi there")).toBeInTheDocument();
   });
 
   it("renders a live assistant timer only when showTimer is true and no persisted duration exists", () => {
     const { rerender } = render(
       <MessageContent
-        message={baseMessage({ contentType: "text", content: "the answer", durationMs: null })}
+        message={baseMessage({
+          contentType: "text",
+          content: "the answer",
+          durationMs: null,
+        })}
       />,
     );
     expect(screen.getByText("the answer")).toBeInTheDocument();
@@ -35,7 +43,11 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
 
     rerender(
       <MessageContent
-        message={baseMessage({ contentType: "text", content: "the answer", durationMs: null })}
+        message={baseMessage({
+          contentType: "text",
+          content: "the answer",
+          durationMs: null,
+        })}
         showTimer
       />,
     );
@@ -45,15 +57,25 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
   it("shows assistant duration and tokens together for completed text replies", () => {
     render(
       <MessageContent
-        message={baseMessage({ contentType: "text", content: "the answer", tokenCount: 15600 })}
+        message={baseMessage({
+          contentType: "text",
+          content: "the answer",
+          tokenCount: 15600,
+        })}
       />,
     );
 
-    expect(screen.getByTestId("token-meter")).toHaveTextContent("0.5s · ↓ 15.6k tokens");
+    expect(screen.getByTestId("token-meter")).toHaveTextContent(
+      "0.5s · ↓ 15.6k tokens",
+    );
   });
 
   it("shows only assistant duration when tokens are unavailable for a completed text reply", () => {
-    render(<MessageContent message={baseMessage({ contentType: "text", content: "the answer" })} />);
+    render(
+      <MessageContent
+        message={baseMessage({ contentType: "text", content: "the answer" })}
+      />,
+    );
 
     expect(screen.getByTestId("token-meter")).toHaveTextContent("0.5s");
   });
@@ -100,7 +122,9 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
       />,
     );
 
-    expect(screen.getByRole("heading", { level: 2, name: "Heading" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 2, name: "Heading" }),
+    ).toBeInTheDocument();
     expect(screen.getByText("one")).toBeInTheDocument();
     expect(screen.getByText("two")).toBeInTheDocument();
   });
@@ -110,7 +134,11 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
   it("shows an input-token meter (↑) on a user message when tokenCount is known", () => {
     render(
       <MessageContent
-        message={baseMessage({ role: "user", content: "hi there", tokenCount: 42 })}
+        message={baseMessage({
+          role: "user",
+          content: "hi there",
+          tokenCount: 42,
+        })}
       />,
     );
     expect(screen.getByTestId("token-meter")).toHaveTextContent("↑ 42 tokens");
@@ -119,7 +147,11 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
   it("shows no token meter on a user message when tokenCount is unknown yet", () => {
     render(
       <MessageContent
-        message={baseMessage({ role: "user", content: "hi there", tokenCount: null })}
+        message={baseMessage({
+          role: "user",
+          content: "hi there",
+          tokenCount: null,
+        })}
       />,
     );
     expect(screen.queryByTestId("token-meter")).not.toBeInTheDocument();
@@ -142,14 +174,22 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
   });
 
   it("renders an error message distinctly", () => {
-    render(<MessageContent message={baseMessage({ contentType: "error", content: "boom" })} />);
+    render(
+      <MessageContent
+        message={baseMessage({ contentType: "error", content: "boom" })}
+      />,
+    );
     expect(screen.getByText("boom")).toBeInTheDocument();
   });
 
   it("renders nothing for a tool_call row (paired tool_result carries the widget)", () => {
     const { container } = render(
       <MessageContent
-        message={baseMessage({ contentType: "tool_call", toolName: "Bash", content: "{}" })}
+        message={baseMessage({
+          contentType: "tool_call",
+          toolName: "Bash",
+          content: "{}",
+        })}
       />,
     );
     expect(container).toBeEmptyDOMElement();
@@ -223,7 +263,9 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
     );
     const notice = screen.getByTestId("context-notice");
     expect(notice).toHaveAttribute("data-notice-kind", "cleared");
-    expect(notice).toHaveTextContent("3 old tool results cleared to save space");
+    expect(notice).toHaveTextContent(
+      "3 old tool results cleared to save space",
+    );
   });
 
   it("renders a 'summarized' notice as a more visible bubble", () => {
@@ -253,7 +295,9 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
         })}
       />,
     );
-    expect(screen.getByTestId("context-notice")).toHaveTextContent("not valid json");
+    expect(screen.getByTestId("context-notice")).toHaveTextContent(
+      "not valid json",
+    );
   });
 
   it("renders nothing for plan-machine tool rows (plan activity is tracker-only)", () => {
@@ -290,13 +334,18 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
         toolName: "Write",
         arguments: {},
         plan: true,
-        outcome: { ok: false, text: "Error: Write is not available in the current phase" },
+        outcome: {
+          ok: false,
+          text: "Error: Write is not available in the current phase",
+        },
       }),
     } as const;
 
     const { container: c1 } = render(<MessageContent message={planCall} />);
     const { container: c2 } = render(<MessageContent message={planResult} />);
-    const { container: c3 } = render(<MessageContent message={gatedRejection} />);
+    const { container: c3 } = render(
+      <MessageContent message={gatedRejection} />,
+    );
     expect(c1).toBeEmptyDOMElement();
     expect(c2).toBeEmptyDOMElement();
     expect(c3).toBeEmptyDOMElement();

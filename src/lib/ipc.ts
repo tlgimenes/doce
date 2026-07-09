@@ -25,7 +25,8 @@ export interface ModelRow {
   installed: boolean;
 }
 
-export type ConversationStatus = "in_progress" | "requires_action" | "failed" | "done";
+export type ConversationStatus =
+  "in_progress" | "requires_action" | "failed" | "done";
 
 export interface Conversation {
   id: string;
@@ -41,7 +42,13 @@ export interface Message {
   id: string;
   conversationId: string;
   role: "user" | "assistant" | "tool";
-  contentType: "text" | "tool_call" | "tool_result" | "error" | "rich_text" | "context_notice";
+  contentType:
+    | "text"
+    | "tool_call"
+    | "tool_result"
+    | "error"
+    | "rich_text"
+    | "context_notice";
   content: string;
   toolName: string | null;
   createdAt: number;
@@ -230,7 +237,11 @@ export function parseToolResultDetail(
 ): ToolResultDetail | UnknownToolDetail {
   try {
     const parsed = JSON.parse(content) as { toolName?: unknown };
-    if (parsed && typeof parsed.toolName === "string" && KNOWN_TOOL_NAMES.has(parsed.toolName)) {
+    if (
+      parsed &&
+      typeof parsed.toolName === "string" &&
+      KNOWN_TOOL_NAMES.has(parsed.toolName)
+    ) {
       return parsed as ToolResultDetail;
     }
     return {
@@ -255,11 +266,19 @@ export function parseToolResultDetail(
  * Returns `null` on any parse failure or missing `questionId` (an older
  * tool_call row from before this field existed, or plain corruption)
  * rather than throwing -- there is simply nothing answerable to show. */
-export function parseAskUserQuestionCallDetail(content: string): AskUserQuestionDetail | null {
+export function parseAskUserQuestionCallDetail(
+  content: string,
+): AskUserQuestionDetail | null {
   try {
-    const parsed = JSON.parse(content) as { arguments?: Record<string, unknown> };
+    const parsed = JSON.parse(content) as {
+      arguments?: Record<string, unknown>;
+    };
     const args = parsed?.arguments;
-    if (!args || typeof args.questionId !== "string" || typeof args.question !== "string") {
+    if (
+      !args ||
+      typeof args.questionId !== "string" ||
+      typeof args.question !== "string"
+    ) {
       return null;
     }
     return {
@@ -267,7 +286,9 @@ export function parseAskUserQuestionCallDetail(content: string): AskUserQuestion
       questionId: args.questionId,
       header: typeof args.header === "string" ? args.header : "",
       question: args.question,
-      options: Array.isArray(args.options) ? (args.options as QuestionOption[]) : [],
+      options: Array.isArray(args.options)
+        ? (args.options as QuestionOption[])
+        : [],
       multiSelect: args.multiSelect === true,
       answer: null,
     };
@@ -282,7 +303,9 @@ export function parseAskUserQuestionCallDetail(content: string): AskUserQuestion
  * `null` on any parse failure or missing `command`. */
 export function parsePendingBashCallDetail(content: string): BashDetail | null {
   try {
-    const parsed = JSON.parse(content) as { arguments?: Record<string, unknown> };
+    const parsed = JSON.parse(content) as {
+      arguments?: Record<string, unknown>;
+    };
     const args = parsed?.arguments;
     if (!args || typeof args.command !== "string") {
       return null;
@@ -308,7 +331,9 @@ export function parsePendingBashCallDetail(content: string): BashDetail | null {
  * failure or missing `prompt`. */
 export function parsePendingTaskCallDetail(content: string): TaskDetail | null {
   try {
-    const parsed = JSON.parse(content) as { arguments?: Record<string, unknown> };
+    const parsed = JSON.parse(content) as {
+      arguments?: Record<string, unknown>;
+    };
     const args = parsed?.arguments;
     if (!args || typeof args.prompt !== "string") {
       return null;
@@ -457,6 +482,49 @@ export function parseContextNoticeDetail(content: string): ContextNoticeDetail {
   return { kind: "cleared", clearedCount: 0, notice: content };
 }
 
+// Plan-machine types and helpers (Task 5: frontend plumbing — plan ipc surface).
+export interface PlanStepSnapshot {
+  description: string;
+  done: boolean;
+}
+
+export interface PlanSnapshot {
+  goal: string;
+  steps: PlanStepSnapshot[];
+  /** null while the engine is in its Planning state (revising / between steps). */
+  currentStepIndex: number | null;
+}
+
+export interface PlanUpdatePayload {
+  conversationId: string;
+  plan: PlanSnapshot | null;
+}
+
+/** Mirror of agent::plan::PLAN_TOOL_NAMES — the five plan-machine tools
+ * whose rows are tracker-only, never transcript content. */
+export const PLAN_TOOL_NAMES = new Set([
+  "CreatePlan",
+  "AddStep",
+  "ResumeExecution",
+  "StepDone",
+  "RefuseStep",
+]);
+
+/** True for any row the plan machine persisted: one of the five plan
+ * tools by name, or a state-gated rejection of a regular tool (real
+ * toolName, but detail carries the `"plan": true` marker). */
+export function isPlanToolRow(
+  content: string,
+  toolName: string | null,
+): boolean {
+  if (toolName && PLAN_TOOL_NAMES.has(toolName)) return true;
+  try {
+    return (JSON.parse(content) as { plan?: unknown }).plan === true;
+  } catch {
+    return false;
+  }
+}
+
 export const commands = {
   getHardwareProfile: () => invoke<HardwareProfile>("get_hardware_profile"),
   startModelInstall: (modelId?: string) =>
@@ -467,19 +535,30 @@ export const commands = {
       { modelId },
     ),
   listModels: () => invoke<ModelRow[]>("list_models"),
-  setActiveModel: (modelId: string) => invoke<void>("set_active_model", { modelId }),
+  setActiveModel: (modelId: string) =>
+    invoke<void>("set_active_model", { modelId }),
   createConversation: (workspaceId?: string) =>
     invoke<Conversation>("create_conversation", { workspaceId }),
-  sendMessage: (conversationId: string, content: string, richContent?: string) =>
-    invoke<SendMessageResult>("send_message", { conversationId, content, richContent }),
+  sendMessage: (
+    conversationId: string,
+    content: string,
+    richContent?: string,
+  ) =>
+    invoke<SendMessageResult>("send_message", {
+      conversationId,
+      content,
+      richContent,
+    }),
   listConversations: (workspaceId?: string) =>
     invoke<Conversation[]>("list_conversations", { workspaceId }),
-  listMessages: (conversationId: string) => invoke<Message[]>("list_messages", { conversationId }),
+  listMessages: (conversationId: string) =>
+    invoke<Message[]>("list_messages", { conversationId }),
   markConversationSeen: (conversationId: string) =>
     invoke<void>("mark_conversation_seen", { conversationId }),
   archiveConversation: (conversationId: string) =>
     invoke<void>("archive_conversation", { conversationId }),
-  searchConversations: (query: string) => invoke<SearchResult[]>("search_conversations", { query }),
+  searchConversations: (query: string) =>
+    invoke<SearchResult[]>("search_conversations", { query }),
   // Values cross as JSON-encoded strings (see commands/settings.rs for why)
   // — parse/stringify at the call site.
   getSettings: () => invoke<Record<string, string>>("get_settings"),
@@ -487,13 +566,23 @@ export const commands = {
     invoke<void>("update_setting", { key, valueJson }),
   setFocusedConversation: (conversationId: string | null) =>
     invoke<void>("set_focused_conversation", { conversationId }),
-  cancelGeneration: (requestId: string) => invoke<boolean>("cancel_generation", { requestId }),
-  openWorkspace: (path: string) => invoke<Workspace>("open_workspace", { path }),
+  cancelGeneration: (requestId: string) =>
+    invoke<boolean>("cancel_generation", { requestId }),
+  openWorkspace: (path: string) =>
+    invoke<Workspace>("open_workspace", { path }),
   listWorkspaces: () => invoke<Workspace[]>("list_workspaces"),
   searchFolders: (query: string, maxResults?: number) =>
     invoke<FolderSearchPage>("search_folders", { query, maxResults }),
-  sendAgentMessage: (conversationId: string, content: string, richContent?: string) =>
-    invoke<string>("send_agent_message", { conversationId, content, richContent }),
+  sendAgentMessage: (
+    conversationId: string,
+    content: string,
+    richContent?: string,
+  ) =>
+    invoke<string>("send_agent_message", {
+      conversationId,
+      content,
+      richContent,
+    }),
   answerUserQuestion: (questionId: string, answer: string[]) =>
     invoke<void>("answer_user_question", { questionId, answer }),
   addMcpServer: (name: string, command: string, args: string[]) =>
@@ -502,13 +591,16 @@ export const commands = {
   listMcpServerTools: (serverId: string) =>
     invoke<McpToolInfo[]>("list_mcp_server_tools", { serverId }),
   listSkills: () => invoke<SkillSummary[]>("list_skills"),
-  readAttachedFile: (path: string) => invoke<AttachedFile>("read_attached_file", { path }),
+  readAttachedFile: (path: string) =>
+    invoke<AttachedFile>("read_attached_file", { path }),
   getContextUsage: (conversationId: string) =>
     invoke<ContextUsage>("get_context_usage", { conversationId }),
   compactConversation: (conversationId: string) =>
     invoke<ContextUsage>("compact_conversation", { conversationId }),
   isGenerationActive: (conversationId: string) =>
     invoke<boolean>("is_generation_active", { conversationId }),
+  getActivePlan: (conversationId: string) =>
+    invoke<PlanSnapshot | null>("get_active_plan", { conversationId }),
 };
 
 export interface ModelInstallProgressPayload {
@@ -567,22 +659,48 @@ export interface AgentMessagePersistedPayload {
 }
 
 export const events = {
-  onModelInstallProgress: (cb: (p: ModelInstallProgressPayload) => void): Promise<UnlistenFn> =>
-    listen<ModelInstallProgressPayload>("model-install-progress", (e) => cb(e.payload)),
-  onAskUserQuestion: (cb: (p: AskUserQuestionEventPayload) => void): Promise<UnlistenFn> =>
-    listen<AskUserQuestionEventPayload>("ask-user-question", (e) => cb(e.payload)),
-  onAssistantToken: (cb: (p: AssistantTokenPayload) => void): Promise<UnlistenFn> =>
+  onModelInstallProgress: (
+    cb: (p: ModelInstallProgressPayload) => void,
+  ): Promise<UnlistenFn> =>
+    listen<ModelInstallProgressPayload>("model-install-progress", (e) =>
+      cb(e.payload),
+    ),
+  onAskUserQuestion: (
+    cb: (p: AskUserQuestionEventPayload) => void,
+  ): Promise<UnlistenFn> =>
+    listen<AskUserQuestionEventPayload>("ask-user-question", (e) =>
+      cb(e.payload),
+    ),
+  onAssistantToken: (
+    cb: (p: AssistantTokenPayload) => void,
+  ): Promise<UnlistenFn> =>
     listen<AssistantTokenPayload>("assistant-token", (e) => cb(e.payload)),
   onAssistantMessageComplete: (
     cb: (p: AssistantMessageCompletePayload) => void,
   ): Promise<UnlistenFn> =>
-    listen<AssistantMessageCompletePayload>("assistant-message-complete", (e) => cb(e.payload)),
-  onAssistantMessageError: (cb: (p: AssistantMessageErrorPayload) => void): Promise<UnlistenFn> =>
-    listen<AssistantMessageErrorPayload>("assistant-message-error", (e) => cb(e.payload)),
-  onGenerationQueueUpdate: (cb: (p: GenerationQueueUpdatePayload) => void): Promise<UnlistenFn> =>
-    listen<GenerationQueueUpdatePayload>("generation-queue-update", (e) => cb(e.payload)),
+    listen<AssistantMessageCompletePayload>("assistant-message-complete", (e) =>
+      cb(e.payload),
+    ),
+  onAssistantMessageError: (
+    cb: (p: AssistantMessageErrorPayload) => void,
+  ): Promise<UnlistenFn> =>
+    listen<AssistantMessageErrorPayload>("assistant-message-error", (e) =>
+      cb(e.payload),
+    ),
+  onGenerationQueueUpdate: (
+    cb: (p: GenerationQueueUpdatePayload) => void,
+  ): Promise<UnlistenFn> =>
+    listen<GenerationQueueUpdatePayload>("generation-queue-update", (e) =>
+      cb(e.payload),
+    ),
   onContextUsageUpdate: (cb: (p: ContextUsage) => void): Promise<UnlistenFn> =>
     listen<ContextUsage>("context-usage-update", (e) => cb(e.payload)),
-  onAgentMessagePersisted: (cb: (p: AgentMessagePersistedPayload) => void): Promise<UnlistenFn> =>
-    listen<AgentMessagePersistedPayload>("agent-message-persisted", (e) => cb(e.payload)),
+  onAgentMessagePersisted: (
+    cb: (p: AgentMessagePersistedPayload) => void,
+  ): Promise<UnlistenFn> =>
+    listen<AgentMessagePersistedPayload>("agent-message-persisted", (e) =>
+      cb(e.payload),
+    ),
+  onPlanUpdate: (cb: (p: PlanUpdatePayload) => void): Promise<UnlistenFn> =>
+    listen<PlanUpdatePayload>("plan-update", (e) => cb(e.payload)),
 };
