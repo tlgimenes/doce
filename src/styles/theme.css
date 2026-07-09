@@ -4,62 +4,73 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
-  /* Neutral gray scale — gray-1 (darkest) through gray-6 (lightest),
-     mirroring Apple's systemGray/systemGray2…6 convention. Semantic
-     tokens below are aliases into this scale, so the whole UI's
-     grayscale can be retuned from one place. */
-  --color-gray-1: oklch(20% 0 0);
-  --color-gray-2: oklch(35% 0 0);
-  --color-gray-3: oklch(50% 0 0);
-  --color-gray-4: oklch(65% 0 0);
-  --color-gray-5: oklch(80% 0 0);
-  --color-gray-6: oklch(93% 0 0);
+  --color-doce-chocolate: oklch(48% 0.085 55);
+  --color-doce-cacao: oklch(29% 0.055 49);
+  --color-doce-caramel: oklch(82% 0.135 80);
+  --color-doce-peach: oklch(82% 0.078 43);
+  --color-doce-coral: oklch(73% 0.105 31);
+  --color-doce-cream: oklch(94% 0.036 70);
+  --color-doce-warm-white: oklch(98% 0.015 75);
 
-  --color-background: oklch(97% 0 0);
-  --color-foreground: var(--color-gray-1);
+  --color-background: var(--color-doce-warm-white);
+  --color-foreground: oklch(23% 0.028 48);
   --color-card: oklch(100% 0 0);
-  --color-primary: var(--color-gray-1);
-  --color-primary-foreground: oklch(98% 0 0);
-  --color-muted: oklch(93% 0 0);
-  --color-muted-foreground: var(--color-gray-3);
-  --color-border: oklch(88% 0 0);
-  --color-ring: var(--color-gray-2);
-  --color-destructive: oklch(46% 0.22 25);
-  --color-destructive-foreground: oklch(98% 0 0);
-
-  /* Sidebar material — a touch darker than the window background, in
-     the spirit of Finder/Mail's side panel, so it reads as a distinct
-     layer without needing a heavy border. */
-  --color-sidebar: oklch(95% 0 0);
-  --color-sidebar-foreground: var(--color-gray-1);
-  --color-sidebar-border: var(--color-border);
+  --color-card-foreground: var(--color-foreground);
+  --color-popover: oklch(100% 0 0);
+  --color-popover-foreground: var(--color-foreground);
+  --color-primary: var(--color-doce-chocolate);
+  --color-primary-foreground: oklch(98% 0.012 75);
+  --color-secondary: oklch(94% 0.026 70);
+  --color-secondary-foreground: oklch(30% 0.04 50);
+  --color-muted: oklch(94% 0.026 70);
+  --color-muted-foreground: oklch(52% 0.032 50);
+  --color-accent: oklch(91% 0.046 65);
+  --color-accent-foreground: oklch(28% 0.042 48);
+  --color-destructive: oklch(58% 0.18 28);
+  --color-destructive-foreground: oklch(98% 0.012 75);
+  --color-border: oklch(87% 0.025 68);
+  --color-input: oklch(89% 0.023 68);
+  --color-ring: var(--color-doce-chocolate);
+  --color-sidebar: oklch(95% 0.026 70);
+  --color-sidebar-foreground: var(--color-foreground);
+  --color-sidebar-primary: var(--color-doce-chocolate);
+  --color-sidebar-primary-foreground: var(--color-primary-foreground);
+  --color-sidebar-accent: oklch(91% 0.038 69);
+  --color-sidebar-accent-foreground: var(--color-foreground);
+  --color-sidebar-border: oklch(86% 0.026 68);
+  --color-sidebar-ring: var(--color-doce-chocolate);
 
   --radius: 0.5rem;
 }
 
 .dark {
-  --color-gray-1: oklch(96% 0 0);
-  --color-gray-2: oklch(85% 0 0);
-  --color-gray-3: oklch(65% 0 0);
-  --color-gray-4: oklch(50% 0 0);
-  --color-gray-5: oklch(35% 0 0);
-  --color-gray-6: oklch(25% 0 0);
-
-  --color-background: oklch(14% 0 0);
-  --color-foreground: var(--color-gray-1);
-  --color-card: oklch(20% 0 0);
-  --color-primary: var(--color-gray-1);
-  --color-primary-foreground: oklch(15% 0 0);
-  --color-muted: oklch(25% 0 0);
-  --color-muted-foreground: var(--color-gray-3);
-  --color-border: oklch(30% 0 0);
-  --color-ring: var(--color-gray-2);
-  --color-destructive: oklch(70% 0.22 25);
-  --color-destructive-foreground: oklch(15% 0 0);
-
-  --color-sidebar: oklch(18% 0 0);
-  --color-sidebar-foreground: var(--color-gray-1);
-  --color-sidebar-border: var(--color-border);
+  --color-background: oklch(18% 0.026 48);
+  --color-foreground: oklch(94% 0.025 72);
+  --color-card: oklch(22% 0.03 48);
+  --color-card-foreground: var(--color-foreground);
+  --color-popover: oklch(22% 0.03 48);
+  --color-popover-foreground: var(--color-foreground);
+  --color-primary: var(--color-doce-caramel);
+  --color-primary-foreground: oklch(20% 0.03 48);
+  --color-secondary: oklch(28% 0.035 48);
+  --color-secondary-foreground: var(--color-foreground);
+  --color-muted: oklch(28% 0.035 48);
+  --color-muted-foreground: oklch(72% 0.034 67);
+  --color-accent: oklch(32% 0.045 50);
+  --color-accent-foreground: var(--color-foreground);
+  --color-destructive: oklch(70% 0.17 29);
+  --color-destructive-foreground: oklch(16% 0.03 48);
+  --color-border: oklch(34% 0.035 48);
+  --color-input: oklch(34% 0.035 48);
+  --color-ring: var(--color-doce-caramel);
+  --color-sidebar: oklch(20% 0.03 48);
+  --color-sidebar-foreground: var(--color-foreground);
+  --color-sidebar-primary: var(--color-doce-caramel);
+  --color-sidebar-primary-foreground: oklch(18% 0.026 48);
+  --color-sidebar-accent: oklch(28% 0.035 48);
+  --color-sidebar-accent-foreground: var(--color-foreground);
+  --color-sidebar-border: oklch(32% 0.035 48);
+  --color-sidebar-ring: var(--color-doce-caramel);
 }
 
 body {
@@ -67,9 +78,6 @@ body {
   color: var(--color-foreground);
 }
 
-/* Apple UI Skills — Interactive States > Focus: a visible 2px outline with
-   2px offset on every focusable element, never suppressed. Uses our own
-   --color-ring token rather than the skill's accent blue. */
 :focus-visible {
   outline: 2px solid var(--color-ring);
   outline-offset: 2px;

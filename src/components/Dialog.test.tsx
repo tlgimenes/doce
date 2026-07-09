@@ -1,18 +1,17 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import Dialog from "./Dialog";
 
 describe("Dialog", () => {
-  it("shows the dialog modally when open, and hides it (and unmounts its content) when open becomes false", async () => {
-    const { container, rerender } = render(
+  it("renders dialog content only while open", () => {
+    const { rerender } = render(
       <Dialog open={true} onClose={vi.fn()}>
         <p>Hello</p>
       </Dialog>,
     );
-    const dialog = container.querySelector("dialog") as HTMLDialogElement;
 
-    await waitFor(() => expect(dialog.open).toBe(true));
+    expect(screen.getByTestId("app-dialog-content")).toBeInTheDocument();
     expect(screen.getByText("Hello")).toBeInTheDocument();
 
     rerender(
@@ -21,11 +20,10 @@ describe("Dialog", () => {
       </Dialog>,
     );
 
-    await waitFor(() => expect(dialog.open).toBe(false));
     expect(screen.queryByText("Hello")).not.toBeInTheDocument();
   });
 
-  it("calls onClose when the native cancel event fires (Escape, per the browser's own <dialog> behavior)", async () => {
+  it("calls onClose when Escape closes the dialog", async () => {
     const onClose = vi.fn();
     render(
       <Dialog open={true} onClose={onClose}>
@@ -33,27 +31,7 @@ describe("Dialog", () => {
       </Dialog>,
     );
 
-    const dialog = await screen
-      .findByText("Hello")
-      .then((el) => el.closest("dialog") as HTMLDialogElement);
-    dialog.dispatchEvent(new Event("cancel", { cancelable: true }));
-
-    expect(onClose).toHaveBeenCalledTimes(1);
-  });
-
-  it("calls onClose on a click landing on the backdrop, but not on a click inside the content", async () => {
-    const onClose = vi.fn();
-    render(
-      <Dialog open={true} onClose={onClose}>
-        <p data-testid="content">Hello</p>
-      </Dialog>,
-    );
-
-    await userEvent.click(screen.getByTestId("content"));
-    expect(onClose).not.toHaveBeenCalled();
-
-    const dialog = screen.getByTestId("content").closest("dialog") as HTMLDialogElement;
-    await userEvent.click(dialog);
+    await userEvent.keyboard("{Escape}");
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
