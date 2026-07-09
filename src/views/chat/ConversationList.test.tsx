@@ -274,6 +274,40 @@ describe("ConversationList", () => {
     expect(screen.queryByText("Archive me")).not.toBeInTheDocument();
   });
 
+  it("archives a conversation through the imperative archiveById handle", async () => {
+    const conversation = {
+      id: "archive-from-handle",
+      workspaceId: null,
+      title: "Archive from handle",
+      createdAt: 1,
+      updatedAt: 3,
+      lastSeenAt: 3,
+      status: "done" as const,
+    };
+    vi.mocked(commands.listConversations).mockResolvedValue([conversation]);
+    vi.mocked(commands.archiveConversation).mockResolvedValue();
+    const ref = createRef<ConversationListHandle>();
+
+    render(
+      <ConversationList
+        ref={ref}
+        activeId={null}
+        onSelect={vi.fn()}
+        onNewConversation={vi.fn()}
+        onOpenSearch={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />,
+    );
+
+    await screen.findByText("Archive from handle");
+    ref.current?.archiveById("archive-from-handle");
+
+    expect(commands.archiveConversation).toHaveBeenCalledWith("archive-from-handle");
+    await waitFor(() =>
+      expect(screen.queryByText("Archive from handle")).not.toBeInTheDocument(),
+    );
+  });
+
   it("reveals the archive trash button only on row hover, not from selected row focus", async () => {
     vi.mocked(commands.listConversations).mockResolvedValue([
       {
@@ -470,6 +504,7 @@ describe("ConversationList", () => {
 
     await waitFor(() => expect(ref.current).not.toBeNull());
     expect(ref.current).toEqual({
+      archiveById: expect.any(Function),
       createNew: expect.any(Function),
       getConversations: expect.any(Function),
       selectById: expect.any(Function),

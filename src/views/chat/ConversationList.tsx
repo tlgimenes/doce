@@ -37,6 +37,7 @@ export interface ConversationListHandle {
   createNew: () => void;
   getConversations: () => Conversation[];
   selectById: (conversationId: string) => boolean;
+  archiveById: (conversationId: string) => void;
 }
 
 const STATUS_COLOR: Record<ConversationStatus, string> = {
@@ -110,18 +111,31 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
       return true;
     };
 
-    const archiveConversation = (
+    const archiveConversation = useCallback(
+      (conversation: Conversation) => {
+        setConversations((current) => current.filter((item) => item.id !== conversation.id));
+        onArchive?.(conversation.id);
+        commands.archiveConversation(conversation.id).catch((error) => {
+          console.error(error);
+          refresh();
+        });
+      },
+      [onArchive, refresh],
+    );
+
+    const handleArchiveConversation = (
       event: MouseEvent<HTMLButtonElement>,
       conversation: Conversation,
     ) => {
       event.preventDefault();
       event.stopPropagation();
-      setConversations((current) => current.filter((item) => item.id !== conversation.id));
-      onArchive?.(conversation.id);
-      commands.archiveConversation(conversation.id).catch((error) => {
-        console.error(error);
-        refresh();
-      });
+      archiveConversation(conversation);
+    };
+
+    const archiveById = (conversationId: string) => {
+      const conversation = conversations.find((item) => item.id === conversationId);
+      if (!conversation) return;
+      archiveConversation(conversation);
     };
 
     const handleConversationKeyDown = (
@@ -177,6 +191,7 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
       createNew,
       getConversations: () => conversations,
       selectById,
+      archiveById,
     }));
 
     return (
@@ -285,7 +300,7 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
                     size="icon-sm"
                     className="pointer-events-none absolute right-0 top-1/2 -translate-y-1/2 rounded-full text-sidebar-foreground/70 opacity-0 hover:bg-sidebar-foreground/10 hover:text-sidebar-foreground group-hover:pointer-events-auto group-hover:opacity-100"
                     aria-label={`Archive ${c.title}`}
-                    onClick={(event) => archiveConversation(event, c)}
+                    onClick={(event) => handleArchiveConversation(event, c)}
                   >
                     <TrashIcon size={14} />
                   </Button>

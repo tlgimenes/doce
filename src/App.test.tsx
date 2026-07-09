@@ -478,12 +478,13 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     expect(await screen.findByTestId("search-panel")).toBeInTheDocument();
   });
 
-  it.skip("opens command center with Cmd+K and keeps Cmd+F for conversation search", async () => {
+  it("opens command center with Cmd+K and keeps Cmd+F for conversation search", async () => {
     render(<App />);
     await waitForReady();
 
     pressCmd("k");
     expect(await screen.findByTestId("command-center")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /New Agent/ })).toBeInTheDocument();
 
     pressCmd("f");
     expect(screen.queryByTestId("search-panel")).not.toBeInTheDocument();

@@ -9,6 +9,7 @@ import EmptyState from "@/views/chat/EmptyState";
 import Workspace from "@/views/workspace/Workspace";
 import Settings from "@/views/settings/Settings";
 import ShortcutsDialog from "@/views/shortcuts/ShortcutsDialog";
+import CommandCenter, { type CommandCenterAction } from "@/views/command/CommandCenter";
 import WidgetGallery from "@/views/design-system/WidgetGallery";
 import { commands, type Conversation } from "@/lib/ipc";
 import { buildShortcuts } from "@/lib/shortcuts";
@@ -136,6 +137,7 @@ export default function App() {
   }, [clearCommandCenterLatch]);
 
   const openCommandCenter = useCallback(() => {
+    setShowSearch(false);
     setShowShortcutsDialog(false);
     setShowCommandCenter(true);
   }, []);
@@ -172,6 +174,68 @@ export default function App() {
         },
       }),
     [activeConversation, clearCommandCenterLatch, openCommandCenter, openSearch],
+  );
+
+  const commandActions = useMemo<CommandCenterAction[]>(
+    () => [
+      {
+        id: "new-agent",
+        label: "New Agent",
+        shortcut: "Cmd+N",
+        run: () => conversationListRef.current?.createNew(),
+      },
+      {
+        id: "search",
+        label: "Search Conversations",
+        shortcut: "Cmd+F",
+        run: () => setShowSearch(true),
+      },
+      { id: "settings", label: "Open Settings", run: () => setShowSettings(true) },
+      {
+        id: "shortcuts",
+        label: "Open Shortcuts",
+        run: () => setShowShortcutsDialog(true),
+      },
+      {
+        id: "widget-gallery",
+        label: "Open Widget Gallery",
+        shortcut: "Cmd+D",
+        run: () => setShowWidgetGallery(true),
+      },
+      {
+        id: "focus-composer",
+        label: "Focus Composer",
+        shortcut: "Cmd+L",
+        disabled: !activeConversation && ready !== true,
+        run: () => {
+          const selector = activeConversation
+            ? '[data-testid="agent-input"]'
+            : '[data-testid="empty-state-input"]';
+          document.querySelector<HTMLElement>(selector)?.focus();
+        },
+      },
+      {
+        id: "archive-current",
+        label: "Archive Current Conversation",
+        disabled: !activeConversation,
+        run: () => {
+          if (activeConversation) {
+            conversationListRef.current?.archiveById(activeConversation.id);
+          }
+        },
+      },
+      {
+        id: "close-surface",
+        label: "Close Current Surface",
+        run: () => {
+          setShowSettings(false);
+          setShowSearch(false);
+          setShowShortcutsDialog(false);
+          setShowWidgetGallery(false);
+        },
+      },
+    ],
+    [activeConversation, ready],
   );
 
   useEffect(() => {
@@ -344,6 +408,11 @@ export default function App() {
           open={showShortcutsDialog}
           onClose={closeShortcutsDialog}
           shortcuts={shortcuts}
+        />
+        <CommandCenter
+          open={showCommandCenter}
+          onOpenChange={setShowCommandCenter}
+          actions={commandActions}
         />
         <ConversationSearchDialog
           open={showSearch}

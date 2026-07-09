@@ -38,10 +38,7 @@ export default function ShortcutsDialog({ open, onClose, shortcuts }: ShortcutsD
               data-testid="shortcut-item"
             >
               <span className="text-muted-foreground">{s.description}</span>
-              <KeyboardShortcut
-                keys={[s.metaKey ? "⌘" : "", s.key.toUpperCase()]}
-                data-testid={`shortcut-combo-${s.id}`}
-              />
+              <KeyboardShortcut keys={s.combo.split("+")} data-testid={`shortcut-combo-${s.id}`} />
             </li>
           ))}
         </ul>
