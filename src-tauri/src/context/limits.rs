@@ -102,11 +102,15 @@ pub const AGENT_TURN_MAX_OUTPUT_TOKENS: u32 = 1024;
 /// tail AFTER `run_loop`'s measure/threshold check and after
 /// `fit_turn_to_budget` have already run, so neither ever sees it; without
 /// this reserve a history parked just under the threshold plus a big tail
-/// (mode banner + Executing goal/step frame + optional refusal reason +
-/// the recitation checklist -- realistically 400-700 tokens on a 20-step
-/// plan) rendered past `n_ctx`, `ctx.decode` failed mid-stream, and the
-/// whole task silently ended with "Error: inference failed" as its final
-/// answer. Sized above the observed worst case so the envelope
+/// rendered past `n_ctx`, `ctx.decode` failed mid-stream, and the whole
+/// task silently ended with "Error: inference failed" as its final answer.
+/// Since Task 14, the Executing tail (mode banner + goal/step frame +
+/// optional refusal reason + the clamped recitation window) is bounded to
+/// roughly six recitation lines plus the goal/current-step frame
+/// regardless of how large the plan grows -- only Planning's recitation
+/// still renders every step and so still scales with plan length, which
+/// this reserve must continue to cover (realistically 400-700 tokens on a
+/// 20-step plan). Sized above that observed worst case so the envelope
 /// `fitted history + tail + AGENT_TURN_MAX_OUTPUT_TOKENS <=
 /// CONTEXT_WINDOW_TOKENS` holds. Subtracted wherever a turn budget is
 /// derived: the plan hosts' `threshold` computations and

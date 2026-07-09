@@ -430,7 +430,21 @@ impl PlanState {
                         description,
                         done: false,
                     });
-                    format!("Step added. Plan now has {} steps.", self.plan.steps.len())
+                    let n = self.plan.steps.len();
+                    if n > 12 {
+                        // Plan-shape guard (Task 14): a bloated plan is the
+                        // OTHER half of the diagnosed benchmark regression
+                        // (degenerate 25-step plans with duplicated
+                        // per-file steps), so nudge away from growing it
+                        // further right at the moment a step was just
+                        // added -- the same decision-moment placement as
+                        // CreatePlan's and StepDone's own nudges above.
+                        format!(
+                            "Step added. Plan now has {n} steps -- that is a lot: long plans burn turns. Only add more if NO existing step already covers the work; duplicate or per-item steps that restate a broader step should not be added."
+                        )
+                    } else {
+                        format!("Step added. Plan now has {n} steps.")
+                    }
                 }
             }
             (LoopState::Planning, "ResumeExecution") => match self.next_undone_step() {
@@ -497,27 +511,55 @@ impl PlanState {
     /// context keeps the global plan inside the model's recent attention
     /// span. `None` when no plan exists (trivial turns pay nothing).
     /// Private: hosts get it folded into `state_tail`, never separately.
+    ///
+    /// Planning renders the full checklist, unclamped, regardless of plan
+    /// size -- the model is the plan editor there and needs every step to
+    /// revise it, and Planning turns are comparatively few. Executing
+    /// clamps to a small window (Task 14): a benchmark regression traced
+    /// the full pending checklist re-advertising every far-off step every
+    /// turn as a distractor that kept a small model servicing salient
+    /// pending "Read"-shaped steps instead of finishing the current one.
+    /// Executing turns are many, so this is the render that actually needs
+    /// to stay bounded regardless of how large the plan has grown.
     fn recitation_text(&self) -> Option<String> {
         if !self.has_plan() {
             return None;
         }
         let done = self.plan.steps.iter().filter(|s| s.done).count();
-        let current = match self.state {
-            LoopState::Executing { step_index } => Some(step_index),
-            LoopState::Planning => None,
-        };
+        let total = self.plan.steps.len();
         let mut lines = vec![format!("Plan status -- goal: {}", self.plan.goal)];
-        for (i, step) in self.plan.steps.iter().enumerate() {
-            let mark = if step.done {
-                "[x]"
-            } else if current == Some(i) {
-                "[>]"
-            } else {
-                "[ ]"
-            };
-            lines.push(format!("{mark} {}", step.description));
+        match self.state {
+            LoopState::Planning => {
+                for step in &self.plan.steps {
+                    let mark = if step.done { "[x]" } else { "[ ]" };
+                    lines.push(format!("{mark} {}", step.description));
+                }
+            }
+            LoopState::Executing { step_index } => {
+                if done > 0 {
+                    lines.push(format!("[x] {done} steps done"));
+                }
+                lines.push(format!("[>] {}", self.plan.steps[step_index].description));
+                let upcoming: Vec<usize> = self
+                    .plan
+                    .steps
+                    .iter()
+                    .enumerate()
+                    .skip(step_index + 1)
+                    .filter(|(_, s)| !s.done)
+                    .map(|(i, _)| i)
+                    .collect();
+                let shown = upcoming.len().min(2);
+                for &i in upcoming.iter().take(2) {
+                    lines.push(format!("[ ] next: {}", self.plan.steps[i].description));
+                }
+                let remaining = upcoming.len() - shown;
+                if remaining > 0 {
+                    lines.push(format!("({remaining} more steps pending)"));
+                }
+            }
         }
-        lines.push(format!("({done}/{} done)", self.plan.steps.len()));
+        lines.push(format!("({done}/{total} done)"));
         Some(lines.join("\n"))
     }
 }
@@ -626,7 +668,10 @@ mod tests {
         );
         // Task 10's recitation checklist is folded into this ONE tail message.
         assert!(tail.contains("[>] write tests"));
-        assert!(tail.contains("[ ] run tests"));
+        assert!(
+            tail.contains("[ ] next: run tests"),
+            "upcoming undone steps carry the 'next:' label (Task 14 clamp), got: {tail:?}"
+        );
         assert!(tail.contains("(0/2 done)"));
     }
 
@@ -880,45 +925,144 @@ mod tests {
     }
 
     #[test]
-    fn recitation_text_formats_the_live_plan_for_context_tail() {
-        // Fresh state with no plan returns None
+    fn recitation_text_returns_none_without_a_plan() {
         let ps = PlanState::default();
         assert!(ps.recitation_text().is_none(), "fresh state should have no recitation");
+    }
 
-        // Create a 3-step plan
+    /// Task 14 test (b): a small Executing plan (3 steps, 1 done) still
+    /// shows everything -- nothing lands in the "(N more steps pending)"
+    /// bucket, even though the one done step now collapses into a count
+    /// line rather than showing its own description (that collapse is
+    /// unconditional on `done_count > 0`, not just a large-plan behavior).
+    #[test]
+    fn recitation_text_in_executing_mode_shows_everything_when_a_plan_is_small() {
         let mut ps = PlanState::default();
         ps.handle_plan_tool(&call(
             "CreatePlan",
             serde_json::json!({"goal": "fix bugs", "steps": ["fix a", "fix b", "fix c"]}),
         ));
 
-        // Mark the first step done, then move to executing the second
+        // Mark the first step done, then move to executing the second.
         ps.handle_plan_tool(&call("ResumeExecution", serde_json::json!({})));
         ps.handle_plan_tool(&call("StepDone", serde_json::json!({"summary": "done"})));
 
-        // Now in Executing{1}, with step 0 done
+        // Now in Executing{1}, with step 0 done.
         assert_eq!(ps.state, LoopState::Executing { step_index: 1 });
         assert!(ps.plan.steps[0].done);
 
         let recitation = ps.recitation_text().expect("should have recitation with active plan");
 
-        // Each step must carry ITS OWN state marker -- asserting the
-        // marker and the description together (not `contains(desc) ||
-        // contains(marked desc)`, which the description alone satisfied
-        // regardless of marker placement).
         assert!(recitation.contains("fix bugs"), "should contain goal");
         assert!(
-            recitation.contains("[x] fix a"),
-            "done step must be marked [x], got: {recitation:?}"
+            recitation.contains("[x] 1 steps done"),
+            "done steps collapse into a single count line, got: {recitation:?}"
+        );
+        assert!(
+            !recitation.contains("fix a"),
+            "the collapsed done step's own description must not appear, got: {recitation:?}"
         );
         assert!(
             recitation.contains("[>] fix b"),
-            "current step must be marked [>], got: {recitation:?}"
+            "current step must be marked [>] with full text, got: {recitation:?}"
         );
         assert!(
-            recitation.contains("[ ] fix c"),
-            "undone step must be marked [ ], got: {recitation:?}"
+            recitation.contains("[ ] next: fix c"),
+            "the upcoming undone step must be shown with a next: label, got: {recitation:?}"
         );
-        assert!(recitation.contains("1/3"), "should show progress counter");
+        assert!(
+            !recitation.contains("more steps pending"),
+            "a small plan must not hide anything behind the remaining-count line, got: {recitation:?}"
+        );
+        assert!(recitation.contains("(1/3 done)"), "should show progress counter");
+    }
+
+    /// Task 14 test (a): a large Executing plan (25 steps, 0-6 done,
+    /// current 7) clamps the recitation to a window -- the diagnosed
+    /// benchmark distractor was the full pending checklist re-advertising
+    /// every far-off step every turn.
+    #[test]
+    fn recitation_text_in_executing_mode_clamps_a_large_plan_to_a_window() {
+        let mut ps = PlanState::default();
+        let steps: Vec<PlanStep> = (0..25)
+            .map(|i| PlanStep {
+                description: format!("step {i}"),
+                done: i < 7,
+            })
+            .collect();
+        ps.plan = Plan {
+            goal: "big plan".to_string(),
+            steps,
+        };
+        ps.state = LoopState::Executing { step_index: 7 };
+
+        let recitation = ps.recitation_text().expect("should have recitation with active plan");
+        assert!(
+            recitation.contains("[x] 7 steps done"),
+            "got: {recitation:?}"
+        );
+        assert!(recitation.contains("[>] step 7"), "got: {recitation:?}");
+        assert!(recitation.contains("[ ] next: step 8"), "got: {recitation:?}");
+        assert!(recitation.contains("[ ] next: step 9"), "got: {recitation:?}");
+        assert!(
+            recitation.contains("(15 more steps pending)"),
+            "17 undone steps after current minus the 2 shown = 15, got: {recitation:?}"
+        );
+        assert!(recitation.contains("(7/25 done)"), "got: {recitation:?}");
+        assert!(
+            !recitation.contains("step 20"),
+            "far-off pending steps must not appear in a clamped recitation, got: {recitation:?}"
+        );
+    }
+
+    /// Task 14 test (c): Planning mode's recitation is the full render,
+    /// unclamped, regardless of plan size -- the model is the plan editor
+    /// there and needs to see every step to revise it.
+    #[test]
+    fn recitation_text_in_planning_mode_renders_every_step_regardless_of_plan_size() {
+        let mut ps = PlanState::default();
+        let steps: Vec<String> = (0..25).map(|i| format!("step {i}")).collect();
+        ps.handle_plan_tool(&call("CreatePlan", serde_json::json!({"goal": "g", "steps": steps})));
+        assert_eq!(ps.state, LoopState::Planning, "CreatePlan alone stays in Planning");
+
+        let recitation = ps.recitation_text().expect("a created plan always has a recitation");
+        for i in 0..25 {
+            assert!(
+                recitation.contains(&format!("step {i}")),
+                "planning mode must render every step's description in full, missing step {i}, got: {recitation:?}"
+            );
+        }
+        assert!(
+            !recitation.contains("more steps pending"),
+            "planning mode is never clamped, got: {recitation:?}"
+        );
+    }
+
+    /// Task 14 test (d): the AddStep result nudge warns once the plan
+    /// crosses 12 steps (long plans burn turns servicing a bloated
+    /// checklist) but keeps the classic text at or below that ceiling.
+    #[test]
+    fn add_step_warns_once_the_plan_exceeds_twelve_steps() {
+        let mut ps = PlanState::default();
+        let steps: Vec<String> = (0..11).map(|i| format!("step {i}")).collect();
+        ps.handle_plan_tool(&call("CreatePlan", serde_json::json!({"goal": "g", "steps": steps})));
+        assert_eq!(ps.plan.steps.len(), 11);
+
+        // The 12th step lands exactly at the ceiling -- classic text.
+        let at_twelve = reply(ps.handle_plan_tool(&call(
+            "AddStep",
+            serde_json::json!({"description": "step 11"}),
+        )));
+        assert_eq!(at_twelve, "Step added. Plan now has 12 steps.");
+
+        // The 13th step crosses the ceiling -- the plan-bloat nudge.
+        let beyond = reply(ps.handle_plan_tool(&call(
+            "AddStep",
+            serde_json::json!({"description": "step 12"}),
+        )));
+        assert_eq!(
+            beyond,
+            "Step added. Plan now has 13 steps -- that is a lot: long plans burn turns. Only add more if NO existing step already covers the work; duplicate or per-item steps that restate a broader step should not be added."
+        );
     }
 }
