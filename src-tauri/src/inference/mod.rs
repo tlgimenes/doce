@@ -42,7 +42,7 @@ const BATCH_CAPACITY: usize = 512;
 /// llama.cpp startup log) -- this is a deliberately chosen budget, raised
 /// from the original 2048 once real use showed the tiered-compaction
 /// pipeline had too little headroom to work with at that size.
-pub const CONTEXT_WINDOW_TOKENS: u32 = 8192;
+pub const CONTEXT_WINDOW_TOKENS: u32 = 16384;
 
 /// Splits the half-open range `[start, n_tokens)` into `<= batch_capacity`
 /// chunks, in order — the sequence of chunks a prompt (or, for a

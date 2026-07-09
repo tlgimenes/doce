@@ -45,8 +45,8 @@ pub fn tool_cleared_placeholder_with_pointer(offload_path: &str) -> String {
 pub const PROTECTED_RECENT_MESSAGES: usize = 10;
 
 /// Max output tokens for the tier-2 summarization completion itself --
-/// ~12.5% of `CONTEXT_WINDOW_TOKENS` at the original 2048-token sizing.
-pub const SUMMARY_MAX_TOKENS: i32 = 256;
+/// 1/16 of `CONTEXT_WINDOW_TOKENS`.
+pub const SUMMARY_MAX_TOKENS: i32 = (CONTEXT_WINDOW_TOKENS / 16) as i32;
 
 pub const SUMMARIZATION_PROMPT: &str =
     "Summarize the conversation so far concisely, preserving key facts, decisions, and unresolved tasks. Respond with only the summary text, nothing else.";
@@ -55,22 +55,35 @@ pub const DEFAULT_WARN_THRESHOLD_PCT: f64 = 0.5;
 pub const DEFAULT_COMPACT_THRESHOLD_PCT: f64 = 0.75;
 pub const DEFAULT_HARD_LIMIT_PCT: f64 = 0.9;
 
-/// ~24% of `CONTEXT_WINDOW_TOKENS` at the original 2048-token sizing (500
-/// chars ~= 125 tokens). A single tool result over this threshold gets
-/// offloaded to disk with only a preview + pointer left inline.
-pub const DEFAULT_TOOL_OUTPUT_OFFLOAD_CHARS: usize = 500;
+/// ~3% of `CONTEXT_WINDOW_TOKENS` (2000 chars ~= 500 tokens). A single tool
+/// result over this threshold gets offloaded to disk with only a preview +
+/// pointer left inline.
+pub const DEFAULT_TOOL_OUTPUT_OFFLOAD_CHARS: usize = 2000;
 
 /// `reserve` for `InferenceEngine::fit_to_context`'s per-turn call inside
 /// `agent::run_loop` (`context::fit_turn_to_budget`) -- and now also the
 /// literal `max_tokens` the agent `generate()` call sites pass (they
 /// reference this constant rather than duplicating the number).
 ///
-/// Raised from 256 (~3% of the 8192 window) to 1024 (~12.5%) after a real
-/// benchmark failure: a well-granulated 20-step `CreatePlan` call needs
-/// more than 256 output tokens, so generation was cut off mid-JSON before
-/// the closing `</tool_call>` tag and the truncated call silently became
-/// the turn's "final answer" (tier4_planned scored 0/20 at turn 2). The
-/// grammar guarantees a tool call ends at its closing tag and EOG ends
-/// short answers early, so the extra headroom costs nothing on turns that
+/// Raised from 256 (~3.1% of the 8192 window) to 1024 (~6.2% of
+/// `CONTEXT_WINDOW_TOKENS`) after a real benchmark failure: a well-granulated
+/// 20-step `CreatePlan` call needs more than 256 output tokens, so generation
+/// was cut off mid-JSON before the closing `</tool_call>` tag and the truncated
+/// call silently became the turn's "final answer" (tier4_planned scored 0/20 at
+/// turn 2). The grammar guarantees a tool call ends at its closing tag and EOG
+/// ends short answers early, so the extra headroom costs nothing on turns that
 /// don't need it.
 pub const AGENT_TURN_MAX_OUTPUT_TOKENS: u32 = 1024;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[allow(clippy::assertions_on_constants)]
+    fn budget_constants_stay_proportional_to_the_window() {
+        assert_eq!(SUMMARY_MAX_TOKENS, (CONTEXT_WINDOW_TOKENS / 16) as i32);
+        assert!(DEFAULT_TOOL_OUTPUT_OFFLOAD_CHARS >= 1500);
+        assert!(AGENT_TURN_MAX_OUTPUT_TOKENS >= CONTEXT_WINDOW_TOKENS / 16);
+    }
+}
