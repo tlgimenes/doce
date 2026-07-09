@@ -21,7 +21,7 @@ export function groupTranscriptTurns(messages: Message[]): TranscriptTurn[] {
       continue;
     }
 
-    if (!current) {
+    if (!current || current.user === null) {
       current = {
         id: message.id,
         user: null,

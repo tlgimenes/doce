@@ -56,6 +56,20 @@ describe("groupTranscriptTurns", () => {
     expect(turns[1]).toEqual({ id: "u1", user: u1, rows: [a1] });
   });
 
+  it("keeps each assistant-only row before the first user message in its own standalone turn", () => {
+    const a0 = message({ id: "a0", role: "assistant", content: "welcome" });
+    const a1 = message({ id: "a1", role: "assistant", content: "still waiting" });
+    const u1 = message({ id: "u1", role: "user", content: "request" });
+
+    const turns = groupTranscriptTurns([a0, a1, u1]);
+
+    expect(turns).toEqual([
+      { id: "a0", user: null, rows: [a0] },
+      { id: "a1", user: null, rows: [a1] },
+      { id: "u1", user: u1, rows: [] },
+    ]);
+  });
+
   it("keeps plan-machine rows in their owning turn so MessageContent can filter them", () => {
     const u1 = message({ id: "u1", role: "user", content: "make a plan" });
     const planTool = message({
