@@ -17,6 +17,38 @@ pub struct ToolOutcome {
     pub detail: serde_json::Value,
 }
 
+impl ToolOutcome {
+    /// The text an offload (`context::offload::offload_if_oversized`)
+    /// should write to disk for this outcome. For every tool but Bash,
+    /// `model_text` IS the full result. Bash is the one tool whose
+    /// `model_text` streams are already tail-biased CAPPED
+    /// (`bash::truncate_tail_biased`) while `detail.outcome` still carries
+    /// every byte -- offloading the capped copy would break the promise in
+    /// tier 1's restorable clearing pointer ("full output saved at
+    /// {path}") and in the offload pointer itself ("full output saved"),
+    /// so the full rendition is reconstructed from `detail` here.
+    pub fn offload_text(&self) -> std::borrow::Cow<'_, str> {
+        if self.detail["toolName"] == "Bash" {
+            let outcome = &self.detail["outcome"];
+            if let (Some(stdout), Some(stderr)) =
+                (outcome["stdout"].as_str(), outcome["stderr"].as_str())
+            {
+                let exit_code = outcome["exitCode"].as_i64().unwrap_or(-1);
+                return std::borrow::Cow::Owned(bash_result_model_text(exit_code, stdout, stderr));
+            }
+        }
+        std::borrow::Cow::Borrowed(&self.model_text)
+    }
+}
+
+/// The one rendition of a completed Bash run the model (and the offload
+/// file) ever sees -- shared by the Bash arm below (capped streams) and
+/// `ToolOutcome::offload_text` (full streams), so the two can never drift
+/// in shape.
+fn bash_result_model_text(exit_code: i64, stdout: &str, stderr: &str) -> String {
+    format!("exit_code: {exit_code}\nstdout:\n{stdout}\nstderr:\n{stderr}")
+}
+
 /// 007-workspace-cwd-resolution: resolves a tool-supplied path against the
 /// conversation's working directory. A relative `given` is joined onto
 /// `cwd` when one is known; an absolute `given`, or no known `cwd`, passes
@@ -50,9 +82,22 @@ fn resolve_optional_base(cwd: Option<&Path>, given: Option<&str>) -> PathBuf {
 /// Read with `{"file": ...}` instead of `{"file_path": ...}` six times in
 /// a row without ever self-correcting, and eventually gave up blaming "the
 /// environment" rather than its own wrong key name.
-fn wrong_key_hint(arguments: &serde_json::Value, expected: &str, common_mistakes: &[&str]) -> String {
+///
+/// `legal_args` names every key that is a LEGAL argument of the tool being
+/// called: a candidate on that list is never flagged, however the call
+/// otherwise failed. Without this, `Grep {"path": ...}` missing `pattern`
+/// yielded "(you passed \"path\", the correct key is \"pattern\")" --
+/// inviting the model to RENAME a perfectly valid optional argument
+/// instead of adding the missing one.
+fn wrong_key_hint(
+    arguments: &serde_json::Value,
+    expected: &str,
+    common_mistakes: &[&str],
+    legal_args: &[&str],
+) -> String {
     common_mistakes
         .iter()
+        .filter(|candidate| !legal_args.contains(*candidate))
         .find(|candidate| arguments.get(**candidate).is_some())
         .map(|candidate| format!(" (you passed \"{candidate}\", the correct key is \"{expected}\")"))
         .unwrap_or_default()
@@ -96,6 +141,20 @@ const REQUIRED_STRING_ARGS: &[(&str, &[&str])] = &[
     ("Grep", &["pattern"]),
 ];
 
+/// (tool, every legal argument key -- required AND optional). Fed to
+/// `wrong_key_hint` so a key that is a legitimate argument of the SAME
+/// tool (e.g. Glob/Grep's optional `path`) is never flagged as a
+/// near-miss for a missing required one. Kept next to
+/// `REQUIRED_STRING_ARGS` so a schema change updates both together.
+const LEGAL_TOOL_ARGS: &[(&str, &[&str])] = &[
+    ("Read", &["file_path", "offset", "limit"]),
+    ("Write", &["file_path", "content"]),
+    ("Edit", &["file_path", "old_string", "new_string", "replace_all"]),
+    ("Bash", &["command", "timeout"]),
+    ("Glob", &["pattern", "path"]),
+    ("Grep", &["pattern", "path", "glob"]),
+];
+
 /// Checked as the first thing `execute()` does, ahead of every per-tool
 /// arm: generalizes `wrong_key_hint` from the 3 tools that used to call it
 /// by hand to all 6 built-in tools with required string arguments, and
@@ -106,6 +165,11 @@ fn validate_required_args(call: &ToolCall) -> Option<String> {
     let (_, required) = REQUIRED_STRING_ARGS
         .iter()
         .find(|(name, _)| *name == call.name)?;
+    let legal_args: &[&str] = LEGAL_TOOL_ARGS
+        .iter()
+        .find(|(name, _)| *name == call.name)
+        .map(|(_, args)| *args)
+        .unwrap_or(&[]);
     let problems: Vec<String> = required
         .iter()
         .filter_map(|key| match call.arguments.get(*key) {
@@ -114,6 +178,7 @@ fn validate_required_args(call: &ToolCall) -> Option<String> {
                     &call.arguments,
                     key,
                     &["file", "path", "filepath", "filename", "text", "cmd"],
+                    legal_args,
                 );
                 Some(format!("missing required \"{key}\" (a string){hint}"))
             }
@@ -314,11 +379,10 @@ pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
                 // transcript widget (and anything reading `detail` back
                 // later) never loses data the model itself didn't see.
                 Ok(result) => ToolOutcome {
-                    model_text: format!(
-                        "exit_code: {}\nstdout:\n{}\nstderr:\n{}",
-                        result.exit_code,
-                        bash::truncate_tail_biased(&result.stdout),
-                        bash::truncate_tail_biased(&result.stderr),
+                    model_text: bash_result_model_text(
+                        i64::from(result.exit_code),
+                        &bash::truncate_tail_biased(&result.stdout),
+                        &bash::truncate_tail_biased(&result.stderr),
                     ),
                     detail: json!({
                         "toolName": "Bash", "command": command, "timeoutMs": timeout_ms,
@@ -707,6 +771,60 @@ mod tests {
         assert!(full_stdout.contains("line-19999"));
     }
 
+    // --- F2 (final whole-branch review): offload sees the ORIGINAL text ---
+
+    #[test]
+    fn bash_offload_text_reconstructs_the_full_untruncated_rendition() {
+        // Same >64KB shape as the tail-biased test above: model_text is
+        // capped (middle lines gone), but what the offload writes to disk
+        // must be the FULL rendition -- the tier-1 clearing pointer and the
+        // offload pointer both promise "full output saved at {path}".
+        let result = execute(
+            &call(
+                "Bash",
+                serde_json::json!({
+                    "command": "i=0; while [ $i -lt 20000 ]; do echo line-$i; i=$((i+1)); done"
+                }),
+            ),
+            None,
+        );
+
+        // A middle line the tail-biased cap definitely dropped from
+        // model_text.
+        assert!(!result.model_text.contains("line-10000\n"));
+        let offload_text = result.offload_text();
+        assert!(offload_text.starts_with("exit_code: 0\nstdout:\n"));
+        assert!(offload_text.contains("line-0\n"));
+        assert!(offload_text.contains("line-10000\n"), "the offload text must keep every byte");
+        assert!(offload_text.contains("line-19999"));
+        assert!(!offload_text.contains("bytes omitted"));
+    }
+
+    #[test]
+    fn offload_text_is_model_text_for_small_bash_and_for_every_other_tool() {
+        // Under the cap, Bash's reconstruction and model_text are
+        // byte-identical.
+        let small = execute(&call("Bash", serde_json::json!({"command": "echo hi"})), None);
+        assert_eq!(small.offload_text(), small.model_text);
+
+        // A failed Bash dispatch has no streams in detail.outcome --
+        // model_text passes through.
+        let failed = execute(&call("Bash", serde_json::json!({"command": "rm -rf ~"})), None);
+        assert_eq!(failed.offload_text(), failed.model_text);
+
+        // Non-Bash tools never reconstruct.
+        let dir = tempdir().unwrap();
+        stdfs::write(dir.path().join("f.txt"), "hello\n").unwrap();
+        let read = execute(
+            &call(
+                "Read",
+                serde_json::json!({"file_path": dir.path().join("f.txt").to_str().unwrap()}),
+            ),
+            None,
+        );
+        assert_eq!(read.offload_text(), read.model_text);
+    }
+
     #[test]
     fn bash_output_under_the_cap_is_unaffected() {
         // Existing exact-stdout tests (us2_bash_success_produces_the_...,
@@ -775,6 +893,32 @@ mod tests {
         assert!(
             result.model_text.contains("\"file\"") && result.model_text.contains("\"file_path\""),
             "expected a hint naming both the wrong key and the correct one, got: {:?}",
+            result.model_text
+        );
+    }
+
+    #[test]
+    fn a_legal_optional_arg_is_never_flagged_as_a_wrong_key() {
+        // Task 5 ledger item (final whole-branch review): `path` IS a
+        // legitimate optional argument of Grep/Glob -- a call carrying a
+        // valid `path` but missing `pattern` must name the missing key
+        // WITHOUT the near-miss hint, which read as an instruction to
+        // rename (destroy) the valid argument.
+        for tool in ["Grep", "Glob"] {
+            let result = execute(&call(tool, serde_json::json!({"path": "/tmp"})), None);
+            assert!(result.model_text.contains("pattern"), "must still name the missing key");
+            assert!(
+                !result.model_text.contains("you passed"),
+                "{tool}'s legal optional `path` must not be flagged, got: {:?}",
+                result.model_text
+            );
+        }
+        // But the same key stays a genuine near-miss where it ISN'T legal:
+        // Read has no `path` argument at all.
+        let result = execute(&call("Read", serde_json::json!({"path": "/tmp/x"})), None);
+        assert!(
+            result.model_text.contains("\"path\"") && result.model_text.contains("\"file_path\""),
+            "Read must keep hinting path -> file_path, got: {:?}",
             result.model_text
         );
     }

@@ -29,9 +29,41 @@ pub const BASH_OUTPUT_MAX_BYTES: usize = 65536;
 const HEAD_KEEP_LINES: usize = 20;
 const TAIL_KEEP_LINES: usize = 200;
 
+/// Byte-window fallback for `truncate_tail_biased` when the line-based
+/// head/tail windows can't get under the byte cap: with ≤ ~220 total
+/// lines (a handful of very long lines, minified JSON, base64, or one
+/// giant unterminated line) head-20 + tail-200 covers EVERY line, so the
+/// "capped" text used to pass through whole -- over the cap -- plus a
+/// spurious "[0 bytes omitted]" marker. Same tail bias as the line
+/// windows, sized so head + tail + marker always land safely under
+/// `BASH_OUTPUT_MAX_BYTES` (8KB + 48KB + a short marker line).
+const BYTE_FALLBACK_HEAD_BYTES: usize = BASH_OUTPUT_MAX_BYTES / 8;
+const BYTE_FALLBACK_TAIL_BYTES: usize = BASH_OUTPUT_MAX_BYTES / 2 + BASH_OUTPUT_MAX_BYTES / 4;
+
+/// Largest index `<= i` that lies on a UTF-8 char boundary of `s`
+/// (`str::floor_char_boundary` is still unstable). `i` must be `<= s.len()`.
+fn floor_char_boundary(s: &str, mut i: usize) -> usize {
+    while !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// Smallest index `>= i` that lies on a UTF-8 char boundary of `s`.
+/// `i` must be `<= s.len()`.
+fn ceil_char_boundary(s: &str, mut i: usize) -> usize {
+    while i < s.len() && !s.is_char_boundary(i) {
+        i += 1;
+    }
+    i
+}
+
 /// Tail-biased truncation used by `dispatch::execute`'s Bash arm for the
 /// model-facing `model_text` only (see `BASH_OUTPUT_MAX_BYTES`'s doc
-/// comment for why this isn't applied inside `run()`).
+/// comment for why this isn't applied inside `run()`). The cap is HARD:
+/// when the line-based windows still exceed it (see
+/// `BYTE_FALLBACK_HEAD_BYTES`), plain byte-sliced head/tail windows
+/// (snapped to UTF-8 boundaries) bound the result instead.
 pub fn truncate_tail_biased(text: &str) -> String {
     if text.len() <= BASH_OUTPUT_MAX_BYTES {
         return text.to_string();
@@ -50,6 +82,23 @@ pub fn truncate_tail_biased(text: &str) -> String {
         .min(lines.len());
     let tail: Vec<&str> = lines[tail_start..].to_vec();
     let kept: usize = head.iter().chain(tail.iter()).map(|l| l.len() + 1).sum();
+    if kept > BASH_OUTPUT_MAX_BYTES {
+        // Line windows weren't enough (this also covers the
+        // omitted-would-be-zero passthrough shape: covering every line
+        // means `kept ≈ text.len()`, which is over the cap in this
+        // branch by construction). `text.len() > BASH_OUTPUT_MAX_BYTES >=
+        // head + tail windows`, so `head_end < tail_begin` always holds
+        // and `omitted` is always positive -- no marker suppression case
+        // survives the fallback.
+        let head_end = floor_char_boundary(text, BYTE_FALLBACK_HEAD_BYTES);
+        let tail_begin = ceil_char_boundary(text, text.len() - BYTE_FALLBACK_TAIL_BYTES);
+        let omitted = tail_begin - head_end;
+        return format!(
+            "{}\n... [{omitted} bytes omitted -- full output preserved in the conversation transcript]\n{}",
+            &text[..head_end],
+            &text[tail_begin..]
+        );
+    }
     let omitted = text.len().saturating_sub(kept);
     format!(
         "{}\n... [{omitted} bytes omitted -- full output preserved in the conversation transcript]\n{}",
@@ -299,19 +348,30 @@ pub fn run(
     use std::sync::mpsc;
     let (stdout_tx, stdout_rx) = mpsc::channel::<String>();
     let (stderr_tx, stderr_rx) = mpsc::channel::<String>();
-    if let Some(mut out) = child.stdout.take() {
-        std::thread::spawn(move || {
-            let mut buf = String::new();
-            let _ = out.read_to_string(&mut buf);
-            let _ = stdout_tx.send(buf);
-        });
+    // The `None` arms are unreachable today (both streams are always piped
+    // above), but each tx must still be dropped there: an undropped sender
+    // with no reader thread would make the normal-exit path's blocking
+    // `recv()` below wait forever on a message that can never come, instead
+    // of returning the disconnected-channel default.
+    match child.stdout.take() {
+        Some(mut out) => {
+            std::thread::spawn(move || {
+                let mut buf = String::new();
+                let _ = out.read_to_string(&mut buf);
+                let _ = stdout_tx.send(buf);
+            });
+        }
+        None => drop(stdout_tx),
     }
-    if let Some(mut err) = child.stderr.take() {
-        std::thread::spawn(move || {
-            let mut buf = String::new();
-            let _ = err.read_to_string(&mut buf);
-            let _ = stderr_tx.send(buf);
-        });
+    match child.stderr.take() {
+        Some(mut err) => {
+            std::thread::spawn(move || {
+                let mut buf = String::new();
+                let _ = err.read_to_string(&mut buf);
+                let _ = stderr_tx.send(buf);
+            });
+        }
+        None => drop(stderr_tx),
     }
 
     // A simple poll loop rather than a dedicated timeout crate: this tool
@@ -368,12 +428,14 @@ pub fn run(
             // process that re-parented into its own new group) can still
             // hold the pipe's write end open, and `read_to_string` only
             // returns once every holder of that write end has actually
-            // closed it. Bound the wait instead of trusting it: fall back
-            // to whatever partial output already arrived if a reader
-            // doesn't finish within the window. The thread itself is left
-            // running in that case (not aborted) -- it will still exit on
-            // its own once the pipe eventually closes, it's just no longer
-            // waited on.
+            // closed it. Bound the wait instead of trusting it: if a
+            // reader doesn't finish within the window, that stream's
+            // capture falls back to EMPTY -- each reader sends one
+            // complete buffer only at EOF, so an expired `recv_timeout`
+            // yields nothing, not a partial read. The thread itself is
+            // left running in that case (not aborted) -- it will still
+            // exit on its own once the pipe eventually closes, it's just
+            // no longer waited on.
             let stdout = stdout_rx
                 .recv_timeout(Duration::from_millis(500))
                 .unwrap_or_default();
@@ -521,6 +583,78 @@ mod tests {
         assert!(!is_denylisted("ls -la"));
         assert!(!is_denylisted("git status"));
         assert!(!is_denylisted("cargo build"));
+    }
+
+    // --- truncate_tail_biased: the byte cap must be HARD (F3, final
+    // whole-branch review). Pre-fix, any over-cap output that head-20 +
+    // tail-200 lines fully covered (≤ ~220 lines, or one giant line)
+    // passed through WHOLE, plus a spurious "[0 bytes omitted]" marker. ---
+
+    #[test]
+    fn truncate_hard_caps_a_single_giant_line() {
+        // One 100KB unterminated line -- minified JSON / base64 shape.
+        let text = "x".repeat(100 * 1024);
+        let out = truncate_tail_biased(&text);
+        assert!(
+            out.len() <= BASH_OUTPUT_MAX_BYTES,
+            "the cap must be a real bound, got {} bytes",
+            out.len()
+        );
+        assert!(out.starts_with("x"), "head window preserved");
+        assert!(out.ends_with("x"), "tail window preserved");
+        assert!(out.contains("bytes omitted"));
+        assert!(
+            !out.contains("[0 bytes omitted"),
+            "the marker must never claim zero omitted bytes on a truncated output"
+        );
+    }
+
+    #[test]
+    fn truncate_hard_caps_a_few_hundred_long_lines() {
+        // 200 lines of ~1KB each (~200KB): fewer total lines than
+        // HEAD_KEEP_LINES + TAIL_KEEP_LINES, so the line windows cover
+        // everything -- the exact pre-fix passthrough shape.
+        let long = "y".repeat(1024);
+        let text = (0..200)
+            .map(|i| format!("{i}:{long}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.len() > BASH_OUTPUT_MAX_BYTES);
+
+        let out = truncate_tail_biased(&text);
+        assert!(
+            out.len() <= BASH_OUTPUT_MAX_BYTES,
+            "line windows covering every line must fall back to the byte cap, got {} bytes",
+            out.len()
+        );
+        assert!(out.starts_with("0:"), "head window keeps the start");
+        assert!(out.ends_with(&long), "tail window keeps the end");
+        assert!(out.contains("bytes omitted") && !out.contains("[0 bytes omitted"));
+    }
+
+    #[test]
+    fn truncate_byte_fallback_respects_utf8_boundaries() {
+        // 120KB of 2-byte chars on one line: the byte windows land
+        // mid-char unless snapped to boundaries -- a raw slice would panic.
+        let text = "é".repeat(60 * 1024);
+        let out = truncate_tail_biased(&text);
+        assert!(out.len() <= BASH_OUTPUT_MAX_BYTES);
+        assert!(out.contains("bytes omitted"));
+    }
+
+    #[test]
+    fn truncate_line_path_still_reports_real_omissions() {
+        // Many short lines (the original regression shape) stay on the
+        // line-based path: head + tail lines intact, honest marker.
+        let text = (0..20000)
+            .map(|i| format!("line-{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let out = truncate_tail_biased(&text);
+        assert!(out.contains("line-0\n"), "head lines preserved");
+        assert!(out.ends_with("line-19999"), "tail lines preserved");
+        assert!(out.contains("bytes omitted") && !out.contains("[0 bytes omitted"));
+        assert!(out.len() <= BASH_OUTPUT_MAX_BYTES);
     }
 
     #[test]

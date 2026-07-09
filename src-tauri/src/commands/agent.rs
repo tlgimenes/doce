@@ -1004,16 +1004,30 @@ async fn handle_general_tool_call(
     let settings = crate::context::ContextSettings::load(conn)
         .await
         .unwrap_or_else(|_| crate::context::ContextSettings::from_raw(&Default::default()));
-    let (model_text, offloaded_to) = match app.and_then(|a| a.path().app_data_dir().ok()) {
+    // The offload file must hold the ORIGINAL untruncated text: for Bash,
+    // `model_text` is already tail-biased capped and the full streams only
+    // live in `detail.outcome` -- `offload_text()` reconstructs them so the
+    // clearing pointer's "full output saved at {path}" promise is true.
+    let offload_source = outcome.offload_text();
+    let offloaded = match app.and_then(|a| a.path().app_data_dir().ok()) {
         Some(app_data_dir) => crate::context::offload::offload_if_oversized(
             &app_data_dir,
             parent_conversation_id,
             tool_call_id,
-            &outcome.model_text,
+            &offload_source,
             settings.tool_output_offload_chars,
         )
-        .unwrap_or_else(|_| (outcome.model_text.clone(), None)),
-        None => (outcome.model_text.clone(), None),
+        .ok(),
+        None => None,
+    };
+    let (model_text, offloaded_to) = match offloaded {
+        Some((pointer_text, Some(path))) => (pointer_text, Some(path)),
+        // No offload happened (under threshold, no app dir, or a write
+        // error): the model keeps seeing `model_text` -- the capped,
+        // model-facing copy -- NEVER the reconstructed full rendition,
+        // which for Bash could otherwise bypass the output cap whenever
+        // the offload threshold is configured above it.
+        _ => (outcome.model_text.clone(), None),
     };
 
     let mut detail = outcome.detail.clone();

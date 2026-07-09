@@ -98,14 +98,21 @@ const UNION_TOOL_LINES: &[&str] = &[
     r#"{"type": "function", "function": {"name": "Glob", "description": "Find files by name pattern. The pattern is a single wildcard expression, e.g. \"bug_*.txt\" or \"*.rs\" -- never a space-separated list of literal filenames, that matches nothing. Omit path to search the current working directory.", "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}}, "required": ["pattern"]}}}"#,
 ];
 
-/// `Task` gets its own line because it's the ONE union tool a subagent host
+/// `Task` gets its own line because it's a union tool a subagent host
 /// must never advertise (FR-016's one-level nesting cap: `run_loop` rejects
 /// any `Task` call from a subagent, so listing it would just spend a
-/// guaranteed-failing turn).
+/// guaranteed-failing turn). `AskUserQuestion` below gets the identical
+/// treatment for its own reason.
 const TASK_TOOL_LINE: &str = r#"{"type": "function", "function": {"name": "Task", "description": "Delegate substantial, self-contained work (extensive exploration, a large search, a bulky sub-investigation) to an isolated subagent instead of doing it inline. This conversation is shared across the WHOLE task, not just this step -- everything you do here stays visible to every later step too, so keep it lean: reach for Task when a piece of work would otherwise flood this shared history with exploration detail nobody later needs, and only the outcome actually matters going forward.", "parameters": {"type": "object", "properties": {"prompt": {"type": "string"}}, "required": ["prompt"]}}}"#;
 
+/// `AskUserQuestion` gets its own line for the same reason `Task` does:
+/// only the top-level host can service it (`SubagentBackend::execute_tool`
+/// has no AskUserQuestion route -- a subagent's questions have no user to
+/// reach), so the subagent flavor must not advertise it, and Planning's
+/// grammar allowed-set must not make it samplable there either.
+const ASK_USER_QUESTION_TOOL_LINE: &str = r#"{"type": "function", "function": {"name": "AskUserQuestion", "description": "Ask the user directly if the request is genuinely ambiguous.", "parameters": {"type": "object", "properties": {"header": {"type": "string"}, "question": {"type": "string"}, "options": {"type": "array", "items": {"type": "object", "properties": {"label": {"type": "string"}, "description": {"type": "string"}}, "required": ["label"]}}, "multiSelect": {"type": "boolean"}}, "required": ["header", "question", "options"]}}}"#;
+
 const UNION_TOOL_LINES_TAIL: &[&str] = &[
-    r#"{"type": "function", "function": {"name": "AskUserQuestion", "description": "Ask the user directly if the request is genuinely ambiguous.", "parameters": {"type": "object", "properties": {"header": {"type": "string"}, "question": {"type": "string"}, "options": {"type": "array", "items": {"type": "object", "properties": {"label": {"type": "string"}, "description": {"type": "string"}}, "required": ["label"]}}, "multiSelect": {"type": "boolean"}}, "required": ["header", "question", "options"]}}}"#,
     r#"{"type": "function", "function": {"name": "StepDone", "description": "Call this once you have actually completed the step, not when you believe you're close.", "parameters": {"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]}}}"#,
     r#"{"type": "function", "function": {"name": "RefuseStep", "description": "Call this if the step cannot be completed as described (unclear, blocked, or wrong). Explain why -- your reason is used to revise the plan.", "parameters": {"type": "object", "properties": {"reason": {"type": "string"}}, "required": ["reason"]}}}"#,
     r#"{"type": "function", "function": {"name": "FinishTask", "description": "End the task and deliver your final answer to the user. Only call this after you have verified the outcome yourself.", "parameters": {"type": "object", "properties": {"answer": {"type": "string"}}, "required": ["answer"]}}}"#,
@@ -124,10 +131,20 @@ const UNION_TOOL_LINES_TAIL: &[&str] = &[
 fn build_plan_system_prompt(allow_task: bool) -> String {
     let mut tools: Vec<&str> = UNION_TOOL_LINES.to_vec();
     if allow_task {
+        // Top-level-only tools, both keyed on the same host flag: `Task`
+        // because of FR-016's nesting cap, `AskUserQuestion` because only
+        // the top-level host has an AskUserQuestion route to a real user
+        // (see each line's own doc comment).
         tools.push(TASK_TOOL_LINE);
+        tools.push(ASK_USER_QUESTION_TOOL_LINE);
     }
     tools.extend(UNION_TOOL_LINES_TAIL);
     let tools_block = tools.join("\n");
+    let planning_names = if allow_task {
+        "CreatePlan, AddStep, ResumeExecution, Read, Grep, Glob, AskUserQuestion, FinishTask"
+    } else {
+        "CreatePlan, AddStep, ResumeExecution, Read, Grep, Glob, FinishTask"
+    };
     let executing_names = if allow_task {
         "Read, Write, Edit, Bash, Grep, Glob, Task, StepDone, RefuseStep"
     } else {
@@ -153,7 +170,7 @@ For each function call, return a json object with function name and arguments wi
 
 # Modes
 
-PLANNING mode tools: CreatePlan, AddStep, ResumeExecution, Read, Grep, Glob, AskUserQuestion, FinishTask.
+PLANNING mode tools: {planning_names}.
 EXECUTING mode tools: {executing_names}.
 Only the current mode's tools are available to you -- the last message of the conversation names the mode.
 
@@ -253,6 +270,19 @@ const PLANNING_ALLOWED_TOOLS: &[&str] = &[
     "AskUserQuestion",
     "FinishTask",
 ];
+/// A subagent's Planning turns must not be able to sample
+/// `AskUserQuestion` -- `SubagentBackend` has no route to a user, so the
+/// call could only ever come back as "Error: unknown tool", a
+/// guaranteed-wasted turn (the same reasoning as `Task`/FR-016 below).
+const PLANNING_ALLOWED_TOOLS_NO_ASK: &[&str] = &[
+    "CreatePlan",
+    "AddStep",
+    "ResumeExecution",
+    "Read",
+    "Grep",
+    "Glob",
+    "FinishTask",
+];
 const EXECUTING_ALLOWED_TOOLS: &[&str] = &[
     "Read", "Write", "Edit", "Bash", "Grep", "Glob", "Task", "StepDone", "RefuseStep",
 ];
@@ -311,12 +341,15 @@ impl PlanState {
     /// the sampler's grammar name-enum gate on every `generate` call, so a
     /// tool outside the current state's set is unsamplable rather than
     /// merely un-advertised (the union prompt lists everything). Mirrors
-    /// exactly the per-state tool sets the retired prompts advertised (the
-    /// sets the 20/20 benchmark validated). `allow_task` only matters while
-    /// Executing -- Planning never listed `Task` in the first place.
+    /// exactly the per-state tool sets each host flavor's prompt
+    /// advertises. `allow_task = false` (subagent hosts) drops the two
+    /// top-level-only tools from their respective states: `Task` while
+    /// Executing (FR-016) and `AskUserQuestion` while Planning (no
+    /// subagent route to a user).
     pub fn allowed_tool_names(&self, allow_task: bool) -> &'static [&'static str] {
         match self.state {
-            LoopState::Planning => PLANNING_ALLOWED_TOOLS,
+            LoopState::Planning if allow_task => PLANNING_ALLOWED_TOOLS,
+            LoopState::Planning => PLANNING_ALLOWED_TOOLS_NO_ASK,
             LoopState::Executing { .. } if allow_task => EXECUTING_ALLOWED_TOOLS,
             LoopState::Executing { .. } => EXECUTING_ALLOWED_TOOLS_NO_TASK,
         }
@@ -537,17 +570,29 @@ mod tests {
 
     /// FR-016's one-level nesting cap means `run_loop` rejects ANY `Task`
     /// call from a subagent -- so a subagent host's union prompt must not
-    /// advertise `Task` at all. Repeated calls per variant must also return
-    /// the SAME cached string (pointer equality): byte-stability of
-    /// messages[0] within a host is the entire point of this prompt.
+    /// advertise `Task` at all. `AskUserQuestion` gets the identical
+    /// treatment (F4, final whole-branch review): `SubagentBackend` has no
+    /// route to a user, so advertising it (in the tools block OR the
+    /// "# Modes" PLANNING list) invites a guaranteed "unknown tool" turn.
+    /// Repeated calls per variant must also return the SAME cached string
+    /// (pointer equality): byte-stability of messages[0] within a host is
+    /// the entire point of this prompt.
     #[test]
-    fn plan_system_prompt_omits_task_for_subagents_and_is_cached_per_variant() {
+    fn plan_system_prompt_omits_task_and_ask_user_for_subagents_and_is_cached_per_variant() {
         let sub = plan_system_prompt(false);
         assert!(!sub.contains("\"name\": \"Task\""));
+        assert!(!sub.contains("AskUserQuestion"), "no tool line and no # Modes mention");
+        assert!(sub.contains(
+            "PLANNING mode tools: CreatePlan, AddStep, ResumeExecution, Read, Grep, Glob, FinishTask."
+        ));
         assert!(sub.contains("\"name\": \"StepDone\""));
         assert!(sub.contains("\"name\": \"FinishTask\""));
         let top = plan_system_prompt(true);
         assert!(top.contains("\"name\": \"Task\""));
+        assert!(top.contains("\"name\": \"AskUserQuestion\""));
+        assert!(top.contains(
+            "PLANNING mode tools: CreatePlan, AddStep, ResumeExecution, Read, Grep, Glob, AskUserQuestion, FinishTask."
+        ));
         assert!(std::ptr::eq(plan_system_prompt(true), plan_system_prompt(true)));
         assert!(std::ptr::eq(plan_system_prompt(false), plan_system_prompt(false)));
     }
@@ -609,9 +654,11 @@ mod tests {
         assert!(!tail2.contains("the file does not exist"));
     }
 
-    /// The grammar-level gate must mirror EXACTLY the tool set each state's
-    /// prompt used to advertise -- Planning's read-only+plan set, Executing's
-    /// file/shell set (minus `Task` for subagents, FR-016).
+    /// The grammar-level gate must mirror EXACTLY the tool set each host
+    /// flavor's prompt advertises per state -- Planning's read-only+plan
+    /// set (minus `AskUserQuestion` for subagents, which have no route to
+    /// a user), Executing's file/shell set (minus `Task` for subagents,
+    /// FR-016).
     #[test]
     fn allowed_tool_names_mirror_the_per_state_toolsets() {
         let mut ps = PlanState::default();
@@ -628,9 +675,20 @@ mod tests {
                 "FinishTask"
             ]
         );
-        // Planning never listed Task in the first place -- allow_task is
-        // irrelevant there.
-        assert_eq!(ps.allowed_tool_names(false), ps.allowed_tool_names(true));
+        // A subagent's Planning turns must not be able to sample
+        // AskUserQuestion -- SubagentBackend cannot service it (F4).
+        assert_eq!(
+            ps.allowed_tool_names(false),
+            [
+                "CreatePlan",
+                "AddStep",
+                "ResumeExecution",
+                "Read",
+                "Grep",
+                "Glob",
+                "FinishTask"
+            ]
+        );
 
         ps.handle_plan_tool(&call(
             "CreatePlan",
@@ -844,21 +902,22 @@ mod tests {
 
         let recitation = ps.recitation_text().expect("should have recitation with active plan");
 
-        // Check all required elements
+        // Each step must carry ITS OWN state marker -- asserting the
+        // marker and the description together (not `contains(desc) ||
+        // contains(marked desc)`, which the description alone satisfied
+        // regardless of marker placement).
         assert!(recitation.contains("fix bugs"), "should contain goal");
-        assert!(recitation.contains("[x]"), "should mark done step with [x]");
-        assert!(recitation.contains("[>]"), "should mark current step with [>]");
         assert!(
-            recitation.contains("fix a") || recitation.contains("[x] fix a"),
-            "done step should appear in recitation"
+            recitation.contains("[x] fix a"),
+            "done step must be marked [x], got: {recitation:?}"
         );
         assert!(
-            recitation.contains("fix b") || recitation.contains("[>] fix b"),
-            "current step should appear with [>] marker"
+            recitation.contains("[>] fix b"),
+            "current step must be marked [>], got: {recitation:?}"
         );
         assert!(
-            recitation.contains("fix c") || recitation.contains("[ ] fix c"),
-            "undone step should appear with [ ] marker"
+            recitation.contains("[ ] fix c"),
+            "undone step must be marked [ ], got: {recitation:?}"
         );
         assert!(recitation.contains("1/3"), "should show progress counter");
     }

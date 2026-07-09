@@ -629,10 +629,26 @@ impl PromptSession<'_> {
         // on sequence 0 (`p1 = None` means "to the end"; llama.cpp's range is
         // half-open `[p0, p1)`), leaving `[0, common)` intact for reuse.
         // Truncate `cached` in the same breath so the two never disagree.
-        if let Err(e) = self.ctx.clear_kv_cache_seq(Some(0), Some(common as u32), None) {
-            self.cached.clear();
-            return Err(InferenceError::Backend(e.to_string()));
-        }
+        let common = match self.ctx.clear_kv_cache_seq(Some(0), Some(common as u32), None) {
+            Ok(true) => common,
+            // `Ok(false)` means the backend REFUSED the partial-range
+            // removal (llama.cpp documents partial sequence removals as
+            // fallible on some cache implementations; full removals always
+            // succeed). Stale KV entries past `common` may have survived —
+            // reusing the prefix would silently sample against them, so
+            // degrade to a full clear and a re-prefill from position 0:
+            // correctness beats reuse, and the cost is one turn's worth of
+            // whole-prompt prefill, exactly what a fresh session would pay.
+            Ok(false) => {
+                self.ctx.clear_kv_cache();
+                self.cached.clear();
+                0
+            }
+            Err(e) => {
+                self.cached.clear();
+                return Err(InferenceError::Backend(e.to_string()));
+            }
+        };
         self.cached.truncate(common);
 
         // Prefill only the divergent suffix `[common, tokens.len())`, with
