@@ -1,6 +1,6 @@
 use crate::agent::rich_content::{expand_segments, RichMessageContent};
 use crate::agent::tools::ask_user::{PendingQuestions, QuestionOption};
-use crate::agent::{dispatch, run_loop, subagent, AgentContext, ToolCall, ToolExecution, SYSTEM_PROMPT};
+use crate::agent::{dispatch, run_loop, subagent, AgentContext, ToolCall, ToolExecution};
 use crate::commands::conversations::{ActiveGenerations, InferenceState};
 use crate::commands::models::now_ms;
 use crate::inference::{ChatMessage, InferenceEngine};
@@ -639,6 +639,7 @@ struct SubagentBackend<'a> {
     subagent_id: &'a str,
     cwd: Option<&'a Path>,
     threshold: u32,
+    plan_state: crate::agent::plan::PlanState,
 }
 
 impl crate::agent::AgentBackend for SubagentBackend<'_> {
@@ -657,14 +658,23 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
         crate::context::fit_turn_to_budget(self.engine, messages).unwrap_or_else(|_| messages.to_vec())
     }
 
-    async fn generate(&mut self, messages: Vec<ChatMessage>) -> String {
+    async fn generate(&mut self, mut messages: Vec<ChatMessage>) -> String {
+        // Same two-state engine as `RealBackend::generate` (see that impl's
+        // doc comment for the full rationale) -- subagents get the same
+        // Planning/Executing prompt swap and the same tool-call requirement,
+        // just without ActivePlans/events (no tracker for a subagent's own
+        // transcript).
+        let system_text = plan_system_message(&mut self.plan_state, self.cwd);
+        if let Some(first) = messages.first_mut() {
+            *first = ChatMessage::system(system_text);
+        }
         match self.engine.render_chat_prompt(&messages) {
             Ok(rendered) => self
                 .engine
                 .generate(
                     &rendered,
                     crate::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS as i32,
-                    crate::inference::ToolCallMode::Allow,
+                    crate::inference::ToolCallMode::Require,
                     |_piece| {},
                     || false,
                 )
@@ -674,6 +684,34 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
     }
 
     async fn execute_tool(&mut self, tool_call_id: String, call: ToolCall) -> ToolExecution {
+        // Plan machine first, same as `RealBackend::execute_tool` -- the
+        // plan tools (and state-gated rejections) never reach dispatch.
+        // Persisted under the subagent's own conversation with the
+        // `"plan": true` marker; no ActivePlans/events -- subagents have no
+        // tracker.
+        if let Some(outcome) = self.plan_state.handle_plan_tool(&call) {
+            let (result_text, execution) = match outcome {
+                crate::agent::plan::PlanToolReply::Reply(text) => {
+                    let execution = ToolExecution::Result(text.clone());
+                    (text, execution)
+                }
+                crate::agent::plan::PlanToolReply::Finish(answer) => {
+                    let execution = ToolExecution::Finish(answer.clone());
+                    (answer, execution)
+                }
+            };
+            persist_plan_tool(
+                None,
+                self.conn,
+                self.subagent_id,
+                &tool_call_id,
+                &call,
+                &result_text,
+            )
+            .await;
+            return execution;
+        }
+
         // 004-tool-call-widgets: the subagent's own tool activity persists
         // under its own conversation row -- never the parent's --
         // preserving 001's existing FR-015/SC-008 isolation guarantee
@@ -809,10 +847,15 @@ async fn execute_top_level_tool(
     // 007-workspace-cwd-resolution/FR-006: inherit the parent's cwd rather
     // than starting the subagent unscoped.
     let sub_context = AgentContext::subagent().with_cwd(cwd.map(|p| p.to_path_buf()));
+    // Subagents now run the same two-state plan engine as the top-level
+    // loop (rather than the flat SYSTEM_PROMPT ReAct loop) — seeded here,
+    // before the backend literal below takes ownership of the state.
+    let mut plan_state = crate::agent::plan::PlanState::default();
+    let sub_system_prompt = plan_system_message(&mut plan_state, sub_context.cwd.as_deref());
     // FR-015: a fresh, isolated context — just the system prompt plus the
     // delegated task, no parent conversation history.
     let sub_messages = vec![
-        ChatMessage::system(SYSTEM_PROMPT),
+        ChatMessage::system(sub_system_prompt),
         ChatMessage::user(prompt.clone()),
     ];
     // Same fit-to-budget guarantee as the top-level loop, now automatic for
@@ -828,6 +871,7 @@ async fn execute_top_level_tool(
         subagent_id: &subagent_id,
         cwd: sub_context.cwd.as_deref(),
         threshold: sub_threshold,
+        plan_state,
     };
     let sub_started_at = now_ms();
     let sub_result = run_loop(&sub_context, sub_messages, &mut sub_backend).await;
@@ -2015,6 +2059,7 @@ mod tests {
             subagent_id: "sub",
             cwd: Some(dir.path()),
             threshold: 1024,
+            plan_state: crate::agent::plan::PlanState::default(),
         };
         use crate::agent::AgentBackend;
         let call = crate::agent::ToolCall {
@@ -2183,5 +2228,28 @@ mod tests {
         let detail: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(detail["plan"], true, "the transcript-skip marker");
         assert_eq!(detail["outcome"]["ok"], true);
+    }
+
+    #[tokio::test]
+    async fn subagent_plan_rows_persist_under_the_subagent_conversation_with_the_plan_marker() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_conversation(&conn, "sub-1").await;
+
+        persist_plan_tool(
+            None,
+            &conn,
+            "sub-1",
+            "tc1",
+            &crate::agent::ToolCall {
+                name: "CreatePlan".to_string(),
+                arguments: serde_json::json!({"goal": "g", "steps": ["a"]}),
+            },
+            "Plan created with 1 steps.",
+        )
+        .await;
+        let (_, content_type, _, content) = latest_message(&conn, "sub-1").await;
+        assert_eq!(content_type, "tool_result");
+        let detail: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(detail["plan"], true);
     }
 }
