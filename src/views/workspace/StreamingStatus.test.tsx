@@ -7,19 +7,19 @@ describe("StreamingStatus", () => {
     vi.useRealTimers();
   });
 
-  it("renders a quiet accessible thinking status with decorative animation", () => {
+  it("renders a quiet accessible working status with decorative animation", () => {
     vi.useFakeTimers();
     vi.setSystemTime(10_000);
 
     render(<StreamingStatus startedAt={8_750} />);
 
-    const status = screen.getByRole("status", { name: "Thinking" });
+    const status = screen.getByRole("status", { name: "Working" });
     const timer = screen.getByTestId("agent-thinking-timer");
 
     expect(status).toBeInTheDocument();
-    expect(status).toHaveTextContent("Thinking");
+    expect(status).toHaveTextContent("Working");
     expect(status).not.toContainElement(timer);
-    expect(screen.getByTestId("agent-thinking")).toHaveTextContent("Thinking");
+    expect(screen.getByTestId("agent-thinking")).toHaveTextContent("Working");
     expect(screen.getAllByTestId("agent-thinking-dot")).toHaveLength(3);
     expect(screen.getByTestId("agent-thinking-dots")).toHaveAttribute("aria-hidden", "true");
     expect(timer).toHaveTextContent("1.3s");

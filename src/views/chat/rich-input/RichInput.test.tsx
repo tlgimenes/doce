@@ -33,6 +33,27 @@ describe("RichInput (009-rich-chat-input, US1)", () => {
     expect(screen.getByTestId("test-submit")).toBeInTheDocument();
   });
 
+  it("only applies the composer shadow while focus is inside the input", () => {
+    render(
+      <RichInput
+        onSubmit={vi.fn()}
+        skillsEnabled={false}
+        disabled={false}
+        placeholder="p"
+        inputTestId="test-input"
+        submitTestId="test-submit"
+      />,
+    );
+
+    const editable = screen.getByTestId("test-input");
+    const frame = editable.parentElement?.parentElement;
+
+    expect(frame).toBeInstanceOf(HTMLElement);
+    expect(frame).not.toHaveClass("shadow-xs");
+    expect(frame).not.toHaveClass("shadow-sm");
+    expect(frame).toHaveClass("focus-within:shadow-sm");
+  });
+
   it("typing produces the expected doc text", async () => {
     render(
       <RichInput

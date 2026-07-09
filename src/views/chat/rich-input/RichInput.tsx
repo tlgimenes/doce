@@ -484,7 +484,7 @@ export default function RichInput({
 
   return (
     <div className="flex flex-col gap-1">
-      <div className="flex flex-col gap-2 rounded-lg border border-border bg-card px-3 py-2 shadow-xs transition-shadow focus-within:shadow-sm">
+      <div className="flex flex-col gap-2 rounded-lg border border-border bg-card px-3 py-2 transition-shadow focus-within:shadow-sm">
         <EditorContent
           editor={editor}
           className={cn(

@@ -338,7 +338,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     expect(secondSeenCallback).toHaveBeenCalledWith("conv-1");
   });
 
-  it("sends a task and shows a thinking state until the real (non-streamed) reply returns", async () => {
+  it("sends a task and shows a working state until the real (non-streamed) reply returns", async () => {
     const nowSpy = vi.spyOn(Date, "now").mockReturnValue(10_000);
     // Streaming (UI refactor): `send()` no longer builds the final message
     // from `sendAgentMessage`'s own return value -- it relies on the
@@ -393,9 +393,8 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
 
     const status = await screen.findByTestId("agent-thinking");
     const composerShell = screen.getByTestId("workspace-composer-shell");
-    expect(status).toHaveTextContent("Thinking");
+    expect(status).toHaveTextContent("Working");
     expect(screen.getByTestId("agent-thinking-timer")).toHaveTextContent("0.0s");
-    expect(status).not.toHaveTextContent("Working");
     expect(status.closest('[data-testid="chat-message"]')).toBeNull();
     expectElementBefore(status, composerShell);
     expect(status).toHaveClass("border-b");
@@ -483,7 +482,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     await waitFor(() => {
       expect(screen.getByTestId("bash-widget")).toBeInTheDocument();
     });
-    // Still "thinking": the turn's own promise hasn't resolved yet, only a
+    // Still working: the turn's own promise hasn't resolved yet, only a
     // live event landed -- this is the whole point of streaming loop
     // progress separately from the turn's final completion.
     expect(screen.getByTestId("agent-thinking")).toBeInTheDocument();
@@ -690,7 +689,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     expect(screen.queryByTestId("agent-thinking")).not.toBeInTheDocument();
   });
 
-  it("blocks the composer and shows Thinking when the latest message is an unfinished tool_call with no dedicated pending widget (e.g. Grep)", async () => {
+  it("blocks the composer and shows Working when the latest message is an unfinished tool_call with no dedicated pending widget (e.g. Grep)", async () => {
     // Regression: only AskUserQuestion/Bash/Task counted as "in flight",
     // so a turn stuck inside any other tool (a slow Grep, in production)
     // left the composer enabled after a reload wiped the in-memory
@@ -725,7 +724,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
 
     render(<Workspace conversationId="conv-1" />);
 
-    expect(await screen.findByTestId("agent-thinking")).toHaveTextContent("Thinking");
+    expect(await screen.findByTestId("agent-thinking")).toHaveTextContent("Working");
     expect(screen.getByTestId("agent-input")).toHaveAttribute("contenteditable", "false");
   });
 

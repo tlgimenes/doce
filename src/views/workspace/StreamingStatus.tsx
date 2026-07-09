@@ -35,8 +35,8 @@ export default function StreamingStatus({ startedAt }: StreamingStatusProps) {
             data-testid="agent-thinking-dot"
           />
         </span>
-        <span role="status" aria-atomic="true" aria-label="Thinking">
-          Thinking
+        <span role="status" aria-atomic="true" aria-label="Working">
+          Working
         </span>
         <span
           aria-live="off"
