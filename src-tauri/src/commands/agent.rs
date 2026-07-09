@@ -809,9 +809,18 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
         let (model_text, detail) = if call.name == "Read" {
             // Carve-out: never write a copy of a file we just read — the
             // payload reference IS the source. `fs::read`'s own caps
-            // (Task 5) bound the text.
+            // (Task 5) bound the text. `payloadRef` is the RESOLVED
+            // absolute path (`detail.resolvedPath`, set by dispatch.rs's
+            // Read arm), not the raw `filePath` the model supplied — a
+            // relative `filePath` would otherwise reach the frontend's
+            // `read_attached_file`, which does no cwd resolution of its
+            // own. `filePath` is only a fallback for a detail shape that
+            // predates `resolvedPath`.
             let mut detail = outcome.detail.clone();
-            detail["payloadRef"] = detail["filePath"].clone();
+            detail["payloadRef"] = detail
+                .get("resolvedPath")
+                .cloned()
+                .unwrap_or_else(|| detail["filePath"].clone());
             (outcome.model_text.clone(), detail)
         } else {
             match self.app_data_dir.as_deref() {
@@ -970,6 +979,28 @@ async fn execute_top_level_tool(
             return error_text;
         }
     };
+
+    // 2026-07-09 transcript design: `spawn_subagent` seeds this subagent's
+    // task-prompt row with `transcript_dir: None` (it's a synchronous,
+    // `&Connection`-only function with no `AppHandle` to resolve one from),
+    // so no transcript file exists for it yet. A subagent conversation is
+    // never re-opened through a user-facing entry point (the only other
+    // places `heal_if_stale` is wired — `commands::conversations` and this
+    // module's own turn-entry above), so without a heal here entry #0 would
+    // be permanently missing: every append after this point keeps
+    // `last_file_seq` moving forward, so the seq-tail check that would
+    // normally catch a stale file can never notice a hole at the start.
+    // Best-effort, same as every other heal call: a transcript is a
+    // derived, regenerable cache, never authoritative.
+    if let Some(dir) = transcript_dir.clone() {
+        let heal_subagent_id = subagent_id.clone();
+        let _ = conn
+            .call(move |conn: &mut Connection| -> rusqlite::Result<()> {
+                let _ = crate::context::transcript::heal_if_stale(conn, &dir, &heal_subagent_id);
+                Ok(())
+            })
+            .await;
+    }
 
     // 007-workspace-cwd-resolution/FR-006: inherit the parent's cwd rather
     // than starting the subagent unscoped.
@@ -1132,9 +1163,17 @@ async fn handle_general_tool_call(
     let (model_text, detail) = if call.name == "Read" {
         // Carve-out: never write a copy of a file we just read — the
         // payload reference IS the source. `fs::read`'s own caps (Task 5)
-        // bound the text.
+        // bound the text. `payloadRef` is the RESOLVED absolute path
+        // (`detail.resolvedPath`, set by dispatch.rs's Read arm), not the
+        // raw `filePath` the model supplied — a relative `filePath` would
+        // otherwise reach the frontend's `read_attached_file`, which does
+        // no cwd resolution of its own. `filePath` is only a fallback for a
+        // detail shape that predates `resolvedPath`.
         let mut detail = outcome.detail.clone();
-        detail["payloadRef"] = detail["filePath"].clone();
+        detail["payloadRef"] = detail
+            .get("resolvedPath")
+            .cloned()
+            .unwrap_or_else(|| detail["filePath"].clone());
         (outcome.model_text.clone(), detail)
     } else {
         match &app_data_dir {
@@ -2616,9 +2655,15 @@ mod tests {
 
         let engine = crate::inference::InferenceEngine::load(&test_model_path(), 4)
             .expect("model should load");
+        // A RELATIVE file_path, resolved against a known cwd -- reproduces
+        // the bug this test now guards against: the carve-out used to
+        // stamp the raw, possibly-relative `filePath` straight into
+        // `payloadRef`, which the frontend's "View Full Output" feeds
+        // straight to `read_attached_file` with no cwd resolution of its
+        // own, breaking the button for any relative-path Read.
         let call = ToolCall {
             name: "Read".to_string(),
-            arguments: serde_json::json!({"file_path": file_path.to_str().unwrap()}),
+            arguments: serde_json::json!({"file_path": "notes.txt"}),
         };
 
         let model_text = handle_general_tool_call(
@@ -2627,7 +2672,7 @@ mod tests {
             &conn,
             &engine,
             "c1",
-            None,
+            Some(dir.path()),
             "call1",
             &call,
         )
@@ -2639,7 +2684,7 @@ mod tests {
         assert_eq!(
             detail["payloadRef"].as_str(),
             Some(file_path.to_str().unwrap()),
-            "Read's payloadRef must be the source file itself, not a copy"
+            "Read's payloadRef must be the RESOLVED absolute source path, not the raw relative filePath"
         );
 
         assert!(

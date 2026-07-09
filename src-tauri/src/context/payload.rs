@@ -51,8 +51,12 @@ fn reference_line(detail: &serde_json::Value, payload_bytes: usize, path: &str) 
 }
 
 /// Replaces bulk text fields in `detail` with bounded previews + byte
-/// counts (the spec's "detail becomes pure metadata"). Only Bash carries
-/// bulk in `detail` today; other tools' detail passes through unchanged.
+/// counts (the spec's "detail becomes pure metadata"). Only Bash's detail
+/// is slimmed here — Grep's `matches` also carries bulk (the matched
+/// lines), but is deliberately left whole: the widget renders every match,
+/// and `reference_line`'s "N matches" count needs the full array too, so
+/// there's no preview/byte-count shape that would serve both without
+/// re-fetching from the payload file.
 fn slim_detail(mut detail: serde_json::Value) -> serde_json::Value {
     if detail["toolName"] == "Bash" {
         if let Some(outcome) = detail["outcome"].as_object_mut() {

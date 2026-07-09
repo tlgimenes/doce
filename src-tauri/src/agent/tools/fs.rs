@@ -14,8 +14,8 @@ pub enum ToolError {
 /// Per-line clamp: a single pathological line (minified JS, one-line JSONL
 /// record) must not blow through the total cap on its own.
 pub const READ_MAX_LINE_CHARS: usize = 2000;
-/// Total output cap: ~2k tokens of the 8192-token window. The marker names
-/// the exact `offset` to continue from, so paging never needs guesswork.
+/// Total output cap: ~2k tokens. The marker names the exact `offset` to
+/// continue from, so paging never needs guesswork.
 pub const READ_MAX_BYTES: usize = 8192;
 /// How the byte-cap marker line begins. Shared with `dispatch.rs`'s Read
 /// arm so the `truncated` flag can be derived from the output itself

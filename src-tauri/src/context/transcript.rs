@@ -136,6 +136,14 @@ fn last_file_seq(path: &Path) -> Option<i64> {
     rest[..end].parse().ok()
 }
 
+/// A seq-only check: it compares the file's LAST header's seq number
+/// against `MAX(sequence)`, so a torn write that corrupts an earlier entry
+/// while still leaving an intact, correctly-numbered header at the very end
+/// (e.g. a crash mid-append to a middle row, immediately followed by a
+/// clean final append) would pass as healthy and go undetected. Spec-
+/// inherent and accepted: this is a derived, regenerable cache (see this
+/// module's doc comment), not the source of truth, so a full-content
+/// checksum on every heal call isn't worth paying for.
 pub fn heal_if_stale(
     conn: &rusqlite::Connection,
     transcript_dir: &Path,

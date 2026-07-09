@@ -252,7 +252,12 @@ pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
     match call.name.as_str() {
         "Read" => {
             // validate_required_args already guaranteed file_path is present
-            // and a string.
+            // and a string. `detail.resolvedPath` (below) carries the
+            // cwd-joined absolute path -- the top-level/subagent Read
+            // carve-outs stamp it into `payloadRef` so the frontend's "View
+            // Full Output" button (which feeds `payloadRef` straight to
+            // `read_attached_file`, with no cwd resolution of its own)
+            // works for a relative `file_path` too.
             let path = call
                 .arguments
                 .get("file_path")
@@ -288,6 +293,7 @@ pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
                         model_text: content.clone(),
                         detail: json!({
                             "toolName": "Read", "filePath": path, "offset": offset, "limit": limit,
+                            "resolvedPath": resolved.display().to_string(),
                             "outcome": {"ok": true, "contentPreview": content.chars().take(2000).collect::<String>(), "contentBytes": content.len(), "truncated": truncated},
                         }),
                     }
@@ -297,6 +303,7 @@ pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
                     ToolOutcome {
                         detail: json!({
                             "toolName": "Read", "filePath": path, "offset": offset, "limit": limit,
+                            "resolvedPath": resolved.display().to_string(),
                             "outcome": {"ok": false, "error": text},
                         }),
                         model_text: text,
@@ -629,6 +636,47 @@ mod tests {
             None,
         );
         assert!(result.model_text.contains("hello"));
+    }
+
+    #[test]
+    fn read_detail_carries_the_resolved_absolute_path() {
+        // 2026-07-09 Read `payloadRef` fix: `detail.resolvedPath` must be
+        // the cwd-joined absolute path, not the raw (possibly relative)
+        // `filePath` the model supplied — the top-level/subagent carve-outs
+        // stamp this into `payloadRef`, which the frontend feeds straight
+        // to `read_attached_file` with no cwd resolution of its own.
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("notes.txt");
+        stdfs::write(&file, "hello\n").unwrap();
+
+        let result = execute(
+            &call("Read", serde_json::json!({"file_path": "notes.txt"})),
+            Some(dir.path()),
+        );
+
+        assert_eq!(
+            result.detail["resolvedPath"].as_str(),
+            Some(file.to_str().unwrap()),
+            "a relative file_path must resolve against cwd in the detail, got {}",
+            result.detail
+        );
+    }
+
+    #[test]
+    fn read_error_detail_still_carries_the_resolved_absolute_path() {
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("nope.txt");
+
+        let result = execute(
+            &call("Read", serde_json::json!({"file_path": "nope.txt"})),
+            Some(dir.path()),
+        );
+
+        assert_eq!(result.detail["outcome"]["ok"], false);
+        assert_eq!(
+            result.detail["resolvedPath"].as_str(),
+            Some(missing.to_str().unwrap())
+        );
     }
 
     #[test]

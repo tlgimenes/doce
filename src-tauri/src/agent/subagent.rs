@@ -50,8 +50,12 @@ pub fn spawn_subagent(
     .map_err(|e| SubagentError::Db(e.to_string()))?;
 
     // `transcript_dir: None` -- this synchronous, `&Connection`-only
-    // function has no `AppHandle` to resolve one from; the subagent's first
-    // `heal_if_stale` regenerates the transcript from this row regardless.
+    // function has no `AppHandle` to resolve one from. The subagent
+    // conversation is never re-opened through a user-facing entry point
+    // (those are the only places `heal_if_stale` is normally wired), so the
+    // spawn site itself (`commands::agent::execute_top_level_tool`, right
+    // after this call succeeds) heals this transcript once, immediately;
+    // every append after that keeps it complete.
     crate::storage::messages::insert(
         conn,
         None,
@@ -142,5 +146,39 @@ mod tests {
         let conn = test_connection();
         let err = spawn_subagent(&conn, "does-not-exist", "task").unwrap_err();
         assert_eq!(err, SubagentError::ParentNotFound);
+    }
+
+    #[test]
+    fn healing_right_after_spawn_gives_the_subagent_transcript_its_entry_zero() {
+        // `spawn_subagent` seeds the subagent's task-prompt row with
+        // `transcript_dir: None` (see the comment above, in
+        // `spawn_subagent` itself) -- no transcript file is written at
+        // spawn time. `commands::agent::execute_top_level_tool` heals this
+        // transcript once, right after a successful spawn; this proves that
+        // heal actually produces entry #0 from exactly the row shape
+        // `spawn_subagent` leaves behind, closing the hole a stale doc
+        // comment used to paper over (the subagent conversation is never
+        // re-opened through a user-facing entry point, so nothing else
+        // would ever heal it).
+        let conn = test_connection();
+        insert_conversation(&conn, "parent", None);
+        let subagent_id = spawn_subagent(&conn, "parent", "go research X").unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        crate::context::transcript::heal_if_stale(&conn, dir.path(), &subagent_id).unwrap();
+
+        let transcript = std::fs::read_to_string(crate::context::transcript::transcript_path(
+            dir.path(),
+            &subagent_id,
+        ))
+        .unwrap();
+        assert!(
+            transcript.contains("[#0 user]"),
+            "healing must regenerate the missing entry #0, got: {transcript:?}"
+        );
+        assert!(
+            transcript.contains("go research X"),
+            "entry #0's body must be the task prompt, got: {transcript:?}"
+        );
     }
 }
