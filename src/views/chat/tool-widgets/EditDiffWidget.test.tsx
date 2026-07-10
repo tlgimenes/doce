@@ -21,6 +21,31 @@ describe("EditDiffWidget (004-tool-call-widgets, US1)", () => {
     const added = screen.getByTestId("diff-added");
     expect(removed).toHaveTextContent("old line");
     expect(added).toHaveTextContent("new line");
+    expect(removed.querySelector('[data-slot="code-block-line"]')).toHaveAttribute(
+      "data-variant",
+      "removed",
+    );
+    expect(added.querySelector('[data-slot="code-block-line"]')).toHaveAttribute(
+      "data-variant",
+      "added",
+    );
+  });
+
+  it("shows the file path and +N/−N change-count badges in the header (FR-002)", () => {
+    // oldString has one line replaced ("old line" -> "new line"): +1/-1.
+    const detail: EditDetail = {
+      toolName: "Edit",
+      filePath: "/tmp/notes.md",
+      oldString: "line one\nold line\nline three",
+      newString: "line one\nnew line\nline three",
+      replaceAll: false,
+      outcome: { ok: true },
+    };
+
+    render(<EditDiffWidget detail={detail} />);
+
+    expect(screen.getByText("+1")).toBeInTheDocument();
+    expect(screen.getByText("−1")).toBeInTheDocument();
   });
 
   it("renders a failed-edit state, not an empty or misleading diff, when outcome.ok is false", () => {

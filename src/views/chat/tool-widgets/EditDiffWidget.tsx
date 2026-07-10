@@ -1,4 +1,10 @@
 import { diffLines } from "diff";
+import { FilePen } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { CodeBlock, CodeBlockLine } from "@/components/ui/code-block";
+import { ItemContent, ItemMedia, ItemTitle } from "@/components/ui/item";
+import { WidgetFrame, WidgetFrameContent, WidgetFrameHeader } from "@/components/ui/widget-frame";
 import type { EditDetail } from "@/lib/ipc";
 
 interface EditDiffWidgetProps {
@@ -13,46 +19,66 @@ interface EditDiffWidgetProps {
 export default function EditDiffWidget({ detail }: EditDiffWidgetProps) {
   if (!detail.outcome.ok) {
     return (
-      <div
-        className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm"
-        data-testid="edit-failed"
-      >
-        <p className="mb-1 font-mono text-xs text-muted-foreground">
-          {detail.filePath ?? "(no file path)"}
-        </p>
-        <p className="text-destructive">{detail.outcome.error}</p>
-      </div>
+      <WidgetFrame data-testid="edit-failed">
+        <WidgetFrameHeader>
+          <ItemMedia variant="icon">
+            <FilePen />
+          </ItemMedia>
+          <ItemContent>
+            <ItemTitle>{detail.filePath ?? "(no file path)"}</ItemTitle>
+          </ItemContent>
+        </WidgetFrameHeader>
+        <div className="p-3 pt-0">
+          <Alert variant="destructive">
+            <AlertDescription>{detail.outcome.error}</AlertDescription>
+          </Alert>
+        </div>
+      </WidgetFrame>
     );
   }
 
   const changes = diffLines(detail.oldString, detail.newString);
+  const lineCount = (value: string) => value.replace(/\n$/, "").split("\n").length;
+  const addedCount = changes.filter((c) => c.added).reduce((n, c) => n + lineCount(c.value), 0);
+  const removedCount = changes.filter((c) => c.removed).reduce((n, c) => n + lineCount(c.value), 0);
 
   return (
-    <div className="overflow-hidden rounded-lg border border-border" data-testid="edit-diff">
-      <p className="border-b border-border bg-card px-3 py-1.5 font-mono text-xs text-muted-foreground">
-        {detail.filePath}
-      </p>
-      <pre className="overflow-x-auto p-0 font-mono text-xs">
-        {changes.map((change, i) => {
-          const lines = change.value.replace(/\n$/, "").split("\n");
-          const testId = change.added ? "diff-added" : change.removed ? "diff-removed" : undefined;
-          const prefix = change.added ? "+" : change.removed ? "-" : " ";
-          const rowClass = change.added
-            ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400"
-            : change.removed
-              ? "bg-red-500/15 text-red-700 dark:text-red-400"
-              : "text-foreground";
-          return (
-            <div key={i} data-testid={testId}>
-              {lines.map((line, j) => (
-                <div key={j} className={`whitespace-pre px-3 py-0.5 ${rowClass}`}>
-                  {prefix} {line}
-                </div>
-              ))}
-            </div>
-          );
-        })}
-      </pre>
-    </div>
+    <WidgetFrame collapsible defaultOpen data-testid="edit-diff">
+      <WidgetFrameHeader>
+        <ItemMedia variant="icon">
+          <FilePen />
+        </ItemMedia>
+        <ItemContent>
+          <ItemTitle>{detail.filePath}</ItemTitle>
+        </ItemContent>
+        <span className="flex items-center gap-2">
+          <Badge variant="outline">+{addedCount}</Badge>
+          <Badge variant="outline">−{removedCount}</Badge>
+        </span>
+      </WidgetFrameHeader>
+      <WidgetFrameContent>
+        <CodeBlock className="p-0 whitespace-pre">
+          {changes.map((change, i) => {
+            const lines = change.value.replace(/\n$/, "").split("\n");
+            const testId = change.added
+              ? "diff-added"
+              : change.removed
+                ? "diff-removed"
+                : undefined;
+            const prefix = change.added ? "+" : change.removed ? "-" : " ";
+            const variant = change.added ? "added" : change.removed ? "removed" : "default";
+            return (
+              <div key={i} data-testid={testId}>
+                {lines.map((line, j) => (
+                  <CodeBlockLine key={j} variant={variant}>
+                    {prefix} {line}
+                  </CodeBlockLine>
+                ))}
+              </div>
+            );
+          })}
+        </CodeBlock>
+      </WidgetFrameContent>
+    </WidgetFrame>
   );
 }
