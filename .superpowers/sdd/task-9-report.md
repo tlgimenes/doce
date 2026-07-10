@@ -273,3 +273,29 @@ What I could not fully verify in this environment:
   - `Tests       9 passed (9)`
 - Wider Task 9 subset:
   - Not run. The change is scoped to `SearchPanel` request-finalization control flow and the focused component test covers the affected stale-request behavior.
+
+## Controller follow-up: final verification after SearchPanel test type import
+
+- Added the missing `SearchResult` type import in
+  `src/views/chat/SearchPanel.test.tsx` after `npm run build` caught the
+  otherwise passing test file during TypeScript compilation.
+
+### Final verification
+
+```bash
+npm test -- src/views/chat/SearchPanel.test.tsx
+npm run lint
+rg "@radix-ui|radix-ui" src package.json package-lock.json
+rg "@phosphor-icons/react" src package.json package-lock.json
+npm run build
+npm test
+```
+
+Results:
+
+- Focused `SearchPanel` tests: 1 file passed, 9 tests passed
+- Lint: passed with no warnings
+- Radix grep: no matches (`rg` exit code 1)
+- Phosphor grep: no matches (`rg` exit code 1)
+- Build: passed, with Vite's existing large-chunk warning
+- Full test suite: 53 files passed, 381 tests passed
