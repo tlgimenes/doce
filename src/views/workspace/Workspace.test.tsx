@@ -175,7 +175,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     await waitFor(() => expect(commands.listMessages).toHaveBeenCalledWith("conv-1"));
   });
 
-  it("renders user messages as sticky turn anchors that own following assistant rows", async () => {
+  it("renders user messages as turn anchors that own following assistant rows", async () => {
     vi.mocked(commands.listMessages).mockResolvedValue([
       messageFixture("u1", "first request", 1),
       {
@@ -214,7 +214,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     expect(turns[0]).not.toHaveTextContent("second request");
     expect(turns[1]).toHaveTextContent("second request");
     expect(turns[1]).toHaveTextContent("second answer");
-    expect(document.querySelectorAll('[data-sticky-user-message="true"]')).toHaveLength(2);
+    expect(screen.getAllByRole("group", { name: "You said" })).toHaveLength(2);
   });
 
   it("renders the transcript inside the shadcn message scroller", async () => {

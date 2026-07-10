@@ -1,9 +1,9 @@
-import { useRef } from "react";
 import type * as React from "react";
 import MessageContent from "@/components/MessageContent";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { MessageGroup } from "@/components/ui/message";
 import BashWidget from "@/views/chat/tool-widgets/BashWidget";
 import TaskWidget from "@/views/chat/tool-widgets/TaskWidget";
-import StickyUserMessage from "@/views/workspace/StickyUserMessage";
 import type { BashDetail, TaskDetail } from "@/lib/ipc";
 import type { TranscriptTurn as TranscriptTurnModel } from "./transcriptTurns";
 
@@ -24,30 +24,14 @@ export default function TranscriptTurn({
   pendingWidget = null,
   error = null,
 }: TranscriptTurnProps): React.JSX.Element {
-  const turnRef = useRef<HTMLDivElement>(null);
-
-  const scrollToTurn = () => {
-    turnRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-  };
-
   return (
-    <div
-      ref={turnRef}
-      className="flex flex-col pb-2"
+    <MessageGroup
+      className="pb-2"
       data-chat-turn="true"
       data-testid="transcript-turn"
       data-last-turn={isLastTurn ? "true" : "false"}
     >
-      {turn.user && (
-        <>
-          <div
-            aria-hidden="true"
-            className="sticky top-0 z-40 h-4 w-full bg-background"
-            data-testid="sticky-user-background"
-          />
-          <StickyUserMessage message={turn.user} onScrollToTurn={scrollToTurn} />
-        </>
-      )}
+      {turn.user && <MessageContent message={turn.user} />}
       <div data-testid="transcript-turn-body" className="min-w-0">
         {turn.rows.map((message) => (
           <MessageContent key={message.id} message={message} />
@@ -62,14 +46,11 @@ export default function TranscriptTurn({
           </div>
         )}
         {error && (
-          <div
-            className="mb-6 rounded-lg bg-destructive/10 p-3 text-sm text-destructive"
-            data-testid="workspace-error"
-          >
-            {error}
-          </div>
+          <Alert variant="destructive" className="mb-6" data-testid="workspace-error">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
         )}
       </div>
-    </div>
+    </MessageGroup>
   );
 }

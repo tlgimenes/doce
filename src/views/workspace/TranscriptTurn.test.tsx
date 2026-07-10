@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { render, screen, within } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
 import type { BashDetail, Message, TaskDetail } from "@/lib/ipc";
 import type { TranscriptTurn as TranscriptTurnModel } from "./transcriptTurns";
 import TranscriptTurn, { type PendingTurnWidget } from "./TranscriptTurn";
@@ -29,51 +29,23 @@ function turn(overrides: Partial<TranscriptTurnModel>): TranscriptTurnModel {
 }
 
 describe("TranscriptTurn", () => {
-  it("renders a sticky user header above assistant rows", () => {
+  it("renders the user message as a chat row above assistant rows", () => {
     render(<TranscriptTurn turn={turn({})} />);
 
     const transcriptTurn = screen.getByTestId("transcript-turn");
     const body = screen.getByTestId("transcript-turn-body");
 
-    expect(screen.getByTestId("sticky-user-background")).toHaveClass(
-      "sticky",
-      "top-0",
-      "z-40",
-      "h-4",
-      "w-full",
-      "bg-background",
-    );
-    expect(transcriptTurn.querySelector('[data-sticky-user-message="true"]')).not.toBeNull();
+    expect(transcriptTurn).toHaveAttribute("data-slot", "message-group");
+    expect(screen.queryByTestId("sticky-user-background")).not.toBeInTheDocument();
+    expect(document.querySelector('[data-sticky-user-message="true"]')).toBeNull();
     expect(within(transcriptTurn).getByText("run the tests")).toBeInTheDocument();
     expect(within(body).getByText("done")).toBeInTheDocument();
+    // The user row precedes the body in DOM order.
+    const userRow = within(transcriptTurn).getByRole("group", { name: "You said" });
+    expect(userRow.compareDocumentPosition(body) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it("re-anchors the owning turn when the sticky user bubble is focused", () => {
-    const scrollIntoView = vi.fn();
-    const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
-    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
-      configurable: true,
-      value: scrollIntoView,
-    });
-
-    try {
-      render(<TranscriptTurn turn={turn({})} />);
-
-      fireEvent.focus(screen.getByTestId("sticky-user-message-bubble"));
-
-      expect(scrollIntoView).toHaveBeenCalledWith({
-        behavior: "smooth",
-        block: "start",
-      });
-    } finally {
-      Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
-        configurable: true,
-        value: originalScrollIntoView,
-      });
-    }
-  });
-
-  it("renders assistant-only turns without sticky user chrome", () => {
+  it("renders assistant-only turns without a user row", () => {
     render(
       <TranscriptTurn
         turn={turn({
@@ -85,8 +57,7 @@ describe("TranscriptTurn", () => {
     );
 
     expect(screen.getByTestId("transcript-turn")).toHaveTextContent("welcome");
-    expect(screen.queryByTestId("sticky-user-background")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("sticky-user-message-bubble")).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "You said" })).not.toBeInTheDocument();
   });
 
   it("marks transcript turns with chat primitive data attributes", () => {
@@ -123,9 +94,11 @@ describe("TranscriptTurn", () => {
     expect(screen.getByTestId("task-widget")).toBeInTheDocument();
   });
 
-  it("renders error content inside the turn", () => {
+  it("renders error content as a destructive alert inside the turn", () => {
     render(<TranscriptTurn turn={turn({})} error="send failed" />);
 
-    expect(screen.getByText("send failed")).toBeInTheDocument();
+    const alert = screen.getByTestId("workspace-error");
+    expect(alert).toHaveAttribute("data-slot", "alert");
+    expect(alert).toHaveTextContent("send failed");
   });
 });
