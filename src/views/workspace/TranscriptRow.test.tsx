@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
-import MessageContent from "./MessageContent";
+import TranscriptRow from "./TranscriptRow";
 import type { Message } from "@/lib/ipc";
 
 function baseMessage(overrides: Partial<Message>): Message {
@@ -18,9 +18,9 @@ function baseMessage(overrides: Partial<Message>): Message {
   };
 }
 
-describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
+describe("TranscriptRow (004-tool-call-widgets, Foundational)", () => {
   it("renders a user message as a plain markdown bubble", () => {
-    render(<MessageContent message={baseMessage({ role: "user", content: "hi there" })} />);
+    render(<TranscriptRow message={baseMessage({ role: "user", content: "hi there" })} />);
 
     const row = screen.getByTestId("chat-message");
     const bubble = screen.getByTestId("user-message-bubble");
@@ -35,7 +35,7 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
 
   it("renders a live assistant timer only when showTimer is true and no persisted duration exists", () => {
     const { rerender } = render(
-      <MessageContent
+      <TranscriptRow
         message={baseMessage({
           contentType: "text",
           content: "the answer",
@@ -47,7 +47,7 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
     expect(screen.queryByText(/0\.5s/)).not.toBeInTheDocument();
 
     rerender(
-      <MessageContent
+      <TranscriptRow
         message={baseMessage({
           contentType: "text",
           content: "the answer",
@@ -61,7 +61,7 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
 
   it("shows assistant duration and tokens together for completed text replies", () => {
     render(
-      <MessageContent
+      <TranscriptRow
         message={baseMessage({
           contentType: "text",
           content: "the answer",
@@ -74,16 +74,14 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
   });
 
   it("shows only assistant duration when tokens are unavailable for a completed text reply", () => {
-    render(
-      <MessageContent message={baseMessage({ contentType: "text", content: "the answer" })} />,
-    );
+    render(<TranscriptRow message={baseMessage({ contentType: "text", content: "the answer" })} />);
 
     expect(screen.getByTestId("token-meter")).toHaveTextContent("0.5s");
   });
 
   it("shows only assistant tokens when duration is unavailable", () => {
     render(
-      <MessageContent
+      <TranscriptRow
         message={baseMessage({
           contentType: "text",
           content: "the answer",
@@ -100,7 +98,7 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
 
   it("shows no assistant metadata footer when neither duration nor tokens are available", () => {
     render(
-      <MessageContent
+      <TranscriptRow
         message={baseMessage({
           contentType: "text",
           content: "the answer",
@@ -115,7 +113,7 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
 
   it("continues to render markdown after the markdown renderer is shared", () => {
     render(
-      <MessageContent
+      <TranscriptRow
         message={baseMessage({
           contentType: "text",
           content: "## Heading\n\n- one\n- two",
@@ -136,7 +134,7 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
 
   it("shows an input-token meter (↑) on a user message when tokenCount is known", () => {
     render(
-      <MessageContent
+      <TranscriptRow
         message={baseMessage({
           role: "user",
           content: "hi there",
@@ -147,9 +145,9 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
     expect(screen.getByTestId("token-meter")).toHaveTextContent("↑ 42 tokens");
   });
 
-  it("keeps the user token meter wired through the top-level MessageContent row", () => {
+  it("keeps the user token meter wired through the top-level TranscriptRow row", () => {
     render(
-      <MessageContent
+      <TranscriptRow
         message={baseMessage({
           role: "user",
           content: "hi there",
@@ -166,7 +164,7 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
 
   it("shows no token meter on a user message when tokenCount is unknown yet", () => {
     render(
-      <MessageContent
+      <TranscriptRow
         message={baseMessage({
           role: "user",
           content: "hi there",
@@ -177,9 +175,25 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
     expect(screen.queryByTestId("token-meter")).not.toBeInTheDocument();
   });
 
+  it("renders rich_text user content through UserMessageContent", () => {
+    render(
+      <TranscriptRow
+        message={baseMessage({
+          id: "u9",
+          role: "user",
+          contentType: "rich_text",
+          content: JSON.stringify({
+            segments: [{ type: "text", text: "rich hello" }],
+          }),
+        })}
+      />,
+    );
+    expect(screen.getByTestId("user-message-bubble")).toHaveTextContent("rich hello");
+  });
+
   it("combines the live elapsed-time chron and an output-token meter (↓) on an assistant message when showTimer is enabled", () => {
     render(
-      <MessageContent
+      <TranscriptRow
         message={baseMessage({
           contentType: "text",
           content: "the answer",
@@ -194,17 +208,16 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
   });
 
   it("renders an error message distinctly", () => {
-    render(<MessageContent message={baseMessage({ contentType: "error", content: "boom" })} />);
+    render(<TranscriptRow message={baseMessage({ contentType: "error", content: "boom" })} />);
     const row = screen.getByTestId("chat-message");
     expect(row).toHaveAttribute("data-slot", "message");
-    expect(screen.getByTestId("error-message")).toHaveAttribute("data-slot", "marker");
-    expect(screen.getByTestId("error-message").querySelector('[data-slot="marker-content"]')).not.toBeNull();
-    expect(screen.getByText("boom")).toBeInTheDocument();
+    expect(screen.getByTestId("error-message")).toHaveAttribute("data-slot", "alert");
+    expect(screen.getByTestId("error-message")).toHaveTextContent(/boom/);
   });
 
   it("renders nothing for a tool_call row (paired tool_result carries the widget)", () => {
     const { container } = render(
-      <MessageContent
+      <TranscriptRow
         message={baseMessage({
           contentType: "tool_call",
           toolName: "Bash",
@@ -222,7 +235,7 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
       outcome: { ok: true, text: "did the thing" },
     };
     render(
-      <MessageContent
+      <TranscriptRow
         message={baseMessage({
           contentType: "tool_result",
           toolName: "SomeMcpTool",
@@ -236,7 +249,7 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
 
   it("degrades to the fallback widget on unparseable tool_result content rather than crashing", () => {
     render(
-      <MessageContent
+      <TranscriptRow
         message={baseMessage({
           contentType: "tool_result",
           toolName: "SomeMcpTool",
@@ -249,7 +262,7 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
 
   it("does not add assistant duration metadata to non-text rows", () => {
     render(
-      <MessageContent
+      <TranscriptRow
         message={baseMessage({
           contentType: "tool_result",
           toolName: "SomeMcpTool",
@@ -270,7 +283,7 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
 
   it("renders a 'cleared' notice as a small, muted inline line", () => {
     render(
-      <MessageContent
+      <TranscriptRow
         message={baseMessage({
           contentType: "context_notice",
           content: JSON.stringify({
@@ -288,7 +301,7 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
 
   it("renders context notices as marker-style status rows", () => {
     render(
-      <MessageContent
+      <TranscriptRow
         message={{
           id: "n1",
           conversationId: "c1",
@@ -313,7 +326,7 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
 
   it("renders a 'summarized' notice as a more visible bubble", () => {
     render(
-      <MessageContent
+      <TranscriptRow
         message={baseMessage({
           contentType: "context_notice",
           content: JSON.stringify({
@@ -331,7 +344,7 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
 
   it("degrades to a plain-text notice on malformed context_notice content rather than crashing", () => {
     render(
-      <MessageContent
+      <TranscriptRow
         message={baseMessage({
           contentType: "context_notice",
           content: "not valid json",
@@ -382,9 +395,9 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
       }),
     } as const;
 
-    const { container: c1 } = render(<MessageContent message={planCall} />);
-    const { container: c2 } = render(<MessageContent message={planResult} />);
-    const { container: c3 } = render(<MessageContent message={gatedRejection} />);
+    const { container: c1 } = render(<TranscriptRow message={planCall} />);
+    const { container: c2 } = render(<TranscriptRow message={planResult} />);
+    const { container: c3 } = render(<TranscriptRow message={gatedRejection} />);
     expect(c1).toBeEmptyDOMElement();
     expect(c2).toBeEmptyDOMElement();
     expect(c3).toBeEmptyDOMElement();

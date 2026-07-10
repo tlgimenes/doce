@@ -1,9 +1,14 @@
 import Timer from "@/components/Timer";
 import MarkdownPreview from "@/components/MarkdownPreview";
-import UserMessageBubble from "@/components/UserMessageBubble";
+import UserMessageContent from "@/views/chat/rich-input/UserMessageContent";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Marker, MarkerContent } from "@/components/ui/marker";
-import { Message as ChatMessage, MessageContent as ChatMessageContent } from "@/components/ui/message";
+import {
+  Message as ChatMessage,
+  MessageContent as ChatMessageContent,
+  MessageFooter,
+} from "@/components/ui/message";
 import { formatTokenCount } from "@/lib/formatTokenCount";
 import {
   parseContextNoticeDetail,
@@ -30,7 +35,7 @@ import WriteWidget from "@/views/chat/tool-widgets/WriteWidget";
 import SearchResultsWidget from "@/views/chat/tool-widgets/SearchResultsWidget";
 import TaskWidget from "@/views/chat/tool-widgets/TaskWidget";
 
-interface MessageContentProps {
+interface TranscriptRowProps {
   message: Message;
   // Historical message rows may include duration metadata. Workspace keeps
   // this off by default because `send_agent_message` has no useful
@@ -44,7 +49,7 @@ interface MessageContentProps {
  * ordinary text/rich-text/context rows render through the shared message
  * components below.
  */
-export default function MessageContent({ message: m, showTimer = false }: MessageContentProps) {
+export default function TranscriptRow({ message: m, showTimer = false }: TranscriptRowProps) {
   if (m.role === "user") {
     return (
       <ChatMessage
@@ -55,7 +60,20 @@ export default function MessageContent({ message: m, showTimer = false }: Messag
         aria-label="You said"
       >
         <ChatMessageContent>
-          <UserMessageBubble message={m} />
+          <Bubble align="end" variant="user">
+            <BubbleContent data-testid="user-message-bubble">
+              {m.contentType === "rich_text" ? (
+                <UserMessageContent content={m.content} />
+              ) : (
+                <MarkdownPreview>{m.content}</MarkdownPreview>
+              )}
+            </BubbleContent>
+          </Bubble>
+          {m.tokenCount != null && (
+            <MessageFooter data-testid="token-meter">
+              ↑ {formatTokenCount(m.tokenCount)} tokens
+            </MessageFooter>
+          )}
         </ChatMessageContent>
       </ChatMessage>
     );
@@ -86,7 +104,12 @@ export default function MessageContent({ message: m, showTimer = false }: Messag
   if (m.contentType === "tool_result") {
     const detail = parseToolResultDetail(m.content, m.toolName);
     return (
-      <ChatMessage className="mb-6" data-testid="chat-message" role="group" aria-label="doce replied">
+      <ChatMessage
+        className="mb-6"
+        data-testid="chat-message"
+        role="group"
+        aria-label="doce replied"
+      >
         <ChatMessageContent>
           <ToolWidget detail={detail} />
         </ChatMessageContent>
@@ -96,14 +119,16 @@ export default function MessageContent({ message: m, showTimer = false }: Messag
 
   if (m.contentType === "error") {
     return (
-      <ChatMessage className="mb-5" data-testid="chat-message" role="group" aria-label="doce replied">
+      <ChatMessage
+        className="mb-5"
+        data-testid="chat-message"
+        role="group"
+        aria-label="doce replied"
+      >
         <ChatMessageContent>
-          <Marker
-            className="rounded-md border border-destructive/25 bg-destructive/10 p-3 text-sm text-destructive"
-            data-testid="error-message"
-          >
-            <MarkerContent>{m.content}</MarkerContent>
-          </Marker>
+          <Alert variant="destructive" data-testid="error-message">
+            <AlertDescription>{m.content}</AlertDescription>
+          </Alert>
         </ChatMessageContent>
       </ChatMessage>
     );
@@ -116,20 +141,10 @@ export default function MessageContent({ message: m, showTimer = false }: Messag
   // breakdown.
   if (m.contentType === "context_notice") {
     const detail = parseContextNoticeDetail(m.content);
-    const isSummarized = detail.kind === "summarized";
     return (
       <ChatMessage className="mb-5" role="group" aria-label="doce replied">
         <ChatMessageContent>
-          <Marker
-            className={
-              isSummarized
-                ? "rounded-md border border-border bg-muted p-3 text-sm text-muted-foreground"
-                : "text-xs text-muted-foreground/70"
-            }
-            data-testid="context-notice"
-            data-notice-kind={detail.kind}
-            role="status"
-          >
+          <Marker data-testid="context-notice" data-notice-kind={detail.kind} role="status">
             <MarkerContent>{detail.notice}</MarkerContent>
           </Marker>
         </ChatMessageContent>
@@ -142,20 +157,15 @@ export default function MessageContent({ message: m, showTimer = false }: Messag
     m.contentType === "text" && (showAssistantDuration || m.tokenCount != null);
 
   return (
-    <ChatMessage
-      className="mb-5 max-w-none"
-      data-testid="chat-message"
-      role="group"
-      aria-label="doce replied"
-    >
-      <ChatMessageContent className="max-w-none">
-        <Bubble variant="ghost" className="max-w-none">
-          <BubbleContent className="max-w-none">
+    <ChatMessage className="mb-5" data-testid="chat-message" role="group" aria-label="doce replied">
+      <ChatMessageContent>
+        <Bubble variant="ghost">
+          <BubbleContent>
             <MarkdownPreview>{m.content}</MarkdownPreview>
           </BubbleContent>
         </Bubble>
         {showAssistantMetadata && (
-          <p className="mt-1 text-xs text-muted-foreground" data-testid="token-meter">
+          <MessageFooter data-testid="token-meter">
             {showAssistantDuration && <Timer createdAt={m.createdAt} durationMs={m.durationMs} />}
             {/* 010-context-window-management (UI refactor): output tokens
                 for this reply, combined with the elapsed-time chron on the
@@ -163,7 +173,7 @@ export default function MessageContent({ message: m, showTimer = false }: Messag
                 ↓ 15.6k tokens"). */}
             {showAssistantDuration && m.tokenCount != null && " · "}
             {m.tokenCount != null && `↓ ${formatTokenCount(m.tokenCount)} tokens`}
-          </p>
+          </MessageFooter>
         )}
       </ChatMessageContent>
     </ChatMessage>
