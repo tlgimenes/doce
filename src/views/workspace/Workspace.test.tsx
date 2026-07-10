@@ -12,6 +12,19 @@ type TestDocument = Document & {
 
 const originalStartViewTransition = (document as TestDocument).startViewTransition;
 
+const scrollToEndSpy = vi.hoisted(() => vi.fn());
+vi.mock("@shadcn/react/message-scroller", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@shadcn/react/message-scroller")>();
+  return {
+    ...original,
+    useMessageScroller: () => ({
+      scrollToEnd: scrollToEndSpy,
+      scrollToMessage: vi.fn(),
+      scrollToStart: vi.fn(),
+    }),
+  };
+});
+
 vi.mock("@/lib/ipc", async (importOriginal) => {
   // Partial mock: `commands`/`events` are fully replaced, but
   // `parseContextNoticeDetail`/`parseToolResultDetail` etc. (real, pure,
@@ -51,28 +64,6 @@ function messageFixture(id: string, content: string, createdAt = 1) {
   };
 }
 
-function setScrollMetrics(
-  element: HTMLElement,
-  metrics: { scrollHeight: number; clientHeight: number; scrollTop: number },
-) {
-  let currentScrollTop = metrics.scrollTop;
-  Object.defineProperty(element, "scrollHeight", {
-    configurable: true,
-    value: metrics.scrollHeight,
-  });
-  Object.defineProperty(element, "clientHeight", {
-    configurable: true,
-    value: metrics.clientHeight,
-  });
-  Object.defineProperty(element, "scrollTop", {
-    configurable: true,
-    get: () => currentScrollTop,
-    set: (value: number) => {
-      currentScrollTop = value;
-    },
-  });
-}
-
 function expectElementBefore(first: HTMLElement, second: HTMLElement) {
   expect(Boolean(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(
     true,
@@ -82,6 +73,7 @@ function expectElementBefore(first: HTMLElement, second: HTMLElement) {
 describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    scrollToEndSpy.mockClear();
     vi.mocked(commands.listMessages).mockResolvedValue([]);
     vi.mocked(commands.isGenerationActive).mockResolvedValue(false);
     // No model loaded in these unit tests — ContextUsageGauge's
@@ -174,9 +166,11 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
   it("fills the shell content area instead of forcing viewport height", async () => {
     render(<Workspace conversationId="conv-1" />);
 
-    const root = screen.getByTestId("workspace-scroll-container").parentElement?.parentElement;
+    const root = screen
+      .getByTestId("workspace-scroll-container")
+      .closest('[data-slot="message-scroller"]');
     expect(root).not.toBeNull();
-    expect(root!).toHaveClass("h-full");
+    expect(root!).toHaveClass("h-auto");
     expect(root!).not.toHaveClass("h-dvh");
     await waitFor(() => expect(commands.listMessages).toHaveBeenCalledWith("conv-1"));
   });
@@ -223,18 +217,14 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     expect(document.querySelectorAll('[data-sticky-user-message="true"]')).toHaveLength(2);
   });
 
-  it("keeps the transcript content wrapper sticky-safe and makes the latest turn viewport-height", async () => {
-    vi.mocked(commands.listMessages).mockResolvedValue([messageFixture("u1", "latest request", 1)]);
-
+  it("renders the transcript inside the shadcn message scroller", async () => {
+    vi.mocked(commands.listMessages).mockResolvedValue([]);
     render(<Workspace conversationId="conv-1" />);
-
-    await screen.findByText("latest request");
-
-    expect(screen.getByTestId("workspace-scroll-container").parentElement).toHaveClass(
-      "[container-type:size]",
-    );
-    expect(screen.getByTestId("workspace-transcript-content")).toHaveClass("overflow-x-clip");
-    expect(screen.getByTestId("last-transcript-turn-viewport")).toHaveClass("min-h-[100cqh]");
+    const viewport = await screen.findByTestId("workspace-scroll-container");
+    const content = screen.getByTestId("workspace-transcript-content");
+    expect(viewport).toHaveAttribute("data-slot", "message-scroller-viewport");
+    expect(content).toHaveAttribute("data-slot", "message-scroller-content");
+    expect(viewport.closest('[data-slot="message-scroller"]')).not.toBeNull();
   });
 
   it("notifies when active messages refresh so the app can mark the conversation seen", async () => {
@@ -1922,143 +1912,30 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     });
   });
 
-  // Autoscroll itself (following content growth while pinned, initial
-  // scroll to the bottom) is use-stick-to-bottom's own tested contract,
-  // driven by ResizeObserver — inert in jsdom, so it isn't re-tested here.
-  // What IS ours to test is the wiring: the scroll-to-bottom button follows
-  // the library's isAtBottom state (fed by real scroll events), and
-  // clicking it hands off to the library's scrollToBottom.
+  // Autoscroll and the scroll-to-end button's show/hide behavior are the
+  // shadcn message-scroller primitive's own contract (IntersectionObserver-
+  // driven) — inert in jsdom (see the stub in src/test/setup.ts), so it
+  // isn't re-tested here; it's covered by browser-level verification. What
+  // IS ours to test is the wiring: the button renders inside the scroller,
+  // and sending a message re-arms autoscroll via scrollToEnd.
 
-  it("shows the scroll-to-bottom button after scrolling up and hides it again near the bottom", async () => {
-    vi.mocked(commands.listMessages).mockResolvedValueOnce([messageFixture("m1", "first message")]);
-
+  it("renders the self-managing scroll-to-end button inside the scroller", async () => {
+    vi.mocked(commands.listMessages).mockResolvedValue([]);
     render(<Workspace conversationId="conv-1" />);
-    const scrollContainer = await screen.findByTestId("workspace-scroll-container");
-    await screen.findByText("first message");
-
-    expect(screen.queryByTestId("scroll-to-bottom")).not.toBeInTheDocument();
-
-    // use-stick-to-bottom escapes its lock on *upward* scroll movement, so
-    // establish a bottom baseline first, then scroll up.
-    setScrollMetrics(scrollContainer, {
-      scrollHeight: 1000,
-      clientHeight: 300,
-      scrollTop: 700,
-    });
-    fireEvent.scroll(scrollContainer);
-    scrollContainer.scrollTop = 200;
-    fireEvent.scroll(scrollContainer);
-
-    await waitFor(() =>
-      expect(screen.getByTestId("scroll-to-bottom")).toHaveClass("left-1/2", "-translate-x-1/2"),
-    );
-
-    // Scrolling back to within the library's near-bottom threshold re-pins
-    // and hides the button.
-    scrollContainer.scrollTop = 680;
-    fireEvent.scroll(scrollContainer);
-
-    await waitFor(() => expect(screen.queryByTestId("scroll-to-bottom")).not.toBeInTheDocument());
+    const button = await screen.findByTestId("scroll-to-bottom");
+    expect(button).toHaveAttribute("data-slot", "message-scroller-button");
   });
 
-  it("scrolls to bottom and hides the scroll-to-bottom button when clicked", async () => {
-    vi.mocked(commands.listMessages).mockResolvedValueOnce([messageFixture("m1", "first message")]);
-
+  it("re-arms autoscroll by scrolling to the end when a message is sent", async () => {
+    vi.mocked(commands.listMessages).mockResolvedValue([]);
+    vi.mocked(commands.sendAgentMessage).mockResolvedValue("ok");
     render(<Workspace conversationId="conv-1" />);
-    const scrollContainer = await screen.findByTestId("workspace-scroll-container");
-    await screen.findByText("first message");
+    await screen.findByTestId("agent-input");
 
-    setScrollMetrics(scrollContainer, {
-      scrollHeight: 1000,
-      clientHeight: 300,
-      scrollTop: 700,
-    });
-    fireEvent.scroll(scrollContainer);
-    scrollContainer.scrollTop = 200;
-    fireEvent.scroll(scrollContainer);
-    await waitFor(() => screen.getByTestId("scroll-to-bottom"));
+    await userEvent.type(screen.getByTestId("agent-input"), "hello");
+    await userEvent.click(screen.getByTestId("agent-send"));
 
-    await userEvent.click(screen.getByRole("button", { name: "Scroll to bottom" }));
-
-    // The library's spring animation converges asymptotically (a real
-    // browser clamps scrollTop to integers; the jsdom metrics mock
-    // doesn't), so assert "back at the bottom" rather than an exact px.
-    await waitFor(() => expect(scrollContainer.scrollTop).toBeGreaterThanOrEqual(695), {
-      timeout: 4000,
-    });
-    await waitFor(() => expect(screen.queryByTestId("scroll-to-bottom")).not.toBeInTheDocument());
-  });
-
-  it("always scrolls back to the bottom when the user sends a message, even after the sticky lock escaped", async () => {
-    // use-stick-to-bottom only follows content growth while its lock is
-    // engaged; ANY upward scroll/wheel silently escapes it — and within
-    // the library's 70px near-bottom threshold the scroll-to-bottom
-    // button stays hidden, so autoscroll *looks* active while sends
-    // don't follow. Sending your own message must always re-engage
-    // (the library README's own ChatBox pattern).
-    //
-    // A dedicated conversation id: the never-resolving send below leaves
-    // this conversation in the module-level send-in-flight Set for the
-    // rest of the file, which must not block other tests' "conv-1" sends.
-    vi.mocked(commands.sendAgentMessage).mockReturnValue(new Promise(() => {}));
-    vi.mocked(commands.listMessages).mockResolvedValueOnce([messageFixture("m1", "first message")]);
-
-    render(<Workspace conversationId="conv-scroll-send" />);
-    const scrollContainer = await screen.findByTestId("workspace-scroll-container");
-    await screen.findByText("first message");
-
-    // Escape the lock: bottom baseline, then an upward scroll (a stray
-    // trackpad flick while reading).
-    setScrollMetrics(scrollContainer, {
-      scrollHeight: 1000,
-      clientHeight: 300,
-      scrollTop: 700,
-    });
-    fireEvent.scroll(scrollContainer);
-    scrollContainer.scrollTop = 200;
-    fireEvent.scroll(scrollContainer);
-    await waitFor(() => screen.getByTestId("scroll-to-bottom"));
-
-    const input = screen.getByTestId("agent-input");
-    await userEvent.click(input);
-    await userEvent.type(input, "follow up{Enter}");
-
-    await waitFor(() => expect(scrollContainer.scrollTop).toBeGreaterThanOrEqual(695), {
-      timeout: 4000,
-    });
-  });
-
-  it("hides the scroll-to-bottom button when switching conversations", async () => {
-    // StickToBottom is keyed by conversationId: switching remounts the
-    // scroll state, so the new conversation starts pinned at the bottom
-    // with no stale detached-button state carried over.
-    vi.mocked(commands.listMessages)
-      .mockResolvedValueOnce([messageFixture("m1", "first workspace")])
-      .mockResolvedValueOnce([
-        {
-          ...messageFixture("m2", "second workspace"),
-          conversationId: "conv-2",
-        },
-      ]);
-
-    const { rerender } = render(<Workspace conversationId="conv-1" />);
-    const scrollContainer = await screen.findByTestId("workspace-scroll-container");
-    await screen.findByText("first workspace");
-
-    setScrollMetrics(scrollContainer, {
-      scrollHeight: 1000,
-      clientHeight: 300,
-      scrollTop: 700,
-    });
-    fireEvent.scroll(scrollContainer);
-    scrollContainer.scrollTop = 200;
-    fireEvent.scroll(scrollContainer);
-    await waitFor(() => expect(screen.getByTestId("scroll-to-bottom")).toBeInTheDocument());
-
-    rerender(<Workspace conversationId="conv-2" />);
-
-    expect(screen.queryByTestId("scroll-to-bottom")).not.toBeInTheDocument();
-    await screen.findByText("second workspace");
+    expect(scrollToEndSpy).toHaveBeenCalled();
   });
 
   // --- 010-context-window-management (UI refactor): /compact command ---

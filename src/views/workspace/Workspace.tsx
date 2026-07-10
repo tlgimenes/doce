@@ -1,9 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { ArrowDown } from "lucide-react";
-import { StickToBottom, type StickToBottomContext } from "use-stick-to-bottom";
 import { cn } from "@/lib/cn";
 import { runViewTransition } from "@/lib/viewTransition";
-import { Button } from "@/components/ui/button";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import {
+  MessageScroller,
+  MessageScrollerButton,
+  MessageScrollerContent,
+  MessageScrollerProvider,
+  MessageScrollerViewport,
+  useMessageScroller,
+} from "@/components/ui/message-scroller";
 import RichInput from "@/views/chat/rich-input/RichInput";
 import UserAskWidget from "@/views/chat/tool-widgets/UserAskWidget";
 import PlanTracker from "@/views/workspace/PlanTracker";
@@ -128,6 +134,28 @@ function getServerSnapshot() {
 }
 
 /**
+ * useMessageScroller must be called under MessageScrollerProvider, but the
+ * send() callback lives in Workspace (the Provider's renderer). This inert
+ * bridge hands the scrollToEnd handle up via a ref.
+ */
+function ScrollToEndBridge({
+  scrollToEndRef,
+}: {
+  scrollToEndRef: { current: (() => void) | null };
+}) {
+  const { scrollToEnd } = useMessageScroller();
+  useEffect(() => {
+    scrollToEndRef.current = () => {
+      scrollToEnd({ behavior: "smooth" });
+    };
+    return () => {
+      scrollToEndRef.current = null;
+    };
+  }, [scrollToEnd, scrollToEndRef]);
+  return null;
+}
+
+/**
  * 006-chat-empty-state: message view for a selected conversation. Folder
  * selection happens once, up front, in `EmptyState.tsx`/`FolderPicker.tsx`.
  *
@@ -172,7 +200,7 @@ export default function Workspace({
   onConversationSeenRef.current = onConversationSeen;
   const consumedInitialTurnRef = useRef<string | null>(null);
   const dispatchedInitialTurnRef = useRef<string | null>(null);
-  const stickToBottomContextRef = useRef<StickToBottomContext | null>(null);
+  const scrollToEndRef = useRef<(() => void) | null>(null);
   const sendInFlight = useSyncExternalStore(
     subscribeToSendInFlight,
     () => conversationsWithSendInFlight.has(conversationId),
@@ -331,8 +359,6 @@ export default function Workspace({
     ? (activeTurnStartedAtCandidate ?? genericStatusFallbackStartedAtRef.current)
     : null;
   const transcriptTurns = useMemo(() => groupTranscriptTurns(messages), [messages]);
-  const previousTurns = transcriptTurns.slice(0, -1);
-  const lastTurn = transcriptTurns.at(-1) ?? null;
   const pendingTurnWidget: PendingTurnWidget | null =
     pendingToolCall?.kind === "bash" || pendingToolCall?.kind === "task" ? pendingToolCall : null;
 
@@ -403,14 +429,14 @@ export default function Workspace({
       setOptimisticTurnStartedAt(submittedAt);
       setThinking(true);
       // Sending your own message always re-engages autoscroll and snaps to
-      // the bottom — the library README's own ChatBox pattern, and load-
-      // bearing here: use-stick-to-bottom only follows content growth
-      // while its sticky lock is engaged, and ANY upward scroll/wheel
-      // (even a stray trackpad flick) silently escapes it. Within the
-      // library's 70px near-bottom threshold the scroll-to-bottom button
-      // stays hidden, so without this call a send can look pinned yet
-      // never follow.
-      void stickToBottomContextRef.current?.scrollToBottom();
+      // the end — the same ChatBox pattern the previous use-stick-to-bottom
+      // integration relied on, and still load-bearing here: the
+      // message-scroller only follows content growth while its internal
+      // "following-bottom" mode is engaged, and ANY upward scroll/wheel
+      // (even a stray trackpad flick) escapes it. Without this call a send
+      // made after scrolling up would add content off-screen instead of
+      // following it.
+      scrollToEndRef.current?.();
       void (async () => {
         try {
           // The `agent-message-persisted` event (subscribed above) is what
@@ -461,87 +487,44 @@ export default function Workspace({
   }, [conversationId, onPendingInitialTurnConsumed, pendingInitialTurn, send]);
 
   return (
-    <div className="flex h-full flex-col bg-background text-foreground">
+    <div className="flex h-full flex-col">
       {conversation && <WorkspaceTopbar conversation={conversation} />}
-      {/* Autoscroll is use-stick-to-bottom's job (ResizeObserver-driven:
-          follows content growth while pinned, escapes on upward scroll,
-          re-pins near the bottom), replacing the hand-rolled
-          pin/scroll-effect machinery this component used to carry. The
-          render-prop form (not <StickToBottom.Content>) keeps ownership of
-          the scroll/content divs' classes and testids. `key` remounts the
-          scroll state per conversation — a fresh conversation starts
-          pinned at the bottom (`initial="instant"`), matching the old
-          reset-pinning-on-switch effect. */}
-      {/* The shadcn MessageScroller primitive is installed, but this pass keeps
-          use-stick-to-bottom because its pinned/escape behavior is covered by
-          existing workspace tests and matches the app's current chat contract. */}
-      <StickToBottom
-        key={conversationId}
-        className="[container-type:size] relative min-h-0 flex-1"
-        initial="instant"
-        contextRef={stickToBottomContextRef}
-      >
-        {({ scrollRef, contentRef, isAtBottom, scrollToBottom }) => (
-          <>
-            <div
-              ref={scrollRef}
-              className="h-full overflow-y-auto p-4"
-              data-testid="workspace-scroll-container"
-            >
-              <div
-                ref={contentRef}
-                className="overflow-x-clip"
-                data-testid="workspace-transcript-content"
-              >
-                <div className="mx-auto max-w-3xl">
-                  {previousTurns.map((turn) => (
-                    <TranscriptTurn key={turn.id} turn={turn} />
-                  ))}
-                </div>
-                {lastTurn ? (
-                  <div
-                    className="mx-auto min-h-[100cqh] max-w-3xl"
-                    data-testid="last-transcript-turn-viewport"
-                  >
+      {/* `key` remounts the scroller's scroll state per conversation — a
+          fresh conversation starts pinned at the end (`defaultScrollPosition
+          ="end"`), matching the old reset-pinning-on-switch behavior.
+          Autoscroll (following content growth while pinned, escaping on
+          upward scroll, the scroll-to-end button's show/hide) is the
+          message-scroller primitive's own job now. */}
+      <MessageScrollerProvider key={conversationId} autoScroll defaultScrollPosition="end">
+        <ScrollToEndBridge scrollToEndRef={scrollToEndRef} />
+        <MessageScroller className="h-auto min-h-0 flex-1 @container">
+          <MessageScrollerViewport className="p-4" data-testid="workspace-scroll-container">
+            <MessageScrollerContent data-testid="workspace-transcript-content">
+              <div className="mx-auto w-full max-w-3xl">
+                {transcriptTurns.map((turn, index) => {
+                  const isLastTurn = index === transcriptTurns.length - 1;
+                  return (
                     <TranscriptTurn
-                      key={lastTurn.id}
-                      turn={lastTurn}
-                      isLastTurn
-                      pendingWidget={pendingTurnWidget}
-                      error={error}
+                      key={turn.id}
+                      turn={turn}
+                      isLastTurn={isLastTurn}
+                      pendingWidget={isLastTurn ? pendingTurnWidget : null}
+                      error={isLastTurn ? error : null}
                     />
-                  </div>
-                ) : (
-                  error && (
-                    <div className="mx-auto max-w-3xl">
-                      <div
-                        className="mb-6 rounded-lg bg-destructive/10 p-3 text-sm text-destructive"
-                        data-testid="workspace-error"
-                      >
-                        {error}
-                      </div>
-                    </div>
-                  )
+                  );
+                })}
+                {transcriptTurns.length === 0 && error && (
+                  <Alert variant="destructive" className="mb-6" data-testid="workspace-error">
+                    <AlertDescription>{error}</AlertDescription>
+                  </Alert>
                 )}
               </div>
-            </div>
-            {!isAtBottom && (
-              <Button
-                type="button"
-                variant="secondary"
-                size="icon"
-                className="absolute bottom-4 left-1/2 z-10 -translate-x-1/2 rounded-full bg-card/95 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-card/80"
-                onClick={() => void scrollToBottom()}
-                aria-label="Scroll to bottom"
-                data-testid="scroll-to-bottom"
-              >
-                <ArrowDown size={16} />
-              </Button>
-            )}
-            <PlanTracker conversationId={conversationId} />
-          </>
-        )}
-      </StickToBottom>
+            </MessageScrollerContent>
+          </MessageScrollerViewport>
+          <MessageScrollerButton data-testid="scroll-to-bottom" />
+          <PlanTracker conversationId={conversationId} />
+        </MessageScroller>
+      </MessageScrollerProvider>
       {showGenericStreamingStatus && <StreamingStatus startedAt={activeTurnStartedAt} />}
       <div
         className={cn(

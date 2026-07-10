@@ -91,3 +91,17 @@ if (typeof globalThis.ResizeObserver === "undefined") {
     disconnect() {}
   } as unknown as typeof ResizeObserver;
 }
+
+// jsdom has no IntersectionObserver either; the @shadcn/react
+// message-scroller needs one to exist. Inert stub — autoscroll behavior is
+// not testable in jsdom and is covered by browser-level verification.
+if (typeof globalThis.IntersectionObserver === "undefined") {
+  globalThis.IntersectionObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+    takeRecords() {
+      return [];
+    }
+  } as unknown as typeof IntersectionObserver;
+}
