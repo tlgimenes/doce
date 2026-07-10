@@ -2012,6 +2012,9 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     const composer = screen.getByTestId("workspace-composer-shell");
     // Not inside the scroller any more…
     expect(scroller.contains(tracker)).toBe(false);
+    // Load-bearing guard: the old location was inside the MessageScroller
+    // ROOT (a sibling of the viewport), which the viewport check can't see.
+    expect(document.querySelector('[data-slot="message-scroller"]')?.contains(tracker)).toBe(false);
     // …and between it and the composer in document order.
     expect(
       scroller.compareDocumentPosition(tracker) & Node.DOCUMENT_POSITION_FOLLOWING,
