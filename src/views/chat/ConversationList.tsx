@@ -9,12 +9,12 @@ import {
 } from "react";
 import { Archive, Cog, Plus, Search } from "lucide-react";
 import { homeDir } from "@tauri-apps/api/path";
+import { Button } from "@/components/ui/button";
 import { KeyboardShortcut } from "@/components/ui/KeyboardShortcut";
 import {
   SidebarContent,
   SidebarGroup,
   SidebarMenu,
-  SidebarMenuAction,
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
@@ -263,7 +263,7 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
                   <SidebarMenuItem
                     key={c.id}
                     className={cn(
-                      "group",
+                      "rounded-md transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-within:bg-sidebar-accent focus-within:text-sidebar-accent-foreground",
                       isActive
                         ? "bg-sidebar-accent text-sidebar-accent-foreground"
                         : "bg-transparent",
@@ -271,22 +271,34 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
                     data-testid="conversation-item"
                     data-conversation-id={c.id}
                   >
-                    <SidebarMenuButton
-                      isActive={isActive}
-                      className="min-h-12 h-auto items-start gap-2 px-2 py-2 pr-12 text-left transition-colors data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
+                    <div
+                      className="relative grid min-h-12 w-full min-w-0 grid-cols-[minmax(0,1fr)_min-content] items-center gap-2 px-2 py-2"
+                      data-testid="conversation-thread-button"
                       onClick={() => selectConversation(c)}
                     >
-                      <span
-                        className={cn("mt-1.5 size-2 shrink-0 rounded-full", STATUS_COLOR[c.status])}
-                        title={STATUS_LABEL[c.status]}
-                        data-testid="conversation-status-dot"
-                        data-status={c.status}
+                      <button
+                        type="button"
+                        className="absolute inset-0 z-0 rounded-md ring-sidebar-ring outline-hidden focus-visible:ring-2"
+                        aria-label={`Open ${c.title}`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          selectConversation(c);
+                        }}
                       />
-                      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                        <span className="flex min-w-0 items-baseline gap-2">
+                      <span className="relative z-10 grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-2 overflow-hidden">
+                        <span
+                          className={cn(
+                            "mt-1.5 size-2 shrink-0 rounded-full",
+                            STATUS_COLOR[c.status],
+                          )}
+                          title={STATUS_LABEL[c.status]}
+                          data-testid="conversation-status-dot"
+                          data-status={c.status}
+                        />
+                        <span className="flex min-w-0 flex-col gap-0.5 overflow-hidden">
                           <span
                             className={cn(
-                              "min-w-0 flex-1 truncate text-[13px] font-medium leading-4",
+                              "block min-w-0 truncate text-[13px] font-medium leading-4",
                               isActive
                                 ? "text-sidebar-accent-foreground"
                                 : isReadInactive
@@ -296,49 +308,60 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
                           >
                             {c.title}
                           </span>
-                        </span>
-                        <span
-                          className={cn(
-                            "min-w-0 truncate text-[11px] leading-4",
-                            isActive
-                              ? "text-sidebar-accent-foreground/70"
-                              : "text-sidebar-foreground/60",
-                          )}
-                        >
-                          {getConversationWorkspaceLabel(c.workspaceId, workspacesById, homePath)}
-                        </span>
-                      </span>
-                      <span className="pointer-events-none absolute right-8 top-1/2 h-8 w-10 -translate-y-1/2">
-                        <span
-                          className={cn(
-                            "absolute right-0 top-0 text-[11px] leading-4 tabular-nums transition-opacity group-hover:opacity-0",
-                            isActive
-                              ? "text-sidebar-accent-foreground/80"
-                              : "text-sidebar-foreground/55",
-                          )}
-                        >
-                          {formatConversationRelativeTime(c.updatedAt)}
-                        </span>
-                        <span
-                          className={cn(
-                            "absolute bottom-0 right-0 text-[11px] leading-4 transition-opacity group-hover:opacity-0",
-                            isActive
-                              ? "text-sidebar-accent-foreground/70"
-                              : "text-sidebar-foreground/60",
-                          )}
-                        >
-                          {getConversationWorkStateLabel(c.status)}
+                          <span
+                            className={cn(
+                              "block min-w-0 truncate text-[11px] leading-4",
+                              isActive
+                                ? "text-sidebar-accent-foreground/70"
+                                : "text-sidebar-foreground/60",
+                            )}
+                          >
+                            {getConversationWorkspaceLabel(c.workspaceId, workspacesById, homePath)}
+                          </span>
                         </span>
                       </span>
-                    </SidebarMenuButton>
-                    <SidebarMenuAction
-                      showOnHover
-                      className="bg-transparent size-6 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
-                      aria-label={`Archive ${c.title}`}
-                      onClick={(event) => handleArchiveConversation(event, c)}
-                    >
-                      <Archive className="size-3.5" />
-                    </SidebarMenuAction>
+                      <span
+                        className="relative z-20 grid min-w-0 items-center justify-items-end overflow-hidden"
+                        data-testid="conversation-end-slot"
+                      >
+                        <span className="flex w-full min-w-0 flex-col items-end justify-center overflow-hidden text-right transition-opacity group-hover/menu-item:opacity-0 group-focus-within/menu-item:opacity-0">
+                          <span
+                            className={cn(
+                              "block w-full max-w-full truncate text-[11px] leading-4 tabular-nums",
+                              isActive
+                                ? "text-sidebar-accent-foreground/80"
+                                : "text-sidebar-foreground/55",
+                            )}
+                          >
+                            {formatConversationRelativeTime(c.updatedAt)}
+                          </span>
+                          <span
+                            className={cn(
+                              "block w-full max-w-full truncate text-[11px] leading-4",
+                              isActive
+                                ? "text-sidebar-accent-foreground/70"
+                                : "text-sidebar-foreground/60",
+                            )}
+                          >
+                            {getConversationWorkStateLabel(c.status)}
+                          </span>
+                        </span>
+                        <span
+                          className="pointer-events-none absolute inset-0 flex items-center justify-end opacity-0 transition-opacity group-hover/menu-item:pointer-events-auto group-hover/menu-item:opacity-100 group-focus-within/menu-item:pointer-events-auto group-focus-within/menu-item:opacity-100"
+                          data-testid="conversation-archive-action"
+                        >
+                          <Button
+                            type="button"
+                            variant="icon"
+                            size="icon-sm"
+                            aria-label={`Archive ${c.title}`}
+                            onClick={(event) => handleArchiveConversation(event, c)}
+                          >
+                            <Archive className="size-3.5" />
+                          </Button>
+                        </span>
+                      </span>
+                    </div>
                   </SidebarMenuItem>
                 );
               })}

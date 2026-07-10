@@ -1,7 +1,7 @@
 import { forwardRef, type ComponentPropsWithoutRef } from "react";
 import { cn } from "@/lib/cn";
 
-export type ButtonVariant = "primary" | "secondary" | "destructive" | "ghost";
+export type ButtonVariant = "primary" | "secondary" | "destructive" | "ghost" | "icon";
 export type ButtonSize = "sm" | "md" | "icon" | "icon-sm";
 
 export interface ButtonProps extends ComponentPropsWithoutRef<"button"> {
@@ -14,6 +14,7 @@ const variantClasses: Record<ButtonVariant, string> = {
   secondary: "border border-border bg-card text-foreground hover:bg-accent",
   destructive: "bg-destructive text-destructive-foreground hover:bg-destructive/90",
   ghost: "bg-transparent text-foreground hover:bg-accent",
+  icon: "bg-transparent text-foreground hover:bg-accent",
 };
 
 const sizeClasses: Record<ButtonSize, string> = {

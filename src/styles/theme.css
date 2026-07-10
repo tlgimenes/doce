@@ -118,6 +118,11 @@ body {
   outline-offset: 2px;
 }
 
+button:not(:disabled, [aria-disabled="true"]),
+[role="button"]:not([aria-disabled="true"]) {
+  cursor: pointer;
+}
+
 /* View transitions keep the app shell still while chat content swaps. */
 ::view-transition-old(root),
 ::view-transition-new(root) {

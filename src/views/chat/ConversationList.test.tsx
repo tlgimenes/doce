@@ -320,7 +320,20 @@ describe("ConversationList", () => {
 
     const row = await screen.findByTestId("conversation-item");
     await userEvent.hover(row);
+    const threadButton = screen.getByTestId("conversation-thread-button");
     const archiveButton = screen.getByLabelText("Archive Archive me");
+    const endSlot = row.querySelector<HTMLElement>('[data-testid="conversation-end-slot"]');
+    const archiveAction = row.querySelector<HTMLElement>(
+      '[data-testid="conversation-archive-action"]',
+    );
+    expect(threadButton).toHaveClass("grid-cols-[minmax(0,1fr)_min-content]");
+    expect(endSlot).not.toBeNull();
+    expect(archiveAction).not.toBeNull();
+    expect(endSlot).toContainElement(archiveButton);
+    expect(archiveAction).toContainElement(archiveButton);
+    expect(endSlot).toHaveTextContent("Ready");
+    expect(endSlot).toHaveClass("justify-items-end");
+    expect(archiveAction).toHaveClass("justify-end");
     expect(archiveButton).toHaveClass("bg-transparent", "size-6");
     expect(archiveButton.querySelector("svg")).toBeInTheDocument();
 
@@ -360,9 +373,7 @@ describe("ConversationList", () => {
     ref.current?.archiveById("archive-from-handle");
 
     expect(commands.archiveConversation).toHaveBeenCalledWith("archive-from-handle");
-    await waitFor(() =>
-      expect(screen.queryByText("Archive from handle")).not.toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.queryByText("Archive from handle")).not.toBeInTheDocument());
   });
 
   it("archives through the imperative archiveById handle even when the row is missing locally", async () => {
@@ -413,11 +424,12 @@ describe("ConversationList", () => {
       />,
     );
 
-    const archiveButton = await screen.findByLabelText("Archive Selected thread");
-    expect(archiveButton).toHaveClass(
+    await screen.findByLabelText("Archive Selected thread");
+    const archiveAction = screen.getByTestId("conversation-archive-action");
+    expect(archiveAction).toHaveClass(
       "opacity-0",
-      "group-hover:opacity-100",
-      "group-focus-within:opacity-100",
+      "group-hover/menu-item:opacity-100",
+      "group-focus-within/menu-item:opacity-100",
     );
   });
 
