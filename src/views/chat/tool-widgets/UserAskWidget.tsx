@@ -1,6 +1,5 @@
 import { useId, useState } from "react";
-import { ArrowLeftIcon, CheckIcon, XIcon } from "@phosphor-icons/react";
-import { SendHorizontal } from "lucide-react";
+import { ArrowLeft, Check, SendHorizontal, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
 import { commands, type AskUserQuestionDetail, type QuestionOption } from "@/lib/ipc";
@@ -71,7 +70,7 @@ function OptionRow({
       >
         {selected &&
           (multiSelect ? (
-            <CheckIcon size={10} weight="bold" className="text-primary-foreground" />
+            <Check size={10} className="text-primary-foreground" strokeWidth={3} />
           ) : (
             <span className="size-2 rounded-full bg-foreground" />
           ))}
@@ -164,7 +163,7 @@ export default function UserAskWidget({ detail, initialMode = "options" }: UserA
           aria-label={mode === "options" ? "Close question" : "Back to options"}
           data-testid={mode === "options" ? "question-close" : "question-back-to-options"}
         >
-          {mode === "options" ? <XIcon size={14} /> : <ArrowLeftIcon size={14} />}
+          {mode === "options" ? <X size={14} /> : <ArrowLeft size={14} />}
         </Button>
       </div>
 

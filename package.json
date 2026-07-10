@@ -21,7 +21,6 @@
     "@base-ui/react": "^1.6.0",
     "@codemirror/lang-javascript": "^6",
     "@floating-ui/react": "^0.27.19",
-    "@phosphor-icons/react": "^2",
     "@shadcn/react": "^0.2.1",
     "@tanstack/react-form": "^1",
     "@tanstack/react-query": "^5",
