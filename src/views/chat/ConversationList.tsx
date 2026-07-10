@@ -324,10 +324,16 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
                         className="relative z-20 grid min-w-0 items-center justify-items-end overflow-hidden"
                         data-testid="conversation-end-slot"
                       >
-                        <span className="flex w-full min-w-0 flex-col items-end justify-center overflow-hidden text-right transition-opacity group-hover/menu-item:opacity-0 group-focus-within/menu-item:opacity-0">
+                        {/* Intrinsically sized on purpose: this sits in a
+                            min-content grid column, and percentage widths
+                            (w-full) contribute zero intrinsic width there —
+                            the whole slot collapses to 0px and hides time,
+                            work-state, and the archive action. Labels are
+                            short and bounded, so nowrap needs no truncation. */}
+                        <span className="flex flex-col items-end justify-center text-right transition-opacity group-hover/menu-item:opacity-0 group-focus-within/menu-item:opacity-0">
                           <span
                             className={cn(
-                              "block w-full max-w-full truncate text-[11px] leading-4 tabular-nums",
+                              "block whitespace-nowrap text-[11px] leading-4 tabular-nums",
                               isActive
                                 ? "text-sidebar-accent-foreground/80"
                                 : "text-sidebar-foreground/55",
@@ -337,7 +343,7 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
                           </span>
                           <span
                             className={cn(
-                              "block w-full max-w-full truncate text-[11px] leading-4",
+                              "block whitespace-nowrap text-[11px] leading-4",
                               isActive
                                 ? "text-sidebar-accent-foreground/70"
                                 : "text-sidebar-foreground/60",

@@ -334,6 +334,20 @@ describe("ConversationList", () => {
     expect(endSlot).toHaveTextContent("Ready");
     expect(endSlot).toHaveClass("justify-items-end");
     expect(archiveAction).toHaveClass("justify-end");
+    // Regression guard: the end slot sits in a min-content grid column, and
+    // percentage widths (w-full) contribute ZERO intrinsic width to such a
+    // track — with only w-full children the whole slot collapses to 0px in
+    // a real layout engine (jsdom can't see this), hiding time, work-state,
+    // and the archive action. The in-flow lines must be intrinsically sized.
+    const fadeWrapper = endSlot?.firstElementChild as HTMLElement;
+    expect(fadeWrapper).not.toHaveClass("w-full");
+    const endSlotLines = Array.from(fadeWrapper.children) as HTMLElement[];
+    expect(endSlotLines).toHaveLength(2);
+    for (const line of endSlotLines) {
+      expect(line).toHaveClass("whitespace-nowrap");
+      expect(line).not.toHaveClass("w-full");
+      expect(line).not.toHaveClass("truncate");
+    }
     expect(archiveButton).toHaveClass("bg-transparent", "size-6");
     expect(archiveButton.querySelector("svg")).toBeInTheDocument();
 
