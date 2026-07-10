@@ -1,5 +1,5 @@
 import type * as React from "react";
-import MessageContent from "@/components/MessageContent";
+import TranscriptRow from "@/views/workspace/TranscriptRow";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { MessageGroup } from "@/components/ui/message";
 import BashWidget from "@/views/chat/tool-widgets/BashWidget";
@@ -31,10 +31,10 @@ export default function TranscriptTurn({
       data-testid="transcript-turn"
       data-last-turn={isLastTurn ? "true" : "false"}
     >
-      {turn.user && <MessageContent message={turn.user} />}
+      {turn.user && <TranscriptRow message={turn.user} />}
       <div data-testid="transcript-turn-body" className="min-w-0">
         {turn.rows.map((message) => (
-          <MessageContent key={message.id} message={message} />
+          <TranscriptRow key={message.id} message={message} />
         ))}
         {pendingWidget && (
           <div className="mb-6" data-testid="chat-message" role="group" aria-label="doce replied">
