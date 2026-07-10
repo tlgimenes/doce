@@ -60,7 +60,7 @@ function Swatch({ name, variable }: { name: string; variable: string }) {
 }
 
 /**
- * A live catalog of every tool-call widget (the components `MessageContent`
+ * A live catalog of every tool-call widget (the components `TranscriptRow`
  * dispatches `tool_result` rows to), rendered with hand-built sample data
  * covering each widget's real states -- not a static mockup: these are the
  * exact same widget components/props the real chat transcript uses, so
