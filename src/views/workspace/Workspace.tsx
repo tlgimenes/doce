@@ -497,7 +497,7 @@ export default function Workspace({
           message-scroller primitive's own job now. */}
       <MessageScrollerProvider key={conversationId} autoScroll defaultScrollPosition="end">
         <ScrollToEndBridge scrollToEndRef={scrollToEndRef} />
-        <MessageScroller className="h-auto min-h-0 flex-1 @container">
+        <MessageScroller className="h-auto min-h-0 flex-1">
           <MessageScrollerViewport className="p-4" data-testid="workspace-scroll-container">
             <MessageScrollerContent data-testid="workspace-transcript-content">
               <div className="mx-auto w-full max-w-3xl">
@@ -522,9 +522,9 @@ export default function Workspace({
             </MessageScrollerContent>
           </MessageScrollerViewport>
           <MessageScrollerButton data-testid="scroll-to-bottom" />
-          <PlanTracker conversationId={conversationId} />
         </MessageScroller>
       </MessageScrollerProvider>
+      <PlanTracker conversationId={conversationId} />
       {showGenericStreamingStatus && <StreamingStatus startedAt={activeTurnStartedAt} />}
       <div
         className={cn(
