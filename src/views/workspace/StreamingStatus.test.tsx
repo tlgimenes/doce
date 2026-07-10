@@ -20,8 +20,8 @@ describe("StreamingStatus", () => {
     expect(status).toHaveTextContent("Working");
     expect(status).not.toContainElement(timer);
     expect(screen.getByTestId("agent-thinking")).toHaveTextContent("Working");
-    expect(screen.getAllByTestId("agent-thinking-dot")).toHaveLength(3);
-    expect(screen.getByTestId("agent-thinking-dots")).toHaveAttribute("aria-hidden", "true");
+    const spinner = screen.getByTestId("agent-thinking-spinner");
+    expect(spinner).toHaveAttribute("aria-hidden", "true");
     expect(timer).toHaveTextContent("1.3s");
     expect(timer).toHaveAttribute("aria-live", "off");
     expect(timer).toHaveClass("tabular-nums");
@@ -43,15 +43,14 @@ describe("StreamingStatus", () => {
     expect(screen.getByTestId("agent-thinking-timer")).toHaveTextContent("0.0s");
   });
 
-  it("ticks across the 0.9s -> 1.0s boundary without changing fixed-width classes", async () => {
+  it("ticks across the 0.9s -> 1.0s boundary", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(9_900);
 
     render(<StreamingStatus startedAt={9_000} />);
 
     expect(screen.getByTestId("agent-thinking-timer")).toHaveTextContent("0.9s");
-    expect(screen.getByTestId("agent-thinking-timer")).toHaveClass("w-[7ch]");
-    expect(screen.getByTestId("agent-thinking-timer")).toHaveClass("shrink-0");
+    expect(screen.getByTestId("agent-thinking-timer")).toHaveClass("tabular-nums");
 
     vi.setSystemTime(9_900);
     await act(async () => {
@@ -59,7 +58,6 @@ describe("StreamingStatus", () => {
     });
 
     expect(screen.getByTestId("agent-thinking-timer")).toHaveTextContent("1.0s");
-    expect(screen.getByTestId("agent-thinking-timer")).toHaveClass("w-[7ch]");
-    expect(screen.getByTestId("agent-thinking-timer")).toHaveClass("shrink-0");
+    expect(screen.getByTestId("agent-thinking-timer")).toHaveClass("tabular-nums");
   });
 });

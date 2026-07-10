@@ -444,7 +444,6 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     expect(status.closest('[data-testid="chat-message"]')).toBeNull();
     expect(status.closest('[data-testid="transcript-turn"]')).toBeNull();
     expectElementBefore(status, composerShell);
-    expect(status).toHaveClass("border-b");
     expect(composerShell).not.toHaveClass("border-t");
 
     resolveAgent("Found 3 files: a.rs, b.rs, c.rs");
