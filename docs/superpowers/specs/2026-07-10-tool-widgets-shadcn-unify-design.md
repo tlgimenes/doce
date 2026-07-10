@@ -114,8 +114,8 @@ Existing testids and user-visible text contracts are preserved.
 | Read | FileText icon · path · bytes/tokens chips | ReadPreview | collapsed |
 | Write | FilePlus icon · path · "N bytes" Badge | none | header-only |
 | Glob/Grep | Search icon · pattern · match-count Badge | ItemGroup/Item match rows; Empty when none | collapsed |
-| Task | Bot icon · prompt excerpt · Spinner (running) or Badge (done/interrupted) | full prompt text | collapsed |
-| AskUserQuestion (answered) | MessageCircleQuestion icon · question | chosen answer(s) as Item rows | expanded |
+| Task | Bot icon · status title (Spinner while running) · prompt as description · Badge (done/interrupted) | none | header-only |
+| AskUserQuestion (answered) | MessageCircleQuestion icon · question as description · answer line as title | none | header-only |
 | Unknown tool | Wrench icon · tool name | pretty JSON in CodeBlock | collapsed |
 
 Error branches (spawn failed, edit/read/write failed): `Alert
@@ -124,9 +124,11 @@ four hand-rolled `border-destructive/40 bg-destructive/10` cards.
 Interruptions render as `outline` Badges in the header, not error Alerts.
 
 ReadPreview internals: loading → `Spinner`; unavailable/error → `Empty` ›
-`EmptyTitle`/`EmptyDescription`; media framed with `Attachment` primitives
-(playback stays native `<img>`/`<video>`/`<audio>`); markdown stays
-`MarkdownPreview` (sanctioned prose exception); plain text → `CodeBlock`.
+`EmptyTitle`/`EmptyDescription`; media playback stays native
+`<img>`/`<video>`/`<audio>` elements with sizing-only classes (no
+`Attachment` framing — YAGNI, the frame body already provides the card
+context); markdown stays `MarkdownPreview` (sanctioned prose exception);
+plain text → `CodeBlock`.
 
 ViewFullOutput: raw link-styled `<button>` → `Button variant="link"
 size="sm"`; loading → `Spinner`; loaded payload → `CodeBlock`.
