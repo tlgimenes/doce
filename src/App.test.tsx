@@ -62,6 +62,17 @@ function pressCmd(key: string) {
   fireEvent.keyDown(window, { key, metaKey: true });
 }
 
+function dispatchCancelableCmd(key: string) {
+  const event = new KeyboardEvent("keydown", {
+    key,
+    metaKey: true,
+    bubbles: true,
+    cancelable: true,
+  });
+  window.dispatchEvent(event);
+  return event;
+}
+
 async function waitForReady() {
   await waitFor(() => expect(screen.getByTestId("conversation-list")).toBeInTheDocument());
   // EmptyState resolves Home asynchronously — wait for it so a stray
@@ -537,6 +548,20 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     expect(document.activeElement).not.toBe(screen.getByTestId("empty-state-input"));
   });
 
+  it("prevents the browser default for blocked Cmd+L while search is open", async () => {
+    render(<App />);
+    await waitForReady();
+
+    pressCmd("f");
+    const searchInput = await screen.findByTestId("search-input");
+    await waitFor(() => expect(searchInput).toHaveFocus());
+
+    const event = dispatchCancelableCmd("l");
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(searchInput).toHaveFocus();
+  });
+
   it("hands off from search to command center on Cmd+K", async () => {
     render(<App />);
     await waitForReady();
@@ -638,6 +663,19 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     expect(await screen.findByTestId("search-panel")).toBeInTheDocument();
   });
 
+  it("prevents the browser default for blocked Cmd+N while the shortcuts dialog is open", async () => {
+    render(<App />);
+    await waitForReady();
+
+    await userEvent.click(screen.getByTestId("open-shortcuts-dialog"));
+    expect(await screen.findByTestId("shortcuts-dialog")).toBeInTheDocument();
+
+    const event = dispatchCancelableCmd("n");
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(screen.getByTestId("shortcuts-dialog")).toBeInTheDocument();
+  });
+
   it("keeps Cmd+K routed to an open command-center state until Task 4 adds its close path", async () => {
     render(<App />);
     await waitForReady();
@@ -651,6 +689,35 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     await userEvent.keyboard("{Escape}");
     pressCmd("f");
     expect(await screen.findByTestId("search-panel")).toBeInTheDocument();
+  });
+
+  it("prevents the browser default for blocked Cmd+N while command center is open", async () => {
+    render(<App />);
+    await waitForReady();
+
+    pressCmd("k");
+    expect(await screen.findByTestId("command-center")).toBeInTheDocument();
+
+    const event = dispatchCancelableCmd("n");
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(screen.getByTestId("command-center")).toBeInTheDocument();
+  });
+
+  it("still routes Cmd+K through the normal action path and prevents the browser default", async () => {
+    render(<App />);
+    await waitForReady();
+
+    pressCmd("f");
+    expect(await screen.findByTestId("search-panel")).toBeInTheDocument();
+
+    const event = dispatchCancelableCmd("k");
+
+    expect(event.defaultPrevented).toBe(true);
+    await waitFor(() =>
+      expect(screen.queryByTestId("search-panel")).not.toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("command-center")).toBeInTheDocument();
   });
 
   it("Cmd+F opens conversation search in a dialog", async () => {

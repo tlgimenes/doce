@@ -284,9 +284,12 @@ export default function App() {
       if (!match) return;
       // FR-009 / Task 2: once an app-owned surface is open, only Cmd+K may
       // continue through the global handler until that surface yields.
-      if (showSearch && match.id !== "open-command-center") return;
-      if (showShortcutsDialog && match.id !== "open-command-center") return;
-      if (showCommandCenter && match.id !== "open-command-center") return;
+      const modalShortcutBlocked =
+        match.id !== "open-command-center" && (showSearch || showShortcutsDialog || showCommandCenter);
+      if (modalShortcutBlocked) {
+        e.preventDefault();
+        return;
+      }
       e.preventDefault();
       match.action();
     }
