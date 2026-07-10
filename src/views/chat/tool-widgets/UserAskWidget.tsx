@@ -23,7 +23,7 @@ interface UserAskWidgetProps {
 // same gradient sheen, same icon -- so single-select, multi-select, and
 // free text all answer via one visually consistent affordance.
 const SUBMIT_BUTTON_CLASSES =
-  "shrink-0 enabled:bg-gradient-to-r enabled:from-[var(--color-primary)] enabled:via-[var(--color-gray-2)] enabled:to-[var(--color-gray-1)] enabled:hover:from-[var(--color-gray-2)] enabled:hover:via-[var(--color-gray-1)] enabled:hover:to-[var(--color-foreground)]";
+  "shrink-0 enabled:bg-gradient-to-r enabled:from-[var(--color-primary)] enabled:via-[var(--color-doce-caramel)] enabled:to-[var(--color-doce-cacao)] enabled:hover:from-[var(--color-doce-caramel)] enabled:hover:via-[var(--color-primary)] enabled:hover:to-[var(--color-foreground)]";
 
 /**
  * One option row inside the options module -- a real radio/checkbox
@@ -63,7 +63,7 @@ function OptionRow({
     >
       <span
         className={cn(
-          "mt-0.5 flex size-4 shrink-0 items-center justify-center border-[1.5px] border-[var(--color-gray-4)]",
+          "mt-0.5 flex size-4 shrink-0 items-center justify-center border-[1.5px] border-border",
           multiSelect ? "rounded-[4px]" : "rounded-full",
           selected && (multiSelect ? "border-primary bg-primary" : "border-foreground"),
         )}

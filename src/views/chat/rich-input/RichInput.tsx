@@ -14,6 +14,9 @@ import SkillMention, { isSkillMentionSuggestionActive } from "./extensions/skill
 import Attachment, { type AttachmentAttrs } from "./extensions/attachment-node";
 import { richMessageContentFromDoc, shouldCollapsePastedText } from "./serialize";
 
+const SEND_BUTTON_CLASSES =
+  "shrink-0 enabled:bg-gradient-to-r enabled:from-[var(--color-primary)] enabled:via-[var(--color-doce-caramel)] enabled:to-[var(--color-doce-cacao)] enabled:hover:from-[var(--color-doce-caramel)] enabled:hover:via-[var(--color-primary)] enabled:hover:to-[var(--color-foreground)]";
+
 // 009-rich-chat-input, User Story 4 (T044-T047): image/file attachment via
 // paste, native OS drag-and-drop, and a file-picker button. A reasonable
 // sanity cap on an attachment's size — matching mesh's own 10MB cap
@@ -521,7 +524,7 @@ export default function RichInput({
             type="button"
             variant="primary"
             size="icon"
-            className="shrink-0 enabled:bg-gradient-to-r enabled:from-[var(--color-primary)] enabled:via-[var(--color-gray-2)] enabled:to-[var(--color-gray-1)] enabled:hover:from-[var(--color-gray-2)] enabled:hover:via-[var(--color-gray-1)] enabled:hover:to-[var(--color-foreground)]"
+            className={SEND_BUTTON_CLASSES}
             onClick={submitCurrentContent}
             disabled={disabled || isEmpty}
             aria-label="Send message"

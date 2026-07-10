@@ -47,6 +47,23 @@ describe("SearchPanel", () => {
     expect(onSelect).toHaveBeenCalledWith("c1");
   });
 
+  it("gives result rows a non-clipping height class for multi-line content", async () => {
+    vi.mocked(commands.searchConversations).mockResolvedValue([
+      {
+        conversationId: "c1",
+        title: "A very long search result title that wraps onto another line",
+        excerpt: "an excerpt that also wraps onto another line for the row layout",
+        rank: -1,
+      },
+    ]);
+
+    render(<SearchPanel onSelect={vi.fn()} />);
+    await userEvent.type(screen.getByTestId("search-input"), "wrap");
+
+    const row = await screen.findByTestId("search-result");
+    expect(row.className).toContain("h-auto");
+  });
+
   it("shows recent conversations before typing, newest first and capped to ten", async () => {
     const recentConversations: Conversation[] = Array.from({ length: 12 }, (_, i) => ({
       id: `c${i}`,
@@ -159,6 +176,49 @@ describe("SearchPanel", () => {
     expect(await screen.findByText("Latest result")).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByTestId("search-loading")).not.toBeInTheDocument());
     expect(screen.queryByText("Stale result")).not.toBeInTheDocument();
+  });
+
+  it("supports arrow-key navigation and Enter selection across visible results", async () => {
+    vi.mocked(commands.searchConversations).mockResolvedValue([
+      {
+        conversationId: "c1",
+        title: "First result",
+        excerpt: "first match",
+        rank: -5,
+      },
+      {
+        conversationId: "c2",
+        title: "Second result",
+        excerpt: "second match",
+        rank: -4,
+      },
+    ]);
+
+    const onSelect = vi.fn();
+    render(<SearchPanel onSelect={onSelect} />);
+
+    const input = screen.getByTestId("search-input");
+    await userEvent.type(input, "fi");
+
+    const rows = await screen.findAllByTestId("search-result");
+    expect(rows).toHaveLength(2);
+
+    await userEvent.keyboard("{ArrowDown}");
+    expect(input).toHaveAttribute("aria-activedescendant", "search-result-option-0");
+    expect(rows[0]).toHaveAttribute("aria-selected", "true");
+    expect(rows[1]).toHaveAttribute("aria-selected", "false");
+
+    await userEvent.keyboard("{ArrowDown}");
+    expect(input).toHaveAttribute("aria-activedescendant", "search-result-option-1");
+    expect(rows[0]).toHaveAttribute("aria-selected", "false");
+    expect(rows[1]).toHaveAttribute("aria-selected", "true");
+
+    await userEvent.keyboard("{ArrowUp}");
+    expect(input).toHaveAttribute("aria-activedescendant", "search-result-option-0");
+    expect(rows[0]).toHaveAttribute("aria-selected", "true");
+
+    await userEvent.keyboard("{Enter}");
+    expect(onSelect).toHaveBeenCalledWith("c1");
   });
 
   it("ignores stale rejected requests so a newer in-flight search keeps loading and error ownership", async () => {
