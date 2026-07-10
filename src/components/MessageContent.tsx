@@ -1,6 +1,9 @@
 import Timer from "@/components/Timer";
 import MarkdownPreview from "@/components/MarkdownPreview";
 import UserMessageBubble from "@/components/UserMessageBubble";
+import { Bubble, BubbleContent } from "@/components/ui/bubble";
+import { Marker, MarkerContent } from "@/components/ui/marker";
+import { Message as ChatMessage, MessageContent as ChatMessageContent } from "@/components/ui/message";
 import { formatTokenCount } from "@/lib/formatTokenCount";
 import {
   parseContextNoticeDetail,
@@ -44,9 +47,17 @@ interface MessageContentProps {
 export default function MessageContent({ message: m, showTimer = false }: MessageContentProps) {
   if (m.role === "user") {
     return (
-      <div className="mb-6" data-testid="chat-message" role="group" aria-label="You said">
-        <UserMessageBubble message={m} />
-      </div>
+      <ChatMessage
+        align="end"
+        className="mb-5"
+        data-testid="chat-message"
+        role="group"
+        aria-label="You said"
+      >
+        <ChatMessageContent>
+          <UserMessageBubble message={m} />
+        </ChatMessageContent>
+      </ChatMessage>
     );
   }
 
@@ -75,22 +86,26 @@ export default function MessageContent({ message: m, showTimer = false }: Messag
   if (m.contentType === "tool_result") {
     const detail = parseToolResultDetail(m.content, m.toolName);
     return (
-      <div className="mb-6" data-testid="chat-message" role="group" aria-label="doce replied">
-        <ToolWidget detail={detail} />
-      </div>
+      <ChatMessage className="mb-6" data-testid="chat-message" role="group" aria-label="doce replied">
+        <ChatMessageContent>
+          <ToolWidget detail={detail} />
+        </ChatMessageContent>
+      </ChatMessage>
     );
   }
 
   if (m.contentType === "error") {
     return (
-      <div
-        className="mb-6 rounded-lg bg-destructive/10 p-3 text-sm text-destructive"
-        data-testid="chat-message"
-        role="group"
-        aria-label="doce replied"
-      >
-        {m.content}
-      </div>
+      <ChatMessage className="mb-5" data-testid="chat-message" role="group" aria-label="doce replied">
+        <ChatMessageContent>
+          <Marker
+            className="rounded-md border border-destructive/25 bg-destructive/10 p-3 text-sm text-destructive"
+            data-testid="error-message"
+          >
+            <MarkerContent>{m.content}</MarkerContent>
+          </Marker>
+        </ChatMessageContent>
+      </ChatMessage>
     );
   }
 
@@ -103,18 +118,22 @@ export default function MessageContent({ message: m, showTimer = false }: Messag
     const detail = parseContextNoticeDetail(m.content);
     const isSummarized = detail.kind === "summarized";
     return (
-      <div
-        className={
-          isSummarized
-            ? "mb-6 rounded-lg bg-muted p-3 text-sm text-muted-foreground"
-            : "mb-6 text-xs text-muted-foreground/70"
-        }
-        data-testid="context-notice"
-        data-notice-kind={detail.kind}
-        role="status"
-      >
-        {detail.notice}
-      </div>
+      <ChatMessage className="mb-5" role="group" aria-label="doce replied">
+        <ChatMessageContent>
+          <Marker
+            className={
+              isSummarized
+                ? "rounded-md border border-border bg-muted p-3 text-sm text-muted-foreground"
+                : "text-xs text-muted-foreground/70"
+            }
+            data-testid="context-notice"
+            data-notice-kind={detail.kind}
+            role="status"
+          >
+            <MarkerContent>{detail.notice}</MarkerContent>
+          </Marker>
+        </ChatMessageContent>
+      </ChatMessage>
     );
   }
 
@@ -123,20 +142,31 @@ export default function MessageContent({ message: m, showTimer = false }: Messag
     m.contentType === "text" && (showAssistantDuration || m.tokenCount != null);
 
   return (
-    <div className="mb-6" data-testid="chat-message" role="group" aria-label="doce replied">
-      <MarkdownPreview>{m.content}</MarkdownPreview>
-      {showAssistantMetadata && (
-        <p className="mt-1 text-xs text-muted-foreground" data-testid="token-meter">
-          {showAssistantDuration && <Timer createdAt={m.createdAt} durationMs={m.durationMs} />}
-          {/* 010-context-window-management (UI refactor): output tokens
-              for this reply, combined with the elapsed-time chron on the
-              same line — mirrors Claude Code's own status line ("3m 51s ·
-              ↓ 15.6k tokens"). */}
-          {showAssistantDuration && m.tokenCount != null && " · "}
-          {m.tokenCount != null && `↓ ${formatTokenCount(m.tokenCount)} tokens`}
-        </p>
-      )}
-    </div>
+    <ChatMessage
+      className="mb-5 max-w-none"
+      data-testid="chat-message"
+      role="group"
+      aria-label="doce replied"
+    >
+      <ChatMessageContent className="max-w-none">
+        <Bubble variant="ghost" className="max-w-none">
+          <BubbleContent className="max-w-none">
+            <MarkdownPreview>{m.content}</MarkdownPreview>
+          </BubbleContent>
+        </Bubble>
+        {showAssistantMetadata && (
+          <p className="mt-1 text-xs text-muted-foreground" data-testid="token-meter">
+            {showAssistantDuration && <Timer createdAt={m.createdAt} durationMs={m.durationMs} />}
+            {/* 010-context-window-management (UI refactor): output tokens
+                for this reply, combined with the elapsed-time chron on the
+                same line — mirrors Claude Code's own status line ("3m 51s ·
+                ↓ 15.6k tokens"). */}
+            {showAssistantDuration && m.tokenCount != null && " · "}
+            {m.tokenCount != null && `↓ ${formatTokenCount(m.tokenCount)} tokens`}
+          </p>
+        )}
+      </ChatMessageContent>
+    </ChatMessage>
   );
 }
 

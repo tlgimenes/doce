@@ -1,5 +1,17 @@
 import { useEffect, useState } from "react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Field, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import {
+  Item,
+  ItemActions,
+  ItemContent,
+  ItemDescription,
+  ItemGroup,
+  ItemTitle,
+} from "@/components/ui/item";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { commands, type McpServerConnection, type SkillSummary } from "@/lib/ipc";
 
 interface SettingsProps {
@@ -16,6 +28,8 @@ interface SettingsProps {
 export default function Settings({ onClose }: SettingsProps) {
   const [servers, setServers] = useState<McpServerConnection[]>([]);
   const [skills, setSkills] = useState<SkillSummary[]>([]);
+  const [activeTab, setActiveTab] = useState<"mcp" | "skills">("mcp");
+  const [addError, setAddError] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [command, setCommand] = useState("");
   const [argsInput, setArgsInput] = useState("");
@@ -33,11 +47,16 @@ export default function Settings({ onClose }: SettingsProps) {
   const addServer = async () => {
     if (!name.trim() || !command.trim()) return;
     const args = argsInput.trim() ? argsInput.trim().split(/\s+/) : [];
-    await commands.addMcpServer(name.trim(), command.trim(), args);
-    setName("");
-    setCommand("");
-    setArgsInput("");
-    refresh();
+    setAddError(null);
+    try {
+      await commands.addMcpServer(name.trim(), command.trim(), args);
+      setName("");
+      setCommand("");
+      setArgsInput("");
+      refresh();
+    } catch (err) {
+      setAddError(err instanceof Error ? err.message : String(err));
+    }
   };
 
   const testServer = async (serverId: string) => {
@@ -67,87 +86,175 @@ export default function Settings({ onClose }: SettingsProps) {
         </Button>
       </div>
 
-      <section className="mb-8">
-        <h3 className="mb-2 text-sm font-medium">MCP servers</h3>
-        <div className="mb-3 flex gap-2">
-          <input
-            className="rounded-md border border-border bg-card px-2 py-1 text-sm"
-            placeholder="name"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            data-testid="mcp-name-input"
-          />
-          <input
-            className="rounded-md border border-border bg-card px-2 py-1 text-sm"
-            placeholder="command (e.g. npx)"
-            value={command}
-            onChange={(e) => setCommand(e.target.value)}
-            data-testid="mcp-command-input"
-          />
-          <input
-            className="flex-1 rounded-md border border-border bg-card px-2 py-1 text-sm"
-            placeholder="args (space-separated)"
-            value={argsInput}
-            onChange={(e) => setArgsInput(e.target.value)}
-            data-testid="mcp-args-input"
-          />
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={addServer}
-            disabled={!name.trim() || !command.trim()}
-            data-testid="add-mcp-server"
+      <Tabs
+        value={activeTab}
+        onValueChange={(value) => setActiveTab(value as "mcp" | "skills")}
+        className="gap-0"
+      >
+        <TabsList className="mb-6 rounded-md border border-border bg-card p-1">
+          <TabsTrigger
+            value="mcp"
+            aria-selected={activeTab === "mcp"}
+            data-testid="settings-tab-mcp"
+            className="min-w-28 rounded-sm px-3 py-1 text-sm data-active:bg-primary data-active:text-primary-foreground"
           >
-            Add
-          </Button>
-        </div>
-        <ul className="space-y-2">
-          {servers.map((s) => (
-            <li key={s.id} className="rounded-md bg-card p-2 text-sm" data-testid="mcp-server-item">
-              <div className="flex items-center justify-between">
-                <span>
-                  {s.name} <span className="text-muted-foreground">({s.transport})</span>
-                </span>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="p-0 text-xs underline hover:bg-transparent"
-                  onClick={() => testServer(s.id)}
-                  data-testid="test-mcp-server"
-                >
-                  Test connection
-                </Button>
-              </div>
-              {toolsByServer[s.id] === "error" && (
-                <p className="mt-1 text-xs text-destructive">Failed to connect</p>
-              )}
-              {Array.isArray(toolsByServer[s.id]) && (
-                <p className="mt-1 text-xs text-muted-foreground" data-testid="mcp-server-tools">
-                  Tools: {(toolsByServer[s.id] as string[]).join(", ") || "(none)"}
-                </p>
-              )}
-            </li>
-          ))}
-        </ul>
-      </section>
+            MCP Servers
+          </TabsTrigger>
+          <TabsTrigger
+            value="skills"
+            aria-selected={activeTab === "skills"}
+            data-testid="settings-tab-skills"
+            className="min-w-20 rounded-sm px-3 py-1 text-sm data-active:bg-primary data-active:text-primary-foreground"
+          >
+            Skills
+          </TabsTrigger>
+        </TabsList>
 
-      <section>
-        <h3 className="mb-2 text-sm font-medium">Skills</h3>
-        {skills.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            No skills found. Add a folder with a SKILL.md to your skills directory.
-          </p>
-        ) : (
-          <ul className="space-y-2">
-            {skills.map((s) => (
-              <li key={s.name} className="rounded-md bg-card p-2 text-sm" data-testid="skill-item">
-                <span className="font-medium">{s.name}</span>
-                <span className="ml-2 text-muted-foreground">{s.description}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+        <TabsContent value="mcp">
+          {activeTab === "mcp" && (
+            <section data-testid="settings-mcp-panel">
+              <div className="mb-4 rounded-md border border-border bg-card p-4">
+                <h3 className="mb-3 text-sm font-medium">MCP servers</h3>
+                <div className="mb-3 flex flex-wrap gap-2">
+                  <Field className="min-w-40 flex-1 gap-1">
+                    <FieldLabel htmlFor="mcp-name-input" className="text-xs text-muted-foreground">
+                      Server name
+                    </FieldLabel>
+                    <Input
+                      id="mcp-name-input"
+                      placeholder="name"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      data-testid="mcp-name-input"
+                    />
+                  </Field>
+                  <Field className="min-w-48 flex-1 gap-1">
+                    <FieldLabel
+                      htmlFor="mcp-command-input"
+                      className="text-xs text-muted-foreground"
+                    >
+                      Command
+                    </FieldLabel>
+                    <Input
+                      id="mcp-command-input"
+                      placeholder="command (e.g. npx)"
+                      value={command}
+                      onChange={(e) => setCommand(e.target.value)}
+                      data-testid="mcp-command-input"
+                    />
+                  </Field>
+                  <Field className="min-w-56 flex-[2] gap-1">
+                    <FieldLabel
+                      htmlFor="mcp-args-input"
+                      className="text-xs text-muted-foreground"
+                    >
+                      Arguments
+                    </FieldLabel>
+                    <Input
+                      id="mcp-args-input"
+                      placeholder="args (space-separated)"
+                      value={argsInput}
+                      onChange={(e) => setArgsInput(e.target.value)}
+                      data-testid="mcp-args-input"
+                    />
+                  </Field>
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    className="self-start"
+                    onClick={addServer}
+                    disabled={!name.trim() || !command.trim()}
+                    data-testid="add-mcp-server"
+                  >
+                    Add
+                  </Button>
+                </div>
+                {addError && (
+                  <p className="mt-2 text-sm text-destructive" data-testid="mcp-add-error">
+                    {addError}
+                  </p>
+                )}
+              </div>
+
+              <ItemGroup className="gap-3">
+                {servers.map((s) => (
+                  <Item
+                    key={s.id}
+                    variant="outline"
+                    className="bg-card text-sm"
+                    data-testid="mcp-server-item"
+                  >
+                    <ItemContent className="min-w-0 gap-2">
+                      <ItemTitle className="flex-wrap">
+                        <span>{s.name}</span>
+                        <span className="flex flex-wrap items-center gap-2">
+                          <Badge variant="outline">{s.transport}</Badge>
+                          <Badge variant={s.enabled ? "default" : "secondary"}>
+                            {s.enabled ? "Enabled" : "Disabled"}
+                          </Badge>
+                        </span>
+                      </ItemTitle>
+                      {toolsByServer[s.id] === "error" ? (
+                        <ItemDescription className="text-xs text-destructive">
+                          Failed to connect
+                        </ItemDescription>
+                      ) : null}
+                      {Array.isArray(toolsByServer[s.id]) ? (
+                        <ItemDescription
+                          className="text-xs text-muted-foreground"
+                          data-testid="mcp-server-tools"
+                        >
+                          Tools: {(toolsByServer[s.id] as string[]).join(", ") || "(none)"}
+                        </ItemDescription>
+                      ) : null}
+                    </ItemContent>
+                    <ItemActions className="ml-auto self-start">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-auto px-0 text-xs text-muted-foreground underline hover:bg-transparent"
+                        onClick={() => testServer(s.id)}
+                        data-testid="test-mcp-server"
+                      >
+                        Test connection
+                      </Button>
+                    </ItemActions>
+                  </Item>
+                ))}
+              </ItemGroup>
+            </section>
+          )}
+        </TabsContent>
+
+        <TabsContent value="skills">
+          {activeTab === "skills" && (
+            <section data-testid="settings-skills-panel">
+              <h3 className="mb-3 text-sm font-medium">Skills</h3>
+              {skills.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  No skills found. Add a folder with a SKILL.md to your skills directory.
+                </p>
+              ) : (
+                <ItemGroup className="gap-2">
+                  {skills.map((s) => (
+                    <Item
+                      key={s.name}
+                      variant="outline"
+                      className="bg-card text-sm"
+                      data-testid="skill-item"
+                    >
+                      <ItemContent>
+                        <ItemTitle>{s.name}</ItemTitle>
+                        <ItemDescription>{s.description}</ItemDescription>
+                      </ItemContent>
+                    </Item>
+                  ))}
+                </ItemGroup>
+              )}
+            </section>
+          )}
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

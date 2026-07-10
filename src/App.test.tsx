@@ -6,6 +6,10 @@ import App, { checkReadyWithRetries } from "./App";
 import { commands, events } from "@/lib/ipc";
 import { useContextUsageStore } from "@/state/contextUsageStore";
 
+vi.mock("@/hooks/use-mobile", () => ({
+  useIsMobile: () => false,
+}));
+
 type TestDocument = Document & {
   startViewTransition?: (callback: () => void) => unknown;
 };
@@ -28,6 +32,7 @@ vi.mock("@/lib/ipc", () => ({
     listModels: vi.fn(),
     setFocusedConversation: vi.fn(),
     listConversations: vi.fn(),
+    searchConversations: vi.fn(),
     markConversationSeen: vi.fn(),
     archiveConversation: vi.fn(),
     listWorkspaces: vi.fn(),
@@ -57,6 +62,17 @@ function pressCmd(key: string) {
   fireEvent.keyDown(window, { key, metaKey: true });
 }
 
+function dispatchCancelableCmd(key: string) {
+  const event = new KeyboardEvent("keydown", {
+    key,
+    metaKey: true,
+    bubbles: true,
+    cancelable: true,
+  });
+  window.dispatchEvent(event);
+  return event;
+}
+
 async function waitForReady() {
   await waitFor(() => expect(screen.getByTestId("conversation-list")).toBeInTheDocument());
   // EmptyState resolves Home asynchronously — wait for it so a stray
@@ -79,6 +95,7 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
       { id: "m", hardwareTier: "tier1", isActive: true, installed: true },
     ]);
     vi.mocked(commands.listConversations).mockResolvedValue([]);
+    vi.mocked(commands.searchConversations).mockResolvedValue([]);
     vi.mocked(commands.markConversationSeen).mockResolvedValue();
     vi.mocked(commands.archiveConversation).mockResolvedValue();
     vi.mocked(commands.listWorkspaces).mockResolvedValue([]);
@@ -176,6 +193,16 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     );
   });
 
+  it("composes the app shell with the generated sidebar primitives", async () => {
+    render(<App />);
+    await waitForReady();
+
+    expect(document.querySelector('[data-slot="sidebar-wrapper"]')).toBeTruthy();
+    expect(document.querySelector('[data-slot="sidebar"]')).toBeTruthy();
+    expect(document.querySelector('[data-slot="sidebar-inset"]')).toBeTruthy();
+    expect(screen.getByTestId("app-content-pane")).toBeInTheDocument();
+  });
+
   it("renders shared sidebar and main topbars while the empty state keeps the main topbar blank", async () => {
     render(<App />);
     await waitForReady();
@@ -226,7 +253,8 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     await userEvent.click(await screen.findByText("Shared topbar polish"));
 
     const mainTopbar = screen.getByTestId("topbar-main");
-    expect(mainTopbar).toHaveClass("bg-sidebar", "border-b", "border-sidebar-border", "shadow-sm");
+    expect(mainTopbar).toHaveClass("bg-transparent", "text-foreground");
+    expect(mainTopbar).not.toHaveClass("bg-sidebar", "border-b", "border-sidebar-border", "shadow-sm");
     await within(mainTopbar).findByTestId("workspace-topbar");
 
     expect(within(mainTopbar).getByTestId("workspace-topbar-title")).toHaveTextContent(
@@ -428,23 +456,268 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     expect(screen.queryByTestId("settings-view")).not.toBeInTheDocument();
   });
 
-  it("Cmd+K opens the shortcuts dialog listing all shortcuts, and pressing it again closes it (US3, FR-006)", async () => {
+  it("clears the hidden command-center latch when Settings takes over so Cmd+F works after close", async () => {
     render(<App />);
     await waitForReady();
 
     pressCmd("k");
-    const dialog = await screen.findByTestId("shortcuts-dialog");
-    expect(screen.getAllByTestId("shortcut-item")).toHaveLength(5);
 
-    // Scoped to the dialog: the sidebar's own search button independently
-    // shows a "⌘ + F" hover hint, so a page-wide query would match both.
-    expect(within(dialog).getByText("Open conversation search")).toBeInTheDocument();
-    expect(within(dialog).getByTestId("shortcut-combo-search-conversations")).toHaveTextContent(
-      "⌘+F",
+    await userEvent.click(await screen.findByTestId("open-settings"));
+    expect(await screen.findByTestId("settings-view")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId("close-settings"));
+    await waitFor(() => expect(screen.queryByTestId("settings-view")).not.toBeInTheDocument());
+
+    pressCmd("f");
+    expect(await screen.findByTestId("search-panel")).toBeInTheDocument();
+  });
+
+  it("lets Cmd+F reopen search after Cmd+K lands behind an already-open Settings view", async () => {
+    render(<App />);
+    await waitForReady();
+
+    await userEvent.click(await screen.findByTestId("open-settings"));
+    expect(await screen.findByTestId("settings-view")).toBeInTheDocument();
+
+    pressCmd("k");
+
+    await userEvent.click(screen.getByTestId("close-settings"));
+    await waitFor(() => expect(screen.queryByTestId("settings-view")).not.toBeInTheDocument());
+
+    pressCmd("f");
+    expect(await screen.findByTestId("search-panel")).toBeInTheDocument();
+  });
+
+  it("lets Cmd+F reopen search after Cmd+K lands behind an already-open search dialog", async () => {
+    render(<App />);
+    await waitForReady();
+
+    pressCmd("f");
+    expect(await screen.findByTestId("search-panel")).toBeInTheDocument();
+
+    pressCmd("k");
+
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByTestId("search-panel")).not.toBeInTheDocument());
+
+    pressCmd("f");
+    expect(await screen.findByTestId("search-panel")).toBeInTheDocument();
+  });
+
+  it("ignores Cmd+N while search is open so the covered workspace does not switch back to the composer", async () => {
+    render(<App />);
+    await waitForReady();
+    await createWorkspaceConversationViaComposer("first task");
+    vi.mocked(commands.createConversation).mockClear();
+
+    pressCmd("f");
+    expect(await screen.findByTestId("search-panel")).toBeInTheDocument();
+
+    pressCmd("n");
+
+    expect(screen.getByTestId("search-panel")).toBeInTheDocument();
+    expect(screen.getByTestId("agent-input")).toBeInTheDocument();
+    expect(screen.queryByTestId("empty-state-input")).not.toBeInTheDocument();
+    expect(commands.createConversation).not.toHaveBeenCalled();
+  });
+
+  it("ignores Cmd+D while search is open so widget gallery does not open behind the dialog", async () => {
+    render(<App />);
+    await waitForReady();
+
+    pressCmd("f");
+    expect(await screen.findByTestId("search-panel")).toBeInTheDocument();
+
+    pressCmd("d");
+
+    expect(screen.getByTestId("search-panel")).toBeInTheDocument();
+    expect(screen.queryByTestId("widget-gallery")).not.toBeInTheDocument();
+  });
+
+  it("ignores Cmd+L while search is open so focus stays inside the dialog", async () => {
+    render(<App />);
+    await waitForReady();
+
+    pressCmd("f");
+    const searchInput = await screen.findByTestId("search-input");
+    await waitFor(() => expect(searchInput).toHaveFocus());
+
+    pressCmd("l");
+
+    expect(searchInput).toHaveFocus();
+    expect(document.activeElement).not.toBe(screen.getByTestId("empty-state-input"));
+  });
+
+  it("prevents the browser default for blocked Cmd+L while search is open", async () => {
+    render(<App />);
+    await waitForReady();
+
+    pressCmd("f");
+    const searchInput = await screen.findByTestId("search-input");
+    await waitFor(() => expect(searchInput).toHaveFocus());
+
+    const event = dispatchCancelableCmd("l");
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(searchInput).toHaveFocus();
+  });
+
+  it("hands off from search to command center on Cmd+K", async () => {
+    render(<App />);
+    await waitForReady();
+
+    pressCmd("f");
+    expect(await screen.findByTestId("search-panel")).toBeInTheDocument();
+
+    pressCmd("k");
+
+    await waitFor(() =>
+      expect(screen.queryByTestId("search-panel")).not.toBeInTheDocument(),
     );
+    expect(screen.getByTestId("command-center")).toBeInTheDocument();
+  });
+
+  it("opens command center with Cmd+K and keeps Cmd+F for conversation search", async () => {
+    render(<App />);
+    await waitForReady();
+
+    pressCmd("k");
+    expect(await screen.findByTestId("command-center")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /New Agent/ })).toBeInTheDocument();
+
+    pressCmd("f");
+    expect(screen.queryByTestId("search-panel")).not.toBeInTheDocument();
+
+    await userEvent.keyboard("{Escape}");
+    pressCmd("f");
+    expect(await screen.findByTestId("search-panel")).toBeInTheDocument();
+  });
+
+  it("switches from Widget Gallery to Settings when the command center opens Settings", async () => {
+    render(<App />);
+    await waitForReady();
+
+    pressCmd("d");
+    expect(await screen.findByTestId("widget-gallery")).toBeInTheDocument();
+
+    pressCmd("k");
+    await userEvent.click(screen.getByRole("button", { name: /Open Settings/i }));
+
+    expect(await screen.findByTestId("settings-view")).toBeInTheDocument();
+    expect(screen.queryByTestId("widget-gallery")).not.toBeInTheDocument();
+  });
+
+  it("switches from Settings to Widget Gallery when the command center opens Widget Gallery", async () => {
+    render(<App />);
+    await waitForReady();
+
+    await userEvent.click(await screen.findByTestId("open-settings"));
+    expect(await screen.findByTestId("settings-view")).toBeInTheDocument();
+
+    pressCmd("k");
+    await userEvent.click(screen.getByRole("button", { name: /Open Widget Gallery/i }));
+
+    expect(await screen.findByTestId("widget-gallery")).toBeInTheDocument();
+    expect(screen.queryByTestId("settings-view")).not.toBeInTheDocument();
+  });
+
+  it("disables Focus Composer while Settings is covering the primary surface", async () => {
+    render(<App />);
+    await waitForReady();
+
+    await userEvent.click(await screen.findByTestId("open-settings"));
+    expect(await screen.findByTestId("settings-view")).toBeInTheDocument();
+
+    pressCmd("k");
+
+    expect(screen.getByRole("button", { name: /Focus Composer/i })).toBeDisabled();
+  });
+
+  it("disables Focus Composer while Widget Gallery is covering the primary surface", async () => {
+    render(<App />);
+    await waitForReady();
+
+    pressCmd("d");
+    expect(await screen.findByTestId("widget-gallery")).toBeInTheDocument();
+
+    pressCmd("k");
+
+    expect(screen.getByRole("button", { name: /Focus Composer/i })).toBeDisabled();
+  });
+
+  it("hands off from the shortcuts dialog to Cmd+K and lets Cmd+F open search after dismiss", async () => {
+    render(<App />);
+    await waitForReady();
+
+    await userEvent.click(screen.getByTestId("open-shortcuts-dialog"));
+    expect(await screen.findByTestId("shortcuts-dialog")).toBeInTheDocument();
+
+    pressCmd("f");
+    expect(screen.queryByTestId("search-panel")).not.toBeInTheDocument();
 
     pressCmd("k");
     await waitFor(() => expect(screen.queryByTestId("shortcuts-dialog")).not.toBeInTheDocument());
+
+    await userEvent.keyboard("{Escape}");
+    pressCmd("f");
+    expect(await screen.findByTestId("search-panel")).toBeInTheDocument();
+  });
+
+  it("prevents the browser default for blocked Cmd+N while the shortcuts dialog is open", async () => {
+    render(<App />);
+    await waitForReady();
+
+    await userEvent.click(screen.getByTestId("open-shortcuts-dialog"));
+    expect(await screen.findByTestId("shortcuts-dialog")).toBeInTheDocument();
+
+    const event = dispatchCancelableCmd("n");
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(screen.getByTestId("shortcuts-dialog")).toBeInTheDocument();
+  });
+
+  it("keeps Cmd+K routed to an open command-center state until Task 4 adds its close path", async () => {
+    render(<App />);
+    await waitForReady();
+
+    pressCmd("k");
+    pressCmd("k");
+    pressCmd("f");
+
+    expect(screen.queryByTestId("search-panel")).not.toBeInTheDocument();
+
+    await userEvent.keyboard("{Escape}");
+    pressCmd("f");
+    expect(await screen.findByTestId("search-panel")).toBeInTheDocument();
+  });
+
+  it("prevents the browser default for blocked Cmd+N while command center is open", async () => {
+    render(<App />);
+    await waitForReady();
+
+    pressCmd("k");
+    expect(await screen.findByTestId("command-center")).toBeInTheDocument();
+
+    const event = dispatchCancelableCmd("n");
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(screen.getByTestId("command-center")).toBeInTheDocument();
+  });
+
+  it("still routes Cmd+K through the normal action path and prevents the browser default", async () => {
+    render(<App />);
+    await waitForReady();
+
+    pressCmd("f");
+    expect(await screen.findByTestId("search-panel")).toBeInTheDocument();
+
+    const event = dispatchCancelableCmd("k");
+
+    expect(event.defaultPrevented).toBe(true);
+    await waitFor(() =>
+      expect(screen.queryByTestId("search-panel")).not.toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("command-center")).toBeInTheDocument();
   });
 
   it("Cmd+F opens conversation search in a dialog", async () => {
@@ -453,50 +726,46 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
 
     pressCmd("f");
 
-    const searchPanel = await screen.findByTestId("search-panel");
-    const dialog = searchPanel.closest("dialog");
-    expect(dialog).toBeInTheDocument();
-    expect(dialog).toHaveAttribute("open");
-    expect(screen.getByTestId("search-input")).toBeInTheDocument();
+    expect(await screen.findByTestId("conversation-search-dialog")).toBeInTheDocument();
+    expect(screen.getByTestId("search-panel")).toBeInTheDocument();
   });
 
-  it("Escape and the close button both dismiss the shortcuts dialog (FR-005)", async () => {
+  it("opens a searched conversation even when the sidebar cache does not contain it", async () => {
+    const searchedConversation = {
+      id: "conv-from-backend",
+      workspaceId: null,
+      title: "Backend-only match",
+      createdAt: 10,
+      updatedAt: 20,
+      lastSeenAt: 10,
+      status: "done" as const,
+    };
+    vi.mocked(commands.listConversations)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([searchedConversation]);
+    vi.mocked(commands.searchConversations).mockResolvedValue([
+      {
+        conversationId: searchedConversation.id,
+        title: searchedConversation.title,
+        excerpt: "found via backend",
+        rank: -1,
+      },
+    ]);
+
     render(<App />);
     await waitForReady();
 
-    pressCmd("k");
-    const dialog = await screen.findByTestId("shortcuts-dialog");
-    fireEvent(dialog.closest("dialog")!, new Event("cancel", { cancelable: true }));
-    await waitFor(() => expect(screen.queryByTestId("shortcuts-dialog")).not.toBeInTheDocument());
+    pressCmd("f");
+    await userEvent.type(screen.getByTestId("search-input"), "backend");
+    await userEvent.click(await screen.findByTestId("search-result"));
 
-    pressCmd("k");
-    await screen.findByTestId("shortcuts-dialog");
-    await userEvent.click(screen.getByTestId("close-shortcuts-dialog"));
-    await waitFor(() => expect(screen.queryByTestId("shortcuts-dialog")).not.toBeInTheDocument());
+    expect(await screen.findByTestId("agent-input")).toBeInTheDocument();
+    expect(screen.getByTestId("workspace-topbar-title")).toHaveTextContent("Backend-only match");
+    await waitFor(() =>
+      expect(screen.queryByTestId("conversation-search-dialog")).not.toBeInTheDocument(),
+    );
   });
 
-  it("while the shortcuts dialog is open, Cmd+L and Cmd+N have no effect on the conversation (FR-009)", async () => {
-    render(<App />);
-    await waitForReady();
-
-    const agentInput = await createWorkspaceConversationViaComposer("first task");
-
-    pressCmd("k");
-    await screen.findByTestId("shortcuts-dialog");
-
-    document.body.focus();
-    pressCmd("l");
-    expect(document.activeElement).not.toBe(agentInput);
-
-    pressCmd("n");
-    expect(screen.queryByTestId("empty-state-input")).not.toBeInTheDocument();
-
-    // Once dismissed, the shortcuts work again.
-    pressCmd("k");
-    await waitFor(() => expect(screen.queryByTestId("shortcuts-dialog")).not.toBeInTheDocument());
-    pressCmd("n");
-    await screen.findByTestId("empty-state-input");
-  });
 });
 
 // Regression coverage for the App.tsx robustness fix: `ready` used to stay

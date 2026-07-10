@@ -1,11 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { KeyboardIcon } from "lucide-react";
 import { TopbarHost, TopbarProvider } from "@/components/Topbar";
+import { Button } from "@/components/ui/button";
+import { Sidebar, SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import Onboarding from "@/views/onboarding/Onboarding";
 import ConversationList, { type ConversationListHandle } from "@/views/chat/ConversationList";
+import ConversationSearchDialog from "@/views/chat/ConversationSearchDialog";
 import EmptyState from "@/views/chat/EmptyState";
 import Workspace from "@/views/workspace/Workspace";
 import Settings from "@/views/settings/Settings";
 import ShortcutsDialog from "@/views/shortcuts/ShortcutsDialog";
+import CommandCenter, { type CommandCenterAction } from "@/views/command/CommandCenter";
 import WidgetGallery from "@/views/design-system/WidgetGallery";
 import { commands, type Conversation } from "@/lib/ipc";
 import { buildShortcuts } from "@/lib/shortcuts";
@@ -64,6 +69,8 @@ export default function App() {
   const [ready, setReady] = useState<boolean | null>(null);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const [pendingInitialTurn, setPendingInitialTurn] = useState<PendingInitialTurn | null>(null);
+  const [showSearch, setShowSearch] = useState(false);
+  const [showCommandCenter, setShowCommandCenter] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showShortcutsDialog, setShowShortcutsDialog] = useState(false);
   const [showWidgetGallery, setShowWidgetGallery] = useState(false);
@@ -79,6 +86,77 @@ export default function App() {
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  const clearCommandCenterLatch = useCallback(() => {
+    setShowCommandCenter(false);
+  }, []);
+
+  const openSearch = useCallback(() => {
+    clearCommandCenterLatch();
+    setShowSearch(true);
+  }, [clearCommandCenterLatch]);
+
+  const openShortcutsDialog = useCallback(() => {
+    clearCommandCenterLatch();
+    setShowShortcutsDialog(true);
+  }, [clearCommandCenterLatch]);
+
+  const openWidgetGallery = useCallback(() => {
+    clearCommandCenterLatch();
+    setShowSettings(false);
+    setShowWidgetGallery(true);
+  }, [clearCommandCenterLatch]);
+
+  const openSettings = useCallback(() => {
+    clearCommandCenterLatch();
+    setShowWidgetGallery(false);
+    setShowSettings(true);
+  }, [clearCommandCenterLatch]);
+
+  const closeSettings = useCallback(() => {
+    clearCommandCenterLatch();
+    setShowSettings(false);
+  }, [clearCommandCenterLatch]);
+
+  const closeSearch = useCallback(() => {
+    clearCommandCenterLatch();
+    setShowSearch(false);
+  }, [clearCommandCenterLatch]);
+
+  const handleSearchOpenChange = useCallback(
+    (open: boolean) => {
+      if (open) {
+        setShowSearch(true);
+        return;
+      }
+      closeSearch();
+    },
+    [closeSearch],
+  );
+
+  const closeShortcutsDialog = useCallback(() => {
+    setShowShortcutsDialog(false);
+  }, []);
+
+  const closeWidgetGallery = useCallback(() => {
+    clearCommandCenterLatch();
+    setShowWidgetGallery(false);
+  }, [clearCommandCenterLatch]);
+
+  const startNewConversation = useCallback(() => {
+    clearCommandCenterLatch();
+    setShowSettings(false);
+    setShowWidgetGallery(false);
+    setPendingInitialTurn(null);
+    setActiveConversation(null);
+    setEmptyStateAutoFocusToken((current) => (current ?? 0) + 1);
+  }, [clearCommandCenterLatch]);
+
+  const openCommandCenter = useCallback(() => {
+    setShowSearch(false);
+    setShowShortcutsDialog(false);
+    setShowCommandCenter(true);
   }, []);
 
   // 005-keyboard-shortcuts: the app's first global (not input-scoped)
@@ -98,36 +176,127 @@ export default function App() {
             : '[data-testid="empty-state-input"]';
           document.querySelector<HTMLElement>(selector)?.focus();
         },
-        newConversation: () => {
-          conversationListRef.current?.createNew();
-        },
+        newConversation: startNewConversation,
         openSearch: () => {
-          conversationListRef.current?.openSearch();
+          openSearch();
         },
-        toggleShortcutsDialog: () => {
-          setShowShortcutsDialog((prev) => !prev);
+        openCommandCenter: () => {
+          openCommandCenter();
         },
         toggleWidgetGallery: () => {
-          setShowWidgetGallery((prev) => !prev);
+          if (showWidgetGallery) {
+            closeWidgetGallery();
+            return;
+          }
+          openWidgetGallery();
         },
       }),
-    [activeConversation],
+    [
+      activeConversation,
+      closeWidgetGallery,
+      openCommandCenter,
+      openSearch,
+      openWidgetGallery,
+      showWidgetGallery,
+      startNewConversation,
+    ],
+  );
+
+  const commandActions = useMemo<CommandCenterAction[]>(
+    () => [
+      {
+        id: "new-agent",
+        label: "New Agent",
+        shortcut: "Cmd+N",
+        run: startNewConversation,
+      },
+      {
+        id: "search",
+        label: "Search Conversations",
+        shortcut: "Cmd+F",
+        run: openSearch,
+      },
+      { id: "settings", label: "Open Settings", run: openSettings },
+      {
+        id: "shortcuts",
+        label: "Open Shortcuts",
+        run: () => setShowShortcutsDialog(true),
+      },
+      {
+        id: "widget-gallery",
+        label: "Open Widget Gallery",
+        shortcut: "Cmd+D",
+        run: openWidgetGallery,
+      },
+      {
+        id: "focus-composer",
+        label: "Focus Composer",
+        shortcut: "Cmd+L",
+        disabled: ready !== true || showSettings || showWidgetGallery,
+        run: () => {
+          const selector = activeConversation
+            ? '[data-testid="agent-input"]'
+            : '[data-testid="empty-state-input"]';
+          document.querySelector<HTMLElement>(selector)?.focus();
+        },
+      },
+      {
+        id: "archive-current",
+        label: "Archive Current Conversation",
+        disabled: !activeConversation,
+        run: () => {
+          if (activeConversation) {
+            conversationListRef.current?.archiveById(activeConversation.id);
+          }
+        },
+      },
+      {
+        id: "close-surface",
+        label: "Close Current Surface",
+        run: () => {
+          setShowSettings(false);
+          setShowSearch(false);
+          setShowShortcutsDialog(false);
+          setShowWidgetGallery(false);
+        },
+      },
+    ],
+    [
+      activeConversation,
+      openSearch,
+      openSettings,
+      openWidgetGallery,
+      ready,
+      showSettings,
+      showWidgetGallery,
+      startNewConversation,
+    ],
   );
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape" && showCommandCenter) {
+        e.preventDefault();
+        setShowCommandCenter(false);
+        return;
+      }
       const match = shortcuts.find((s) => s.metaKey === e.metaKey && e.key.toLowerCase() === s.key);
       if (!match) return;
-      // FR-009: while the shortcuts dialog is open, only the shortcut that
-      // toggles it may act — Cmd+L/Cmd+N must not reach the conversation.
-      if (showShortcutsDialog && match.id !== "show-shortcuts") return;
+      // FR-009 / Task 2: once an app-owned surface is open, only Cmd+K may
+      // continue through the global handler until that surface yields.
+      const modalShortcutBlocked =
+        match.id !== "open-command-center" && (showSearch || showShortcutsDialog || showCommandCenter);
+      if (modalShortcutBlocked) {
+        e.preventDefault();
+        return;
+      }
       e.preventDefault();
       match.action();
     }
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [shortcuts, showShortcutsDialog]);
+  }, [shortcuts, showCommandCenter, showSearch, showShortcutsDialog]);
 
   // US5/FR-026: the scheduler's priority is evaluated dynamically at pickup
   // time against whichever conversation is currently focused — every view
@@ -158,63 +327,83 @@ export default function App() {
   }, []);
 
   const activateConversation = (conversation: Conversation, initialTurn?: PendingInitialTurn) => {
+    clearCommandCenterLatch();
     runViewTransition(() => {
       setShowSettings(false);
+      setShowWidgetGallery(false);
       setPendingInitialTurn(initialTurn ?? null);
       setActiveConversation(conversation);
     });
   };
+
+  const selectConversationFromSearch = useCallback(
+    async (conversationId: string) => {
+      if (conversationListRef.current?.selectById(conversationId)) return;
+
+      try {
+        const conversations = await commands.listConversations();
+        const conversation = conversations.find((item) => item.id === conversationId);
+        if (!conversation) return;
+        activateConversation(conversation);
+        markSeen(conversation.id);
+      } catch (error) {
+        console.error(error);
+      }
+    },
+    [activateConversation, markSeen],
+  );
 
   if (ready === null) return null;
   if (!ready) return <Onboarding onReady={() => setReady(true)} />;
 
   return (
     <TopbarProvider>
-      <div className="flex h-dvh">
-        <div className="flex w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar">
-          <TopbarHost target="sidebar" className="px-2" />
+      <SidebarProvider className="h-dvh">
+        <Sidebar collapsible="none" className="w-64 shrink-0 border-r border-sidebar-border">
+          <TopbarHost target="sidebar" className="px-2">
+            <div className="flex w-full items-center justify-end" data-topbar-no-drag>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="rounded-md text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                onClick={openShortcutsDialog}
+                data-testid="open-shortcuts-dialog"
+                aria-label="Keyboard shortcuts"
+              >
+                <KeyboardIcon size={14} />
+              </Button>
+            </div>
+          </TopbarHost>
           <ConversationList
             ref={conversationListRef}
             activeId={activeConversation?.id ?? null}
             onSelect={(conversation) => {
-              setShowSettings(false);
-              setPendingInitialTurn(null);
-              setActiveConversation(conversation);
+              activateConversation(conversation);
               markSeen(conversation.id);
             }}
-            onNewConversation={() => {
-              setShowSettings(false);
-              setPendingInitialTurn(null);
-              setActiveConversation(null);
-              setEmptyStateAutoFocusToken((current) => (current ?? 0) + 1);
-            }}
-            onOpenSettings={() => setShowSettings(true)}
+            onNewConversation={startNewConversation}
+            onOpenSearch={() => openSearch()}
+            onOpenSettings={openSettings}
             onActiveConversationChange={syncActiveConversation}
             onArchive={(conversationId) => {
               if (activeConversation?.id !== conversationId) return;
+              clearCommandCenterLatch();
               setShowSettings(false);
               setPendingInitialTurn(null);
               setActiveConversation(null);
             }}
           />
-        </div>
-        <div className="flex min-w-0 flex-1 flex-col">
-          <TopbarHost
-            target="main"
-            className={
-              !showWidgetGallery && !showSettings && activeConversation
-                ? "border-b border-sidebar-border bg-sidebar px-4 shadow-sm"
-                : "px-4"
-            }
-          />
+        </Sidebar>
+        <SidebarInset className="min-w-0">
+          <TopbarHost target="main" className="px-4" />
           <div
             className="min-h-0 flex-1 [view-transition-name:chat-surface]"
             data-testid="app-content-pane"
           >
             {showWidgetGallery ? (
-              <WidgetGallery onClose={() => setShowWidgetGallery(false)} />
+              <WidgetGallery onClose={closeWidgetGallery} />
             ) : showSettings ? (
-              <Settings onClose={() => setShowSettings(false)} />
+              <Settings onClose={closeSettings} />
             ) : activeConversation ? (
               <Workspace
                 key={activeConversation.id}
@@ -238,13 +427,24 @@ export default function App() {
               />
             )}
           </div>
-        </div>
+        </SidebarInset>
         <ShortcutsDialog
           open={showShortcutsDialog}
-          onClose={() => setShowShortcutsDialog(false)}
+          onClose={closeShortcutsDialog}
           shortcuts={shortcuts}
         />
-      </div>
+        <CommandCenter
+          open={showCommandCenter}
+          onOpenChange={setShowCommandCenter}
+          actions={commandActions}
+        />
+        <ConversationSearchDialog
+          open={showSearch}
+          onOpenChange={handleSearchOpenChange}
+          recentConversations={conversationListRef.current?.getConversations?.() ?? []}
+          onSelectConversationId={selectConversationFromSearch}
+        />
+      </SidebarProvider>
     </TopbarProvider>
   );
 }

@@ -1,4 +1,7 @@
+/// <reference types="node" />
+
 import { describe, it, expect, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Button } from "./button";
@@ -83,28 +86,10 @@ describe("Button", () => {
     expect(onClick).toHaveBeenCalledTimes(2);
   });
 
-  it("renders asChild onto the provided element without an extra wrapper", () => {
-    render(
-      <Button asChild>
-        <a href="/somewhere">Link button</a>
-      </Button>,
-    );
-    const link = screen.getByRole("link", { name: "Link button" });
-    expect(link.tagName).toBe("A");
-    expect(link.className).toContain("cursor-pointer");
-  });
-
-  it("marks asChild elements aria-disabled and suppresses their onClick when disabled", async () => {
-    const onClick = vi.fn();
-    render(
-      <Button asChild disabled onClick={onClick}>
-        <a href="/somewhere">Disabled link</a>
-      </Button>,
-    );
-    const link = screen.getByRole("link", { name: "Disabled link" });
-    expect(link).toHaveAttribute("aria-disabled", "true");
-
-    await userEvent.click(link);
-    expect(onClick).not.toHaveBeenCalled();
+  it("does not import the legacy slot package", () => {
+    const legacySlotImport = ["@", "rad", "ix-ui", "/react-slot"].join("");
+    const source = readFileSync("src/components/ui/button.tsx", "utf8");
+    expect(source).not.toContain(legacySlotImport);
+    expect(source).not.toMatch(/\bSlot\b/);
   });
 });

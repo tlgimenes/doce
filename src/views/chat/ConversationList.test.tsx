@@ -1,10 +1,15 @@
-import { createRef, useState } from "react";
+import { createRef, type ReactElement, useState } from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render as rtlRender, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { homeDir } from "@tauri-apps/api/path";
+import { SidebarProvider } from "@/components/ui/sidebar";
 import ConversationList, { type ConversationListHandle } from "./ConversationList";
 import { commands } from "@/lib/ipc";
+
+vi.mock("@/hooks/use-mobile", () => ({
+  useIsMobile: () => false,
+}));
 
 vi.mock("@tauri-apps/api/path", () => ({
   homeDir: vi.fn(() => Promise.resolve("/Users/tester")),
@@ -17,6 +22,10 @@ vi.mock("@/lib/ipc", () => ({
     archiveConversation: vi.fn(),
   },
 }));
+
+function render(ui: ReactElement) {
+  return rtlRender(<SidebarProvider>{ui}</SidebarProvider>);
+}
 
 describe("ConversationList", () => {
   beforeEach(() => {
@@ -61,6 +70,7 @@ describe("ConversationList", () => {
         activeId={null}
         onSelect={vi.fn()}
         onNewConversation={vi.fn()}
+        onOpenSearch={vi.fn()}
         onOpenSettings={vi.fn()}
       />,
     );
@@ -93,6 +103,7 @@ describe("ConversationList", () => {
         activeId={null}
         onSelect={onSelect}
         onNewConversation={vi.fn()}
+        onOpenSearch={vi.fn()}
         onOpenSettings={vi.fn()}
       />,
     );
@@ -119,6 +130,7 @@ describe("ConversationList", () => {
         activeId={null}
         onSelect={vi.fn()}
         onNewConversation={vi.fn()}
+        onOpenSearch={vi.fn()}
         onOpenSettings={vi.fn()}
       />,
     );
@@ -129,7 +141,7 @@ describe("ConversationList", () => {
     );
   });
 
-  it("renders the active conversation title with normal foreground color even when it has unseen updates", async () => {
+  it("renders the active conversation title with accent foreground color even when it has unseen updates", async () => {
     vi.mocked(commands.listConversations).mockResolvedValue([
       {
         id: "active",
@@ -147,13 +159,14 @@ describe("ConversationList", () => {
         activeId="active"
         onSelect={vi.fn()}
         onNewConversation={vi.fn()}
+        onOpenSearch={vi.fn()}
         onOpenSettings={vi.fn()}
       />,
     );
 
     expect(await screen.findByText("Currently open")).toHaveClass(
       "font-medium",
-      "text-sidebar-foreground",
+      "text-sidebar-accent-foreground",
     );
   });
 
@@ -187,6 +200,7 @@ describe("ConversationList", () => {
           activeId={activeId}
           onSelect={(conversation) => setActiveId(conversation.id)}
           onNewConversation={vi.fn()}
+          onOpenSearch={vi.fn()}
           onOpenSettings={vi.fn()}
         />
       );
@@ -198,13 +212,13 @@ describe("ConversationList", () => {
     expect(first).toHaveClass("font-medium", "text-sidebar-foreground");
 
     await userEvent.click(first);
-    expect(first).toHaveClass("font-medium", "text-sidebar-foreground");
+    expect(first).toHaveClass("font-medium", "text-sidebar-accent-foreground");
 
     await userEvent.click(screen.getByText("Second chat"));
     expect(first).toHaveClass("font-medium", "text-sidebar-foreground/55");
   });
 
-  it("keeps the selected conversation highlighted with the sidebar hover background", async () => {
+  it("keeps the selected conversation highlighted with the sidebar accent styles", async () => {
     vi.mocked(commands.listConversations).mockResolvedValue([
       {
         id: "selected",
@@ -222,13 +236,62 @@ describe("ConversationList", () => {
         activeId="selected"
         onSelect={vi.fn()}
         onNewConversation={vi.fn()}
+        onOpenSearch={vi.fn()}
         onOpenSettings={vi.fn()}
       />,
     );
 
     const row = await screen.findByTestId("conversation-item");
-    expect(row).toHaveClass("bg-sidebar-foreground/8", "hover:bg-sidebar-foreground/8");
+    expect(row).toHaveClass("bg-sidebar-accent", "text-sidebar-accent-foreground");
     expect(row).not.toHaveClass("bg-transparent");
+  });
+
+  it("uses accent text styling for active-row title, workspace, timestamp, and work-state", async () => {
+    const now = new Date("2026-01-01T12:00:00Z").getTime();
+    const dateNow = vi.spyOn(Date, "now").mockReturnValue(now);
+
+    try {
+      const updatedAt = now - 2 * 60_000;
+      vi.mocked(commands.listConversations).mockResolvedValue([
+        {
+          id: "selected",
+          workspaceId: "ws-code",
+          title: "Selected thread",
+          createdAt: updatedAt - 60_000,
+          updatedAt,
+          lastSeenAt: updatedAt,
+          status: "in_progress",
+        },
+      ]);
+      vi.mocked(commands.listWorkspaces).mockResolvedValue([
+        {
+          id: "ws-code",
+          path: "/Users/tester/code/doce",
+          displayName: "doce",
+          createdAt: 1,
+          lastOpenedAt: 2,
+        },
+      ]);
+
+      render(
+        <ConversationList
+          activeId="selected"
+          onSelect={vi.fn()}
+          onNewConversation={vi.fn()}
+          onOpenSearch={vi.fn()}
+          onOpenSettings={vi.fn()}
+        />,
+      );
+
+      expect(await screen.findByText("Selected thread")).toHaveClass(
+        "text-sidebar-accent-foreground",
+      );
+      expect(screen.getByText("~/code/doce")).toHaveClass("text-sidebar-accent-foreground/70");
+      expect(screen.getByText("2m")).toHaveClass("text-sidebar-accent-foreground/80");
+      expect(screen.getByText("Working")).toHaveClass("text-sidebar-accent-foreground/70");
+    } finally {
+      dateNow.mockRestore();
+    }
   });
 
   it("archives a conversation from the hover trash button without selecting it", async () => {
@@ -250,6 +313,7 @@ describe("ConversationList", () => {
         activeId={null}
         onSelect={onSelect}
         onNewConversation={vi.fn()}
+        onOpenSearch={vi.fn()}
         onOpenSettings={vi.fn()}
       />,
     );
@@ -267,7 +331,66 @@ describe("ConversationList", () => {
     expect(screen.queryByText("Archive me")).not.toBeInTheDocument();
   });
 
-  it("reveals the archive trash button only on row hover, not from selected row focus", async () => {
+  it("archives a conversation through the imperative archiveById handle", async () => {
+    const conversation = {
+      id: "archive-from-handle",
+      workspaceId: null,
+      title: "Archive from handle",
+      createdAt: 1,
+      updatedAt: 3,
+      lastSeenAt: 3,
+      status: "done" as const,
+    };
+    vi.mocked(commands.listConversations).mockResolvedValue([conversation]);
+    vi.mocked(commands.archiveConversation).mockResolvedValue();
+    const ref = createRef<ConversationListHandle>();
+
+    render(
+      <ConversationList
+        ref={ref}
+        activeId={null}
+        onSelect={vi.fn()}
+        onNewConversation={vi.fn()}
+        onOpenSearch={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />,
+    );
+
+    await screen.findByText("Archive from handle");
+    ref.current?.archiveById("archive-from-handle");
+
+    expect(commands.archiveConversation).toHaveBeenCalledWith("archive-from-handle");
+    await waitFor(() =>
+      expect(screen.queryByText("Archive from handle")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("archives through the imperative archiveById handle even when the row is missing locally", async () => {
+    vi.mocked(commands.listConversations).mockResolvedValue([]);
+    vi.mocked(commands.archiveConversation).mockResolvedValue();
+    const onArchive = vi.fn();
+    const ref = createRef<ConversationListHandle>();
+
+    render(
+      <ConversationList
+        ref={ref}
+        activeId={null}
+        onSelect={vi.fn()}
+        onNewConversation={vi.fn()}
+        onOpenSearch={vi.fn()}
+        onOpenSettings={vi.fn()}
+        onArchive={onArchive}
+      />,
+    );
+
+    await waitFor(() => expect(ref.current).not.toBeNull());
+    ref.current!.archiveById("missing-active");
+
+    expect(onArchive).toHaveBeenCalledWith("missing-active");
+    expect(commands.archiveConversation).toHaveBeenCalledWith("missing-active");
+  });
+
+  it("reveals the archive trash button on hover and keyboard focus within the row", async () => {
     vi.mocked(commands.listConversations).mockResolvedValue([
       {
         id: "selected",
@@ -285,13 +408,49 @@ describe("ConversationList", () => {
         activeId="selected"
         onSelect={vi.fn()}
         onNewConversation={vi.fn()}
+        onOpenSearch={vi.fn()}
         onOpenSettings={vi.fn()}
       />,
     );
 
     const archiveButton = await screen.findByLabelText("Archive Selected thread");
-    expect(archiveButton).toHaveClass("opacity-0", "group-hover:opacity-100");
-    expect(archiveButton).not.toHaveClass("group-focus-within:opacity-100");
+    expect(archiveButton).toHaveClass(
+      "opacity-0",
+      "group-hover:opacity-100",
+      "group-focus-within:opacity-100",
+    );
+  });
+
+  it("composes the list and rows with sidebar primitives while keeping the archive action", async () => {
+    vi.mocked(commands.listConversations).mockResolvedValue([
+      {
+        id: "selected",
+        workspaceId: null,
+        title: "Selected thread",
+        createdAt: 1,
+        updatedAt: 1,
+        lastSeenAt: 1,
+        status: "done",
+      },
+    ]);
+
+    render(
+      <ConversationList
+        activeId="selected"
+        onSelect={vi.fn()}
+        onNewConversation={vi.fn()}
+        onOpenSearch={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />,
+    );
+
+    const list = await screen.findByTestId("conversation-list");
+    const row = await screen.findByTestId("conversation-item");
+
+    expect(list).toHaveAttribute("data-slot", "sidebar-content");
+    expect(list.querySelector('[data-slot="sidebar-menu"]')).toBeTruthy();
+    expect(row).toHaveAttribute("data-slot", "sidebar-menu-item");
+    expect(screen.getByLabelText("Archive Selected thread")).toBeInTheDocument();
   });
 
   it("renders each conversation as title/time plus path/work-state rows", async () => {
@@ -326,6 +485,7 @@ describe("ConversationList", () => {
           activeId="active"
           onSelect={vi.fn()}
           onNewConversation={vi.fn()}
+          onOpenSearch={vi.fn()}
           onOpenSettings={vi.fn()}
         />,
       );
@@ -355,6 +515,7 @@ describe("ConversationList", () => {
           activeId={null}
           onSelect={vi.fn()}
           onNewConversation={vi.fn()}
+          onOpenSearch={vi.fn()}
           onOpenSettings={vi.fn()}
         />,
       );
@@ -375,6 +536,7 @@ describe("ConversationList", () => {
         activeId={null}
         onSelect={vi.fn()}
         onNewConversation={onNewConversation}
+        onOpenSearch={vi.fn()}
         onOpenSettings={vi.fn()}
       />,
     );
@@ -395,6 +557,7 @@ describe("ConversationList", () => {
         activeId={null}
         onSelect={vi.fn()}
         onNewConversation={onNewConversation}
+        onOpenSearch={vi.fn()}
         onOpenSettings={vi.fn()}
       />,
     );
@@ -405,14 +568,33 @@ describe("ConversationList", () => {
     expect(onNewConversation).toHaveBeenCalledTimes(1);
   });
 
-  it("renders sidebar actions at the top of the sidebar body while search opens in a dialog", async () => {
+  it("calls the parent search handler from the sidebar Search action", async () => {
+    const onOpenSearch = vi.fn();
+    render(
+      <ConversationList
+        activeId={null}
+        onSelect={vi.fn()}
+        onNewConversation={vi.fn()}
+        onOpenSearch={onOpenSearch}
+        onOpenSettings={vi.fn()}
+      />,
+    );
+
+    await userEvent.click(await screen.findByTestId("open-search"));
+
+    expect(onOpenSearch).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders sidebar actions at the top of the sidebar body and routes Search through onOpenSearch", async () => {
     vi.mocked(commands.listConversations).mockResolvedValue([]);
+    const onOpenSearch = vi.fn();
 
     render(
       <ConversationList
         activeId={null}
         onSelect={vi.fn()}
         onNewConversation={vi.fn()}
+        onOpenSearch={onOpenSearch}
         onOpenSettings={vi.fn()}
       />,
     );
@@ -424,49 +606,47 @@ describe("ConversationList", () => {
 
     await userEvent.click(screen.getByTestId("open-search"));
 
-    const searchPanel = screen.getByTestId("search-panel");
-    expect(searchPanel.closest("dialog")).toBeInTheDocument();
+    expect(onOpenSearch).toHaveBeenCalledTimes(1);
     expect(sidebar.firstElementChild).toBe(actions);
     expect(actions).toBeInTheDocument();
   });
 
-  it("shows recent conversations in search and selects them through the full conversation path", async () => {
-    const oldConversation = {
-      id: "old",
+  it("exposes conversation accessors via the imperative handle for app-owned search", async () => {
+    const conversation = {
+      id: "c-search",
       workspaceId: null,
-      title: "Older task",
+      title: "Search target",
       createdAt: 1,
-      updatedAt: 1,
+      updatedAt: 2,
       lastSeenAt: 1,
       status: "done" as const,
     };
-    const recentConversation = {
-      id: "recent",
-      workspaceId: null,
-      title: "Recent task",
-      createdAt: 2,
-      updatedAt: 3,
-      lastSeenAt: 3,
-      status: "done" as const,
-    };
-    vi.mocked(commands.listConversations).mockResolvedValue([oldConversation, recentConversation]);
+    vi.mocked(commands.listConversations).mockResolvedValue([conversation]);
+    const ref = createRef<ConversationListHandle>();
     const onSelect = vi.fn();
 
     render(
       <ConversationList
+        ref={ref}
         activeId={null}
         onSelect={onSelect}
         onNewConversation={vi.fn()}
+        onOpenSearch={vi.fn()}
         onOpenSettings={vi.fn()}
       />,
     );
 
-    await userEvent.click(await screen.findByTestId("open-search"));
+    await waitFor(() => expect(ref.current).not.toBeNull());
+    expect(ref.current).toEqual({
+      archiveById: expect.any(Function),
+      createNew: expect.any(Function),
+      getConversations: expect.any(Function),
+      selectById: expect.any(Function),
+    });
+    expect(ref.current!.getConversations()).toEqual([conversation]);
 
-    const rows = screen.getAllByTestId("search-result");
-    expect(rows[0]).toHaveTextContent("Recent task");
-
-    await userEvent.click(rows[0]);
-    expect(onSelect).toHaveBeenCalledWith(recentConversation);
+    expect(ref.current!.selectById("c-search")).toBe(true);
+    expect(onSelect).toHaveBeenCalledWith(conversation);
+    expect(ref.current!.selectById("missing")).toBe(false);
   });
 });

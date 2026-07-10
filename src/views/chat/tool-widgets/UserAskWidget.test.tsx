@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -196,5 +198,34 @@ describe("UserAskWidget", () => {
     expect(screen.getByRole("checkbox", { name: /Option B/ })).toHaveStyle({
       animationDelay: "18ms",
     });
+  });
+
+  it("keeps undefined gray theme variables out of src files", () => {
+    const srcRoot = path.join(process.cwd(), "src");
+    const pending = [srcRoot];
+    const scannedFiles: string[] = [];
+    const undefinedGrayToken = ["color", "gray"].join("-");
+
+    while (pending.length > 0) {
+      const current = pending.pop();
+      if (!current) continue;
+
+      for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+        const nextPath = path.join(current, entry.name);
+        if (entry.isDirectory()) {
+          pending.push(nextPath);
+          continue;
+        }
+
+        if (!/\.(ts|tsx|css)$/.test(entry.name) || /\.test\.(ts|tsx)$/.test(entry.name)) continue;
+        scannedFiles.push(nextPath);
+      }
+    }
+
+    const fileWithUndefinedToken = scannedFiles.find((filePath) =>
+      fs.readFileSync(filePath, "utf8").includes(undefinedGrayToken),
+    );
+
+    expect(fileWithUndefinedToken).toBeUndefined();
   });
 });

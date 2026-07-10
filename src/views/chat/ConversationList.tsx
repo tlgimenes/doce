@@ -1,6 +1,5 @@
 import {
   forwardRef,
-  type KeyboardEvent,
   type MouseEvent,
   useCallback,
   useEffect,
@@ -8,14 +7,19 @@ import {
   useMemo,
   useState,
 } from "react";
-import { MagnifyingGlassIcon, GearIcon, PlusIcon, TrashIcon } from "@phosphor-icons/react";
+import { Archive, Cog, Plus, Search } from "lucide-react";
 import { homeDir } from "@tauri-apps/api/path";
-import Dialog from "@/components/Dialog";
-import { Button } from "@/components/ui/button";
 import { KeyboardShortcut } from "@/components/ui/KeyboardShortcut";
+import {
+  SidebarContent,
+  SidebarGroup,
+  SidebarMenu,
+  SidebarMenuAction,
+  SidebarMenuButton,
+  SidebarMenuItem,
+} from "@/components/ui/sidebar";
 import { cn } from "@/lib/cn";
 import { commands, type Conversation, type ConversationStatus, type Workspace } from "@/lib/ipc";
-import SearchPanel from "./SearchPanel";
 import {
   formatConversationRelativeTime,
   getConversationWorkspaceLabel,
@@ -26,6 +30,7 @@ interface ConversationListProps {
   activeId: string | null;
   onSelect: (conversation: Conversation) => void;
   onNewConversation: () => void;
+  onOpenSearch: () => void;
   onOpenSettings: () => void;
   onActiveConversationChange?: (conversation: Conversation) => void;
   onArchive?: (conversationId: string) => void;
@@ -36,14 +41,16 @@ interface ConversationListProps {
 // not a duplicate (research.md § 3).
 export interface ConversationListHandle {
   createNew: () => void;
-  openSearch: () => void;
+  getConversations: () => Conversation[];
+  selectById: (conversationId: string) => boolean;
+  archiveById: (conversationId: string) => void;
 }
 
 const STATUS_COLOR: Record<ConversationStatus, string> = {
-  done: "bg-emerald-500",
-  in_progress: "bg-sky-500 animate-pulse",
-  requires_action: "bg-amber-500",
-  failed: "bg-red-500",
+  done: "bg-muted-foreground/45",
+  in_progress: "bg-[var(--color-doce-caramel)] animate-pulse",
+  requires_action: "bg-[var(--color-doce-coral)]",
+  failed: "bg-destructive",
 };
 
 const STATUS_LABEL: Record<ConversationStatus, string> = {
@@ -54,7 +61,7 @@ const STATUS_LABEL: Record<ConversationStatus, string> = {
 };
 
 const SIDEBAR_ACTION_BUTTON =
-  "w-full justify-start gap-1 h-8 rounded-lg border-0 bg-transparent px-1 py-0 text-sm text-sidebar-foreground/95 hover:bg-sidebar-foreground/8 hover:text-sidebar-foreground focus-visible:ring-0 focus-visible:outline-none";
+  "h-8 w-full justify-start gap-2 rounded-md px-2 text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground";
 
 /**
  * User Story 7: at-a-glance conversation status (FR-011) and auto-generated
@@ -69,6 +76,7 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
       activeId,
       onSelect,
       onNewConversation,
+      onOpenSearch,
       onOpenSettings,
       onActiveConversationChange,
       onArchive,
@@ -78,7 +86,6 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
     const [conversations, setConversations] = useState<Conversation[]>([]);
     const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
     const [homePath, setHomePath] = useState<string | null>(null);
-    const [searching, setSearching] = useState(false);
 
     const refresh = useCallback(() => {
       commands.listConversations().then(setConversations);
@@ -103,28 +110,45 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
       onSelect(conversation);
     };
 
-    const archiveConversation = (
+    const selectById = (conversationId: string) => {
+      const conversation = conversations.find((item) => item.id === conversationId);
+      if (!conversation) return false;
+      selectConversation(conversation);
+      return true;
+    };
+
+    const archiveConversation = useCallback(
+      (conversation: Conversation) => {
+        setConversations((current) => current.filter((item) => item.id !== conversation.id));
+        onArchive?.(conversation.id);
+        commands.archiveConversation(conversation.id).catch((error) => {
+          console.error(error);
+          refresh();
+        });
+      },
+      [onArchive, refresh],
+    );
+
+    const handleArchiveConversation = (
       event: MouseEvent<HTMLButtonElement>,
       conversation: Conversation,
     ) => {
       event.preventDefault();
       event.stopPropagation();
-      setConversations((current) => current.filter((item) => item.id !== conversation.id));
-      onArchive?.(conversation.id);
-      commands.archiveConversation(conversation.id).catch((error) => {
-        console.error(error);
-        refresh();
-      });
+      archiveConversation(conversation);
     };
 
-    const handleConversationKeyDown = (
-      event: KeyboardEvent<HTMLDivElement>,
-      conversation: Conversation,
-    ) => {
-      if (event.target !== event.currentTarget) return;
-      if (event.key !== "Enter" && event.key !== " ") return;
-      event.preventDefault();
-      selectConversation(conversation);
+    const archiveById = (conversationId: string) => {
+      const conversation = conversations.find((item) => item.id === conversationId);
+      if (!conversation) {
+        onArchive?.(conversationId);
+        commands.archiveConversation(conversationId).catch((error) => {
+          console.error(error);
+          refresh();
+        });
+        return;
+      }
+      archiveConversation(conversation);
     };
 
     useEffect(() => {
@@ -163,143 +187,164 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
     };
 
     const openSearch = () => {
-      setSearching(true);
+      onOpenSearch();
     };
 
-    useImperativeHandle(ref, () => ({ createNew, openSearch }));
+    useImperativeHandle(ref, () => ({
+      createNew,
+      getConversations: () => conversations,
+      selectById,
+      archiveById,
+    }));
 
     return (
-      <div
-        className="relative flex min-h-0 flex-1 flex-col px-2 pb-3 text-sidebar-foreground"
-        data-testid="conversation-list"
-      >
-        <div className="mb-3 flex flex-col gap-0.5" data-testid="sidebar-actions">
-          <Button
-            variant="ghost"
-            size="sm"
-            className={`${SIDEBAR_ACTION_BUTTON} group justify-between`}
-            onClick={createNew}
-            data-testid="new-conversation"
-            aria-label="New agent"
-          >
-            <span className="flex items-center gap-1">
-              <PlusIcon size={16} weight="bold" />
-              New Agent
-            </span>
-            <KeyboardShortcut
-              keys={["⌘", "N"]}
-              className="text-xs text-sidebar-foreground/60 opacity-0 transition-opacity group-hover:opacity-100"
-            />
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className={`${SIDEBAR_ACTION_BUTTON} group justify-between`}
-            onClick={openSearch}
-            data-testid="open-search"
-            aria-label="Search conversations"
-          >
-            <span className="flex items-center gap-1">
-              <MagnifyingGlassIcon size={16} />
-              Search
-            </span>
-            <KeyboardShortcut
-              keys={["⌘", "F"]}
-              className="text-xs text-sidebar-foreground/60 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
-            />
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className={SIDEBAR_ACTION_BUTTON}
-            onClick={onOpenSettings}
-            data-testid="open-settings"
-            aria-label="Settings"
-          >
-            <GearIcon size={16} />
-            Settings
-          </Button>
-        </div>
-        <div className="flex-1 space-y-1 overflow-y-auto">
-          {conversations.map((c) => {
-            const isActive = c.id === activeId;
-            const hasUnseenUpdates = !isActive && c.updatedAt > c.lastSeenAt;
-            const isReadInactive = !isActive && !hasUnseenUpdates;
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <SidebarContent
+          className="px-2 pb-3 text-sidebar-foreground"
+          data-testid="conversation-list"
+        >
+          <SidebarGroup className="mb-3 gap-0.5 p-0" data-testid="sidebar-actions">
+            <SidebarMenu className="gap-0.5">
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  className={`${SIDEBAR_ACTION_BUTTON} group justify-between`}
+                  onClick={createNew}
+                  data-testid="new-conversation"
+                  aria-label="New agent"
+                >
+                  <span className="flex items-center gap-2">
+                    <Plus className="size-4" />
+                    New Agent
+                  </span>
+                  <KeyboardShortcut
+                    keys={["⌘", "N"]}
+                    className="text-xs text-sidebar-foreground/60 opacity-0 transition-opacity group-hover:opacity-100"
+                  />
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  className={`${SIDEBAR_ACTION_BUTTON} group justify-between`}
+                  onClick={openSearch}
+                  data-testid="open-search"
+                  aria-label="Search conversations"
+                >
+                  <span className="flex items-center gap-2">
+                    <Search className="size-4" />
+                    Search
+                  </span>
+                  <KeyboardShortcut
+                    keys={["⌘", "F"]}
+                    className="text-xs text-sidebar-foreground/60 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
+                  />
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  className={SIDEBAR_ACTION_BUTTON}
+                  onClick={onOpenSettings}
+                  data-testid="open-settings"
+                  aria-label="Settings"
+                >
+                  <Cog className="size-4" />
+                  Settings
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            </SidebarMenu>
+          </SidebarGroup>
+          <SidebarGroup className="min-h-0 flex-1 p-0">
+            <SidebarMenu className="flex-1 gap-1 overflow-y-auto">
+              {conversations.map((c) => {
+                const isActive = c.id === activeId;
+                const hasUnseenUpdates = !isActive && c.updatedAt > c.lastSeenAt;
+                const isReadInactive = !isActive && !hasUnseenUpdates;
 
-            return (
-              <div
-                key={c.id}
-                role="button"
-                tabIndex={0}
-                onClick={() => selectConversation(c)}
-                onKeyDown={(event) => handleConversationKeyDown(event, c)}
-                data-testid="conversation-item"
-                data-conversation-id={c.id}
-                className={cn(
-                  "group flex h-auto min-h-12 w-full cursor-pointer items-start justify-start gap-2 rounded-lg border-0 px-2 py-2 text-left text-foreground shadow-none transition-colors hover:bg-sidebar-foreground/8 focus-visible:outline-none",
-                  isActive ? "bg-sidebar-foreground/8" : "bg-transparent",
-                )}
-              >
-                <span
-                  className={cn("mt-1.5 size-2 shrink-0 rounded-full", STATUS_COLOR[c.status])}
-                  title={STATUS_LABEL[c.status]}
-                  data-testid="conversation-status-dot"
-                  data-status={c.status}
-                />
-                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                  <span className="flex min-w-0 items-baseline gap-2">
-                    <span
-                      className={cn(
-                        "min-w-0 flex-1 truncate text-[13px] font-medium leading-4",
-                        isReadInactive ? "text-sidebar-foreground/55" : "text-sidebar-foreground",
-                      )}
-                    >
-                      {c.title}
-                    </span>
-                  </span>
-                  <span className="min-w-0 truncate text-[11px] leading-4 text-sidebar-foreground/60">
-                    {getConversationWorkspaceLabel(c.workspaceId, workspacesById, homePath)}
-                  </span>
-                </span>
-                <span className="relative h-8 w-10 shrink-0 self-center">
-                  <span className="absolute right-0 top-0 text-[11px] leading-4 text-sidebar-foreground/55 tabular-nums transition-opacity group-hover:opacity-0">
-                    {formatConversationRelativeTime(c.updatedAt)}
-                  </span>
-                  <span className="absolute bottom-0 right-0 text-[11px] leading-4 text-sidebar-foreground/60 transition-opacity group-hover:opacity-0">
-                    {getConversationWorkStateLabel(c.status)}
-                  </span>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon-sm"
-                    className="pointer-events-none absolute right-0 top-1/2 -translate-y-1/2 rounded-full text-sidebar-foreground/70 opacity-0 hover:bg-sidebar-foreground/10 hover:text-sidebar-foreground group-hover:pointer-events-auto group-hover:opacity-100"
-                    aria-label={`Archive ${c.title}`}
-                    onClick={(event) => archiveConversation(event, c)}
+                return (
+                  <SidebarMenuItem
+                    key={c.id}
+                    className={cn(
+                      "group",
+                      isActive
+                        ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                        : "bg-transparent",
+                    )}
+                    data-testid="conversation-item"
+                    data-conversation-id={c.id}
                   >
-                    <TrashIcon size={14} />
-                  </Button>
-                </span>
-              </div>
-            );
-          })}
-        </div>
-        <Dialog open={searching} onClose={() => setSearching(false)}>
-          <SearchPanel
-            recentConversations={conversations}
-            onSelect={(id) => {
-              // Search results only carry the id (commands.searchConversations
-              // returns a slimmer SearchResult, not a full Conversation) —
-              // look it up in the already-loaded list rather than changing
-              // onSelect's shape just for this one caller.
-              const conversation = conversations.find((c) => c.id === id);
-              if (conversation) {
-                markConversationSeenLocally(conversation.id);
-                onSelect(conversation);
-              }
-              setSearching(false);
-            }}
-          />
-        </Dialog>
+                    <SidebarMenuButton
+                      isActive={isActive}
+                      className="min-h-12 h-auto items-start gap-2 px-2 py-2 pr-12 text-left transition-colors data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
+                      onClick={() => selectConversation(c)}
+                    >
+                      <span
+                        className={cn("mt-1.5 size-2 shrink-0 rounded-full", STATUS_COLOR[c.status])}
+                        title={STATUS_LABEL[c.status]}
+                        data-testid="conversation-status-dot"
+                        data-status={c.status}
+                      />
+                      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                        <span className="flex min-w-0 items-baseline gap-2">
+                          <span
+                            className={cn(
+                              "min-w-0 flex-1 truncate text-[13px] font-medium leading-4",
+                              isActive
+                                ? "text-sidebar-accent-foreground"
+                                : isReadInactive
+                                  ? "text-sidebar-foreground/55"
+                                  : "text-sidebar-foreground",
+                            )}
+                          >
+                            {c.title}
+                          </span>
+                        </span>
+                        <span
+                          className={cn(
+                            "min-w-0 truncate text-[11px] leading-4",
+                            isActive
+                              ? "text-sidebar-accent-foreground/70"
+                              : "text-sidebar-foreground/60",
+                          )}
+                        >
+                          {getConversationWorkspaceLabel(c.workspaceId, workspacesById, homePath)}
+                        </span>
+                      </span>
+                      <span className="pointer-events-none absolute right-8 top-1/2 h-8 w-10 -translate-y-1/2">
+                        <span
+                          className={cn(
+                            "absolute right-0 top-0 text-[11px] leading-4 tabular-nums transition-opacity group-hover:opacity-0",
+                            isActive
+                              ? "text-sidebar-accent-foreground/80"
+                              : "text-sidebar-foreground/55",
+                          )}
+                        >
+                          {formatConversationRelativeTime(c.updatedAt)}
+                        </span>
+                        <span
+                          className={cn(
+                            "absolute bottom-0 right-0 text-[11px] leading-4 transition-opacity group-hover:opacity-0",
+                            isActive
+                              ? "text-sidebar-accent-foreground/70"
+                              : "text-sidebar-foreground/60",
+                          )}
+                        >
+                          {getConversationWorkStateLabel(c.status)}
+                        </span>
+                      </span>
+                    </SidebarMenuButton>
+                    <SidebarMenuAction
+                      showOnHover
+                      className="bg-transparent size-6 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
+                      aria-label={`Archive ${c.title}`}
+                      onClick={(event) => handleArchiveConversation(event, c)}
+                    >
+                      <Archive className="size-3.5" />
+                    </SidebarMenuAction>
+                  </SidebarMenuItem>
+                );
+              })}
+            </SidebarMenu>
+          </SidebarGroup>
+        </SidebarContent>
       </div>
     );
   },

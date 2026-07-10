@@ -5,7 +5,7 @@ import { Placeholder } from "@tiptap/extension-placeholder";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
-import { PaperPlaneRightIcon, PlusIcon } from "@phosphor-icons/react";
+import { Plus, SendHorizontal } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
 import { commands, type RichMessageContent } from "@/lib/ipc";
@@ -13,6 +13,9 @@ import PastedText from "./extensions/pasted-text-node";
 import SkillMention, { isSkillMentionSuggestionActive } from "./extensions/skill-mention";
 import Attachment, { type AttachmentAttrs } from "./extensions/attachment-node";
 import { richMessageContentFromDoc, shouldCollapsePastedText } from "./serialize";
+
+const SEND_BUTTON_CLASSES =
+  "shrink-0 enabled:bg-gradient-to-r enabled:from-[var(--color-primary)] enabled:via-[var(--color-doce-caramel)] enabled:to-[var(--color-doce-cacao)] enabled:hover:from-[var(--color-doce-caramel)] enabled:hover:via-[var(--color-primary)] enabled:hover:to-[var(--color-foreground)]";
 
 // 009-rich-chat-input, User Story 4 (T044-T047): image/file attachment via
 // paste, native OS drag-and-drop, and a file-picker button. A reasonable
@@ -393,7 +396,7 @@ export default function RichInput({
     editorProps: {
       attributes: {
         ...(inputTestId ? { "data-testid": inputTestId } : {}),
-        class: "min-h-[72px] w-full text-sm leading-6 outline-none [&_p]:m-0",
+        class: "min-h-12 w-full px-3 py-2 text-sm leading-6 outline-none [&_p]:m-0",
       },
       handleKeyDown: (view, event) => {
         // `editorProps.handleKeyDown` (this function) is checked by
@@ -484,12 +487,12 @@ export default function RichInput({
 
   return (
     <div className="flex flex-col gap-1">
-      <div className="flex flex-col gap-2 rounded-lg border border-border bg-card px-3 py-2 transition-shadow focus-within:shadow-sm">
+      <div className="flex flex-col rounded-lg border border-border bg-card shadow-sm">
         <EditorContent
           editor={editor}
           className={cn(
             "w-full",
-            "[&_.ProseMirror]:min-h-[72px] [&_.ProseMirror]:!outline-none [&_.ProseMirror:focus-visible]:!outline-none [&_.ProseMirror:focus]:!outline-none",
+            "[&_.ProseMirror]:!outline-none [&_.ProseMirror:focus-visible]:!outline-none [&_.ProseMirror:focus]:!outline-none",
             "[&_.ProseMirror_p.is-editor-empty:first-child::before]:content-[attr(data-placeholder)]",
             "[&_.ProseMirror_p.is-editor-empty:first-child::before]:text-muted-foreground",
             "[&_.ProseMirror_p.is-editor-empty:first-child::before]:float-left",
@@ -497,7 +500,7 @@ export default function RichInput({
             "[&_.ProseMirror_p.is-editor-empty:first-child::before]:h-0",
           )}
         />
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between px-3 pb-2">
           <div className="flex items-center gap-1">
             {/* T047: the file-picker button (paperclip, matching this
                 codebase's existing icon-button styling — same shape as the
@@ -505,27 +508,29 @@ export default function RichInput({
                 secondary action). */}
             <Button
               type="button"
-              variant="secondary"
-              className="h-8 w-8 shrink-0 rounded-full p-0"
+              variant="ghost"
+              size="icon"
+              className="shrink-0"
               onClick={() => void pickAttachment()}
               disabled={disabled}
               aria-label="Attach a file"
               data-testid="rich-input-attach"
             >
-              <PlusIcon size={16} weight="bold" />
+              <Plus size={16} />
             </Button>
             {contextGauge}
           </div>
           <Button
             type="button"
             variant="primary"
-            className="h-8 w-8 shrink-0 rounded-full p-0 enabled:bg-gradient-to-r enabled:from-[var(--color-primary)] enabled:via-[var(--color-gray-2)] enabled:to-[var(--color-gray-1)] enabled:hover:from-[var(--color-gray-2)] enabled:hover:via-[var(--color-gray-1)] enabled:hover:to-[var(--color-foreground)]"
+            size="icon"
+            className={SEND_BUTTON_CLASSES}
             onClick={submitCurrentContent}
             disabled={disabled || isEmpty}
             aria-label="Send message"
             data-testid={submitTestId}
           >
-            <PaperPlaneRightIcon size={16} />
+            <SendHorizontal size={16} />
           </Button>
         </div>
       </div>

@@ -1,52 +1,51 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { type ReactNode } from "react"
+import { cn } from "@/lib/cn"
+
+import {
+  Dialog as DialogRoot,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 
 export interface DialogProps {
-  open: boolean;
-  onClose: () => void;
-  children: ReactNode;
+  open: boolean
+  onClose: () => void
+  title: string
+  description?: string
+  contentClassName?: string
+  children: ReactNode
 }
 
-// The app's first modal (005-keyboard-shortcuts). Built directly on the
-// native <dialog> element rather than a hand-rolled overlay or a library:
-// WebKit's .showModal() gives focus-trapping, Escape-to-close (the native
-// `cancel` event), and correct modal semantics for free (research.md § 2).
-export default function Dialog({ open, onClose, children }: DialogProps) {
-  const ref = useRef<HTMLDialogElement>(null);
-
-  useEffect(() => {
-    const dialog = ref.current;
-    if (!dialog) return;
-    if (open && !dialog.open) {
-      dialog.showModal();
-    } else if (!open && dialog.open) {
-      dialog.close();
-    }
-  }, [open]);
-
+export default function Dialog({
+  open,
+  onClose,
+  title,
+  description,
+  contentClassName,
+  children,
+}: DialogProps) {
   return (
-    <dialog
-      ref={ref}
-      onCancel={(e) => {
-        // Escape fires the native `cancel` event — let the dialog element
-        // handle its own closing, we just need to sync React state.
-        e.preventDefault();
-        onClose();
+    <DialogRoot
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) {
+          onClose()
+        }
       }}
-      onClick={(e) => {
-        // Standard backdrop-click-to-close pattern for <dialog>: a click
-        // that lands on the <dialog> element itself (the backdrop, since
-        // its content has its own box) closes it; a click inside the
-        // content does not, because the event target there is a
-        // descendant, not the dialog element.
-        if (e.target === ref.current) onClose();
-      }}
-      className="fixed left-1/2 top-1/2 z-50 w-[30rem] max-w-[90vw] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-lg border border-border bg-card p-0 text-card-foreground backdrop:bg-black/40"
     >
-      {/* Only mounted while open: a closed native <dialog> keeps its own
-          box invisible via UA styles, but its content would otherwise stay
-          in the DOM regardless — no reason to keep it there once closed,
-          for this app's simple, stateless dialog content. */}
-      {open && children}
-    </dialog>
-  );
+      <DialogContent
+        showCloseButton={false}
+        data-testid="app-dialog-content"
+        className={cn("w-[30rem] max-w-[90vw] overflow-hidden p-0", contentClassName)}
+      >
+        <DialogHeader className="sr-only">
+          <DialogTitle>{title}</DialogTitle>
+          {description ? <DialogDescription>{description}</DialogDescription> : null}
+        </DialogHeader>
+        {children}
+      </DialogContent>
+    </DialogRoot>
+  )
 }

@@ -51,4 +51,18 @@ describe("Onboarding", () => {
       expect(screen.getByText(/sysctl failed/)).toBeInTheDocument();
     });
   });
+
+  it("uses the logo-forward onboarding shell", async () => {
+    vi.mocked(commands.getHardwareProfile).mockResolvedValue({
+      tier: "apple-silicon-16gb",
+      ramGb: 16,
+      chip: "Apple M2",
+      diskFreeGb: 200,
+    });
+
+    render(<Onboarding onReady={() => {}} />);
+
+    expect(await screen.findByAltText("doce")).toHaveClass("h-24");
+    expect(screen.getByText("doce")).toBeInTheDocument();
+  });
 });

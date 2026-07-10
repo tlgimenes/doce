@@ -22,6 +22,16 @@ describe("WidgetGallery", () => {
     expect(screen.queryByText("Truncated")).not.toBeInTheDocument();
   });
 
+  it("includes workbench previews for buttons, command center, settings rows, and brand accents", () => {
+    render(<WidgetGallery onClose={vi.fn()} />);
+
+    expect(screen.getByText("Button variants")).toBeInTheDocument();
+    expect(screen.getByText("Command center preview")).toBeInTheDocument();
+    expect(screen.getByText("Settings row preview")).toBeInTheDocument();
+    expect(screen.getByText("Brand Accent Workbench")).toBeInTheDocument();
+    expect(screen.getByText("--color-doce-caramel")).toBeInTheDocument();
+  });
+
   it("documents search widgets as collapsed expandable result lists", () => {
     render(<WidgetGallery onClose={vi.fn()} />);
 
