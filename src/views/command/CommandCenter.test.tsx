@@ -72,4 +72,56 @@ describe("CommandCenter", () => {
     expect(run).toHaveBeenCalledTimes(1);
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
+
+  it("runs the first enabled visible action when Enter is pressed from the command input", async () => {
+    const onOpenChange = vi.fn();
+    const settingsRun = vi.fn();
+    const searchRun = vi.fn();
+
+    render(
+      <CommandCenter
+        open={true}
+        onOpenChange={onOpenChange}
+        actions={[
+          { id: "search", label: "Search Conversations", run: searchRun },
+          { id: "settings", label: "Open Settings", run: settingsRun },
+        ]}
+      />,
+    );
+
+    const input = screen.getByPlaceholderText("Type a command or search");
+    await userEvent.type(input, "settings");
+    await userEvent.keyboard("{Enter}");
+
+    expect(settingsRun).toHaveBeenCalledTimes(1);
+    expect(searchRun).not.toHaveBeenCalled();
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("does not run or close when Enter is pressed from the command input and only disabled actions match", async () => {
+    const onOpenChange = vi.fn();
+    const archiveRun = vi.fn();
+
+    render(
+      <CommandCenter
+        open={true}
+        onOpenChange={onOpenChange}
+        actions={[
+          {
+            id: "archive",
+            label: "Archive Current Conversation",
+            run: archiveRun,
+            disabled: true,
+          },
+        ]}
+      />,
+    );
+
+    const input = screen.getByPlaceholderText("Type a command or search");
+    await userEvent.type(input, "archive");
+    await userEvent.keyboard("{Enter}");
+
+    expect(archiveRun).not.toHaveBeenCalled();
+    expect(onOpenChange).not.toHaveBeenCalledWith(false);
+  });
 });

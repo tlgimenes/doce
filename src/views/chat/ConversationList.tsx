@@ -134,7 +134,14 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
 
     const archiveById = (conversationId: string) => {
       const conversation = conversations.find((item) => item.id === conversationId);
-      if (!conversation) return;
+      if (!conversation) {
+        onArchive?.(conversationId);
+        commands.archiveConversation(conversationId).catch((error) => {
+          console.error(error);
+          refresh();
+        });
+        return;
+      }
       archiveConversation(conversation);
     };
 

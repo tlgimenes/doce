@@ -356,6 +356,31 @@ describe("ConversationList", () => {
     );
   });
 
+  it("archives through the imperative archiveById handle even when the row is missing locally", async () => {
+    vi.mocked(commands.listConversations).mockResolvedValue([]);
+    vi.mocked(commands.archiveConversation).mockResolvedValue();
+    const onArchive = vi.fn();
+    const ref = createRef<ConversationListHandle>();
+
+    render(
+      <ConversationList
+        ref={ref}
+        activeId={null}
+        onSelect={vi.fn()}
+        onNewConversation={vi.fn()}
+        onOpenSearch={vi.fn()}
+        onOpenSettings={vi.fn()}
+        onArchive={onArchive}
+      />,
+    );
+
+    await waitFor(() => expect(ref.current).not.toBeNull());
+    ref.current!.archiveById("missing-active");
+
+    expect(onArchive).toHaveBeenCalledWith("missing-active");
+    expect(commands.archiveConversation).toHaveBeenCalledWith("missing-active");
+  });
+
   it("reveals the archive trash button on hover and keyboard focus within the row", async () => {
     vi.mocked(commands.listConversations).mockResolvedValue([
       {
