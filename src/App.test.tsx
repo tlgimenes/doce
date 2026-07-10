@@ -495,6 +495,34 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     expect(await screen.findByTestId("search-panel")).toBeInTheDocument();
   });
 
+  it("switches from Widget Gallery to Settings when the command center opens Settings", async () => {
+    render(<App />);
+    await waitForReady();
+
+    pressCmd("d");
+    expect(await screen.findByTestId("widget-gallery")).toBeInTheDocument();
+
+    pressCmd("k");
+    await userEvent.click(screen.getByRole("button", { name: /Open Settings/i }));
+
+    expect(await screen.findByTestId("settings-view")).toBeInTheDocument();
+    expect(screen.queryByTestId("widget-gallery")).not.toBeInTheDocument();
+  });
+
+  it("switches from Settings to Widget Gallery when the command center opens Widget Gallery", async () => {
+    render(<App />);
+    await waitForReady();
+
+    await userEvent.click(await screen.findByTestId("open-settings"));
+    expect(await screen.findByTestId("settings-view")).toBeInTheDocument();
+
+    pressCmd("k");
+    await userEvent.click(screen.getByRole("button", { name: /Open Widget Gallery/i }));
+
+    expect(await screen.findByTestId("widget-gallery")).toBeInTheDocument();
+    expect(screen.queryByTestId("settings-view")).not.toBeInTheDocument();
+  });
+
   it("hands off from the shortcuts dialog to Cmd+K and lets Cmd+F open search after dismiss", async () => {
     render(<App />);
     await waitForReady();

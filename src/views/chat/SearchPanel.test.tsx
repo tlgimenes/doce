@@ -206,12 +206,14 @@ describe("SearchPanel", () => {
     await userEvent.keyboard("{ArrowDown}");
     expect(input).toHaveAttribute("aria-activedescendant", "search-result-option-0");
     expect(rows[0]).toHaveAttribute("aria-selected", "true");
+    expect(rows[0]).toHaveClass("bg-accent", "ring-1", "ring-ring");
     expect(rows[1]).toHaveAttribute("aria-selected", "false");
 
     await userEvent.keyboard("{ArrowDown}");
     expect(input).toHaveAttribute("aria-activedescendant", "search-result-option-1");
     expect(rows[0]).toHaveAttribute("aria-selected", "false");
     expect(rows[1]).toHaveAttribute("aria-selected", "true");
+    expect(rows[1]).toHaveClass("bg-accent", "ring-1", "ring-ring");
 
     await userEvent.keyboard("{ArrowUp}");
     expect(input).toHaveAttribute("aria-activedescendant", "search-result-option-0");

@@ -23,6 +23,8 @@ describe("UserMessageBubble", () => {
     render(<UserMessageBubble message={userMessage()} />);
 
     const bubble = screen.getByTestId("user-message-bubble");
+    expect(bubble).toHaveAttribute("data-slot", "bubble-content");
+    expect(bubble.closest('[data-slot="bubble"]')).not.toBeNull();
     expect(bubble).toHaveTextContent("hello");
     expect(bubble).toHaveTextContent("there");
     expect(bubble).toHaveClass(
@@ -67,6 +69,9 @@ describe("UserMessageBubble", () => {
       />,
     );
 
-    expect(screen.getByTestId("user-message-bubble")).toHaveTextContent("rich hello");
+    const bubble = screen.getByTestId("user-message-bubble");
+    expect(bubble).toHaveAttribute("data-slot", "bubble-content");
+    expect(bubble.closest('[data-slot="bubble"]')).not.toBeNull();
+    expect(bubble).toHaveTextContent("rich hello");
   });
 });

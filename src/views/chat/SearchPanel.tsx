@@ -159,7 +159,11 @@ export default function SearchPanel({ onSelect, recentConversations = [] }: Sear
             variant="secondary"
             role="option"
             aria-selected={activeResultIndex === index}
-            className="h-auto min-h-14 w-full flex-col items-start justify-start gap-0 p-3 text-left"
+            className={
+              activeResultIndex === index
+                ? "h-auto min-h-14 w-full flex-col items-start justify-start gap-0 bg-accent p-3 text-left ring-1 ring-ring"
+                : "h-auto min-h-14 w-full flex-col items-start justify-start gap-0 p-3 text-left"
+            }
             onClick={() => onSelect(r.conversationId)}
             onMouseMove={() => setActiveResultIndex(index)}
             data-testid="search-result"

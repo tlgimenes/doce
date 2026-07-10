@@ -101,8 +101,15 @@ export default function App() {
     setShowShortcutsDialog(true);
   }, [clearCommandCenterLatch]);
 
+  const openWidgetGallery = useCallback(() => {
+    clearCommandCenterLatch();
+    setShowSettings(false);
+    setShowWidgetGallery(true);
+  }, [clearCommandCenterLatch]);
+
   const openSettings = useCallback(() => {
     clearCommandCenterLatch();
+    setShowWidgetGallery(false);
     setShowSettings(true);
   }, [clearCommandCenterLatch]);
 
@@ -136,6 +143,15 @@ export default function App() {
     setShowWidgetGallery(false);
   }, [clearCommandCenterLatch]);
 
+  const startNewConversation = useCallback(() => {
+    clearCommandCenterLatch();
+    setShowSettings(false);
+    setShowWidgetGallery(false);
+    setPendingInitialTurn(null);
+    setActiveConversation(null);
+    setEmptyStateAutoFocusToken((current) => (current ?? 0) + 1);
+  }, [clearCommandCenterLatch]);
+
   const openCommandCenter = useCallback(() => {
     setShowSearch(false);
     setShowShortcutsDialog(false);
@@ -159,9 +175,7 @@ export default function App() {
             : '[data-testid="empty-state-input"]';
           document.querySelector<HTMLElement>(selector)?.focus();
         },
-        newConversation: () => {
-          conversationListRef.current?.createNew();
-        },
+        newConversation: startNewConversation,
         openSearch: () => {
           openSearch();
         },
@@ -169,11 +183,22 @@ export default function App() {
           openCommandCenter();
         },
         toggleWidgetGallery: () => {
-          clearCommandCenterLatch();
-          setShowWidgetGallery((prev) => !prev);
+          if (showWidgetGallery) {
+            closeWidgetGallery();
+            return;
+          }
+          openWidgetGallery();
         },
       }),
-    [activeConversation, clearCommandCenterLatch, openCommandCenter, openSearch],
+    [
+      activeConversation,
+      closeWidgetGallery,
+      openCommandCenter,
+      openSearch,
+      openWidgetGallery,
+      showWidgetGallery,
+      startNewConversation,
+    ],
   );
 
   const commandActions = useMemo<CommandCenterAction[]>(
@@ -182,15 +207,15 @@ export default function App() {
         id: "new-agent",
         label: "New Agent",
         shortcut: "Cmd+N",
-        run: () => conversationListRef.current?.createNew(),
+        run: startNewConversation,
       },
       {
         id: "search",
         label: "Search Conversations",
         shortcut: "Cmd+F",
-        run: () => setShowSearch(true),
+        run: openSearch,
       },
-      { id: "settings", label: "Open Settings", run: () => setShowSettings(true) },
+      { id: "settings", label: "Open Settings", run: openSettings },
       {
         id: "shortcuts",
         label: "Open Shortcuts",
@@ -200,7 +225,7 @@ export default function App() {
         id: "widget-gallery",
         label: "Open Widget Gallery",
         shortcut: "Cmd+D",
-        run: () => setShowWidgetGallery(true),
+        run: openWidgetGallery,
       },
       {
         id: "focus-composer",
@@ -235,7 +260,7 @@ export default function App() {
         },
       },
     ],
-    [activeConversation, ready],
+    [activeConversation, openSearch, openSettings, openWidgetGallery, ready, startNewConversation],
   );
 
   useEffect(() => {
@@ -291,6 +316,7 @@ export default function App() {
     clearCommandCenterLatch();
     runViewTransition(() => {
       setShowSettings(false);
+      setShowWidgetGallery(false);
       setPendingInitialTurn(initialTurn ?? null);
       setActiveConversation(conversation);
     });
@@ -338,19 +364,10 @@ export default function App() {
             ref={conversationListRef}
             activeId={activeConversation?.id ?? null}
             onSelect={(conversation) => {
-              clearCommandCenterLatch();
-              setShowSettings(false);
-              setPendingInitialTurn(null);
-              setActiveConversation(conversation);
+              activateConversation(conversation);
               markSeen(conversation.id);
             }}
-            onNewConversation={() => {
-              clearCommandCenterLatch();
-              setShowSettings(false);
-              setPendingInitialTurn(null);
-              setActiveConversation(null);
-              setEmptyStateAutoFocusToken((current) => (current ?? 0) + 1);
-            }}
+            onNewConversation={startNewConversation}
             onOpenSearch={() => openSearch()}
             onOpenSettings={openSettings}
             onActiveConversationChange={syncActiveConversation}

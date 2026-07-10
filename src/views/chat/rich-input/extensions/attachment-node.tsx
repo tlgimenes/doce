@@ -1,5 +1,7 @@
 import { mergeAttributes, Node } from "@tiptap/core";
 import { NodeViewWrapper, ReactNodeViewRenderer, type ReactNodeViewProps } from "@tiptap/react";
+import { ImageIcon, Paperclip } from "lucide-react";
+import { AttachmentDescription, AttachmentTitle } from "@/components/ui/attachment";
 
 /**
  * 009-rich-chat-input, User Story 4 (T043): the "<imagename.png>"-style chip
@@ -43,22 +45,41 @@ function AttachmentChip({ node }: ReactNodeViewProps) {
   const { name, mimeType, data, isImage } = node.attrs as AttachmentAttrs;
 
   return (
-    <NodeViewWrapper as="span" contentEditable={false} data-testid="attachment-chip">
-      <span className="group relative mx-0.5 inline-flex items-center gap-1 rounded-lg border border-border bg-card px-1.5 py-0.5 align-baseline text-xs text-muted-foreground">
-        <span>{isImage ? name : `${name} (${mimeType})`}</span>
-        {isImage ? (
-          <span
-            className="pointer-events-none absolute bottom-full left-0 z-10 mb-1 hidden overflow-hidden rounded-lg border border-border bg-card p-1 opacity-0 shadow-lg transition-opacity group-hover:block group-hover:opacity-100"
-            data-testid="attachment-preview"
-          >
-            <img
-              src={`data:${mimeType};base64,${data}`}
-              alt={name}
-              className="max-h-40 max-w-40 rounded"
-            />
-          </span>
+    <NodeViewWrapper
+      as="span"
+      contentEditable={false}
+      className="group/attachment relative mx-0.5 inline-flex max-w-[16rem] items-center gap-1.5 rounded-lg border border-border bg-card px-1.5 py-0.5 align-baseline text-xs text-muted-foreground"
+      data-slot="attachment"
+      data-testid="attachment-chip"
+    >
+      <span
+        aria-hidden="true"
+        className="inline-flex size-4 shrink-0 items-center justify-center rounded bg-muted/70 text-muted-foreground"
+      >
+        {isImage ? <ImageIcon className="size-3" /> : <Paperclip className="size-3" />}
+      </span>
+      <span className="min-w-0" data-slot="attachment-content">
+        <AttachmentTitle className="inline align-baseline">
+          {name}
+        </AttachmentTitle>
+        {!isImage ? (
+          <AttachmentDescription className="ml-1 inline align-baseline">
+            {mimeType}
+          </AttachmentDescription>
         ) : null}
       </span>
+      {isImage ? (
+        <span
+          className="pointer-events-none absolute bottom-full left-0 z-10 mb-1 hidden overflow-hidden rounded-lg border border-border bg-card p-1 opacity-0 shadow-lg transition-opacity group-hover:block group-hover:opacity-100"
+          data-testid="attachment-preview"
+        >
+          <img
+            src={`data:${mimeType};base64,${data}`}
+            alt={name}
+            className="max-h-40 max-w-40 rounded"
+          />
+        </span>
+      ) : null}
     </NodeViewWrapper>
   );
 }

@@ -4,6 +4,7 @@ import { cn } from "@/lib/cn";
 import type * as React from "react";
 import type { Message } from "@/lib/ipc";
 import UserMessageContent from "@/views/chat/rich-input/UserMessageContent";
+import { Bubble, BubbleContent } from "@/components/ui/bubble";
 
 export interface UserMessageBubbleProps {
   message: Message;
@@ -27,23 +28,21 @@ export default function UserMessageBubble({
 
   return (
     <>
-      {message.contentType === "rich_text" ? (
-        <div
-          {...bubbleProps}
-          className={cn(bubbleClasses, "prose prose-sm dark:prose-invert")}
-          data-testid={bubbleTestId}
-        >
-          <UserMessageContent content={message.content} />
-        </div>
-      ) : (
-        <MarkdownPreview
+      <Bubble align="end" variant="user" className="ml-auto max-w-[85%]">
+        <BubbleContent
           {...bubbleProps}
           className={bubbleClasses}
-          testId={bubbleTestId}
+          data-testid={bubbleTestId}
         >
-          {message.content}
-        </MarkdownPreview>
-      )}
+          {message.contentType === "rich_text" ? (
+            <div className="prose prose-sm max-w-none dark:prose-invert">
+              <UserMessageContent content={message.content} />
+            </div>
+          ) : (
+            <MarkdownPreview className="max-w-none p-0">{message.content}</MarkdownPreview>
+          )}
+        </BubbleContent>
+      </Bubble>
       {message.tokenCount != null && (
         <p
           className={cn("mt-1 text-xs text-muted-foreground", tokenMeterClassName)}

@@ -123,6 +123,7 @@ describe("UserMessageContent (009-rich-chat-input, US2)", () => {
     expect(screen.getByText("please", { exact: false })).toBeInTheDocument();
 
     const chip = await screen.findByTestId("attachment-chip");
+    expect(chip).toHaveAttribute("data-slot", "attachment");
     expect(chip).toHaveTextContent("photo.png");
 
     const preview = screen.getByTestId("attachment-preview");
@@ -148,6 +149,7 @@ describe("UserMessageContent (009-rich-chat-input, US2)", () => {
     render(<UserMessageContent content={JSON.stringify(richContent)} />);
 
     const chip = await screen.findByTestId("attachment-chip");
+    expect(chip).toHaveAttribute("data-slot", "attachment");
     expect(chip).toHaveTextContent("report.pdf");
     expect(chip).toHaveTextContent("application/pdf");
     expect(chip.querySelector("img")).not.toBeInTheDocument();

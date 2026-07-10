@@ -23,9 +23,14 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
     render(<MessageContent message={baseMessage({ role: "user", content: "hi there" })} />);
 
     const row = screen.getByTestId("chat-message");
+    const bubble = screen.getByTestId("user-message-bubble");
     expect(row).toHaveAttribute("role", "group");
     expect(row).toHaveAttribute("aria-label", "You said");
-    expect(screen.getByTestId("user-message-bubble")).toHaveTextContent("hi there");
+    expect(row).toHaveAttribute("data-slot", "message");
+    expect(row.querySelector('[data-slot="message-content"]')).not.toBeNull();
+    expect(bubble).toHaveAttribute("data-slot", "bubble-content");
+    expect(bubble.closest('[data-slot="bubble"]')).not.toBeNull();
+    expect(bubble).toHaveTextContent("hi there");
   });
 
   it("renders a live assistant timer only when showTimer is true and no persisted duration exists", () => {
@@ -121,6 +126,10 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
     expect(screen.getByRole("heading", { level: 2, name: "Heading" })).toBeInTheDocument();
     expect(screen.getByText("one")).toBeInTheDocument();
     expect(screen.getByText("two")).toBeInTheDocument();
+    const row = screen.getByTestId("chat-message");
+    expect(row).toHaveAttribute("data-slot", "message");
+    expect(row.querySelector('[data-slot="bubble"]')).not.toBeNull();
+    expect(row.querySelector('[data-slot="bubble-content"]')).not.toBeNull();
   });
 
   // --- 010-context-window-management (UI refactor): token meter ---
@@ -186,6 +195,10 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
 
   it("renders an error message distinctly", () => {
     render(<MessageContent message={baseMessage({ contentType: "error", content: "boom" })} />);
+    const row = screen.getByTestId("chat-message");
+    expect(row).toHaveAttribute("data-slot", "message");
+    expect(screen.getByTestId("error-message")).toHaveAttribute("data-slot", "marker");
+    expect(screen.getByTestId("error-message").querySelector('[data-slot="marker-content"]')).not.toBeNull();
     expect(screen.getByText("boom")).toBeInTheDocument();
   });
 
@@ -290,8 +303,12 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
       />,
     );
 
-    expect(screen.getByTestId("context-notice")).toHaveAttribute("role", "status");
-    expect(screen.getByTestId("context-notice")).toHaveTextContent("Old tool result cleared");
+    const notice = screen.getByTestId("context-notice");
+    expect(notice.closest('[data-slot="message"]')).not.toBeNull();
+    expect(notice).toHaveAttribute("data-slot", "marker");
+    expect(notice).toHaveAttribute("role", "status");
+    expect(notice.querySelector('[data-slot="marker-content"]')).not.toBeNull();
+    expect(notice).toHaveTextContent("Old tool result cleared");
   });
 
   it("renders a 'summarized' notice as a more visible bubble", () => {
