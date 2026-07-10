@@ -131,4 +131,13 @@ describe("WorkspaceTopbar", () => {
     expect(topbar).toHaveClass("pointer-events-none");
     expect(nonDragWrapper).toHaveClass("pointer-events-auto");
   });
+
+  it("renders no usage indicator before context usage resolves", async () => {
+    vi.mocked(commands.getContextUsage).mockRejectedValue(new Error("no model yet"));
+
+    renderTopbar(conversationFixture());
+
+    await screen.findByTestId("workspace-topbar");
+    expect(screen.queryByTestId("context-usage-gauge")).not.toBeInTheDocument();
+  });
 });

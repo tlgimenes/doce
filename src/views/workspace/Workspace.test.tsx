@@ -76,9 +76,9 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     scrollToEndSpy.mockClear();
     vi.mocked(commands.listMessages).mockResolvedValue([]);
     vi.mocked(commands.isGenerationActive).mockResolvedValue(false);
-    // No model loaded in these unit tests — ContextUsageGauge's
+    // No model loaded in these unit tests — ContextUsageIndicator's
     // getContextUsage call is expected to fail and swallow the error,
-    // leaving the gauge simply unrendered.
+    // leaving the indicator simply unrendered.
     vi.mocked(commands.getContextUsage).mockRejectedValue(new Error("No model loaded"));
     vi.mocked(commands.listSkills).mockResolvedValue([]);
     // Streaming (UI refactor): no live events fire by default in these unit

@@ -120,7 +120,7 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     vi.mocked(commands.isGenerationActive).mockResolvedValue(false);
     vi.mocked(commands.listMcpServers).mockResolvedValue([]);
     vi.mocked(commands.listSkills).mockResolvedValue([]);
-    // No model loaded in these unit tests — ContextUsageGauge's
+    // No model loaded in these unit tests — ContextUsageIndicator's
     // getContextUsage call is expected to fail and swallow the error,
     // leaving the indicator simply unrendered.
     vi.mocked(commands.getContextUsage).mockRejectedValue(new Error("No model loaded"));
@@ -254,7 +254,12 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
 
     const mainTopbar = screen.getByTestId("topbar-main");
     expect(mainTopbar).toHaveClass("bg-transparent", "text-foreground");
-    expect(mainTopbar).not.toHaveClass("bg-sidebar", "border-b", "border-sidebar-border", "shadow-sm");
+    expect(mainTopbar).not.toHaveClass(
+      "bg-sidebar",
+      "border-b",
+      "border-sidebar-border",
+      "shadow-sm",
+    );
     await within(mainTopbar).findByTestId("workspace-topbar");
 
     expect(within(mainTopbar).getByTestId("workspace-topbar-title")).toHaveTextContent(
@@ -571,9 +576,7 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
 
     pressCmd("k");
 
-    await waitFor(() =>
-      expect(screen.queryByTestId("search-panel")).not.toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.queryByTestId("search-panel")).not.toBeInTheDocument());
     expect(screen.getByTestId("command-center")).toBeInTheDocument();
   });
 
@@ -714,9 +717,7 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     const event = dispatchCancelableCmd("k");
 
     expect(event.defaultPrevented).toBe(true);
-    await waitFor(() =>
-      expect(screen.queryByTestId("search-panel")).not.toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.queryByTestId("search-panel")).not.toBeInTheDocument());
     expect(screen.getByTestId("command-center")).toBeInTheDocument();
   });
 
@@ -765,7 +766,6 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
       expect(screen.queryByTestId("conversation-search-dialog")).not.toBeInTheDocument(),
     );
   });
-
 });
 
 // Regression coverage for the App.tsx robustness fix: `ready` used to stay
