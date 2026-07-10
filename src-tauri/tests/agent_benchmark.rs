@@ -69,6 +69,106 @@ fn report(name: &str, run: &BenchmarkRun) {
     }
 }
 
+/// Mirrors the payload-staging block `commands::agent::handle_general_tool_call`
+/// (~line 1150-1195) and `SubagentBackend::execute_tool` (~line 797-842) each
+/// duplicate verbatim (2026-07-09 payload-files design) -- production moved
+/// every general tool result through `context::payload::stage_tool_result`
+/// before it enters message history (payload file written first, then an
+/// over-threshold result replaced by a status reference line), and this
+/// benchmark predates that move: it used to feed `dispatch::execute(...).
+/// model_text` straight into history, unstaged, so a benchmark run never
+/// exercised the production context economy at all. This is the one place
+/// both bench backends (`BenchBackend`, `PlanExecBackend`) route a general
+/// tool result through, so the two call sites can't independently drift from
+/// what production actually does.
+///
+/// `threshold_tokens` is `limits::DEFAULT_TOOL_OUTPUT_OFFLOAD_TOKENS`
+/// directly, not `ContextSettings::tool_output_offload_tokens` -- the bench
+/// has no DB/settings store to load one from, and that constant is exactly
+/// what an unconfigured install defaults to.
+///
+/// Deliberately takes a `count_tokens` closure rather than an
+/// `&InferenceEngine` like production's call sites do: production also
+/// calls `context::annotate_with_token_count(engine, outcome)` right before
+/// this block (detail-only, `model_text`-irrelevant token-count metadata),
+/// which the real call sites below apply themselves before calling in here
+/// -- but keeping that engine dependency out of this function itself is
+/// what lets `bench_wiring_stages_oversized_result_as_reference_line`
+/// exercise this exact wiring without a loaded model.
+fn stage_bench_tool_result(
+    payload_dir: &Path,
+    conversation_id: &str,
+    tool_call_id: &str,
+    call_name: &str,
+    outcome: doce_lib::agent::dispatch::ToolOutcome,
+    count_tokens: impl Fn(&str) -> usize,
+) -> String {
+    if call_name == "Read" {
+        // Carve-out: never write a copy of a file we just read -- the
+        // payload reference IS the source. Production additionally stamps
+        // `detail.payloadRef` from `detail.resolvedPath` here, but neither
+        // bench backend persists `detail` anywhere, so only `model_text`
+        // (what actually enters message history) matters.
+        outcome.model_text
+    } else {
+        let staged = context::payload::stage_tool_result(
+            payload_dir,
+            conversation_id,
+            tool_call_id,
+            &outcome,
+            context::limits::DEFAULT_TOOL_OUTPUT_OFFLOAD_TOKENS,
+            count_tokens,
+        );
+        staged.model_text
+    }
+}
+
+/// Sanity assertion (no real model, not `#[ignore]`d): proves the bench's
+/// own wiring above -- not just `stage_tool_result` in isolation, which
+/// already has its own unit tests in `context/payload.rs` -- replaces an
+/// oversized synthetic result with a status reference line pointing at a
+/// payload file that holds the full text.
+#[test]
+fn bench_wiring_stages_oversized_result_as_reference_line() {
+    let dir = tempdir().unwrap();
+    let big = "line of output\n".repeat(2000);
+    let outcome = doce_lib::agent::dispatch::ToolOutcome {
+        model_text: big.clone(),
+        detail: serde_json::json!({"toolName": "Grep", "matches": ["a", "b"], "outcome": {"ok": true}}),
+    };
+
+    // 1 char == 1 "token": comfortably trips
+    // `DEFAULT_TOOL_OUTPUT_OFFLOAD_TOKENS` (1024) with a ~30,000-char fixture,
+    // without needing a real tokenizer/loaded model.
+    let result = stage_bench_tool_result(
+        dir.path(),
+        "bench-conv",
+        "call-1",
+        "Grep",
+        outcome,
+        |text| text.chars().count(),
+    );
+
+    assert!(
+        result.contains("→ Read \""),
+        "expected a status reference line, got: {result:?}"
+    );
+    assert!(
+        !result.contains("line of output"),
+        "no content should leak into a reference line, got: {result:?}"
+    );
+    let path = result
+        .split("→ Read \"")
+        .nth(1)
+        .and_then(|s| s.split('"').next())
+        .expect("reference line should contain a quoted payload path");
+    assert_eq!(
+        std::fs::read_to_string(path).expect("payload file should exist"),
+        big,
+        "payload file should hold the full, untruncated text"
+    );
+}
+
 /// `AgentBackend` for this benchmark -- the exact same shape
 /// `commands::agent`'s `SubagentBackend` uses (measure/compact call
 /// `context::fit_turn_to_budget`/its `InferenceEngine` counterparts
@@ -88,6 +188,16 @@ struct BenchBackend<'a> {
     /// against, instead of trusting the step's own final "Done" text (the
     /// exact thing tier 4 showed is not reliable on its own).
     trace: Vec<String>,
+    /// 2026-07-09 payload-files design: the root `stage_bench_tool_result`
+    /// stages into (it joins its own `tool-outputs/` under this, exactly
+    /// like production's `app_data_dir`) -- a tempdir SIBLING to the task's
+    /// fixture dir (`cwd`), never nested inside it: Glob/Grep tool calls
+    /// scan `cwd`, and a `tool-outputs/` directory living inside it would
+    /// contaminate every fixture-scanning tier.
+    payload_dir: PathBuf,
+    /// Mirrors production's `parent_conversation_id`/`subagent_id` -- just a
+    /// namespace for this run's payload subdirectory, not a real conversation.
+    conversation_id: String,
 }
 
 impl AgentBackend for BenchBackend<'_> {
@@ -131,10 +241,19 @@ impl AgentBackend for BenchBackend<'_> {
 
     async fn execute_tool(
         &mut self,
-        _tool_call_id: String,
+        tool_call_id: String,
         call: doce_lib::agent::ToolCall,
     ) -> doce_lib::agent::ToolExecution {
-        let result = dispatch::execute(&call, Some(self.cwd)).model_text;
+        let outcome = dispatch::execute(&call, Some(self.cwd));
+        let outcome = context::annotate_with_token_count(self.engine, outcome);
+        let result = stage_bench_tool_result(
+            &self.payload_dir,
+            &self.conversation_id,
+            &tool_call_id,
+            &call.name,
+            outcome,
+            |text| self.engine.count_tokens(text).unwrap_or(usize::MAX),
+        );
         // Printed for interactive runs, and recorded in `self.trace` as
         // the evidence a plan check-in judges completion against -- the
         // thing worth knowing when a run scores 0 despite claiming full
@@ -177,6 +296,10 @@ async fn run_benchmark_task(
     let threshold = engine
         .context_window()
         .saturating_sub(doce_lib::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS);
+    // 2026-07-09 payload-files design: a fresh tempdir SIBLING to `cwd`
+    // (never nested inside it -- see `BenchBackend::payload_dir`'s doc
+    // comment), kept alive for this whole run by staying a local here.
+    let payload_root = tempdir().expect("payload tempdir should create");
     let mut backend = BenchBackend {
         engine,
         session: engine.new_session().expect("session should create"),
@@ -184,6 +307,8 @@ async fn run_benchmark_task(
         threshold,
         turns: 0,
         trace: Vec::new(),
+        payload_dir: payload_root.path().to_path_buf(),
+        conversation_id: "bench-top".to_string(),
     };
 
     let result = run_loop(&context, initial_messages, &mut backend).await;
@@ -214,6 +339,12 @@ struct PlanExecBackend<'a> {
     threshold: u32,
     turns: u32,
     plan_state: doce_lib::agent::plan::PlanState,
+    /// See `BenchBackend::payload_dir`'s doc comment -- same tempdir-root
+    /// shape, shared with any `Task`-spawned `BenchBackend` below (mirroring
+    /// production's single shared `app_data_dir` across `RealBackend` and
+    /// every `SubagentBackend` it spawns).
+    payload_dir: PathBuf,
+    conversation_id: String,
 }
 
 impl AgentBackend for PlanExecBackend<'_> {
@@ -263,7 +394,7 @@ impl AgentBackend for PlanExecBackend<'_> {
 
     async fn execute_tool(
         &mut self,
-        _tool_call_id: String,
+        tool_call_id: String,
         call: doce_lib::agent::ToolCall,
     ) -> doce_lib::agent::ToolExecution {
         let plan_finish: Option<String>;
@@ -311,6 +442,13 @@ impl AgentBackend for PlanExecBackend<'_> {
                 threshold: self.threshold,
                 turns: 0,
                 trace: Vec::new(),
+                // Same shared payload root as the parent (mirrors
+                // production's single shared `app_data_dir`), namespaced
+                // under this `Task` call's own id (mirrors production's
+                // fresh `subagent_id` per spawn) so the subagent's payload
+                // files land in their own subdirectory.
+                payload_dir: self.payload_dir.clone(),
+                conversation_id: format!("task-{tool_call_id}"),
             };
             let sub_result = run_loop(&sub_context, sub_messages, &mut sub_backend).await;
             self.turns += sub_backend.turns;
@@ -320,7 +458,16 @@ impl AgentBackend for PlanExecBackend<'_> {
             }
         } else {
             plan_finish = None;
-            dispatch::execute(&call, Some(self.cwd)).model_text
+            let outcome = dispatch::execute(&call, Some(self.cwd));
+            let outcome = context::annotate_with_token_count(self.engine, outcome);
+            stage_bench_tool_result(
+                &self.payload_dir,
+                &self.conversation_id,
+                &tool_call_id,
+                &call.name,
+                outcome,
+                |text| self.engine.count_tokens(text).unwrap_or(usize::MAX),
+            )
         };
 
         let args_preview: String = call.arguments.to_string().chars().take(200).collect();
@@ -384,6 +531,10 @@ async fn run_planned_benchmark_task(
         doce_lib::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS
             + doce_lib::context::limits::STATE_TAIL_RESERVE_TOKENS,
     );
+    // 2026-07-09 payload-files design: see `run_benchmark_task`'s identical
+    // tempdir -- a fresh root SIBLING to `cwd`, kept alive for this whole
+    // run (including every `Task`-spawned subagent) by staying a local here.
+    let payload_root = tempdir().expect("payload tempdir should create");
     let mut backend = PlanExecBackend {
         engine,
         session: engine.new_session().expect("session should create"),
@@ -391,6 +542,8 @@ async fn run_planned_benchmark_task(
         threshold,
         turns: 0,
         plan_state: doce_lib::agent::plan::PlanState::default(),
+        payload_dir: payload_root.path().to_path_buf(),
+        conversation_id: "planned-top".to_string(),
     };
 
     let result = run_loop(&context, initial_messages, &mut backend).await;
