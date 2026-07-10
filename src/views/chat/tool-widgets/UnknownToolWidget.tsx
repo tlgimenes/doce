@@ -1,3 +1,7 @@
+import { Wrench } from "lucide-react";
+import { CodeBlock } from "@/components/ui/code-block";
+import { ItemContent, ItemMedia, ItemTitle } from "@/components/ui/item";
+import { WidgetFrame, WidgetFrameContent, WidgetFrameHeader } from "@/components/ui/widget-frame";
 import type { ToolResultDetail, UnknownToolDetail } from "@/lib/ipc";
 
 interface UnknownToolWidgetProps {
@@ -12,14 +16,18 @@ interface UnknownToolWidgetProps {
  */
 export default function UnknownToolWidget({ detail }: UnknownToolWidgetProps) {
   return (
-    <div
-      className="rounded-lg border border-border bg-card p-3 text-sm"
-      data-testid="unknown-tool-widget"
-    >
-      <p className="mb-1 font-mono text-xs text-muted-foreground">{detail.toolName}</p>
-      <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-xs">
-        {JSON.stringify(detail, null, 2)}
-      </pre>
-    </div>
+    <WidgetFrame collapsible data-testid="unknown-tool-widget">
+      <WidgetFrameHeader>
+        <ItemMedia variant="icon">
+          <Wrench />
+        </ItemMedia>
+        <ItemContent>
+          <ItemTitle>{detail.toolName}</ItemTitle>
+        </ItemContent>
+      </WidgetFrameHeader>
+      <WidgetFrameContent>
+        <CodeBlock>{JSON.stringify(detail, null, 2)}</CodeBlock>
+      </WidgetFrameContent>
+    </WidgetFrame>
   );
 }

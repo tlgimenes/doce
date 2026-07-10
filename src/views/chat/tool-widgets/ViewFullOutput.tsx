@@ -1,6 +1,10 @@
 import { useState } from "react";
 import { commands } from "@/lib/ipc";
 import { base64ToUtf8 } from "@/lib/base64";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { CodeBlock } from "@/components/ui/code-block";
+import { Spinner } from "@/components/ui/spinner";
 
 interface ViewFullOutputProps {
   path: string;
@@ -33,28 +37,27 @@ export default function ViewFullOutput({ path }: ViewFullOutputProps) {
   };
 
   if (fullText != null) {
-    return (
-      <pre
-        className="overflow-x-auto whitespace-pre-wrap break-words border-t border-border px-3 py-2 font-mono text-xs"
-        data-testid="view-full-output-content"
-      >
-        {fullText}
-      </pre>
-    );
+    return <CodeBlock data-testid="view-full-output-content">{fullText}</CodeBlock>;
   }
 
   return (
-    <div className="border-t border-border px-3 py-1">
-      <button
+    <div className="flex flex-col items-start gap-1 px-3 py-1">
+      <Button
         type="button"
-        className="text-xs text-muted-foreground underline hover:text-foreground"
+        variant="ghost"
+        size="sm"
         onClick={load}
         disabled={loading}
         data-testid="view-full-output-button"
       >
+        {loading && <Spinner role="presentation" aria-label={undefined} />}
         {loading ? "Loading…" : "View full output"}
-      </button>
-      {error && <p className="mt-1 text-xs text-destructive">{error}</p>}
+      </Button>
+      {error && (
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
     </div>
   );
 }
