@@ -27,11 +27,13 @@
 ### Task 1: Workspace scroller swap (StickToBottom → MessageScroller) + error Alert
 
 **Files:**
+
 - Modify: `src/test/setup.ts` (~line 87, next to the ResizeObserver stub)
 - Modify: `src/views/workspace/Workspace.tsx`
 - Modify: `src/views/workspace/Workspace.test.tsx`
 
 **Interfaces:**
+
 - Consumes: `MessageScrollerProvider/MessageScroller/MessageScrollerViewport/MessageScrollerContent/MessageScrollerButton` from `@/components/ui/message-scroller`; `useMessageScroller` from `@shadcn/react/message-scroller` (returns `{ scrollToEnd(options?), scrollToMessage, scrollToStart }`); `Alert`, `AlertDescription` from `@/components/ui/alert`.
 - Produces: transcript DOM structure later tasks' tests rely on — `data-testid="workspace-scroll-container"` on the Viewport, `data-testid="workspace-transcript-content"` on the Content, `data-testid="scroll-to-bottom"` on the self-managing button. `TranscriptTurn` props are unchanged.
 
@@ -64,8 +66,7 @@ Three areas change (write these first; they should fail until Step 3):
 ```tsx
 const scrollToEndSpy = vi.hoisted(() => vi.fn());
 vi.mock("@shadcn/react/message-scroller", async (importOriginal) => {
-  const original =
-    await importOriginal<typeof import("@shadcn/react/message-scroller")>();
+  const original = await importOriginal<typeof import("@shadcn/react/message-scroller")>();
   return {
     ...original,
     useMessageScroller: () => ({
@@ -231,12 +232,14 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ### Task 2: TranscriptTurn — drop sticky UX, MessageGroup wrapper, error Alert
 
 **Files:**
+
 - Modify: `src/views/workspace/TranscriptTurn.tsx`
 - Delete: `src/views/workspace/StickyUserMessage.tsx`, `src/views/workspace/StickyUserMessage.test.tsx`
 - Modify: `src/views/workspace/TranscriptTurn.test.tsx`
 - Modify: `src/views/workspace/Workspace.test.tsx` (sticky-anchor test ~line 184)
 
 **Interfaces:**
+
 - Consumes: `MessageGroup` from `@/components/ui/message`; `Alert`/`AlertDescription` from `@/components/ui/alert`; the existing default export of `@/components/MessageContent` (user branch renders the user bubble — Task 3 restyles its internals; testid `user-message-bubble` appears after Task 3, so do NOT assert it here yet).
 - Produces: `TranscriptTurn` props unchanged (`turn`, `isLastTurn`, `pendingWidget`, `error`). Turn DOM: `data-testid="transcript-turn"` on a `MessageGroup` (`data-slot="message-group"`), user row rendered via `MessageContent`, `data-testid="transcript-turn-body"` intact, error as `Alert` with `data-testid="workspace-error"`.
 
@@ -386,12 +389,14 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ### Task 3: Rename dispatcher to TranscriptRow; recompose rows; delete UserMessageBubble
 
 **Files:**
+
 - Move: `src/components/MessageContent.tsx` → `src/views/workspace/TranscriptRow.tsx`
 - Move: `src/components/MessageContent.test.tsx` → `src/views/workspace/TranscriptRow.test.tsx`
 - Delete: `src/components/UserMessageBubble.tsx`, `src/components/UserMessageBubble.test.tsx`
 - Modify: `src/views/workspace/TranscriptTurn.tsx` (import path), any other importer found by grep
 
 **Interfaces:**
+
 - Consumes: `Bubble`/`BubbleContent` (`variant="user"` carries the doce-cream look in the ui layer), `Marker`/`MarkerContent`, `Message as ChatMessage`/`MessageContent as ChatMessageContent`/`MessageFooter` from `@/components/ui/message`, `Alert`/`AlertDescription`, `MarkdownPreview`, `UserMessageContent`, `Timer`, `formatTokenCount` — all existing.
 - Produces: `export default function TranscriptRow({ message, showTimer }: TranscriptRowProps)` — same props as today's `MessageContent` (`message: Message; showTimer?: boolean`). Row DOM contracts: user rows `role="group" aria-label="You said"` with `data-testid="user-message-bubble"` on the BubbleContent and `data-testid="token-meter"` footer; assistant metadata in a `MessageFooter` with `data-testid="token-meter"`; errors as `Alert` `data-testid="error-message"`; context notices as plain `Marker` keeping `data-testid="context-notice"`, `data-notice-kind`, `role="status"`.
 
@@ -564,10 +569,12 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ### Task 4: StreamingStatus on Marker + Spinner
 
 **Files:**
+
 - Modify: `src/views/workspace/StreamingStatus.tsx`
 - Modify: `src/views/workspace/StreamingStatus.test.tsx`
 
 **Interfaces:**
+
 - Consumes: `Marker`, `MarkerIcon`, `MarkerContent` from `@/components/ui/marker` (MarkerIcon is `aria-hidden` by itself); `Spinner` from `@/components/ui/spinner` (defaults `role="status"` — MUST be overridden here so the row's own `role="status"` stays the only live region).
 - Produces: unchanged props (`startedAt: number | null`). DOM contract: `data-testid="agent-thinking"` wrapper, `role="status"` element labeled "Working", `data-testid="agent-thinking-spinner"` decorative icon, `data-testid="agent-thinking-timer"` with `aria-live="off"` and `tabular-nums` (exception 2).
 
@@ -659,10 +666,12 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ### Task 5: PlanTracker on Card/Item/Badge/Progress; drop fade-out
 
 **Files:**
+
 - Modify: `src/views/workspace/PlanTracker.tsx`
 - Modify: `src/views/workspace/PlanTracker.test.tsx`
 
 **Interfaces:**
+
 - Consumes: `Card`/`CardHeader`/`CardTitle`/`CardContent` from `@/components/ui/card`; `Item`/`ItemGroup`/`ItemMedia`/`ItemContent`/`ItemTitle` from `@/components/ui/item`; `Badge` from `@/components/ui/badge`; `Progress` from `@/components/ui/progress`; `Spinner`; `Button` from `@/components/ui/button`; `Check`, `Circle` from `lucide-react`.
 - Produces: unchanged props (`conversationId: string`). DOM contract for tests: `plan-tracker`/`plan-card`/`plan-rail`/`plan-collapse`/`plan-step`/`plan-dot`/`plan-chip`/`plan-done-collapsed`/`plan-more` testids survive; step state exposed as `data-state="done" | "current" | "todo"` on `plan-step` items and `plan-dot` badges (replacing class-based assertions); `data-current` attribute kept.
 
@@ -677,6 +686,7 @@ expect(steps[2]).toHaveAttribute("data-state", "todo");
 ```
 
 (keep the `data-current` assertion on the current step and the text-content assertions).
+
 - Fade test (~line 102) becomes immediate: rename to "unmounts when the turn ends (plan: null)" and assert `plan-tracker` is removed right after the null event (no `opacity-0` intermediate, no timer advance):
 
 ```tsx
@@ -709,19 +719,21 @@ Delete `leaving` state, `leaveTimerRef`, and their cleanup lines. The overlay wr
 The collapse control becomes a ghost Button:
 
 ```tsx
-{expanded && (
-  <Button
-    type="button"
-    variant="ghost"
-    size="sm"
-    className="mt-1 w-full @5xl:hidden"
-    onClick={() => setExpanded(false)}
-    aria-label="Hide plan"
-    data-testid="plan-collapse"
-  >
-    collapse
-  </Button>
-)}
+{
+  expanded && (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      className="mt-1 w-full @5xl:hidden"
+      onClick={() => setExpanded(false)}
+      aria-label="Hide plan"
+      data-testid="plan-collapse"
+    >
+      collapse
+    </Button>
+  );
+}
 ```
 
 New `PlanCard` (helper `stepState` shared with the rail):
@@ -859,11 +871,13 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ### Task 6: WorkspaceTopbar on Item; gauge → Progress + Tooltip; delete ContextUsageGauge
 
 **Files:**
+
 - Modify: `src/views/workspace/WorkspaceTopbar.tsx`
 - Delete: `src/components/ContextUsageGauge.tsx`, `src/components/ContextUsageGauge.test.tsx`
 - Modify: `src/views/workspace/WorkspaceTopbar.test.tsx`
 
 **Interfaces:**
+
 - Consumes: `Item`/`ItemContent`/`ItemTitle`/`ItemDescription` from `@/components/ui/item`; `Progress` from `@/components/ui/progress`; `Tooltip`/`TooltipTrigger`/`TooltipContent` from `@/components/ui/tooltip`; `useContextUsageStore` and `commands.getContextUsage` (moved in from the deleted gauge).
 - Produces: unchanged props. DOM contract: `workspace-topbar`, `workspace-topbar-title`, `workspace-topbar-path` testids; `data-testid="context-usage-gauge"` with `role="status"` and the percentage `aria-label` (REQUIRED by `tests/e2e/specs/context-window-management.spec.ts`), inside the `data-topbar-no-drag` wrapper.
 
@@ -1052,10 +1066,12 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ### Task 7: Dependency removal, compliance sweep, full gates
 
 **Files:**
+
 - Modify: `package.json`, `package-lock.json` (via npm)
 - Possibly modify: any file the sweep flags
 
 **Interfaces:**
+
 - Consumes: everything landed in Tasks 1–6.
 - Produces: the verified end state — no `use-stick-to-bottom`, all gates green, compliance sweep clean.
 
@@ -1101,6 +1117,7 @@ npm run format:check                          # expected: exit 0
 - [ ] **Step 4: Verify scroll behavior in the running app**
 
 Launch the app (`npm run tauri dev`, or the project's run skill) and verify against the spec's behavior contract:
+
 1. Send a message in a conversation → view snaps to bottom and follows streamed rows.
 2. Scroll up during streaming → autoscroll stops (escape), scroll-to-end button appears.
 3. Click the button → returns to bottom, button hides, following resumes.

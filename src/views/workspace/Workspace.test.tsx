@@ -227,6 +227,18 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     expect(viewport.closest('[data-slot="message-scroller"]')).not.toBeNull();
   });
 
+  it("remounts the scroller when switching conversations", async () => {
+    vi.mocked(commands.listMessages).mockResolvedValue([]);
+    const { rerender } = render(<Workspace conversationId="conv-1" />);
+    const before = await screen.findByTestId("workspace-scroll-container");
+
+    rerender(<Workspace conversationId="conv-2" />);
+    await waitFor(() => {
+      const after = screen.getByTestId("workspace-scroll-container");
+      expect(after).not.toBe(before);
+    });
+  });
+
   it("notifies when active messages refresh so the app can mark the conversation seen", async () => {
     const onConversationSeen = vi.fn();
     vi.mocked(commands.listMessages).mockResolvedValue([
