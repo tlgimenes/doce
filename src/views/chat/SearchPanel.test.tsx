@@ -223,6 +223,51 @@ describe("SearchPanel", () => {
     expect(onSelect).toHaveBeenCalledWith("c1");
   });
 
+  it("does not allow Enter to select stale results while a newer query is still loading", async () => {
+    const first = deferred<SearchResult[]>();
+    const second = deferred<SearchResult[]>();
+    vi.mocked(commands.searchConversations).mockImplementation((query) => {
+      if (query === "a") return first.promise;
+      if (query === "ab") return second.promise;
+      return Promise.resolve([]);
+    });
+
+    const onSelect = vi.fn();
+    render(<SearchPanel onSelect={onSelect} />);
+
+    const input = screen.getByTestId("search-input");
+    await userEvent.type(input, "a");
+    first.resolve([
+      {
+        conversationId: "stale-result",
+        title: "Stale result",
+        excerpt: "old match",
+        rank: -1,
+      },
+    ]);
+
+    await screen.findByText("Stale result");
+    await userEvent.keyboard("{ArrowDown}");
+    expect(input).toHaveAttribute("aria-activedescendant", "search-result-option-0");
+
+    await userEvent.type(input, "b");
+
+    expect(screen.getByTestId("search-loading")).toBeInTheDocument();
+    await userEvent.keyboard("{Enter}");
+    expect(onSelect).not.toHaveBeenCalled();
+
+    second.resolve([
+      {
+        conversationId: "fresh-result",
+        title: "Fresh result",
+        excerpt: "new match",
+        rank: -2,
+      },
+    ]);
+
+    expect(await screen.findByText("Fresh result")).toBeInTheDocument();
+  });
+
   it("ignores stale rejected requests so a newer in-flight search keeps loading and error ownership", async () => {
     const first = deferred<SearchResult[]>();
     const second = deferred<SearchResult[]>();

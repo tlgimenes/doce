@@ -35,6 +35,7 @@ describe("ShortcutsDialog", () => {
   it("renders one row per entry in the shared shortcuts registry (FR-010)", () => {
     render(<ShortcutsDialog open={true} onClose={vi.fn()} shortcuts={SHORTCUTS} />);
 
+    expect(screen.getByRole("dialog", { name: "Keyboard shortcuts" })).toBeInTheDocument();
     const rows = screen.getAllByTestId("shortcut-item");
     expect(rows).toHaveLength(3);
     expect(screen.getByText("Focus the message input")).toBeInTheDocument();

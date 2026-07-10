@@ -8,7 +8,7 @@ import Dialog from "./Dialog";
 describe("Dialog", () => {
   it("shows content when open, then hides it and unmounts it when closed", async () => {
     const { rerender } = render(
-      <Dialog open={true} onClose={vi.fn()}>
+      <Dialog open={true} onClose={vi.fn()} title="Test dialog">
         <p>Hello</p>
       </Dialog>,
     );
@@ -18,7 +18,7 @@ describe("Dialog", () => {
     expect(screen.getByText("Hello")).toBeInTheDocument();
 
     rerender(
-      <Dialog open={false} onClose={vi.fn()}>
+      <Dialog open={false} onClose={vi.fn()} title="Test dialog">
         <p>Hello</p>
       </Dialog>,
     );
@@ -32,7 +32,7 @@ describe("Dialog", () => {
   it("calls onClose when Escape is pressed", async () => {
     const onClose = vi.fn();
     render(
-      <Dialog open={true} onClose={onClose}>
+      <Dialog open={true} onClose={onClose} title="Test dialog">
         <p>Hello</p>
       </Dialog>,
     );
@@ -42,9 +42,25 @@ describe("Dialog", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it("uses the provided title and description as the dialog's accessible name and description", async () => {
+    render(
+      <Dialog
+        open={true}
+        onClose={vi.fn()}
+        title="Search conversations"
+        description="Find a conversation by title or message content."
+      >
+        <p>Hello</p>
+      </Dialog>,
+    );
+
+    const dialog = await screen.findByRole("dialog", { name: "Search conversations" });
+    expect(dialog).toHaveAccessibleDescription("Find a conversation by title or message content.");
+  });
+
   it("does not render dialog content while closed", () => {
     render(
-      <Dialog open={false} onClose={vi.fn()}>
+      <Dialog open={false} onClose={vi.fn()} title="Test dialog">
         <p>Hello</p>
       </Dialog>,
     );

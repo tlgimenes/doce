@@ -19,7 +19,12 @@ interface CommandCenterProps {
 
 export default function CommandCenter({ open, onOpenChange, actions }: CommandCenterProps) {
   return (
-    <Dialog open={open} onClose={() => onOpenChange(false)}>
+    <Dialog
+      open={open}
+      onClose={() => onOpenChange(false)}
+      title="Command center"
+      description="Run application actions."
+    >
       <div className="w-[34rem] max-w-[90vw] p-2" data-testid="command-center">
         <div className="px-2 py-2 text-xs font-medium uppercase text-muted-foreground">
           Actions

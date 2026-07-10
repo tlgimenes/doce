@@ -57,9 +57,12 @@ export default function SearchPanel({ onSelect, recentConversations = [] }: Sear
     const requestId = latestSearchRequestId.current;
     if (!value.trim()) {
       setResults([]);
+      setActiveResultIndex(-1);
       setLoading(false);
       return;
     }
+    setResults([]);
+    setActiveResultIndex(-1);
     setLoading(true);
     try {
       const found = await commands.searchConversations(value);

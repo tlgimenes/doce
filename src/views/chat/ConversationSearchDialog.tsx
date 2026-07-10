@@ -16,7 +16,12 @@ export default function ConversationSearchDialog({
   onSelectConversationId,
 }: ConversationSearchDialogProps) {
   return (
-    <Dialog open={open} onClose={() => onOpenChange(false)}>
+    <Dialog
+      open={open}
+      onClose={() => onOpenChange(false)}
+      title="Search conversations"
+      description="Find a conversation by title or message content."
+    >
       <div data-testid="conversation-search-dialog">
         <SearchPanel
           recentConversations={recentConversations}

@@ -15,7 +15,12 @@ export interface ShortcutsDialogProps {
 // actually bound (research.md § 5).
 export default function ShortcutsDialog({ open, onClose, shortcuts }: ShortcutsDialogProps) {
   return (
-    <Dialog open={open} onClose={onClose}>
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title="Keyboard shortcuts"
+      description="Browse the available app keyboard shortcuts."
+    >
       <div className="w-full p-4" data-testid="shortcuts-dialog">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-sm font-semibold">Keyboard shortcuts</h2>

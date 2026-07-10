@@ -14,6 +14,7 @@ describe("CommandCenter", () => {
     render(<CommandCenter open={true} onOpenChange={vi.fn()} actions={actions} />);
 
     expect(screen.getByTestId("command-center")).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Command center" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /New Agent/ })).toBeEnabled();
     expect(screen.getByRole("button", { name: /Archive Current Conversation/ })).toBeDisabled();
   });

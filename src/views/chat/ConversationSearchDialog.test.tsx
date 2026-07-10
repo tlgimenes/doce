@@ -17,8 +17,22 @@ describe("ConversationSearchDialog", () => {
 
     expect(screen.getByTestId("conversation-search-dialog")).toBeInTheDocument();
     expect(screen.getByTestId("search-panel")).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Search conversations" })).toBeInTheDocument();
 
     await userEvent.keyboard("{Escape}");
     expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("focuses the search input when opened", async () => {
+    render(
+      <ConversationSearchDialog
+        open={true}
+        onOpenChange={vi.fn()}
+        recentConversations={[]}
+        onSelectConversationId={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByTestId("search-input")).toHaveFocus();
   });
 });
