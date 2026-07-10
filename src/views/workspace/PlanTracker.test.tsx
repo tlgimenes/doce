@@ -55,22 +55,9 @@ describe("PlanTracker", () => {
     expect(steps).toHaveLength(3);
     expect(steps[1]).toHaveAttribute("data-current", "true");
 
-    // The strike-through belongs on the description text, not the <li> --
-    // an ancestor's line-through can't be cancelled by a child's
-    // no-underline, so it must not sit on the row itself (it would visually
-    // strike the ✓ icon too in a real browser).
-    const descriptionSpan = steps[0].querySelector("span.truncate");
-    expect(descriptionSpan).toHaveClass("line-through");
-    expect(steps[0]).not.toHaveClass("line-through");
-
-    // Check done step icon is green
-    const doneCheckSpan = steps[0].querySelector("span.w-3");
-    expect(doneCheckSpan).toHaveClass("text-emerald-600");
-
-    // Check pending step has muted styling
-    expect(steps[2]).toHaveClass("text-muted-foreground");
-    // Check current step does not have muted styling
-    expect(steps[1]).not.toHaveClass("text-muted-foreground");
+    expect(steps[0]).toHaveAttribute("data-state", "done");
+    expect(steps[1]).toHaveAttribute("data-state", "current");
+    expect(steps[2]).toHaveAttribute("data-state", "todo");
   });
 
   it("appears and updates on plan-update events for its own conversation only", async () => {
@@ -99,15 +86,12 @@ describe("PlanTracker", () => {
     expect(screen.getByTestId("plan-card")).toHaveTextContent("2/3");
   });
 
-  it("fades out and unmounts when the turn ends (plan: null)", async () => {
+  it("unmounts when the turn ends (plan: null)", async () => {
     vi.mocked(commands.getActivePlan).mockResolvedValue(snapshot());
     render(<PlanTracker conversationId="c1" />);
     await screen.findByTestId("plan-tracker");
 
     act(() => firePlanUpdate({ conversationId: "c1", plan: null }));
-    // Fading: still mounted with the leaving style…
-    expect(screen.getByTestId("plan-tracker")).toHaveClass("opacity-0");
-    // …then gone.
     await waitFor(() => expect(screen.queryByTestId("plan-tracker")).not.toBeInTheDocument());
   });
 
@@ -196,8 +180,11 @@ describe("PlanTracker", () => {
 
     const dots = screen.getAllByTestId("plan-dot");
     expect(dots).toHaveLength(3);
-    expect(dots[0]).toHaveTextContent("✓");
+    expect(dots[0].querySelector("svg")).toBeInTheDocument();
+    expect(dots[0]).toHaveAttribute("data-state", "done");
     expect(dots[1]).toHaveAttribute("data-current", "true");
+    expect(dots[1]).toHaveAttribute("data-state", "current");
+    expect(dots[2]).toHaveAttribute("data-state", "todo");
     expect(screen.queryByTestId("plan-chip")).not.toBeInTheDocument();
 
     act(() =>

@@ -1,8 +1,14 @@
-import { useEffect, useRef, useState } from "react";
-import { cn } from "@/lib/cn";
+import { useEffect, useState } from "react";
+import { Check, Circle } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Item, ItemContent, ItemGroup, ItemMedia, ItemTitle } from "@/components/ui/item";
+import { Progress } from "@/components/ui/progress";
+import { Spinner } from "@/components/ui/spinner";
 import { commands, events, type PlanSnapshot } from "@/lib/ipc";
+import { cn } from "@/lib/cn";
 
-const FADE_OUT_MS = 300;
 /** Card caps (spec): completed steps collapse into one "✓ n done" line
  * once the plan exceeds 6 steps; visible pending capped at 4. */
 const CARD_COLLAPSE_THRESHOLD = 6;
@@ -20,52 +26,39 @@ interface PlanTrackerProps {
  * the transcript's top-right gutter inside Workspace's StickToBottom
  * wrapper. Live-turn chrome only — appears when the agent creates a plan,
  * follows plan-update events, recovers across reloads via
- * get_active_plan, and fades out when the turn ends (plan: null). The
- * card/rail split is pure CSS container queries (the chat surface is the
- * container): the full card when the gutter fits it, the numbered dot
- * rail when it doesn't. Both render in the DOM — jsdom can't evaluate
- * container queries, and tests assert both forms directly.
+ * get_active_plan, and unmounts immediately when the turn ends (plan:
+ * null). The card/rail split is pure CSS container queries (the chat
+ * surface is the container): the full card when the gutter fits it, the
+ * numbered dot rail when it doesn't. Both render in the DOM — jsdom can't
+ * evaluate container queries, and tests assert both forms directly.
  */
 export default function PlanTracker({ conversationId }: PlanTrackerProps) {
   const [plan, setPlan] = useState<PlanSnapshot | null>(null);
-  const [leaving, setLeaving] = useState(false);
   // The rail's tap-to-expand: force-shows the card at narrow widths.
   const [expanded, setExpanded] = useState(false);
-  const leaveTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | undefined;
 
     const applyUpdate = (next: PlanSnapshot | null) => {
-      if (leaveTimerRef.current !== null) {
-        window.clearTimeout(leaveTimerRef.current);
-        leaveTimerRef.current = null;
-      }
       if (next) {
-        setLeaving(false);
         setPlan(next);
         return;
       }
-      // Turn ended: fade, then unmount.
+      // Turn ended: unmount immediately.
       setExpanded(false);
-      setLeaving(true);
-      leaveTimerRef.current = window.setTimeout(() => {
-        setPlan(null);
-        setLeaving(false);
-        leaveTimerRef.current = null;
-      }, FADE_OUT_MS);
+      setPlan(null);
     };
 
     // Set once a plan-update event for THIS conversation has been seen, so
     // the mount-time recovery invoke below can tell it's become stale --
     // covers both a stale snapshot clobbering a fresher live event, and a
-    // `plan: null` event fading the tracker before recovery even resolves
-    // (a late, stale resolve must not resurrect it).
+    // `plan: null` event unmounting the tracker before recovery even
+    // resolves (a late, stale resolve must not resurrect it).
     let sawEvent = false;
 
     setPlan(null);
-    setLeaving(false);
     setExpanded(false);
     void commands
       .getActivePlan(conversationId)
@@ -87,10 +80,6 @@ export default function PlanTracker({ conversationId }: PlanTrackerProps) {
     return () => {
       cancelled = true;
       unlisten?.();
-      if (leaveTimerRef.current !== null) {
-        window.clearTimeout(leaveTimerRef.current);
-        leaveTimerRef.current = null;
-      }
     };
   }, [conversationId]);
 
@@ -99,13 +88,7 @@ export default function PlanTracker({ conversationId }: PlanTrackerProps) {
   const doneCount = plan.steps.filter((s) => s.done).length;
 
   return (
-    <div
-      className={cn(
-        "absolute top-3 right-3 z-10 transition-opacity duration-300",
-        leaving && "opacity-0",
-      )}
-      data-testid="plan-tracker"
-    >
+    <div className="absolute top-3 right-3 z-10" data-testid="plan-tracker">
       {/* Full card: shown when the container is wide enough for the
           gutter (>= 64rem), or when the rail was tapped open. */}
       <div className={cn("hidden @5xl:block", expanded && "block")} data-testid="plan-card">
@@ -123,18 +106,29 @@ export default function PlanTracker({ conversationId }: PlanTrackerProps) {
         <PlanRail plan={plan} doneCount={doneCount} />
       </button>
       {expanded && (
-        <button
+        <Button
           type="button"
-          className="mt-1 block w-full text-center text-xs text-muted-foreground @5xl:hidden"
+          variant="ghost"
+          size="sm"
+          className="mt-1 w-full @5xl:hidden"
           onClick={() => setExpanded(false)}
           aria-label="Hide plan"
           data-testid="plan-collapse"
         >
           collapse
-        </button>
+        </Button>
       )}
     </div>
   );
+}
+
+function stepState(
+  step: PlanSnapshot["steps"][number],
+  index: number,
+  currentStepIndex: number | null,
+) {
+  if (step.done) return "done";
+  return index === currentStepIndex ? "current" : "todo";
 }
 
 function PlanCard({ plan, doneCount }: { plan: PlanSnapshot; doneCount: number }) {
@@ -151,79 +145,75 @@ function PlanCard({ plan, doneCount }: { plan: PlanSnapshot; doneCount: number }
   const hiddenCount = rows.length - pendingVisible.length;
 
   return (
-    <div className="w-60 rounded-lg border border-border bg-card/95 p-3 text-sm shadow-sm backdrop-blur supports-[backdrop-filter]:bg-card/80">
-      <div className="mb-1.5 flex items-baseline justify-between gap-2">
-        <span className="truncate text-xs font-semibold" title={plan.goal}>
+    <Card className="w-64 gap-2 py-3">
+      <CardHeader className="gap-1 px-3">
+        <CardTitle className="truncate" title={plan.goal}>
           {plan.goal}
-        </span>
-        <span className="shrink-0 text-xs text-muted-foreground">
+        </CardTitle>
+        <Badge variant="secondary">
           {doneCount}/{plan.steps.length}
-        </span>
-      </div>
-      {collapseDone && doneCount > 0 && (
-        <p className="text-xs text-muted-foreground" data-testid="plan-done-collapsed">
-          ✓ {doneCount} done
-        </p>
-      )}
-      <ul className="space-y-0.5">
-        {pendingVisible.map(({ step, index }) => (
-          <li
-            key={index}
-            className={cn(
-              "flex items-baseline gap-1.5 text-xs",
-              step.done && "text-muted-foreground",
-              !step.done && index !== plan.currentStepIndex && "text-muted-foreground",
-              index === plan.currentStepIndex && "font-semibold",
-            )}
-            data-current={index === plan.currentStepIndex ? "true" : undefined}
-            data-testid="plan-step"
-          >
-            <span className={cn("w-3 shrink-0", step.done && "text-emerald-600")}>
-              {step.done ? "✓" : index === plan.currentStepIndex ? "●" : "○"}
-            </span>
-            <span className={cn("truncate", step.done && "line-through")} title={step.description}>
-              {step.description}
-            </span>
-          </li>
-        ))}
-      </ul>
-      {hiddenCount > 0 && (
-        <p className="text-xs text-muted-foreground" data-testid="plan-more">
-          +{hiddenCount} more
-        </p>
-      )}
-    </div>
+        </Badge>
+        <Progress value={plan.steps.length > 0 ? (doneCount / plan.steps.length) * 100 : 0} />
+      </CardHeader>
+      <CardContent className="px-3">
+        {collapseDone && doneCount > 0 && (
+          <div data-testid="plan-done-collapsed">✓ {doneCount} done</div>
+        )}
+        <ItemGroup>
+          {pendingVisible.map(({ step, index }) => (
+            <Item
+              key={index}
+              size="xs"
+              data-state={stepState(step, index, plan.currentStepIndex)}
+              data-current={index === plan.currentStepIndex ? "true" : undefined}
+              data-testid="plan-step"
+            >
+              <ItemMedia variant="icon">
+                {step.done ? (
+                  <Check />
+                ) : index === plan.currentStepIndex ? (
+                  <Spinner role="presentation" aria-label={undefined} />
+                ) : (
+                  <Circle />
+                )}
+              </ItemMedia>
+              <ItemContent>
+                <ItemTitle className="truncate" title={step.description}>
+                  {step.description}
+                </ItemTitle>
+              </ItemContent>
+            </Item>
+          ))}
+        </ItemGroup>
+        {hiddenCount > 0 && <div data-testid="plan-more">+{hiddenCount} more</div>}
+      </CardContent>
+    </Card>
   );
 }
 
 function PlanRail({ plan, doneCount }: { plan: PlanSnapshot; doneCount: number }) {
-  const pill =
-    "rounded-full border border-border bg-card/95 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-card/80";
   if (plan.steps.length > RAIL_MAX_DOTS) {
     return (
-      <span className={cn(pill, "px-2.5 py-1 text-xs font-semibold")} data-testid="plan-chip">
+      <Badge variant="secondary" data-testid="plan-chip">
         {doneCount}/{plan.steps.length}
-      </span>
+      </Badge>
     );
   }
   return (
-    <span className={cn(pill, "flex flex-col items-center gap-1 px-1.5 py-2")}>
+    <span className="flex flex-col items-center gap-1">
       {plan.steps.map((step, index) => (
-        <span
+        <Badge
           key={index}
-          className={cn(
-            "flex h-4.5 w-4.5 items-center justify-center rounded-full text-[10px] font-semibold",
-            step.done
-              ? "bg-emerald-600 text-white"
-              : index === plan.currentStepIndex
-                ? "border-2 border-amber-500 text-amber-600"
-                : "border border-border text-muted-foreground",
-          )}
+          variant={
+            step.done ? "default" : index === plan.currentStepIndex ? "secondary" : "outline"
+          }
+          className="size-5 justify-center p-0"
+          data-state={stepState(step, index, plan.currentStepIndex)}
           data-current={index === plan.currentStepIndex ? "true" : undefined}
           data-testid="plan-dot"
         >
-          {step.done ? "✓" : index + 1}
-        </span>
+          {step.done ? <Check /> : index + 1}
+        </Badge>
       ))}
     </span>
   );
