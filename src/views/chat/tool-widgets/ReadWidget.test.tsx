@@ -17,11 +17,13 @@ describe("ReadWidget (004-tool-call-widgets, US4)", () => {
 
     render(<ReadWidget detail={detail} />);
 
-    expect(screen.getByTestId("read-widget")).not.toHaveAttribute("open");
-    expect(screen.getByTestId("read-summary")).toHaveTextContent(
-      "Read /tmp/notes.txt · 11B · 312 tok",
-    );
-    expect(screen.getByTestId("tool-disclosure-chevron")).toBeInTheDocument();
+    expect(screen.getByRole("button")).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByTestId("read-summary")).toHaveTextContent("Read /tmp/notes.txt");
+    expect(screen.getByText("11B")).toBeInTheDocument();
+    expect(screen.getByText("312 tok")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("read-widget").querySelector('[data-slot="widget-frame-chevron"]'),
+    ).toBeInTheDocument();
     expect(screen.queryByTestId("read-preview")).not.toBeInTheDocument();
   });
 
@@ -36,9 +38,10 @@ describe("ReadWidget (004-tool-call-widgets, US4)", () => {
     };
 
     render(<ReadWidget detail={detail} />);
-    await userEvent.click(screen.getByTestId("read-summary"));
+    await userEvent.click(screen.getByRole("button"));
 
-    expect(screen.getByTestId("read-preview")).toHaveClass("max-h-80");
+    const preview = screen.getByTestId("read-preview");
+    expect(preview.querySelector(".max-h-80")).toBeInTheDocument();
     expect(screen.getByTestId("read-text-preview")).toHaveTextContent("captured text");
   });
 
@@ -56,10 +59,10 @@ describe("ReadWidget (004-tool-call-widgets, US4)", () => {
 
     expect(screen.queryByTestId("read-truncated")).not.toBeInTheDocument();
     expect(screen.queryByText("Output truncated")).not.toBeInTheDocument();
-    expect(screen.getByTestId("read-summary")).toHaveTextContent(
-      "Read /tmp/big.txt · 16B · 42 tok",
-    );
-    await userEvent.click(screen.getByTestId("read-summary"));
+    expect(screen.getByTestId("read-summary")).toHaveTextContent("Read /tmp/big.txt");
+    expect(screen.getByText("16B")).toBeInTheDocument();
+    expect(screen.getByText("42 tok")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button"));
     expect(screen.queryByText("Output truncated")).not.toBeInTheDocument();
   });
 
@@ -76,12 +79,12 @@ describe("ReadWidget (004-tool-call-widgets, US4)", () => {
 
     render(<ReadWidget detail={detail} />);
 
-    expect(screen.getByTestId("read-summary")).toHaveTextContent(
-      "Read /tmp/huge.txt · 15B · 2.0k tok",
-    );
+    expect(screen.getByTestId("read-summary")).toHaveTextContent("Read /tmp/huge.txt");
+    expect(screen.getByText("15B")).toBeInTheDocument();
+    expect(screen.getByText("2.0k tok")).toBeInTheDocument();
     expect(screen.queryByTestId("view-full-output-button")).not.toBeInTheDocument();
 
-    await userEvent.click(screen.getByTestId("read-summary"));
+    await userEvent.click(screen.getByRole("button"));
     expect(screen.getByTestId("read-text-preview")).toHaveTextContent("preview only...");
     expect(screen.getByTestId("view-full-output-button")).toBeInTheDocument();
   });
@@ -104,7 +107,7 @@ describe("ReadWidget (004-tool-call-widgets, US4)", () => {
     };
 
     render(<ReadWidget detail={detail} />);
-    await userEvent.click(screen.getByTestId("read-summary"));
+    await userEvent.click(screen.getByRole("button"));
 
     expect(screen.getByTestId("read-text-preview")).toHaveTextContent("pub fn execute(...");
     expect(screen.getByTestId("view-full-output-button")).toBeInTheDocument();
@@ -120,7 +123,7 @@ describe("ReadWidget (004-tool-call-widgets, US4)", () => {
     };
 
     render(<ReadWidget detail={detail} />);
-    await userEvent.click(screen.getByTestId("read-summary"));
+    await userEvent.click(screen.getByRole("button"));
 
     expect(screen.getByTestId("read-text-preview")).toHaveTextContent("hello world");
     expect(screen.queryByTestId("view-full-output-button")).not.toBeInTheDocument();
@@ -137,8 +140,9 @@ describe("ReadWidget (004-tool-call-widgets, US4)", () => {
 
     render(<ReadWidget detail={detail} />);
 
-    expect(screen.getByTestId("read-summary")).toHaveTextContent("Read /tmp/legacy.txt · 11B");
-    expect(screen.getByTestId("read-summary")).not.toHaveTextContent("tok");
+    expect(screen.getByTestId("read-summary")).toHaveTextContent("Read /tmp/legacy.txt");
+    expect(screen.getByText("11B")).toBeInTheDocument();
+    expect(screen.queryByText(/tok/)).not.toBeInTheDocument();
   });
 
   it("renders a failure state distinctly and not as a disclosure", () => {
@@ -152,8 +156,8 @@ describe("ReadWidget (004-tool-call-widgets, US4)", () => {
 
     render(<ReadWidget detail={detail} />);
 
-    expect(screen.getByTestId("read-widget")).toHaveClass("border-destructive/40");
-    expect(screen.getByText(/No such file or directory/)).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(/No such file or directory/);
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
     expect(screen.queryByTestId("read-summary")).not.toBeInTheDocument();
   });
 });

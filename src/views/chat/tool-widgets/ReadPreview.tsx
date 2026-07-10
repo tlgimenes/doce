@@ -1,5 +1,8 @@
 import { useEffect, useState } from "react";
 import MarkdownPreview from "@/components/MarkdownPreview";
+import { CodeBlock } from "@/components/ui/code-block";
+import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
+import { Spinner } from "@/components/ui/spinner";
 import { commands } from "@/lib/ipc";
 import type { ReadDetail } from "@/lib/ipc";
 
@@ -101,14 +104,7 @@ export default function ReadPreview({ detail }: ReadPreviewProps) {
   }
 
   if (kind === "text") {
-    return (
-      <pre
-        className="whitespace-pre-wrap break-words font-mono text-xs"
-        data-testid="read-text-preview"
-      >
-        {content}
-      </pre>
-    );
+    return <CodeBlock data-testid="read-text-preview">{content}</CodeBlock>;
   }
 
   if (kind === "native" && detail.filePath) {
@@ -146,7 +142,8 @@ function NativeReadPreview({ path }: { path: string }) {
 
   if (state.status === "loading") {
     return (
-      <p className="text-xs text-muted-foreground" data-testid="read-preview-loading">
+      <p className="flex items-center gap-2" data-testid="read-preview-loading">
+        <Spinner role="presentation" aria-label={undefined} />
         Loading preview…
       </p>
     );
@@ -154,9 +151,12 @@ function NativeReadPreview({ path }: { path: string }) {
 
   if (state.status === "error") {
     return (
-      <p className="text-xs text-destructive" data-testid="read-preview-error">
-        {state.error}
-      </p>
+      <Empty data-testid="read-preview-error">
+        <EmptyHeader>
+          <EmptyTitle>Preview failed</EmptyTitle>
+          <EmptyDescription>{state.error}</EmptyDescription>
+        </EmptyHeader>
+      </Empty>
     );
   }
 
@@ -167,7 +167,7 @@ function NativeReadPreview({ path }: { path: string }) {
       <img
         src={state.dataUrl}
         alt={state.name}
-        className="max-h-80 max-w-full rounded-md object-contain"
+        className="max-h-80 max-w-full object-contain"
         data-testid="read-image-preview"
       />
     );
@@ -178,7 +178,7 @@ function NativeReadPreview({ path }: { path: string }) {
       <video
         src={state.dataUrl}
         controls
-        className="max-h-80 w-full rounded-md"
+        className="max-h-80 w-full"
         data-testid="read-video-preview"
       >
         {state.name}
@@ -206,8 +206,10 @@ function nativeMediaKind(mimeType: string): "image" | "video" | "audio" | null {
 
 function PreviewUnavailable({ filePath }: { filePath: string | null }) {
   return (
-    <p className="text-xs text-muted-foreground" data-testid="read-preview-unavailable">
-      Preview unavailable{filePath ? ` for ${filePath}` : ""}
-    </p>
+    <Empty data-testid="read-preview-unavailable">
+      <EmptyHeader>
+        <EmptyDescription>Preview unavailable{filePath ? ` for ${filePath}` : ""}</EmptyDescription>
+      </EmptyHeader>
+    </Empty>
   );
 }

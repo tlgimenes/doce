@@ -39,7 +39,9 @@ describe("ReadPreview", () => {
   it("renders captured content for text-like files without reading from disk", () => {
     render(<ReadPreview detail={readDetail("/tmp/notes.txt", "captured text")} />);
 
-    expect(screen.getByTestId("read-text-preview")).toHaveTextContent("captured text");
+    const preview = screen.getByTestId("read-text-preview");
+    expect(preview).toHaveTextContent("captured text");
+    expect(preview).toHaveAttribute("data-slot", "code-block");
     expect(commands.readAttachedFile).not.toHaveBeenCalled();
   });
 
@@ -48,6 +50,16 @@ describe("ReadPreview", () => {
 
     expect(screen.getByRole("heading", { level: 2, name: "Title" })).toBeInTheDocument();
     expect(commands.readAttachedFile).not.toHaveBeenCalled();
+  });
+
+  it("shows a loading spinner while a native preview is being read from disk", () => {
+    vi.mocked(commands.readAttachedFile).mockReturnValue(new Promise(() => {}));
+
+    render(<ReadPreview detail={readDetail("/tmp/photo.png")} />);
+
+    const loading = screen.getByTestId("read-preview-loading");
+    expect(loading.querySelector('[data-slot="spinner"]')).toBeInTheDocument();
+    expect(loading).toHaveTextContent("Loading preview…");
   });
 
   it("loads and renders image previews from disk", async () => {
@@ -94,7 +106,9 @@ describe("ReadPreview", () => {
   it("renders preview unavailable for unsupported file types", () => {
     render(<ReadPreview detail={readDetail("/tmp/archive.zip")} />);
 
-    expect(screen.getByTestId("read-preview-unavailable")).toHaveTextContent("Preview unavailable");
+    const unavailable = screen.getByTestId("read-preview-unavailable");
+    expect(unavailable).toHaveTextContent("Preview unavailable");
+    expect(unavailable).toHaveAttribute("data-slot", "empty");
     expect(commands.readAttachedFile).not.toHaveBeenCalled();
   });
 
@@ -103,8 +117,8 @@ describe("ReadPreview", () => {
 
     render(<ReadPreview detail={readDetail("/tmp/photo.png")} />);
 
-    expect(await screen.findByTestId("read-preview-error")).toHaveTextContent(
-      "failed to read file",
-    );
+    const error = await screen.findByTestId("read-preview-error");
+    expect(error).toHaveTextContent("failed to read file");
+    expect(error).toHaveAttribute("data-slot", "empty");
   });
 });
