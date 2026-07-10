@@ -16,13 +16,18 @@ describe("SearchResultsWidget (004-tool-call-widgets, US4: Glob + Grep)", () => 
 
     render(<SearchResultsWidget detail={detail} />);
 
-    expect(screen.getByTestId("search-widget")).not.toHaveAttribute("open");
-    expect(screen.getByTestId("search-summary")).toHaveTextContent("Glob *.rs · 2 files · 42 tok");
+    expect(screen.getByRole("button")).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByTestId("search-summary")).toHaveTextContent("Glob");
+    expect(screen.getByTestId("search-summary")).toHaveTextContent("*.rs");
+    expect(screen.getByText("2 files")).toBeInTheDocument();
+    expect(screen.getByText("42 tok")).toBeInTheDocument();
     expect(screen.queryByTestId("search-match")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("search-results")).not.toBeInTheDocument();
 
-    await userEvent.click(screen.getByTestId("search-summary"));
+    await userEvent.click(screen.getByRole("button"));
 
-    expect(screen.getByTestId("search-results")).toHaveClass("max-h-80");
+    expect(screen.getByRole("button")).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByTestId("search-results").querySelector(".max-h-80")).toBeInTheDocument();
     expect(screen.getAllByTestId("search-match")).toHaveLength(2);
     expect(screen.getByText("/tmp/project/a.rs")).toBeInTheDocument();
     expect(screen.getByTestId("search-context")).toHaveTextContent("/tmp/project");
@@ -32,12 +37,16 @@ describe("SearchResultsWidget (004-tool-call-widgets, US4: Glob + Grep)", () => 
     const detail: GlobDetail = { toolName: "Glob", pattern: "*.nope", path: "/tmp", matches: [] };
     render(<SearchResultsWidget detail={detail} />);
 
-    expect(screen.getByTestId("search-summary")).toHaveTextContent("Glob *.nope · 0 files");
+    expect(screen.getByTestId("search-summary")).toHaveTextContent("Glob");
+    expect(screen.getByTestId("search-summary")).toHaveTextContent("*.nope");
+    expect(screen.getByText("0 files")).toBeInTheDocument();
     expect(screen.queryByTestId("search-no-matches")).not.toBeInTheDocument();
 
-    await userEvent.click(screen.getByTestId("search-summary"));
+    await userEvent.click(screen.getByRole("button"));
 
-    expect(screen.getByTestId("search-no-matches")).toHaveTextContent("No files matched");
+    const empty = screen.getByTestId("search-no-matches");
+    expect(empty).toHaveTextContent("No files matched");
+    expect(empty.closest('[data-slot="empty"]')).not.toBeNull();
   });
 
   it("renders Grep collapsed with match count and expands to show match list", async () => {
@@ -51,10 +60,13 @@ describe("SearchResultsWidget (004-tool-call-widgets, US4: Glob + Grep)", () => 
     };
     render(<SearchResultsWidget detail={detail} />);
 
-    expect(screen.getByTestId("search-summary")).toHaveTextContent("Grep TODO · 1 match · 99 tok");
+    expect(screen.getByTestId("search-summary")).toHaveTextContent("Grep");
+    expect(screen.getByTestId("search-summary")).toHaveTextContent("TODO");
+    expect(screen.getByText("1 match")).toBeInTheDocument();
+    expect(screen.getByText("99 tok")).toBeInTheDocument();
     expect(screen.queryByTestId("search-match")).not.toBeInTheDocument();
 
-    await userEvent.click(screen.getByTestId("search-summary"));
+    await userEvent.click(screen.getByRole("button"));
 
     const match = screen.getByTestId("search-match");
     expect(match).toHaveTextContent("/tmp/project/a.rs:12: // TODO: fix this");
@@ -72,12 +84,16 @@ describe("SearchResultsWidget (004-tool-call-widgets, US4: Glob + Grep)", () => 
     };
     render(<SearchResultsWidget detail={detail} />);
 
-    expect(screen.getByTestId("search-summary")).toHaveTextContent("Grep nonexistent · 0 matches");
+    expect(screen.getByTestId("search-summary")).toHaveTextContent("Grep");
+    expect(screen.getByTestId("search-summary")).toHaveTextContent("nonexistent");
+    expect(screen.getByText("0 matches")).toBeInTheDocument();
     expect(screen.queryByTestId("search-no-matches")).not.toBeInTheDocument();
 
-    await userEvent.click(screen.getByTestId("search-summary"));
+    await userEvent.click(screen.getByRole("button"));
 
-    expect(screen.getByTestId("search-no-matches")).toHaveTextContent("No matches found");
+    const empty = screen.getByTestId("search-no-matches");
+    expect(empty).toHaveTextContent("No matches found");
+    expect(empty.closest('[data-slot="empty"]')).not.toBeNull();
   });
 
   it("shows no token cost when tokenCount is absent", () => {
@@ -88,7 +104,7 @@ describe("SearchResultsWidget (004-tool-call-widgets, US4: Glob + Grep)", () => 
       matches: ["/tmp/project/a.rs"],
     };
     render(<SearchResultsWidget detail={detail} />);
-    expect(screen.getByTestId("search-summary")).not.toHaveTextContent("tok");
+    expect(screen.queryByText(/tok/)).not.toBeInTheDocument();
   });
 
   it("renders an interrupted notice — never a collapsed zero-result disclosure — for a healed crash-orphaned Grep", () => {
@@ -102,7 +118,10 @@ describe("SearchResultsWidget (004-tool-call-widgets, US4: Glob + Grep)", () => 
     };
     render(<SearchResultsWidget detail={detail} />);
     expect(screen.getByTestId("search-interrupted")).toHaveTextContent(/interrupted/i);
+    const badge = screen.getByTestId("search-widget").querySelector('[data-slot="badge"]');
+    expect(badge).toHaveTextContent("Interrupted");
     expect(screen.queryByTestId("search-summary")).not.toBeInTheDocument();
     expect(screen.queryByTestId("search-no-matches")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 });

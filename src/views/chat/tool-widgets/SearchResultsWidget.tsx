@@ -1,6 +1,11 @@
+import { Search } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { CodeInline } from "@/components/ui/code-block";
+import { Empty, EmptyDescription, EmptyHeader } from "@/components/ui/empty";
+import { ItemContent, ItemDescription, ItemMedia, ItemTitle } from "@/components/ui/item";
+import { WidgetFrame, WidgetFrameContent, WidgetFrameHeader } from "@/components/ui/widget-frame";
 import type { GlobDetail, GrepDetail } from "@/lib/ipc";
 import { formatTokenCount } from "@/lib/formatTokenCount";
-import ToolDisclosure from "./ToolDisclosure";
 
 interface SearchResultsWidgetProps {
   detail: GlobDetail | GrepDetail;
@@ -12,42 +17,53 @@ export default function SearchResultsWidget({ detail }: SearchResultsWidgetProps
 
   if (detail.interrupted) {
     return (
-      <div
-        className="rounded-lg border border-border bg-card p-3 text-sm"
-        data-testid="search-widget"
-      >
-        <p className="mb-1 font-mono text-xs text-muted-foreground">
-          {detail.toolName} {detail.pattern}
-          {detail.tokenCount != null && <span> · {formatTokenCount(detail.tokenCount)} tok</span>}
-        </p>
-        <p className="text-xs text-amber-600 dark:text-amber-400" data-testid="search-interrupted">
-          Interrupted — the app closed before this search finished
-        </p>
-      </div>
+      <WidgetFrame data-testid="search-widget">
+        <WidgetFrameHeader>
+          <ItemMedia variant="icon">
+            <Search />
+          </ItemMedia>
+          <ItemContent>
+            <ItemTitle>
+              {detail.toolName} <CodeInline>{detail.pattern}</CodeInline>
+            </ItemTitle>
+            <ItemDescription data-testid="search-interrupted">
+              Interrupted — the app closed before this search finished
+            </ItemDescription>
+          </ItemContent>
+          <Badge variant="outline">Interrupted</Badge>
+        </WidgetFrameHeader>
+      </WidgetFrame>
     );
   }
 
   const count = detail.matches.length;
   const countLabel = isGrep ? `${count} ${count === 1 ? "match" : "matches"}` : `${count} files`;
-  const tokenLabel =
-    detail.tokenCount != null ? ` · ${formatTokenCount(detail.tokenCount)} tok` : "";
 
   return (
-    <ToolDisclosure
-      testId="search-widget"
-      summaryTestId="search-summary"
-      bodyTestId="search-results"
-      summary={
-        <span className="font-mono text-xs text-muted-foreground">
-          {detail.toolName} {detail.pattern} · {countLabel}
-          {tokenLabel}
+    <WidgetFrame collapsible data-testid="search-widget">
+      <WidgetFrameHeader>
+        <ItemMedia variant="icon">
+          <Search />
+        </ItemMedia>
+        <ItemContent>
+          <ItemTitle data-testid="search-summary">
+            {detail.toolName} <CodeInline>{detail.pattern}</CodeInline>
+          </ItemTitle>
+        </ItemContent>
+        <span className="flex items-center gap-2">
+          <Badge variant="outline">{countLabel}</Badge>
+          {detail.tokenCount != null && (
+            <Badge variant="outline">{formatTokenCount(detail.tokenCount)} tok</Badge>
+          )}
         </span>
-      }
-      bodyClassName="space-y-2"
-    >
-      <SearchContext detail={detail} />
-      {isGrep ? <GrepResults detail={detail} /> : <GlobResults detail={detail} />}
-    </ToolDisclosure>
+      </WidgetFrameHeader>
+      <WidgetFrameContent data-testid="search-results">
+        <div className="max-h-80 space-y-2 overflow-y-auto p-3">
+          <SearchContext detail={detail} />
+          {isGrep ? <GrepResults detail={detail} /> : <GlobResults detail={detail} />}
+        </div>
+      </WidgetFrameContent>
+    </WidgetFrame>
   );
 }
 
@@ -60,26 +76,28 @@ function SearchContext({ detail }: { detail: GlobDetail | GrepDetail }) {
   if (parts.length === 0) return null;
 
   return (
-    <p className="font-mono text-xs text-muted-foreground" data-testid="search-context">
-      {parts.join(" · ")}
-    </p>
+    <ItemDescription data-testid="search-context">
+      <CodeInline>{parts.join(" · ")}</CodeInline>
+    </ItemDescription>
   );
 }
 
 function GlobResults({ detail }: { detail: GlobDetail }) {
   if (detail.matches.length === 0) {
     return (
-      <p className="text-xs text-muted-foreground" data-testid="search-no-matches">
-        No files matched
-      </p>
+      <Empty data-testid="search-no-matches">
+        <EmptyHeader>
+          <EmptyDescription>No files matched</EmptyDescription>
+        </EmptyHeader>
+      </Empty>
     );
   }
 
   return (
-    <ul className="space-y-0.5 font-mono text-xs">
+    <ul className="space-y-0.5">
       {detail.matches.map((path, i) => (
         <li key={i} data-testid="search-match" className="truncate">
-          {path}
+          <CodeInline>{path}</CodeInline>
         </li>
       ))}
     </ul>
@@ -89,17 +107,21 @@ function GlobResults({ detail }: { detail: GlobDetail }) {
 function GrepResults({ detail }: { detail: GrepDetail }) {
   if (detail.matches.length === 0) {
     return (
-      <p className="text-xs text-muted-foreground" data-testid="search-no-matches">
-        No matches found
-      </p>
+      <Empty data-testid="search-no-matches">
+        <EmptyHeader>
+          <EmptyDescription>No matches found</EmptyDescription>
+        </EmptyHeader>
+      </Empty>
     );
   }
 
   return (
-    <ul className="space-y-0.5 font-mono text-xs">
+    <ul className="space-y-0.5">
       {detail.matches.map((m, i) => (
         <li key={i} data-testid="search-match" className="truncate">
-          {m.path}:{m.lineNumber}: {m.line}
+          <CodeInline>
+            {m.path}:{m.lineNumber}: {m.line}
+          </CodeInline>
         </li>
       ))}
     </ul>
