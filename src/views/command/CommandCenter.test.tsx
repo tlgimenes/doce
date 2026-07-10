@@ -15,12 +15,20 @@ describe("CommandCenter", () => {
 
     expect(screen.getByTestId("command-center")).toBeInTheDocument();
     expect(screen.getByRole("dialog", { name: "Command center" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Command search" })).toBeInTheDocument();
     expect(screen.getByTestId("command-center").querySelector('[data-slot="command"]')).toBeTruthy();
     expect(screen.getByTestId("command-center").querySelector('[data-slot="command-input"]')).toBeTruthy();
     expect(screen.getByTestId("command-center").querySelector('[data-slot="command-list"]')).toBeTruthy();
     expect(screen.getByTestId("command-center").querySelectorAll('[data-slot="command-item"]')).toHaveLength(3);
     expect(screen.getByRole("button", { name: /New Agent/ })).toBeEnabled();
     expect(screen.getByRole("button", { name: /Archive Current Conversation/ })).toBeDisabled();
+  });
+
+  it("sizes the dialog shell to fit the command center without horizontal clipping", async () => {
+    render(<CommandCenter open={true} onOpenChange={vi.fn()} actions={actions} />);
+
+    expect(await screen.findByTestId("app-dialog-content")).toHaveClass("w-[34rem]");
+    expect(screen.getByTestId("command-center")).toHaveClass("w-full");
   });
 
   it("runs an enabled action and closes", async () => {

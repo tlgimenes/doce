@@ -131,6 +131,7 @@ export default function SearchPanel({ onSelect, recentConversations = [] }: Sear
         <input
           autoFocus
           className="flex-1 rounded-md border border-border bg-card px-3 py-2"
+          aria-label="Search conversations"
           placeholder="Search conversations…"
           value={query}
           onChange={(e) => runSearch(e.target.value)}

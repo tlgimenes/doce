@@ -62,8 +62,9 @@ export default function CommandCenter({ open, onOpenChange, actions }: CommandCe
       onClose={() => onOpenChange(false)}
       title="Command center"
       description="Run application actions."
+      contentClassName="w-[34rem]"
     >
-      <div className="w-[34rem] max-w-[90vw]" data-testid="command-center">
+      <div className="w-full" data-testid="command-center">
         <Command
           className="rounded-lg border border-border/70 bg-popover p-0"
           value={query}
@@ -71,6 +72,7 @@ export default function CommandCenter({ open, onOpenChange, actions }: CommandCe
         >
           <CommandInput
             autoFocus
+            aria-label="Command search"
             placeholder="Type a command or search"
             onKeyDown={handleInputKeyDown}
           />

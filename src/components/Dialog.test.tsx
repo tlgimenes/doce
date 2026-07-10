@@ -58,6 +58,21 @@ describe("Dialog", () => {
     expect(dialog).toHaveAccessibleDescription("Find a conversation by title or message content.");
   });
 
+  it("applies a content class override to the dialog shell", async () => {
+    render(
+      <Dialog
+        open={true}
+        onClose={vi.fn()}
+        title="Command center"
+        contentClassName="w-[34rem]"
+      >
+        <p>Hello</p>
+      </Dialog>,
+    );
+
+    expect(await screen.findByTestId("app-dialog-content")).toHaveClass("w-[34rem]");
+  });
+
   it("does not render dialog content while closed", () => {
     render(
       <Dialog open={false} onClose={vi.fn()} title="Test dialog">

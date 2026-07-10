@@ -1,4 +1,5 @@
 import { type ReactNode } from "react"
+import { cn } from "@/lib/cn"
 
 import {
   Dialog as DialogRoot,
@@ -13,6 +14,7 @@ export interface DialogProps {
   onClose: () => void
   title: string
   description?: string
+  contentClassName?: string
   children: ReactNode
 }
 
@@ -21,6 +23,7 @@ export default function Dialog({
   onClose,
   title,
   description,
+  contentClassName,
   children,
 }: DialogProps) {
   return (
@@ -35,7 +38,7 @@ export default function Dialog({
       <DialogContent
         showCloseButton={false}
         data-testid="app-dialog-content"
-        className="w-[30rem] max-w-[90vw] overflow-hidden p-0"
+        className={cn("w-[30rem] max-w-[90vw] overflow-hidden p-0", contentClassName)}
       >
         <DialogHeader className="sr-only">
           <DialogTitle>{title}</DialogTitle>

@@ -38,6 +38,8 @@ describe("SearchPanel", () => {
     const onSelect = vi.fn();
     render(<SearchPanel onSelect={onSelect} />);
 
+    expect(screen.getByRole("combobox", { name: "Search conversations" })).toBeInTheDocument();
+
     await userEvent.type(screen.getByTestId("search-input"), "fox");
 
     await waitFor(() => expect(screen.getByTestId("search-result")).toBeInTheDocument());

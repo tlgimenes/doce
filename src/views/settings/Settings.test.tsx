@@ -51,9 +51,9 @@ describe("Settings (User Story 4: MCP servers + skills)", () => {
     });
 
     render(<Settings onClose={vi.fn()} />);
-    await userEvent.type(screen.getByTestId("mcp-name-input"), "my-server");
-    await userEvent.type(screen.getByTestId("mcp-command-input"), "npx");
-    await userEvent.type(screen.getByTestId("mcp-args-input"), "-y some-package");
+    await userEvent.type(screen.getByLabelText("Server name"), "my-server");
+    await userEvent.type(screen.getByLabelText("Command"), "npx");
+    await userEvent.type(screen.getByLabelText("Arguments"), "-y some-package");
     await userEvent.click(screen.getByTestId("add-mcp-server"));
 
     await waitFor(() => {

@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Field, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { commands, type McpServerConnection, type SkillSummary } from "@/lib/ipc";
 
@@ -106,27 +108,48 @@ export default function Settings({ onClose }: SettingsProps) {
               <div className="mb-4 rounded-md border border-border bg-card p-4">
                 <h3 className="mb-3 text-sm font-medium">MCP servers</h3>
                 <div className="mb-3 flex flex-wrap gap-2">
-                  <input
-                    className="min-w-40 flex-1 rounded-md border border-border bg-card px-3 py-2 text-sm"
-                    placeholder="name"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    data-testid="mcp-name-input"
-                  />
-                  <input
-                    className="min-w-48 flex-1 rounded-md border border-border bg-card px-3 py-2 text-sm"
-                    placeholder="command (e.g. npx)"
-                    value={command}
-                    onChange={(e) => setCommand(e.target.value)}
-                    data-testid="mcp-command-input"
-                  />
-                  <input
-                    className="min-w-56 flex-[2] rounded-md border border-border bg-card px-3 py-2 text-sm"
-                    placeholder="args (space-separated)"
-                    value={argsInput}
-                    onChange={(e) => setArgsInput(e.target.value)}
-                    data-testid="mcp-args-input"
-                  />
+                  <Field className="min-w-40 flex-1 gap-1">
+                    <FieldLabel htmlFor="mcp-name-input" className="text-xs text-muted-foreground">
+                      Server name
+                    </FieldLabel>
+                    <Input
+                      id="mcp-name-input"
+                      placeholder="name"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      data-testid="mcp-name-input"
+                    />
+                  </Field>
+                  <Field className="min-w-48 flex-1 gap-1">
+                    <FieldLabel
+                      htmlFor="mcp-command-input"
+                      className="text-xs text-muted-foreground"
+                    >
+                      Command
+                    </FieldLabel>
+                    <Input
+                      id="mcp-command-input"
+                      placeholder="command (e.g. npx)"
+                      value={command}
+                      onChange={(e) => setCommand(e.target.value)}
+                      data-testid="mcp-command-input"
+                    />
+                  </Field>
+                  <Field className="min-w-56 flex-[2] gap-1">
+                    <FieldLabel
+                      htmlFor="mcp-args-input"
+                      className="text-xs text-muted-foreground"
+                    >
+                      Arguments
+                    </FieldLabel>
+                    <Input
+                      id="mcp-args-input"
+                      placeholder="args (space-separated)"
+                      value={argsInput}
+                      onChange={(e) => setArgsInput(e.target.value)}
+                      data-testid="mcp-args-input"
+                    />
+                  </Field>
                   <Button
                     variant="primary"
                     size="sm"
