@@ -493,6 +493,65 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     expect(await screen.findByTestId("search-panel")).toBeInTheDocument();
   });
 
+  it("ignores Cmd+N while search is open so the covered workspace does not switch back to the composer", async () => {
+    render(<App />);
+    await waitForReady();
+    await createWorkspaceConversationViaComposer("first task");
+    vi.mocked(commands.createConversation).mockClear();
+
+    pressCmd("f");
+    expect(await screen.findByTestId("search-panel")).toBeInTheDocument();
+
+    pressCmd("n");
+
+    expect(screen.getByTestId("search-panel")).toBeInTheDocument();
+    expect(screen.getByTestId("agent-input")).toBeInTheDocument();
+    expect(screen.queryByTestId("empty-state-input")).not.toBeInTheDocument();
+    expect(commands.createConversation).not.toHaveBeenCalled();
+  });
+
+  it("ignores Cmd+D while search is open so widget gallery does not open behind the dialog", async () => {
+    render(<App />);
+    await waitForReady();
+
+    pressCmd("f");
+    expect(await screen.findByTestId("search-panel")).toBeInTheDocument();
+
+    pressCmd("d");
+
+    expect(screen.getByTestId("search-panel")).toBeInTheDocument();
+    expect(screen.queryByTestId("widget-gallery")).not.toBeInTheDocument();
+  });
+
+  it("ignores Cmd+L while search is open so focus stays inside the dialog", async () => {
+    render(<App />);
+    await waitForReady();
+
+    pressCmd("f");
+    const searchInput = await screen.findByTestId("search-input");
+    await waitFor(() => expect(searchInput).toHaveFocus());
+
+    pressCmd("l");
+
+    expect(searchInput).toHaveFocus();
+    expect(document.activeElement).not.toBe(screen.getByTestId("empty-state-input"));
+  });
+
+  it("hands off from search to command center on Cmd+K", async () => {
+    render(<App />);
+    await waitForReady();
+
+    pressCmd("f");
+    expect(await screen.findByTestId("search-panel")).toBeInTheDocument();
+
+    pressCmd("k");
+
+    await waitFor(() =>
+      expect(screen.queryByTestId("search-panel")).not.toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("command-center")).toBeInTheDocument();
+  });
+
   it("opens command center with Cmd+K and keeps Cmd+F for conversation search", async () => {
     render(<App />);
     await waitForReady();

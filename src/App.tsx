@@ -284,6 +284,7 @@ export default function App() {
       if (!match) return;
       // FR-009 / Task 2: once an app-owned surface is open, only Cmd+K may
       // continue through the global handler until that surface yields.
+      if (showSearch && match.id !== "open-command-center") return;
       if (showShortcutsDialog && match.id !== "open-command-center") return;
       if (showCommandCenter && match.id !== "open-command-center") return;
       e.preventDefault();
@@ -292,7 +293,7 @@ export default function App() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [shortcuts, showCommandCenter, showShortcutsDialog]);
+  }, [shortcuts, showCommandCenter, showSearch, showShortcutsDialog]);
 
   // US5/FR-026: the scheduler's priority is evaluated dynamically at pickup
   // time against whichever conversation is currently focused — every view
