@@ -35,7 +35,7 @@ export default function TaskWidget({ detail }: TaskWidgetProps) {
                 ? "Running…"
                 : "Complete"}
           </ItemTitle>
-          <ItemDescription>{detail.prompt}</ItemDescription>
+          <ItemDescription title={detail.prompt}>{detail.prompt}</ItemDescription>
         </ItemContent>
         {!running && (
           <Badge variant={interrupted ? "outline" : "secondary"}>

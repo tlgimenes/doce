@@ -46,7 +46,7 @@ export default function SearchResultsWidget({ detail }: SearchResultsWidgetProps
           <Search />
         </ItemMedia>
         <ItemContent>
-          <ItemTitle data-testid="search-summary">
+          <ItemTitle data-testid="search-summary" title={detail.pattern ?? undefined}>
             {detail.toolName} <CodeInline>{detail.pattern}</CodeInline>
           </ItemTitle>
         </ItemContent>

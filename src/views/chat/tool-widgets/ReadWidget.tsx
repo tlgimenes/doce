@@ -52,7 +52,9 @@ export default function ReadWidget({ detail }: ReadWidgetProps) {
           <FileText />
         </ItemMedia>
         <ItemContent>
-          <ItemTitle data-testid="read-summary">Read {detail.filePath}</ItemTitle>
+          <ItemTitle data-testid="read-summary" title={detail.filePath ?? undefined}>
+            Read {detail.filePath}
+          </ItemTitle>
         </ItemContent>
         <span className="flex items-center gap-2">
           <Badge variant="outline">{byteCount}</Badge>

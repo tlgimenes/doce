@@ -31,13 +31,13 @@ export default function AskUserQuestionWidget({ detail }: AskUserQuestionWidgetP
           <MessageCircleQuestion />
         </ItemMedia>
         <ItemContent>
-          <ItemDescription>{detail.question}</ItemDescription>
+          <ItemDescription title={detail.question}>{detail.question}</ItemDescription>
           {detail.interrupted ? (
             // A healed crash-orphaned question carries answer: [] — rendering
             // "You chose: " would read as answered-with-nothing.
             <ItemTitle>Interrupted — the app closed before this was answered</ItemTitle>
           ) : (
-            <ItemTitle>
+            <ItemTitle title={answer.join(", ")}>
               {isFreeText ? "You replied" : "You chose"}: {answer.join(", ")}
             </ItemTitle>
           )}

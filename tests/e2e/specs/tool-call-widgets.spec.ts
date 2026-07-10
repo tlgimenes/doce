@@ -43,7 +43,15 @@ describe("Tool call widgets (004-tool-call-widgets)", () => {
     await bash.waitForExist({ timeout: 15000 });
     const statusText = await (await browser.$("[data-testid='bash-status']")).getText();
     expect(statusText.toLowerCase()).toContain("success");
-    const stdoutText = await (await browser.$("[data-testid='bash-stdout']")).getText();
+
+    // Completed Bash widgets are collapsed by default with the body
+    // unmounted (Base UI) -- click the header trigger to expand before
+    // reading stdout.
+    const bashHeader = await bash.$("[data-slot='widget-frame-header']");
+    await bashHeader.click();
+    const stdout = await browser.$("[data-testid='bash-stdout']");
+    await stdout.waitForExist({ timeout: 10000 });
+    const stdoutText = await stdout.getText();
     expect(stdoutText).toContain("DOCE_E2E_WIDGET_BASH_MARKER.txt");
   });
 

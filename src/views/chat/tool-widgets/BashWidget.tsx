@@ -57,7 +57,7 @@ export default function BashWidget({ detail }: BashWidgetProps) {
             <Terminal />
           </ItemMedia>
           <ItemContent>
-            <ItemTitle data-testid="bash-command">
+            <ItemTitle data-testid="bash-command" title={`$ ${detail.command}`}>
               <CodeInline>$ {detail.command}</CodeInline>
             </ItemTitle>
             <ItemDescription data-testid="bash-status">Failed to run</ItemDescription>
@@ -90,7 +90,7 @@ export default function BashWidget({ detail }: BashWidgetProps) {
           <Terminal />
         </ItemMedia>
         <ItemContent>
-          <ItemTitle data-testid="bash-command">
+          <ItemTitle data-testid="bash-command" title={`$ ${detail.command}`}>
             <CodeInline>$ {detail.command}</CodeInline>
           </ItemTitle>
         </ItemContent>
