@@ -209,7 +209,7 @@ describe("ConversationList", () => {
     expect(first).toHaveClass("font-medium", "text-sidebar-foreground/55");
   });
 
-  it("keeps the selected conversation highlighted with the sidebar hover background", async () => {
+  it("keeps the selected conversation highlighted with the sidebar accent styles", async () => {
     vi.mocked(commands.listConversations).mockResolvedValue([
       {
         id: "selected",
@@ -233,7 +233,7 @@ describe("ConversationList", () => {
     );
 
     const row = await screen.findByTestId("conversation-item");
-    expect(row).toHaveClass("bg-sidebar-foreground/8", "hover:bg-sidebar-foreground/8");
+    expect(row).toHaveClass("bg-sidebar-accent", "text-sidebar-accent-foreground");
     expect(row).not.toHaveClass("bg-transparent");
   });
 
@@ -449,6 +449,23 @@ describe("ConversationList", () => {
     ref.current!.createNew();
 
     expect(onNewConversation).toHaveBeenCalledTimes(1);
+  });
+
+  it("calls the parent search handler from the sidebar Search action", async () => {
+    const onOpenSearch = vi.fn();
+    render(
+      <ConversationList
+        activeId={null}
+        onSelect={vi.fn()}
+        onNewConversation={vi.fn()}
+        onOpenSearch={onOpenSearch}
+        onOpenSettings={vi.fn()}
+      />,
+    );
+
+    await userEvent.click(await screen.findByTestId("open-search"));
+
+    expect(onOpenSearch).toHaveBeenCalledTimes(1);
   });
 
   it("renders sidebar actions at the top of the sidebar body and routes Search through onOpenSearch", async () => {

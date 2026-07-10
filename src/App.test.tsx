@@ -228,7 +228,8 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     await userEvent.click(await screen.findByText("Shared topbar polish"));
 
     const mainTopbar = screen.getByTestId("topbar-main");
-    expect(mainTopbar).toHaveClass("bg-sidebar", "border-b", "border-sidebar-border", "shadow-sm");
+    expect(mainTopbar).toHaveClass("bg-transparent", "text-foreground");
+    expect(mainTopbar).not.toHaveClass("bg-sidebar", "border-b", "border-sidebar-border", "shadow-sm");
     await within(mainTopbar).findByTestId("workspace-topbar");
 
     expect(within(mainTopbar).getByTestId("workspace-topbar-title")).toHaveTextContent(

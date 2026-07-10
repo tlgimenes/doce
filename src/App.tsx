@@ -325,7 +325,7 @@ export default function App() {
               <Button
                 variant="ghost"
                 size="icon-sm"
-                className="text-sidebar-foreground/70 hover:bg-sidebar-foreground/8 hover:text-sidebar-foreground"
+                className="rounded-md text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
                 onClick={openShortcutsDialog}
                 data-testid="open-shortcuts-dialog"
                 aria-label="Keyboard shortcuts"
@@ -364,14 +364,7 @@ export default function App() {
           />
         </div>
         <div className="flex min-w-0 flex-1 flex-col">
-          <TopbarHost
-            target="main"
-            className={
-              !showWidgetGallery && !showSettings && activeConversation
-                ? "border-b border-sidebar-border bg-sidebar px-4 shadow-sm"
-                : "px-4"
-            }
-          />
+          <TopbarHost target="main" className="px-4" />
           <div
             className="min-h-0 flex-1 [view-transition-name:chat-surface]"
             data-testid="app-content-pane"

@@ -8,7 +8,7 @@ import {
   useMemo,
   useState,
 } from "react";
-import { MagnifyingGlassIcon, GearIcon, PlusIcon, TrashIcon } from "@phosphor-icons/react";
+import { Archive, Cog, Plus, Search } from "lucide-react";
 import { homeDir } from "@tauri-apps/api/path";
 import { Button } from "@/components/ui/button";
 import { KeyboardShortcut } from "@/components/ui/KeyboardShortcut";
@@ -41,10 +41,10 @@ export interface ConversationListHandle {
 }
 
 const STATUS_COLOR: Record<ConversationStatus, string> = {
-  done: "bg-emerald-500",
-  in_progress: "bg-sky-500 animate-pulse",
-  requires_action: "bg-amber-500",
-  failed: "bg-red-500",
+  done: "bg-muted-foreground/45",
+  in_progress: "bg-[var(--color-doce-caramel)] animate-pulse",
+  requires_action: "bg-[var(--color-doce-coral)]",
+  failed: "bg-destructive",
 };
 
 const STATUS_LABEL: Record<ConversationStatus, string> = {
@@ -55,7 +55,7 @@ const STATUS_LABEL: Record<ConversationStatus, string> = {
 };
 
 const SIDEBAR_ACTION_BUTTON =
-  "w-full justify-start gap-1 h-8 rounded-lg border-0 bg-transparent px-1 py-0 text-sm text-sidebar-foreground/95 hover:bg-sidebar-foreground/8 hover:text-sidebar-foreground focus-visible:ring-0 focus-visible:outline-none";
+  "h-8 w-full justify-start gap-2 rounded-md px-2 text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground";
 
 /**
  * User Story 7: at-a-glance conversation status (FR-011) and auto-generated
@@ -208,8 +208,8 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
             data-testid="new-conversation"
             aria-label="New agent"
           >
-            <span className="flex items-center gap-1">
-              <PlusIcon size={16} weight="bold" />
+            <span className="flex items-center gap-2">
+              <Plus className="size-4" />
               New Agent
             </span>
             <KeyboardShortcut
@@ -225,8 +225,8 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
             data-testid="open-search"
             aria-label="Search conversations"
           >
-            <span className="flex items-center gap-1">
-              <MagnifyingGlassIcon size={16} />
+            <span className="flex items-center gap-2">
+              <Search className="size-4" />
               Search
             </span>
             <KeyboardShortcut
@@ -242,7 +242,7 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
             data-testid="open-settings"
             aria-label="Settings"
           >
-            <GearIcon size={16} />
+            <Cog className="size-4" />
             Settings
           </Button>
         </div>
@@ -262,8 +262,11 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
                 data-testid="conversation-item"
                 data-conversation-id={c.id}
                 className={cn(
-                  "group flex h-auto min-h-12 w-full cursor-pointer items-start justify-start gap-2 rounded-lg border-0 px-2 py-2 text-left text-foreground shadow-none transition-colors hover:bg-sidebar-foreground/8 focus-visible:outline-none",
-                  isActive ? "bg-sidebar-foreground/8" : "bg-transparent",
+                  "group flex min-h-12 w-full cursor-pointer items-start gap-2 rounded-md px-2 py-2 text-left transition-colors",
+                  "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-offset-[-2px]",
+                  isActive
+                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                    : "bg-transparent",
                 )}
               >
                 <span
@@ -298,11 +301,11 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
                     type="button"
                     variant="ghost"
                     size="icon-sm"
-                    className="pointer-events-none absolute right-0 top-1/2 -translate-y-1/2 rounded-full text-sidebar-foreground/70 opacity-0 hover:bg-sidebar-foreground/10 hover:text-sidebar-foreground group-hover:pointer-events-auto group-hover:opacity-100"
+                    className="pointer-events-none absolute right-0 top-1/2 -translate-y-1/2 rounded-md text-sidebar-foreground/70 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-accent-foreground group-hover:pointer-events-auto group-hover:opacity-100"
                     aria-label={`Archive ${c.title}`}
                     onClick={(event) => handleArchiveConversation(event, c)}
                   >
-                    <TrashIcon size={14} />
+                    <Archive className="size-3.5" />
                   </Button>
                 </span>
               </div>

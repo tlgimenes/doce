@@ -27,8 +27,24 @@ describe("Topbar", () => {
     const sidebar = screen.getByTestId("topbar-sidebar");
     const main = screen.getByTestId("topbar-main");
 
-    expect(sidebar).toHaveClass("h-10", "shrink-0", "select-none");
-    expect(main).toHaveClass("h-10", "shrink-0", "select-none");
+    expect(sidebar).toHaveClass(
+      "flex",
+      "h-10",
+      "shrink-0",
+      "select-none",
+      "items-center",
+      "bg-transparent",
+      "text-foreground",
+    );
+    expect(main).toHaveClass(
+      "flex",
+      "h-10",
+      "shrink-0",
+      "select-none",
+      "items-center",
+      "bg-transparent",
+      "text-foreground",
+    );
     expect(sidebar).toHaveAttribute("data-tauri-drag-region");
     expect(main).toHaveAttribute("data-tauri-drag-region");
   });

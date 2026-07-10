@@ -83,7 +83,10 @@ export function TopbarHost({ target, className, children }: TopbarHostProps) {
   return (
     <div
       ref={ref}
-      className={cn("flex h-10 shrink-0 select-none items-center bg-transparent", className)}
+      className={cn(
+        "flex h-10 shrink-0 select-none items-center bg-transparent text-foreground",
+        className,
+      )}
       data-tauri-drag-region
       data-testid={`topbar-${target}`}
       onMouseDown={startDrag}
