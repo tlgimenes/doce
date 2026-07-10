@@ -1,3 +1,10 @@
+import { Terminal } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { CodeBlock, CodeInline } from "@/components/ui/code-block";
+import { ItemContent, ItemDescription, ItemMedia, ItemTitle } from "@/components/ui/item";
+import { Spinner } from "@/components/ui/spinner";
+import { WidgetFrame, WidgetFrameContent, WidgetFrameHeader } from "@/components/ui/widget-frame";
 import type { BashDetail } from "@/lib/ipc";
 import { formatTokenCount } from "@/lib/formatTokenCount";
 import ViewFullOutput from "./ViewFullOutput";
@@ -23,40 +30,45 @@ export default function BashWidget({ detail }: BashWidgetProps) {
   // Pending branch: outcome absent means the command is still running
   if (!detail.outcome) {
     return (
-      <div className="overflow-hidden rounded-lg border border-border" data-testid="bash-widget">
-        <div
-          className="flex items-center border-b border-border px-3 py-1.5 font-mono text-xs text-sky-600 dark:text-sky-400"
-          data-testid="bash-status"
-        >
-          <span>Running…</span>
-        </div>
-        <pre
-          className="overflow-x-auto whitespace-pre-wrap break-words bg-card px-3 py-2 font-mono text-xs"
-          data-testid="bash-command"
-        >
-          $ {detail.command}
-        </pre>
-      </div>
+      <WidgetFrame collapsible defaultOpen data-testid="bash-widget">
+        <WidgetFrameHeader>
+          <ItemMedia variant="icon">
+            <Terminal />
+          </ItemMedia>
+          <ItemContent>
+            <ItemTitle data-testid="bash-status">
+              <Spinner role="presentation" aria-label={undefined} />
+              Running…
+            </ItemTitle>
+          </ItemContent>
+        </WidgetFrameHeader>
+        <WidgetFrameContent>
+          <CodeBlock data-testid="bash-command">$ {detail.command}</CodeBlock>
+        </WidgetFrameContent>
+      </WidgetFrame>
     );
   }
 
   if (!detail.outcome.ok) {
     return (
-      <div
-        className="overflow-hidden rounded-lg border border-destructive/40 bg-destructive/10"
-        data-testid="bash-widget"
-      >
-        <p
-          className="border-b border-destructive/40 px-3 py-1.5 font-mono text-xs text-destructive"
-          data-testid="bash-status"
-        >
-          Failed to run
-        </p>
-        <p className="px-3 py-2 font-mono text-xs text-destructive" data-testid="bash-command">
-          $ {detail.command}
-        </p>
-        <p className="px-3 pb-2 text-sm text-destructive">{detail.outcome.error}</p>
-      </div>
+      <WidgetFrame data-testid="bash-widget">
+        <WidgetFrameHeader>
+          <ItemMedia variant="icon">
+            <Terminal />
+          </ItemMedia>
+          <ItemContent>
+            <ItemTitle data-testid="bash-command">
+              <CodeInline>$ {detail.command}</CodeInline>
+            </ItemTitle>
+            <ItemDescription data-testid="bash-status">Failed to run</ItemDescription>
+          </ItemContent>
+        </WidgetFrameHeader>
+        <div className="p-3 pt-0">
+          <Alert variant="destructive">
+            <AlertDescription>{detail.outcome.error}</AlertDescription>
+          </Alert>
+        </div>
+      </WidgetFrame>
     );
   }
 
@@ -72,52 +84,40 @@ export default function BashWidget({ detail }: BashWidgetProps) {
   const stderrTrunc = truncatedLines(stderr);
 
   return (
-    <div className="overflow-hidden rounded-lg border border-border" data-testid="bash-widget">
-      <div
-        className={`flex items-center justify-between border-b border-border px-3 py-1.5 font-mono text-xs ${
-          succeeded
-            ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
-            : "bg-destructive/10 text-destructive"
-        }`}
-        data-testid="bash-status"
-      >
-        <span>{succeeded ? "Success" : `Failed (exit ${exitCode})`}</span>
-        <span>
-          exit {exitCode}
-          {detail.tokenCount != null && ` · ${formatTokenCount(detail.tokenCount)} tok`}
+    <WidgetFrame collapsible data-testid="bash-widget">
+      <WidgetFrameHeader>
+        <ItemMedia variant="icon">
+          <Terminal />
+        </ItemMedia>
+        <ItemContent>
+          <ItemTitle data-testid="bash-command">
+            <CodeInline>$ {detail.command}</CodeInline>
+          </ItemTitle>
+        </ItemContent>
+        <span className="flex items-center gap-2" data-testid="bash-status">
+          <Badge variant={succeeded ? "secondary" : "destructive"}>
+            {succeeded ? "Success" : `Failed (exit ${exitCode})`}
+          </Badge>
+          <Badge variant="outline">
+            exit {exitCode}
+            {detail.tokenCount != null && ` · ${formatTokenCount(detail.tokenCount)} tok`}
+          </Badge>
         </span>
-      </div>
-      <pre
-        className="overflow-x-auto whitespace-pre-wrap break-words bg-card px-3 py-2 font-mono text-xs"
-        data-testid="bash-command"
-      >
-        $ {detail.command}
-      </pre>
-      {stdout && (
-        <pre
-          className="overflow-x-auto whitespace-pre-wrap break-words px-3 py-2 font-mono text-xs"
-          data-testid="bash-stdout"
-        >
-          {stdoutTrunc.shown}
-        </pre>
-      )}
-      {stderr && (
-        <pre
-          className="overflow-x-auto whitespace-pre-wrap break-words px-3 py-2 font-mono text-xs text-destructive"
-          data-testid="bash-stderr"
-        >
-          {stderrTrunc.shown}
-        </pre>
-      )}
-      {(stdoutTrunc.truncated || stderrTrunc.truncated) && (
-        <p
-          className="border-t border-border px-3 py-1 text-xs text-muted-foreground"
-          data-testid="bash-output-truncated"
-        >
-          Output truncated
-        </p>
-      )}
-      {payloadPath && <ViewFullOutput path={payloadPath} />}
-    </div>
+      </WidgetFrameHeader>
+      <WidgetFrameContent>
+        {stdout && <CodeBlock data-testid="bash-stdout">{stdoutTrunc.shown}</CodeBlock>}
+        {stderr && (
+          <CodeBlock tone="destructive" data-testid="bash-stderr">
+            {stderrTrunc.shown}
+          </CodeBlock>
+        )}
+        {(stdoutTrunc.truncated || stderrTrunc.truncated) && (
+          <ItemDescription className="px-3 py-1" data-testid="bash-output-truncated">
+            Output truncated
+          </ItemDescription>
+        )}
+        {payloadPath && <ViewFullOutput path={payloadPath} />}
+      </WidgetFrameContent>
+    </WidgetFrame>
   );
 }

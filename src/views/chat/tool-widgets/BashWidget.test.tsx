@@ -1,10 +1,11 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import BashWidget from "./BashWidget";
 import type { BashDetail } from "@/lib/ipc";
 
 describe("BashWidget (004-tool-call-widgets, US2)", () => {
-  it("renders the command and stdout/stderr together, monospaced, distinguishable from prose (FR-003)", () => {
+  it("renders the command and stdout/stderr together, monospaced, distinguishable from prose (FR-003)", async () => {
     const detail: BashDetail = {
       toolName: "Bash",
       command: "ls -la",
@@ -14,11 +15,13 @@ describe("BashWidget (004-tool-call-widgets, US2)", () => {
     render(<BashWidget detail={detail} />);
 
     expect(screen.getByTestId("bash-command")).toHaveTextContent("ls -la");
+    // Completed Bash widgets are collapsed by default; expand to see output.
+    await userEvent.click(screen.getByRole("button"));
     expect(screen.getByTestId("bash-stdout")).toHaveTextContent("a.txt");
     expect(screen.getByTestId("bash-stdout")).toHaveTextContent("b.txt");
   });
 
-  it("visually distinguishes success from failure via exitCode without requiring the output text to be read", () => {
+  it("visually distinguishes success from failure via exitCode without requiring the output text to be read", async () => {
     const success: BashDetail = {
       toolName: "Bash",
       command: "true",
@@ -26,7 +29,7 @@ describe("BashWidget (004-tool-call-widgets, US2)", () => {
       outcome: { ok: true, exitCode: 0, stdout: "", stderr: "" },
     };
     const { rerender } = render(<BashWidget detail={success} />);
-    expect(screen.getByTestId("bash-status")).toHaveTextContent(/success|0/i);
+    expect(screen.getByTestId("bash-status")).toHaveTextContent("Success");
 
     const failure: BashDetail = {
       toolName: "Bash",
@@ -35,7 +38,8 @@ describe("BashWidget (004-tool-call-widgets, US2)", () => {
       outcome: { ok: true, exitCode: 1, stdout: "", stderr: "boom" },
     };
     rerender(<BashWidget detail={failure} />);
-    expect(screen.getByTestId("bash-status")).toHaveTextContent(/fail|1/i);
+    expect(screen.getByTestId("bash-status")).toHaveTextContent("Failed (exit 1)");
+    await userEvent.click(screen.getByRole("button"));
     expect(screen.getByTestId("bash-stderr")).toHaveTextContent("boom");
   });
 
@@ -48,10 +52,10 @@ describe("BashWidget (004-tool-call-widgets, US2)", () => {
     };
     render(<BashWidget detail={detail} />);
     expect(screen.getByTestId("bash-status")).toBeInTheDocument();
-    expect(screen.getByText(/catastrophic command/)).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(/catastrophic command/);
   });
 
-  it("truncates or collapses very long output rather than rendering it in full inline (FR-004)", () => {
+  it("truncates or collapses very long output rather than rendering it in full inline (FR-004)", async () => {
     const longOutput = Array.from({ length: 500 }, (_, i) => `line ${i}`).join("\n");
     const detail: BashDetail = {
       toolName: "Bash",
@@ -60,6 +64,7 @@ describe("BashWidget (004-tool-call-widgets, US2)", () => {
       outcome: { ok: true, exitCode: 0, stdout: longOutput, stderr: "" },
     };
     render(<BashWidget detail={detail} />);
+    await userEvent.click(screen.getByRole("button"));
 
     const stdout = screen.getByTestId("bash-stdout");
     expect(stdout.textContent!.length).toBeLessThan(longOutput.length);
@@ -68,7 +73,7 @@ describe("BashWidget (004-tool-call-widgets, US2)", () => {
 
   // --- 010-context-window-management/US3 ---
 
-  it("shows a 'View full output' affordance when the result was offloaded", () => {
+  it("shows a 'View full output' affordance when the result was offloaded", async () => {
     const detail: BashDetail = {
       toolName: "Bash",
       command: "find / -name '*.log'",
@@ -77,10 +82,11 @@ describe("BashWidget (004-tool-call-widgets, US2)", () => {
       offloadedTo: "/data/tool-outputs/conv1/call1.txt",
     };
     render(<BashWidget detail={detail} />);
+    await userEvent.click(screen.getByRole("button"));
     expect(screen.getByTestId("view-full-output-button")).toBeInTheDocument();
   });
 
-  it("does not show the affordance when the result was not offloaded", () => {
+  it("does not show the affordance when the result was not offloaded", async () => {
     const detail: BashDetail = {
       toolName: "Bash",
       command: "echo hi",
@@ -89,6 +95,7 @@ describe("BashWidget (004-tool-call-widgets, US2)", () => {
       offloadedTo: null,
     };
     render(<BashWidget detail={detail} />);
+    await userEvent.click(screen.getByRole("button"));
     expect(screen.queryByTestId("view-full-output-button")).not.toBeInTheDocument();
   });
 
@@ -106,7 +113,7 @@ describe("BashWidget (004-tool-call-widgets, US2)", () => {
 
   // --- Task 9 (payload-files design): slimmed detail shapes ---
 
-  it("renders the preview fields and offers the payload file", () => {
+  it("renders the preview fields and offers the payload file", async () => {
     render(
       <BashWidget
         detail={{
@@ -125,11 +132,12 @@ describe("BashWidget (004-tool-call-widgets, US2)", () => {
         }}
       />,
     );
+    await userEvent.click(screen.getByRole("button"));
     expect(screen.getByTestId("bash-stdout")).toHaveTextContent("running 214 tests…");
     expect(screen.getByTestId("view-full-output-button")).toBeInTheDocument();
   });
 
-  it("still renders legacy rows with inline stdout and offloadedTo", () => {
+  it("still renders legacy rows with inline stdout and offloadedTo", async () => {
     render(
       <BashWidget
         detail={{
@@ -141,6 +149,7 @@ describe("BashWidget (004-tool-call-widgets, US2)", () => {
         }}
       />,
     );
+    await userEvent.click(screen.getByRole("button"));
     expect(screen.getByTestId("bash-stdout")).toHaveTextContent("a.txt");
     expect(screen.getByTestId("view-full-output-button")).toBeInTheDocument();
   });
@@ -155,9 +164,29 @@ describe("BashWidget (004-tool-call-widgets, US2)", () => {
     };
     render(<BashWidget detail={detail} />);
     expect(screen.getByTestId("bash-status")).toHaveTextContent(/running/i);
+    expect(screen.getByTestId("bash-status").querySelector('[data-slot="spinner"]')).not.toBeNull();
+    // Pending/running Bash stays expanded (defaultOpen) — command visible
+    // without clicking, even though the header is still a collapsible trigger.
     expect(screen.getByTestId("bash-command")).toHaveTextContent(
       "cargo test --test agent_benchmark tier4_planned",
     );
+  });
+
+  it("collapses completed output by default until the header is clicked", async () => {
+    const detail: BashDetail = {
+      toolName: "Bash",
+      command: "ls -la",
+      timeoutMs: null,
+      outcome: { ok: true, exitCode: 0, stdout: "a.txt", stderr: "" },
+    };
+    render(<BashWidget detail={detail} />);
+
+    // Header (command + status) renders without expanding.
+    expect(screen.getByTestId("bash-command")).toHaveTextContent("ls -la");
+    expect(screen.getByTestId("bash-status")).toHaveTextContent("Success");
     expect(screen.queryByTestId("bash-stdout")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button"));
+    expect(screen.getByTestId("bash-stdout")).toHaveTextContent("a.txt");
   });
 });
