@@ -1,3 +1,8 @@
+import { FilePlus } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { ItemContent, ItemDescription, ItemMedia, ItemTitle } from "@/components/ui/item";
+import { WidgetFrame, WidgetFrameHeader } from "@/components/ui/widget-frame";
 import type { WriteDetail } from "@/lib/ipc";
 
 interface WriteWidgetProps {
@@ -8,32 +13,38 @@ interface WriteWidgetProps {
 export default function WriteWidget({ detail }: WriteWidgetProps) {
   if (!detail.outcome.ok) {
     return (
-      <div
-        className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm"
-        data-testid="write-widget"
-      >
-        <p className="mb-1 font-mono text-xs text-muted-foreground">
-          Write <span>{detail.filePath}</span>
-        </p>
-        <p className="text-destructive">{detail.outcome.error}</p>
-      </div>
+      <WidgetFrame data-testid="write-widget">
+        <WidgetFrameHeader>
+          <ItemMedia variant="icon">
+            <FilePlus />
+          </ItemMedia>
+          <ItemContent>
+            <ItemTitle>Write {detail.filePath}</ItemTitle>
+          </ItemContent>
+        </WidgetFrameHeader>
+        <div className="p-3 pt-0">
+          <Alert variant="destructive">
+            <AlertDescription>{detail.outcome.error}</AlertDescription>
+          </Alert>
+        </div>
+      </WidgetFrame>
     );
   }
 
   return (
-    <div
-      className="overflow-hidden rounded-lg border border-emerald-500/30 bg-emerald-500/5 text-sm"
-      data-testid="write-widget"
-    >
-      <p
-        className="border-b border-emerald-500/20 bg-card px-3 py-1.5 font-mono text-xs text-muted-foreground"
-        data-testid="write-header"
-      >
-        {detail.filePath}
-      </p>
-      <p className="p-3 text-xs text-muted-foreground" data-testid="write-body">
-        Write · {detail.byteCount} bytes
-      </p>
-    </div>
+    <WidgetFrame data-testid="write-widget">
+      <WidgetFrameHeader>
+        <ItemMedia variant="icon">
+          <FilePlus />
+        </ItemMedia>
+        <ItemContent>
+          <ItemTitle data-testid="write-header">{detail.filePath}</ItemTitle>
+          <ItemDescription data-testid="write-body">
+            Write · {detail.byteCount} bytes
+          </ItemDescription>
+        </ItemContent>
+        <Badge variant="secondary">Written</Badge>
+      </WidgetFrameHeader>
+    </WidgetFrame>
   );
 }

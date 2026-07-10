@@ -1,3 +1,8 @@
+import { Bot } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { ItemContent, ItemDescription, ItemMedia, ItemTitle } from "@/components/ui/item";
+import { Spinner } from "@/components/ui/spinner";
+import { WidgetFrame, WidgetFrameHeader } from "@/components/ui/widget-frame";
 import type { TaskDetail } from "@/lib/ipc";
 
 interface TaskWidgetProps {
@@ -16,24 +21,28 @@ export default function TaskWidget({ detail }: TaskWidgetProps) {
   const interrupted = detail.interrupted === true;
   const running = !interrupted && detail.state === "running";
   return (
-    <div className="rounded-lg border border-border bg-card p-3 text-sm" data-testid="task-widget">
-      <p
-        className={`mb-1 text-xs font-medium ${
-          interrupted
-            ? "text-amber-600 dark:text-amber-400"
-            : running
-              ? "text-sky-600 dark:text-sky-400"
-              : "text-emerald-700 dark:text-emerald-400"
-        }`}
-        data-testid="task-status"
-      >
-        {interrupted
-          ? "Interrupted — the app closed before this finished"
-          : running
-            ? "Running…"
-            : "Complete"}
-      </p>
-      <p className="text-muted-foreground">{detail.prompt}</p>
-    </div>
+    <WidgetFrame data-testid="task-widget">
+      <WidgetFrameHeader>
+        <ItemMedia variant="icon">
+          <Bot />
+        </ItemMedia>
+        <ItemContent>
+          <ItemTitle data-testid="task-status">
+            {running && <Spinner role="presentation" aria-label={undefined} />}
+            {interrupted
+              ? "Interrupted — the app closed before this finished"
+              : running
+                ? "Running…"
+                : "Complete"}
+          </ItemTitle>
+          <ItemDescription>{detail.prompt}</ItemDescription>
+        </ItemContent>
+        {!running && (
+          <Badge variant={interrupted ? "outline" : "secondary"}>
+            {interrupted ? "Interrupted" : "Complete"}
+          </Badge>
+        )}
+      </WidgetFrameHeader>
+    </WidgetFrame>
   );
 }

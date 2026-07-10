@@ -1,3 +1,7 @@
+import { MessageCircleQuestion } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { ItemContent, ItemDescription, ItemMedia, ItemTitle } from "@/components/ui/item";
+import { WidgetFrame, WidgetFrameHeader } from "@/components/ui/widget-frame";
 import type { AskUserQuestionDetail } from "@/lib/ipc";
 
 interface AskUserQuestionWidgetProps {
@@ -21,22 +25,25 @@ export default function AskUserQuestionWidget({ detail }: AskUserQuestionWidgetP
   const isFreeText = !answer.every((a) => detail.options.some((o) => o.label === a));
 
   return (
-    <div
-      className="rounded-lg border border-border bg-card p-3 text-sm"
-      data-testid="question-answered"
-    >
-      <p className="mb-1 text-muted-foreground">{detail.question}</p>
-      {detail.interrupted ? (
-        // A healed crash-orphaned question carries answer: [] — rendering
-        // "You chose: " would read as answered-with-nothing.
-        <p className="font-medium text-amber-600 dark:text-amber-400">
-          Interrupted — the app closed before this was answered
-        </p>
-      ) : (
-        <p className="font-medium">
-          {isFreeText ? "You replied" : "You chose"}: {answer.join(", ")}
-        </p>
-      )}
-    </div>
+    <WidgetFrame data-testid="question-answered">
+      <WidgetFrameHeader>
+        <ItemMedia variant="icon">
+          <MessageCircleQuestion />
+        </ItemMedia>
+        <ItemContent>
+          <ItemDescription>{detail.question}</ItemDescription>
+          {detail.interrupted ? (
+            // A healed crash-orphaned question carries answer: [] — rendering
+            // "You chose: " would read as answered-with-nothing.
+            <ItemTitle>Interrupted — the app closed before this was answered</ItemTitle>
+          ) : (
+            <ItemTitle>
+              {isFreeText ? "You replied" : "You chose"}: {answer.join(", ")}
+            </ItemTitle>
+          )}
+        </ItemContent>
+        {detail.interrupted && <Badge variant="outline">Interrupted</Badge>}
+      </WidgetFrameHeader>
+    </WidgetFrame>
   );
 }

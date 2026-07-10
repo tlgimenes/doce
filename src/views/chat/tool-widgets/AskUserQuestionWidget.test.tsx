@@ -26,6 +26,17 @@ describe("AskUserQuestionWidget", () => {
     expect(widget).toHaveTextContent("You chose: Option A");
   });
 
+  it("renders as a header-only widget frame, question and answer visible without any interaction", () => {
+    const answered: AskUserQuestionDetail = { ...SINGLE, answer: ["Option A"] };
+    render(<AskUserQuestionWidget detail={answered} />);
+
+    const widget = screen.getByTestId("question-answered");
+    expect(widget).toHaveAttribute("data-slot", "widget-frame");
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    expect(screen.getByText("Which way should I go?")).toBeVisible();
+    expect(screen.getByText(/You chose: Option A/)).toBeVisible();
+  });
+
   it("joins a multi-select answer with commas and still reads as 'You chose'", () => {
     const answered: AskUserQuestionDetail = {
       ...SINGLE,
@@ -63,7 +74,9 @@ describe("AskUserQuestionWidget", () => {
     const interrupted: AskUserQuestionDetail = { ...SINGLE, answer: [], interrupted: true };
     render(<AskUserQuestionWidget detail={interrupted} />);
 
-    expect(screen.getByTestId("question-answered")).toHaveTextContent(/interrupted/i);
-    expect(screen.getByTestId("question-answered")).not.toHaveTextContent(/You chose/);
+    const widget = screen.getByTestId("question-answered");
+    expect(widget).toHaveTextContent(/interrupted/i);
+    expect(widget).not.toHaveTextContent(/You chose/);
+    expect(widget.querySelector('[data-slot="badge"]')).toHaveTextContent("Interrupted");
   });
 });
