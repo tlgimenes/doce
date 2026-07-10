@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { KeyboardIcon } from "lucide-react";
 import { TopbarHost, TopbarProvider } from "@/components/Topbar";
 import { Button } from "@/components/ui/button";
+import { Sidebar, SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import Onboarding from "@/views/onboarding/Onboarding";
 import ConversationList, { type ConversationListHandle } from "@/views/chat/ConversationList";
 import ConversationSearchDialog from "@/views/chat/ConversationSearchDialog";
@@ -353,8 +354,8 @@ export default function App() {
 
   return (
     <TopbarProvider>
-      <div className="flex h-dvh">
-        <div className="flex w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar">
+      <SidebarProvider className="h-dvh">
+        <Sidebar collapsible="none" className="w-64 shrink-0 border-r border-sidebar-border">
           <TopbarHost target="sidebar" className="px-2">
             <div className="flex w-full items-center justify-end" data-topbar-no-drag>
               <Button
@@ -388,8 +389,8 @@ export default function App() {
               setActiveConversation(null);
             }}
           />
-        </div>
-        <div className="flex min-w-0 flex-1 flex-col">
+        </Sidebar>
+        <SidebarInset className="min-w-0">
           <TopbarHost target="main" className="px-4" />
           <div
             className="min-h-0 flex-1 [view-transition-name:chat-surface]"
@@ -422,7 +423,7 @@ export default function App() {
               />
             )}
           </div>
-        </div>
+        </SidebarInset>
         <ShortcutsDialog
           open={showShortcutsDialog}
           onClose={closeShortcutsDialog}
@@ -439,7 +440,7 @@ export default function App() {
           recentConversations={conversationListRef.current?.getConversations?.() ?? []}
           onSelectConversationId={selectConversationFromSearch}
         />
-      </div>
+      </SidebarProvider>
     </TopbarProvider>
   );
 }

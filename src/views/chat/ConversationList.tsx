@@ -1,6 +1,5 @@
 import {
   forwardRef,
-  type KeyboardEvent,
   type MouseEvent,
   useCallback,
   useEffect,
@@ -10,8 +9,15 @@ import {
 } from "react";
 import { Archive, Cog, Plus, Search } from "lucide-react";
 import { homeDir } from "@tauri-apps/api/path";
-import { Button } from "@/components/ui/button";
 import { KeyboardShortcut } from "@/components/ui/KeyboardShortcut";
+import {
+  SidebarContent,
+  SidebarGroup,
+  SidebarMenu,
+  SidebarMenuAction,
+  SidebarMenuButton,
+  SidebarMenuItem,
+} from "@/components/ui/sidebar";
 import { cn } from "@/lib/cn";
 import { commands, type Conversation, type ConversationStatus, type Workspace } from "@/lib/ipc";
 import {
@@ -145,16 +151,6 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
       archiveConversation(conversation);
     };
 
-    const handleConversationKeyDown = (
-      event: KeyboardEvent<HTMLDivElement>,
-      conversation: Conversation,
-    ) => {
-      if (event.target !== event.currentTarget) return;
-      if (event.key !== "Enter" && event.key !== " ") return;
-      event.preventDefault();
-      selectConversation(conversation);
-    };
-
     useEffect(() => {
       refresh();
       const id = setInterval(refresh, 2000);
@@ -202,148 +198,153 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
     }));
 
     return (
-      <div
-        className="relative flex min-h-0 flex-1 flex-col px-2 pb-3 text-sidebar-foreground"
-        data-testid="conversation-list"
-      >
-        <div className="mb-3 flex flex-col gap-0.5" data-testid="sidebar-actions">
-          <Button
-            variant="ghost"
-            size="sm"
-            className={`${SIDEBAR_ACTION_BUTTON} group justify-between`}
-            onClick={createNew}
-            data-testid="new-conversation"
-            aria-label="New agent"
-          >
-            <span className="flex items-center gap-2">
-              <Plus className="size-4" />
-              New Agent
-            </span>
-            <KeyboardShortcut
-              keys={["⌘", "N"]}
-              className="text-xs text-sidebar-foreground/60 opacity-0 transition-opacity group-hover:opacity-100"
-            />
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className={`${SIDEBAR_ACTION_BUTTON} group justify-between`}
-            onClick={openSearch}
-            data-testid="open-search"
-            aria-label="Search conversations"
-          >
-            <span className="flex items-center gap-2">
-              <Search className="size-4" />
-              Search
-            </span>
-            <KeyboardShortcut
-              keys={["⌘", "F"]}
-              className="text-xs text-sidebar-foreground/60 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
-            />
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className={SIDEBAR_ACTION_BUTTON}
-            onClick={onOpenSettings}
-            data-testid="open-settings"
-            aria-label="Settings"
-          >
-            <Cog className="size-4" />
-            Settings
-          </Button>
-        </div>
-        <div className="flex-1 space-y-1 overflow-y-auto">
-          {conversations.map((c) => {
-            const isActive = c.id === activeId;
-            const hasUnseenUpdates = !isActive && c.updatedAt > c.lastSeenAt;
-            const isReadInactive = !isActive && !hasUnseenUpdates;
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <SidebarContent
+          className="px-2 pb-3 text-sidebar-foreground"
+          data-testid="conversation-list"
+        >
+          <SidebarGroup className="mb-3 gap-0.5 p-0" data-testid="sidebar-actions">
+            <SidebarMenu className="gap-0.5">
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  className={`${SIDEBAR_ACTION_BUTTON} group justify-between`}
+                  onClick={createNew}
+                  data-testid="new-conversation"
+                  aria-label="New agent"
+                >
+                  <span className="flex items-center gap-2">
+                    <Plus className="size-4" />
+                    New Agent
+                  </span>
+                  <KeyboardShortcut
+                    keys={["⌘", "N"]}
+                    className="text-xs text-sidebar-foreground/60 opacity-0 transition-opacity group-hover:opacity-100"
+                  />
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  className={`${SIDEBAR_ACTION_BUTTON} group justify-between`}
+                  onClick={openSearch}
+                  data-testid="open-search"
+                  aria-label="Search conversations"
+                >
+                  <span className="flex items-center gap-2">
+                    <Search className="size-4" />
+                    Search
+                  </span>
+                  <KeyboardShortcut
+                    keys={["⌘", "F"]}
+                    className="text-xs text-sidebar-foreground/60 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
+                  />
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  className={SIDEBAR_ACTION_BUTTON}
+                  onClick={onOpenSettings}
+                  data-testid="open-settings"
+                  aria-label="Settings"
+                >
+                  <Cog className="size-4" />
+                  Settings
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            </SidebarMenu>
+          </SidebarGroup>
+          <SidebarGroup className="min-h-0 flex-1 p-0">
+            <SidebarMenu className="flex-1 gap-1 overflow-y-auto">
+              {conversations.map((c) => {
+                const isActive = c.id === activeId;
+                const hasUnseenUpdates = !isActive && c.updatedAt > c.lastSeenAt;
+                const isReadInactive = !isActive && !hasUnseenUpdates;
 
-            return (
-              <div
-                key={c.id}
-                role="button"
-                tabIndex={0}
-                onClick={() => selectConversation(c)}
-                onKeyDown={(event) => handleConversationKeyDown(event, c)}
-                data-testid="conversation-item"
-                data-conversation-id={c.id}
-                className={cn(
-                  "group flex min-h-12 w-full cursor-pointer items-start gap-2 rounded-md px-2 py-2 text-left transition-colors",
-                  "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-offset-[-2px]",
-                  isActive
-                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                    : "bg-transparent",
-                )}
-              >
-                <span
-                  className={cn("mt-1.5 size-2 shrink-0 rounded-full", STATUS_COLOR[c.status])}
-                  title={STATUS_LABEL[c.status]}
-                  data-testid="conversation-status-dot"
-                  data-status={c.status}
-                />
-                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                  <span className="flex min-w-0 items-baseline gap-2">
-                    <span
-                      className={cn(
-                        "min-w-0 flex-1 truncate text-[13px] font-medium leading-4",
-                        isActive
-                          ? "text-sidebar-accent-foreground"
-                          : isReadInactive
-                            ? "text-sidebar-foreground/55"
-                            : "text-sidebar-foreground",
-                      )}
+                return (
+                  <SidebarMenuItem
+                    key={c.id}
+                    className={cn(
+                      "group",
+                      isActive
+                        ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                        : "bg-transparent",
+                    )}
+                    data-testid="conversation-item"
+                    data-conversation-id={c.id}
+                  >
+                    <SidebarMenuButton
+                      isActive={isActive}
+                      className="min-h-12 h-auto items-start gap-2 px-2 py-2 pr-12 text-left transition-colors data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
+                      onClick={() => selectConversation(c)}
                     >
-                      {c.title}
-                    </span>
-                  </span>
-                  <span
-                    className={cn(
-                      "min-w-0 truncate text-[11px] leading-4",
-                      isActive
-                        ? "text-sidebar-accent-foreground/70"
-                        : "text-sidebar-foreground/60",
-                    )}
-                  >
-                    {getConversationWorkspaceLabel(c.workspaceId, workspacesById, homePath)}
-                  </span>
-                </span>
-                <span className="relative h-8 w-10 shrink-0 self-center">
-                  <span
-                    className={cn(
-                      "absolute right-0 top-0 text-[11px] leading-4 tabular-nums transition-opacity group-hover:opacity-0",
-                      isActive
-                        ? "text-sidebar-accent-foreground/80"
-                        : "text-sidebar-foreground/55",
-                    )}
-                  >
-                    {formatConversationRelativeTime(c.updatedAt)}
-                  </span>
-                  <span
-                    className={cn(
-                      "absolute bottom-0 right-0 text-[11px] leading-4 transition-opacity group-hover:opacity-0",
-                      isActive
-                        ? "text-sidebar-accent-foreground/70"
-                        : "text-sidebar-foreground/60",
-                    )}
-                  >
-                    {getConversationWorkStateLabel(c.status)}
-                  </span>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon-sm"
-                    className="pointer-events-none absolute right-0 top-1/2 -translate-y-1/2 rounded-md text-sidebar-foreground/70 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100"
-                    aria-label={`Archive ${c.title}`}
-                    onClick={(event) => handleArchiveConversation(event, c)}
-                  >
-                    <Archive className="size-3.5" />
-                  </Button>
-                </span>
-              </div>
-            );
-          })}
-        </div>
+                      <span
+                        className={cn("mt-1.5 size-2 shrink-0 rounded-full", STATUS_COLOR[c.status])}
+                        title={STATUS_LABEL[c.status]}
+                        data-testid="conversation-status-dot"
+                        data-status={c.status}
+                      />
+                      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                        <span className="flex min-w-0 items-baseline gap-2">
+                          <span
+                            className={cn(
+                              "min-w-0 flex-1 truncate text-[13px] font-medium leading-4",
+                              isActive
+                                ? "text-sidebar-accent-foreground"
+                                : isReadInactive
+                                  ? "text-sidebar-foreground/55"
+                                  : "text-sidebar-foreground",
+                            )}
+                          >
+                            {c.title}
+                          </span>
+                        </span>
+                        <span
+                          className={cn(
+                            "min-w-0 truncate text-[11px] leading-4",
+                            isActive
+                              ? "text-sidebar-accent-foreground/70"
+                              : "text-sidebar-foreground/60",
+                          )}
+                        >
+                          {getConversationWorkspaceLabel(c.workspaceId, workspacesById, homePath)}
+                        </span>
+                      </span>
+                      <span className="pointer-events-none absolute right-8 top-1/2 h-8 w-10 -translate-y-1/2">
+                        <span
+                          className={cn(
+                            "absolute right-0 top-0 text-[11px] leading-4 tabular-nums transition-opacity group-hover:opacity-0",
+                            isActive
+                              ? "text-sidebar-accent-foreground/80"
+                              : "text-sidebar-foreground/55",
+                          )}
+                        >
+                          {formatConversationRelativeTime(c.updatedAt)}
+                        </span>
+                        <span
+                          className={cn(
+                            "absolute bottom-0 right-0 text-[11px] leading-4 transition-opacity group-hover:opacity-0",
+                            isActive
+                              ? "text-sidebar-accent-foreground/70"
+                              : "text-sidebar-foreground/60",
+                          )}
+                        >
+                          {getConversationWorkStateLabel(c.status)}
+                        </span>
+                      </span>
+                    </SidebarMenuButton>
+                    <SidebarMenuAction
+                      showOnHover
+                      className="bg-transparent size-6 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
+                      aria-label={`Archive ${c.title}`}
+                      onClick={(event) => handleArchiveConversation(event, c)}
+                    >
+                      <Archive className="size-3.5" />
+                    </SidebarMenuAction>
+                  </SidebarMenuItem>
+                );
+              })}
+            </SidebarMenu>
+          </SidebarGroup>
+        </SidebarContent>
       </div>
     );
   },

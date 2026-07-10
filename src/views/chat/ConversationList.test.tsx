@@ -1,10 +1,15 @@
-import { createRef, useState } from "react";
+import { createRef, type ReactElement, useState } from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render as rtlRender, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { homeDir } from "@tauri-apps/api/path";
+import { SidebarProvider } from "@/components/ui/sidebar";
 import ConversationList, { type ConversationListHandle } from "./ConversationList";
 import { commands } from "@/lib/ipc";
+
+vi.mock("@/hooks/use-mobile", () => ({
+  useIsMobile: () => false,
+}));
 
 vi.mock("@tauri-apps/api/path", () => ({
   homeDir: vi.fn(() => Promise.resolve("/Users/tester")),
@@ -17,6 +22,10 @@ vi.mock("@/lib/ipc", () => ({
     archiveConversation: vi.fn(),
   },
 }));
+
+function render(ui: ReactElement) {
+  return rtlRender(<SidebarProvider>{ui}</SidebarProvider>);
+}
 
 describe("ConversationList", () => {
   beforeEach(() => {
@@ -410,6 +419,38 @@ describe("ConversationList", () => {
       "group-hover:opacity-100",
       "group-focus-within:opacity-100",
     );
+  });
+
+  it("composes the list and rows with sidebar primitives while keeping the archive action", async () => {
+    vi.mocked(commands.listConversations).mockResolvedValue([
+      {
+        id: "selected",
+        workspaceId: null,
+        title: "Selected thread",
+        createdAt: 1,
+        updatedAt: 1,
+        lastSeenAt: 1,
+        status: "done",
+      },
+    ]);
+
+    render(
+      <ConversationList
+        activeId="selected"
+        onSelect={vi.fn()}
+        onNewConversation={vi.fn()}
+        onOpenSearch={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />,
+    );
+
+    const list = await screen.findByTestId("conversation-list");
+    const row = await screen.findByTestId("conversation-item");
+
+    expect(list).toHaveAttribute("data-slot", "sidebar-content");
+    expect(list.querySelector('[data-slot="sidebar-menu"]')).toBeTruthy();
+    expect(row).toHaveAttribute("data-slot", "sidebar-menu-item");
+    expect(screen.getByLabelText("Archive Selected thread")).toBeInTheDocument();
   });
 
   it("renders each conversation as title/time plus path/work-state rows", async () => {

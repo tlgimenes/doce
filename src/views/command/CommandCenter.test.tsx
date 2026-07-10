@@ -132,4 +132,23 @@ describe("CommandCenter", () => {
     expect(archiveRun).not.toHaveBeenCalled();
     expect(onOpenChange).not.toHaveBeenCalledWith(false);
   });
+
+  it("resets the command query after the dialog closes and reopens", async () => {
+    const { rerender } = render(
+      <CommandCenter open={true} onOpenChange={vi.fn()} actions={actions} />,
+    );
+
+    const input = screen.getByRole("textbox", { name: "Command search" });
+    await userEvent.type(input, "search");
+
+    expect(screen.getByRole("button", { name: /Search Conversations/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /New Agent/ })).not.toBeInTheDocument();
+
+    rerender(<CommandCenter open={false} onOpenChange={vi.fn()} actions={actions} />);
+    rerender(<CommandCenter open={true} onOpenChange={vi.fn()} actions={actions} />);
+
+    expect(screen.getByRole("textbox", { name: "Command search" })).toHaveValue("");
+    expect(screen.getByRole("button", { name: /New Agent/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Search Conversations/ })).toBeInTheDocument();
+  });
 });

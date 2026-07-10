@@ -6,6 +6,10 @@ import App, { checkReadyWithRetries } from "./App";
 import { commands, events } from "@/lib/ipc";
 import { useContextUsageStore } from "@/state/contextUsageStore";
 
+vi.mock("@/hooks/use-mobile", () => ({
+  useIsMobile: () => false,
+}));
+
 type TestDocument = Document & {
   startViewTransition?: (callback: () => void) => unknown;
 };
@@ -176,6 +180,16 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     expect(screen.getByTestId("app-content-pane")).toHaveClass(
       "[view-transition-name:chat-surface]",
     );
+  });
+
+  it("composes the app shell with the generated sidebar primitives", async () => {
+    render(<App />);
+    await waitForReady();
+
+    expect(document.querySelector('[data-slot="sidebar-wrapper"]')).toBeTruthy();
+    expect(document.querySelector('[data-slot="sidebar"]')).toBeTruthy();
+    expect(document.querySelector('[data-slot="sidebar-inset"]')).toBeTruthy();
+    expect(screen.getByTestId("app-content-pane")).toBeInTheDocument();
   });
 
   it("renders shared sidebar and main topbars while the empty state keeps the main topbar blank", async () => {

@@ -1,4 +1,4 @@
-import { useMemo, useState, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import Dialog from "@/components/Dialog";
 import {
   Command,
@@ -35,6 +35,12 @@ function matchesActionQuery(action: CommandCenterAction, query: string) {
 
 export default function CommandCenter({ open, onOpenChange, actions }: CommandCenterProps) {
   const [query, setQuery] = useState("");
+
+  useEffect(() => {
+    if (!open) {
+      setQuery("");
+    }
+  }, [open]);
 
   const runAction = (action: CommandCenterAction) => {
     action.run();

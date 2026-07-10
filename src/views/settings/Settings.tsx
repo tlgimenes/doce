@@ -3,6 +3,14 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import {
+  Item,
+  ItemActions,
+  ItemContent,
+  ItemDescription,
+  ItemGroup,
+  ItemTitle,
+} from "@/components/ui/item";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { commands, type McpServerConnection, type SkillSummary } from "@/lib/ipc";
 
@@ -168,34 +176,39 @@ export default function Settings({ onClose }: SettingsProps) {
                 )}
               </div>
 
-              <ul className="space-y-3">
+              <ItemGroup className="gap-3">
                 {servers.map((s) => (
-                  <li
+                  <Item
                     key={s.id}
-                    className="rounded-md border border-border bg-card p-3 text-sm"
+                    variant="outline"
+                    className="bg-card text-sm"
                     data-testid="mcp-server-item"
                   >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0 space-y-2">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-medium">{s.name}</span>
+                    <ItemContent className="min-w-0 gap-2">
+                      <ItemTitle className="flex-wrap">
+                        <span>{s.name}</span>
+                        <span className="flex flex-wrap items-center gap-2">
                           <Badge variant="outline">{s.transport}</Badge>
                           <Badge variant={s.enabled ? "default" : "secondary"}>
                             {s.enabled ? "Enabled" : "Disabled"}
                           </Badge>
-                        </div>
-                        {toolsByServer[s.id] === "error" && (
-                          <p className="text-xs text-destructive">Failed to connect</p>
-                        )}
-                        {Array.isArray(toolsByServer[s.id]) && (
-                          <p
-                            className="text-xs text-muted-foreground"
-                            data-testid="mcp-server-tools"
-                          >
-                            Tools: {(toolsByServer[s.id] as string[]).join(", ") || "(none)"}
-                          </p>
-                        )}
-                      </div>
+                        </span>
+                      </ItemTitle>
+                      {toolsByServer[s.id] === "error" ? (
+                        <ItemDescription className="text-xs text-destructive">
+                          Failed to connect
+                        </ItemDescription>
+                      ) : null}
+                      {Array.isArray(toolsByServer[s.id]) ? (
+                        <ItemDescription
+                          className="text-xs text-muted-foreground"
+                          data-testid="mcp-server-tools"
+                        >
+                          Tools: {(toolsByServer[s.id] as string[]).join(", ") || "(none)"}
+                        </ItemDescription>
+                      ) : null}
+                    </ItemContent>
+                    <ItemActions className="ml-auto self-start">
                       <Button
                         variant="ghost"
                         size="sm"
@@ -205,10 +218,10 @@ export default function Settings({ onClose }: SettingsProps) {
                       >
                         Test connection
                       </Button>
-                    </div>
-                  </li>
+                    </ItemActions>
+                  </Item>
                 ))}
-              </ul>
+              </ItemGroup>
             </section>
           )}
         </TabsContent>
@@ -222,18 +235,21 @@ export default function Settings({ onClose }: SettingsProps) {
                   No skills found. Add a folder with a SKILL.md to your skills directory.
                 </p>
               ) : (
-                <ul className="space-y-2">
+                <ItemGroup className="gap-2">
                   {skills.map((s) => (
-                    <li
+                    <Item
                       key={s.name}
-                      className="rounded-md border border-border bg-card p-3 text-sm"
+                      variant="outline"
+                      className="bg-card text-sm"
                       data-testid="skill-item"
                     >
-                      <span className="font-medium">{s.name}</span>
-                      <span className="ml-2 text-muted-foreground">{s.description}</span>
-                    </li>
+                      <ItemContent>
+                        <ItemTitle>{s.name}</ItemTitle>
+                        <ItemDescription>{s.description}</ItemDescription>
+                      </ItemContent>
+                    </Item>
                   ))}
-                </ul>
+                </ItemGroup>
               )}
             </section>
           )}

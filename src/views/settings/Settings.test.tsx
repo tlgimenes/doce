@@ -89,6 +89,37 @@ describe("Settings (User Story 4: MCP servers + skills)", () => {
     });
   });
 
+  it("composes MCP server and skill rows with item primitives", async () => {
+    vi.mocked(commands.listMcpServers).mockResolvedValue([
+      {
+        id: "srv-1",
+        name: "my-server",
+        transport: "stdio",
+        config: "{}",
+        enabled: true,
+        createdAt: 1,
+      },
+    ]);
+    vi.mocked(commands.listSkills).mockResolvedValue([
+      { name: "pdf-tools", description: "Work with PDF files" },
+    ]);
+
+    render(<Settings onClose={vi.fn()} />);
+
+    const serverRow = await screen.findByTestId("mcp-server-item");
+    expect(serverRow).toHaveAttribute("data-slot", "item");
+    expect(serverRow.querySelector('[data-slot="item-content"]')).toBeTruthy();
+    expect(serverRow.querySelector('[data-slot="item-actions"]')).toBeTruthy();
+
+    await userEvent.click(screen.getByTestId("settings-tab-skills"));
+
+    const skillRow = await screen.findByTestId("skill-item");
+    expect(skillRow).toHaveAttribute("data-slot", "item");
+    expect(skillRow.querySelector('[data-slot="item-content"]')).toBeTruthy();
+    expect(skillRow.querySelector('[data-slot="item-title"]')).toBeTruthy();
+    expect(skillRow.querySelector('[data-slot="item-description"]')).toBeTruthy();
+  });
+
   it("shows an error if testing a server connection fails", async () => {
     vi.mocked(commands.listMcpServers).mockResolvedValue([
       {
