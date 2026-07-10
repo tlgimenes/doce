@@ -215,7 +215,6 @@ function CommandList({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="command-list"
-      role="listbox"
       className={cn(
         "max-h-72 overflow-x-hidden overflow-y-auto outline-none",
         className,
@@ -313,7 +312,6 @@ function CommandItem({
     <button
       type="button"
       data-slot="command-item"
-      role="option"
       className={cn(
         "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none transition-colors hover:bg-muted focus-visible:bg-muted disabled:pointer-events-none disabled:opacity-50 [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
         className,

@@ -231,7 +231,7 @@ export default function App() {
         id: "focus-composer",
         label: "Focus Composer",
         shortcut: "Cmd+L",
-        disabled: !activeConversation && ready !== true,
+        disabled: ready !== true || showSettings || showWidgetGallery,
         run: () => {
           const selector = activeConversation
             ? '[data-testid="agent-input"]'
@@ -260,7 +260,16 @@ export default function App() {
         },
       },
     ],
-    [activeConversation, openSearch, openSettings, openWidgetGallery, ready, startNewConversation],
+    [
+      activeConversation,
+      openSearch,
+      openSettings,
+      openWidgetGallery,
+      ready,
+      showSettings,
+      showWidgetGallery,
+      startNewConversation,
+    ],
   );
 
   useEffect(() => {

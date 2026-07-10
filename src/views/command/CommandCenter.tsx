@@ -1,7 +1,13 @@
 import Dialog from "@/components/Dialog";
-import { Button } from "@/components/ui/button";
-import { KeyboardShortcut } from "@/components/ui/KeyboardShortcut";
-import { cn } from "@/lib/cn";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+  CommandShortcut,
+} from "@/components/ui/command";
 
 export interface CommandCenterAction {
   id: string;
@@ -18,6 +24,11 @@ interface CommandCenterProps {
 }
 
 export default function CommandCenter({ open, onOpenChange, actions }: CommandCenterProps) {
+  const runAction = (action: CommandCenterAction) => {
+    action.run();
+    onOpenChange(false);
+  };
+
   return (
     <Dialog
       open={open}
@@ -25,28 +36,27 @@ export default function CommandCenter({ open, onOpenChange, actions }: CommandCe
       title="Command center"
       description="Run application actions."
     >
-      <div className="w-[34rem] max-w-[90vw] p-2" data-testid="command-center">
-        <div className="px-2 py-2 text-xs font-medium uppercase text-muted-foreground">
-          Actions
-        </div>
-        <div className="space-y-1">
+      <div className="w-[34rem] max-w-[90vw]" data-testid="command-center">
+        <Command className="rounded-lg border border-border/70 bg-popover p-0">
+          <CommandInput autoFocus placeholder="Type a command or search" />
+          <CommandList className="max-h-80 p-1">
+            <CommandEmpty>No matching actions.</CommandEmpty>
+            <CommandGroup heading="Actions">
           {actions.map((action) => (
-            <Button
+            <CommandItem
               key={action.id}
-              type="button"
-              variant="ghost"
-              className={cn("h-9 w-full justify-between px-2", action.disabled && "opacity-50")}
+              value={action.label}
+              keywords={[action.id, action.shortcut ?? ""]}
               disabled={action.disabled}
-              onClick={() => {
-                action.run();
-                onOpenChange(false);
-              }}
+              onSelect={() => runAction(action)}
             >
               <span>{action.label}</span>
-              {action.shortcut ? <KeyboardShortcut keys={action.shortcut.split("+")} /> : null}
-            </Button>
+              {action.shortcut ? <CommandShortcut>{action.shortcut}</CommandShortcut> : null}
+            </CommandItem>
           ))}
-        </div>
+            </CommandGroup>
+          </CommandList>
+        </Command>
       </div>
     </Dialog>
   );

@@ -15,6 +15,10 @@ describe("CommandCenter", () => {
 
     expect(screen.getByTestId("command-center")).toBeInTheDocument();
     expect(screen.getByRole("dialog", { name: "Command center" })).toBeInTheDocument();
+    expect(screen.getByTestId("command-center").querySelector('[data-slot="command"]')).toBeTruthy();
+    expect(screen.getByTestId("command-center").querySelector('[data-slot="command-input"]')).toBeTruthy();
+    expect(screen.getByTestId("command-center").querySelector('[data-slot="command-list"]')).toBeTruthy();
+    expect(screen.getByTestId("command-center").querySelectorAll('[data-slot="command-item"]')).toHaveLength(3);
     expect(screen.getByRole("button", { name: /New Agent/ })).toBeEnabled();
     expect(screen.getByRole("button", { name: /Archive Current Conversation/ })).toBeDisabled();
   });
@@ -32,6 +36,38 @@ describe("CommandCenter", () => {
     );
 
     await userEvent.click(screen.getByRole("button", { name: /Open Settings/ }));
+
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("filters actions from the command input", async () => {
+    render(<CommandCenter open={true} onOpenChange={vi.fn()} actions={actions} />);
+
+    await userEvent.type(screen.getByPlaceholderText("Type a command or search"), "archive");
+
+    expect(screen.getByRole("button", { name: /Archive Current Conversation/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /New Agent/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Search Conversations/ })).not.toBeInTheDocument();
+  });
+
+  it("runs the focused command item with Enter and closes", async () => {
+    const onOpenChange = vi.fn();
+    const run = vi.fn();
+
+    render(
+      <CommandCenter
+        open={true}
+        onOpenChange={onOpenChange}
+        actions={[{ id: "settings", label: "Open Settings", run }]}
+      />,
+    );
+
+    const action = screen.getByRole("button", { name: /Open Settings/ });
+    action.focus();
+    expect(action).toHaveFocus();
+
+    await userEvent.keyboard("{Enter}");
 
     expect(run).toHaveBeenCalledTimes(1);
     expect(onOpenChange).toHaveBeenCalledWith(false);

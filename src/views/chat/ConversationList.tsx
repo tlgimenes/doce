@@ -326,7 +326,7 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
                     type="button"
                     variant="ghost"
                     size="icon-sm"
-                    className="pointer-events-none absolute right-0 top-1/2 -translate-y-1/2 rounded-md text-sidebar-foreground/70 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-accent-foreground group-hover:pointer-events-auto group-hover:opacity-100"
+                    className="pointer-events-none absolute right-0 top-1/2 -translate-y-1/2 rounded-md text-sidebar-foreground/70 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100"
                     aria-label={`Archive ${c.title}`}
                     onClick={(event) => handleArchiveConversation(event, c)}
                   >

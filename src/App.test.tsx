@@ -523,6 +523,30 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     expect(screen.queryByTestId("settings-view")).not.toBeInTheDocument();
   });
 
+  it("disables Focus Composer while Settings is covering the primary surface", async () => {
+    render(<App />);
+    await waitForReady();
+
+    await userEvent.click(await screen.findByTestId("open-settings"));
+    expect(await screen.findByTestId("settings-view")).toBeInTheDocument();
+
+    pressCmd("k");
+
+    expect(screen.getByRole("button", { name: /Focus Composer/i })).toBeDisabled();
+  });
+
+  it("disables Focus Composer while Widget Gallery is covering the primary surface", async () => {
+    render(<App />);
+    await waitForReady();
+
+    pressCmd("d");
+    expect(await screen.findByTestId("widget-gallery")).toBeInTheDocument();
+
+    pressCmd("k");
+
+    expect(screen.getByRole("button", { name: /Focus Composer/i })).toBeDisabled();
+  });
+
   it("hands off from the shortcuts dialog to Cmd+K and lets Cmd+F open search after dismiss", async () => {
     render(<App />);
     await waitForReady();

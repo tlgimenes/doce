@@ -20,7 +20,7 @@ describe("CommandItem", () => {
         </CommandList>
       </Command>,
     );
-    expect(await screen.findByRole("option", { name: "Open settings" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Open settings" })).toBeInTheDocument();
 
     renderProbe.mockClear();
     rerender(

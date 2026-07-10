@@ -356,7 +356,7 @@ describe("ConversationList", () => {
     );
   });
 
-  it("reveals the archive trash button only on row hover, not from selected row focus", async () => {
+  it("reveals the archive trash button on hover and keyboard focus within the row", async () => {
     vi.mocked(commands.listConversations).mockResolvedValue([
       {
         id: "selected",
@@ -380,8 +380,11 @@ describe("ConversationList", () => {
     );
 
     const archiveButton = await screen.findByLabelText("Archive Selected thread");
-    expect(archiveButton).toHaveClass("opacity-0", "group-hover:opacity-100");
-    expect(archiveButton).not.toHaveClass("group-focus-within:opacity-100");
+    expect(archiveButton).toHaveClass(
+      "opacity-0",
+      "group-hover:opacity-100",
+      "group-focus-within:opacity-100",
+    );
   });
 
   it("renders each conversation as title/time plus path/work-state rows", async () => {
