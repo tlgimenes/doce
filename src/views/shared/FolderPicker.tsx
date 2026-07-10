@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { homeDir } from "@tauri-apps/api/path";
 import { open } from "@tauri-apps/plugin-dialog";
-import { FolderSimpleIcon } from "@phosphor-icons/react";
+import { Folder } from "lucide-react";
 import { commands, type FolderSearchResult, type Workspace } from "@/lib/ipc";
 import type { FolderTarget } from "@/views/chat/EmptyState";
 
@@ -175,7 +175,7 @@ export default function FolderPicker({ currentPath, onSelect, onDismiss }: Folde
     <div
       ref={containerRef}
       data-testid="folder-picker"
-      className="absolute -mt-1 z-10 w-72 rounded-lg border border-border bg-card p-2 shadow-lg"
+      className="absolute -mt-1 z-10 w-72 rounded-md border border-border bg-popover p-2 text-popover-foreground shadow-md"
     >
       <input
         ref={filterInputRef}
@@ -218,8 +218,8 @@ export default function FolderPicker({ currentPath, onSelect, onDismiss }: Folde
             <li key={path}>
               <button
                 type="button"
-                className={`flex w-full items-center gap-0 truncate rounded px-2 py-1 text-left text-sm hover:bg-muted ${
-                  isSelected ? "bg-muted/80 font-medium" : ""
+                className={`flex w-full items-center gap-0 truncate rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent hover:text-accent-foreground ${
+                  isSelected ? "bg-accent font-medium text-accent-foreground" : ""
                 }`}
                 aria-current={currentPath === path}
                 aria-selected={isSelected}
@@ -234,7 +234,7 @@ export default function FolderPicker({ currentPath, onSelect, onDismiss }: Folde
                 data-testid="folder-picker-item"
                 title={path}
               >
-                <FolderSimpleIcon className="mr-1.5 shrink-0 text-muted-foreground" size={15} />
+                <Folder className="mr-1.5 shrink-0 text-muted-foreground" size={15} />
                 {displayLabel.prefix ? (
                   <>
                     <span className="font-semibold">{displayLabel.prefix}</span>
@@ -250,7 +250,7 @@ export default function FolderPicker({ currentPath, onSelect, onDismiss }: Folde
       </ul>
       <button
         type="button"
-        className="mt-1 w-full rounded px-2 py-1 text-left text-sm text-muted-foreground hover:bg-muted"
+        className="mt-1 w-full rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground"
         onClick={browse}
         data-testid="folder-picker-browse"
       >

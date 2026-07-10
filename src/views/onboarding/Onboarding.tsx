@@ -70,7 +70,7 @@ export default function Onboarding({ onReady }: OnboardingProps) {
   const pct = bytesTotal > 0 ? Math.round((bytesDownloaded / bytesTotal) * 100) : 0;
 
   return (
-    <div className="flex h-dvh flex-col items-center justify-center gap-6 bg-background text-foreground">
+    <div className="flex h-dvh flex-col items-center justify-center gap-6 bg-background px-6 text-center text-foreground">
       <img src={logo} alt="doce" className="h-24 w-auto" />
       <h1 className="text-balance text-2xl font-semibold">doce</h1>
       {profile && (
@@ -82,7 +82,7 @@ export default function Onboarding({ onReady }: OnboardingProps) {
         <div className="w-64">
           <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
             <div
-              className="h-full w-full origin-left bg-primary transition-transform duration-300 ease-out"
+              className="h-full w-full origin-left bg-[var(--color-doce-caramel)] transition-transform duration-300 ease-out"
               style={{ transform: `scaleX(${pct / 100})` }}
             />
           </div>

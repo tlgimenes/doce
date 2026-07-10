@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { XIcon } from "@phosphor-icons/react";
+import { Command, Folder, Settings2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import ReadWidget from "@/views/chat/tool-widgets/ReadWidget";
 import WriteWidget from "@/views/chat/tool-widgets/WriteWidget";
@@ -44,6 +44,21 @@ function Section({
   );
 }
 
+function Swatch({ name, variable }: { name: string; variable: string }) {
+  return (
+    <div className="rounded-md border border-border bg-card p-3">
+      <div
+        className="mb-2 h-12 rounded-sm border border-border"
+        style={{ backgroundColor: `var(${variable})` }}
+      />
+      <div className="space-y-0.5">
+        <p className="text-sm font-medium">{name}</p>
+        <p className="font-mono text-[11px] text-muted-foreground">{variable}</p>
+      </div>
+    </div>
+  );
+}
+
 /**
  * A live catalog of every tool-call widget (the components `MessageContent`
  * dispatches `tool_result` rows to), rendered with hand-built sample data
@@ -75,11 +90,84 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
           aria-label="Close widget gallery"
           data-testid="widget-gallery-close"
         >
-          <XIcon size={16} />
+          <X size={16} />
         </Button>
       </div>
 
       <div className="flex flex-col gap-10 px-6 py-6">
+        <Section
+          title="Workbench"
+          description="Shared app primitives for command access, settings rows, button treatments, and brand accents."
+        >
+          <Example label="Button variants">
+            <div className="flex flex-wrap gap-2">
+              <Button variant="primary" size="sm">
+                Primary
+              </Button>
+              <Button variant="secondary" size="sm">
+                Secondary
+              </Button>
+              <Button variant="ghost" size="sm">
+                Ghost
+              </Button>
+              <Button variant="destructive" size="sm">
+                Destructive
+              </Button>
+            </div>
+          </Example>
+          <Example label="Command center preview">
+            <div className="rounded-md border border-border bg-card p-2">
+              <div className="px-2 py-2 text-xs font-medium uppercase text-muted-foreground">
+                Actions
+              </div>
+              <div className="space-y-1">
+                <div className="flex items-center justify-between rounded-md px-2 py-2 text-sm hover:bg-accent">
+                  <span className="inline-flex items-center gap-2">
+                    <Command size={14} className="text-muted-foreground" />
+                    Open command center
+                  </span>
+                  <span className="font-mono text-xs text-muted-foreground">Cmd+K</span>
+                </div>
+                <div className="flex items-center justify-between rounded-md px-2 py-2 text-sm hover:bg-accent">
+                  <span className="inline-flex items-center gap-2">
+                    <Settings2 size={14} className="text-muted-foreground" />
+                    Open settings
+                  </span>
+                  <span className="font-mono text-xs text-muted-foreground">Cmd+,</span>
+                </div>
+              </div>
+            </div>
+          </Example>
+          <Example label="Settings row preview">
+            <div className="rounded-md border border-border bg-card p-3 text-sm">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0 space-y-1">
+                  <div className="inline-flex items-center gap-2 font-medium">
+                    <Folder size={14} className="text-muted-foreground" />
+                    Workspace indexing
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Keep recent folders searchable and ready for new conversations.
+                  </p>
+                </div>
+                <Button variant="ghost" size="sm" className="h-auto px-0 text-xs">
+                  Test connection
+                </Button>
+              </div>
+            </div>
+          </Example>
+          <Example label="Brand Accent Workbench">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+              <Swatch name="Chocolate" variable="--color-doce-chocolate" />
+              <Swatch name="Cacao" variable="--color-doce-cacao" />
+              <Swatch name="Caramel" variable="--color-doce-caramel" />
+              <Swatch name="Peach" variable="--color-doce-peach" />
+              <Swatch name="Coral" variable="--color-doce-coral" />
+              <Swatch name="Cream" variable="--color-doce-cream" />
+            </div>
+          </Example>
+        </Section>
+
         <Section
           title="Read"
           description="A collapsed file-reference card with inline expandable preview."

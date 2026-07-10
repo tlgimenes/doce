@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { homeDir } from "@tauri-apps/api/path";
-import { CaretDownIcon } from "@phosphor-icons/react";
+import { ChevronDown } from "lucide-react";
 import { commands, type Conversation, type RichMessageContent } from "@/lib/ipc";
 import FolderPicker from "@/views/shared/FolderPicker";
 import RichInput from "@/views/chat/rich-input/RichInput";
@@ -83,11 +83,11 @@ export default function EmptyState({ autoFocusToken, onConversationCreated }: Em
 
   return (
     <div
-      className="flex h-full flex-col items-center justify-center gap-4 bg-background text-foreground"
+      className="flex h-full flex-col items-center justify-center bg-background px-6 text-foreground"
       data-testid="empty-state"
     >
       <div
-        className="relative w-full max-w-xl space-y-3 [view-transition-name:chat-composer]"
+        className="relative w-full max-w-2xl space-y-3 [view-transition-name:chat-composer]"
         data-testid="empty-state-composer"
       >
         {/* 008-shared-design-system exemption: a compact inline text+caret
@@ -102,7 +102,7 @@ export default function EmptyState({ autoFocusToken, onConversationCreated }: Em
           data-testid="folder-target-selector"
         >
           {target ? toDisplayFolderLabel(target.path, homePath) : "Home"}
-          <CaretDownIcon size={12} />
+          <ChevronDown size={12} />
         </button>
         {pickerOpen && (
           <FolderPicker
