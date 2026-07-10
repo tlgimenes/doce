@@ -89,6 +89,13 @@ describe("TranscriptTurn", () => {
     expect(screen.queryByTestId("sticky-user-message-bubble")).not.toBeInTheDocument();
   });
 
+  it("marks transcript turns with chat primitive data attributes", () => {
+    render(<TranscriptTurn turn={turn({})} />);
+
+    expect(screen.getByTestId("transcript-turn")).toHaveAttribute("data-chat-turn", "true");
+    expect(screen.getByTestId("transcript-turn-body")).toHaveClass("min-w-0");
+  });
+
   it("renders pending Bash and Task widgets when supplied", () => {
     const pendingBash: BashDetail = {
       toolName: "Bash",

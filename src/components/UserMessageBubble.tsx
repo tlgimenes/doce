@@ -20,15 +20,17 @@ export default function UserMessageBubble({
   bubbleTestId = "user-message-bubble",
   tokenMeterClassName,
 }: UserMessageBubbleProps): React.JSX.Element {
+  const bubbleClasses = cn(
+    "ml-auto max-w-[85%] rounded-md border border-border bg-[var(--color-doce-cream)] p-3 text-sm text-foreground shadow-sm",
+    bubbleClassName,
+  );
+
   return (
     <>
       {message.contentType === "rich_text" ? (
         <div
           {...bubbleProps}
-          className={cn(
-            "prose prose-sm dark:prose-invert max-w-none rounded-lg bg-muted p-3 text-foreground",
-            bubbleClassName,
-          )}
+          className={cn(bubbleClasses, "prose prose-sm dark:prose-invert")}
           data-testid={bubbleTestId}
         >
           <UserMessageContent content={message.content} />
@@ -36,7 +38,7 @@ export default function UserMessageBubble({
       ) : (
         <MarkdownPreview
           {...bubbleProps}
-          className={cn("rounded-lg bg-muted p-3 text-foreground", bubbleClassName)}
+          className={bubbleClasses}
           testId={bubbleTestId}
         >
           {message.content}

@@ -46,7 +46,7 @@ describe("ToolDisclosure", () => {
     expect(screen.getByTestId("tool-body")).toHaveClass("overflow-y-auto");
   });
 
-  it("uses the same compact header rhythm as the edit diff header", () => {
+  it("uses the redesigned compact header rhythm", () => {
     render(
       <ToolDisclosure
         summary={<span>Read /tmp/notes.txt · 11B</span>}
@@ -58,8 +58,11 @@ describe("ToolDisclosure", () => {
       </ToolDisclosure>,
     );
 
-    expect(screen.getByTestId("tool-disclosure")).toHaveClass("overflow-hidden");
-    expect(screen.getByTestId("tool-summary")).toHaveClass("px-3", "py-1.5");
-    expect(screen.getByTestId("tool-summary")).not.toHaveClass("py-2");
+    expect(screen.getByTestId("tool-disclosure")).toHaveClass(
+      "overflow-hidden",
+      "rounded-md",
+      "shadow-sm",
+    );
+    expect(screen.getByTestId("tool-summary")).toHaveClass("px-3", "py-2");
   });
 });

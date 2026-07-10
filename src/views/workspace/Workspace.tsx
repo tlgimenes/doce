@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { ArrowDownIcon } from "@phosphor-icons/react";
+import { ArrowDown } from "lucide-react";
 import { StickToBottom, type StickToBottomContext } from "use-stick-to-bottom";
 import { cn } from "@/lib/cn";
 import { runViewTransition } from "@/lib/viewTransition";
@@ -472,6 +472,9 @@ export default function Workspace({
           scroll state per conversation — a fresh conversation starts
           pinned at the bottom (`initial="instant"`), matching the old
           reset-pinning-on-switch effect. */}
+      {/* The shadcn MessageScroller primitive is installed, but this pass keeps
+          use-stick-to-bottom because its pinned/escape behavior is covered by
+          existing workspace tests and matches the app's current chat contract. */}
       <StickToBottom
         key={conversationId}
         className="[container-type:size] relative min-h-0 flex-1"
@@ -532,7 +535,7 @@ export default function Workspace({
                 aria-label="Scroll to bottom"
                 data-testid="scroll-to-bottom"
               >
-                <ArrowDownIcon size={16} />
+                <ArrowDown size={16} />
               </Button>
             )}
             <PlanTracker conversationId={conversationId} />

@@ -25,7 +25,18 @@ describe("UserMessageBubble", () => {
     const bubble = screen.getByTestId("user-message-bubble");
     expect(bubble).toHaveTextContent("hello");
     expect(bubble).toHaveTextContent("there");
-    expect(bubble).toHaveClass("rounded-lg", "bg-muted", "p-3", "text-foreground");
+    expect(bubble).toHaveClass(
+      "ml-auto",
+      "max-w-[85%]",
+      "rounded-md",
+      "border",
+      "border-border",
+      "bg-[var(--color-doce-cream)]",
+      "p-3",
+      "text-sm",
+      "text-foreground",
+      "shadow-sm",
+    );
   });
 
   it("applies caller classes to the visual bubble without moving the token meter", () => {

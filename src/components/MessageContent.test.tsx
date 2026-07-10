@@ -273,6 +273,27 @@ describe("MessageContent (004-tool-call-widgets, Foundational)", () => {
     expect(notice).toHaveTextContent("3 old tool results cleared to save space");
   });
 
+  it("renders context notices as marker-style status rows", () => {
+    render(
+      <MessageContent
+        message={{
+          id: "n1",
+          conversationId: "c1",
+          role: "assistant",
+          contentType: "context_notice",
+          content: JSON.stringify({ kind: "cleared", notice: "Old tool result cleared" }),
+          toolName: null,
+          createdAt: 1,
+          durationMs: null,
+          tokenCount: null,
+        }}
+      />,
+    );
+
+    expect(screen.getByTestId("context-notice")).toHaveAttribute("role", "status");
+    expect(screen.getByTestId("context-notice")).toHaveTextContent("Old tool result cleared");
+  });
+
   it("renders a 'summarized' notice as a more visible bubble", () => {
     render(
       <MessageContent

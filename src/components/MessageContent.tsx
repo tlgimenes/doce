@@ -44,7 +44,7 @@ interface MessageContentProps {
 export default function MessageContent({ message: m, showTimer = false }: MessageContentProps) {
   if (m.role === "user") {
     return (
-      <div className="mb-6" data-testid="chat-message" role="group" aria-label="You said">
+      <div className="mb-5" data-testid="chat-message" role="group" aria-label="You said">
         <UserMessageBubble message={m} />
       </div>
     );
@@ -84,7 +84,7 @@ export default function MessageContent({ message: m, showTimer = false }: Messag
   if (m.contentType === "error") {
     return (
       <div
-        className="mb-6 rounded-lg bg-destructive/10 p-3 text-sm text-destructive"
+        className="mb-5 rounded-md border border-destructive/25 bg-destructive/10 p-3 text-sm text-destructive"
         data-testid="chat-message"
         role="group"
         aria-label="doce replied"
@@ -106,8 +106,8 @@ export default function MessageContent({ message: m, showTimer = false }: Messag
       <div
         className={
           isSummarized
-            ? "mb-6 rounded-lg bg-muted p-3 text-sm text-muted-foreground"
-            : "mb-6 text-xs text-muted-foreground/70"
+            ? "mb-5 rounded-md border border-border bg-muted p-3 text-sm text-muted-foreground"
+            : "mb-5 text-xs text-muted-foreground/70"
         }
         data-testid="context-notice"
         data-notice-kind={detail.kind}
@@ -123,7 +123,12 @@ export default function MessageContent({ message: m, showTimer = false }: Messag
     m.contentType === "text" && (showAssistantDuration || m.tokenCount != null);
 
   return (
-    <div className="mb-6" data-testid="chat-message" role="group" aria-label="doce replied">
+    <div
+      className="mb-5 max-w-none"
+      data-testid="chat-message"
+      role="group"
+      aria-label="doce replied"
+    >
       <MarkdownPreview>{m.content}</MarkdownPreview>
       {showAssistantMetadata && (
         <p className="mt-1 text-xs text-muted-foreground" data-testid="token-meter">

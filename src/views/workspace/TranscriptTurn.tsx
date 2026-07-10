@@ -34,6 +34,7 @@ export default function TranscriptTurn({
     <div
       ref={turnRef}
       className="flex flex-col pb-2"
+      data-chat-turn="true"
       data-testid="transcript-turn"
       data-last-turn={isLastTurn ? "true" : "false"}
     >

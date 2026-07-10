@@ -1,5 +1,6 @@
 import { useId, useState } from "react";
-import { ArrowLeftIcon, CheckIcon, PaperPlaneRightIcon, XIcon } from "@phosphor-icons/react";
+import { ArrowLeftIcon, CheckIcon, XIcon } from "@phosphor-icons/react";
+import { SendHorizontal } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
 import { commands, type AskUserQuestionDetail, type QuestionOption } from "@/lib/ipc";
@@ -23,7 +24,7 @@ interface UserAskWidgetProps {
 // same gradient sheen, same icon -- so single-select, multi-select, and
 // free text all answer via one visually consistent affordance.
 const SUBMIT_BUTTON_CLASSES =
-  "h-8 w-8 shrink-0 rounded-full p-0 enabled:bg-gradient-to-r enabled:from-[var(--color-primary)] enabled:via-[var(--color-gray-2)] enabled:to-[var(--color-gray-1)] enabled:hover:from-[var(--color-gray-2)] enabled:hover:via-[var(--color-gray-1)] enabled:hover:to-[var(--color-foreground)]";
+  "shrink-0 enabled:bg-gradient-to-r enabled:from-[var(--color-primary)] enabled:via-[var(--color-gray-2)] enabled:to-[var(--color-gray-1)] enabled:hover:from-[var(--color-gray-2)] enabled:hover:via-[var(--color-gray-1)] enabled:hover:to-[var(--color-foreground)]";
 
 /**
  * One option row inside the options module -- a real radio/checkbox
@@ -205,13 +206,14 @@ export default function UserAskWidget({ detail, initialMode = "options" }: UserA
               <Button
                 type="button"
                 variant="primary"
+                size="icon"
                 className={SUBMIT_BUTTON_CLASSES}
                 disabled={selected.length === 0 || submitting}
                 onClick={() => submit(selected)}
                 aria-label="Send answer"
                 data-testid="question-submit"
               >
-                <PaperPlaneRightIcon size={16} />
+                <SendHorizontal size={16} />
               </Button>
             </div>
           </div>
