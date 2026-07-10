@@ -86,3 +86,56 @@ This confirmed the parent-owned search wiring already behaved correctly before t
 ## Concerns
 
 - None.
+
+## Review Fix: Active Row Accent Text
+
+### Finding addressed
+
+- The selected conversation row already applied `text-sidebar-accent-foreground` at the container level, but child text nodes for the title, workspace label, timestamp, and work-state still hard-coded `text-sidebar-foreground*` classes, which broke the selected-row accent treatment.
+
+### Changes made
+
+- Updated `src/views/chat/ConversationList.tsx` so active rows switch child text styling with `isActive`:
+  - title: `text-sidebar-accent-foreground`
+  - workspace label: `text-sidebar-accent-foreground/70`
+  - timestamp: `text-sidebar-accent-foreground/80`
+  - work-state: `text-sidebar-accent-foreground/70`
+- Preserved row `role`, `tabIndex`, `data-testid`, keyboard activation, archive behavior, status dot data attributes, and existing callbacks.
+- Added a focused regression test in `src/views/chat/ConversationList.test.tsx` asserting an active row applies accent styling to those four child text nodes.
+- Updated two pre-existing title-color assertions to reflect the intended selected-row accent treatment.
+
+### TDD evidence
+
+1. Added the active-row child text styling test in `src/views/chat/ConversationList.test.tsx`.
+2. Ran before implementation:
+   - `npm test -- src/views/chat/ConversationList.test.tsx`
+3. RED result:
+   - `Test Files 1 failed (1)`
+   - `Tests 1 failed | 16 passed (17)`
+   - failure showed `Selected thread` still had `text-sidebar-foreground`
+4. Implemented the `isActive` child text class changes in `src/views/chat/ConversationList.tsx`.
+5. Re-ran the focused suite:
+   - `npm test -- src/views/chat/ConversationList.test.tsx`
+6. GREEN result:
+   - `Test Files 1 passed (1)`
+   - `Tests 17 passed (17)`
+
+### Required verification
+
+- Ran:
+  - `npm test -- src/views/chat/ConversationList.test.tsx src/views/chat/sidebarConversationRow.test.ts src/components/Topbar.test.tsx src/App.test.tsx`
+- Result:
+  - `Test Files 4 passed (4)`
+  - `Tests 51 passed (51)`
+
+### Scope
+
+- Changed:
+  - `src/views/chat/ConversationList.tsx`
+  - `src/views/chat/ConversationList.test.tsx`
+- Appended this follow-up section to:
+  - `.superpowers/sdd/task-5-report.md`
+
+### Concerns
+
+- None.

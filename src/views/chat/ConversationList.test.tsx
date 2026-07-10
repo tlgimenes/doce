@@ -132,7 +132,7 @@ describe("ConversationList", () => {
     );
   });
 
-  it("renders the active conversation title with normal foreground color even when it has unseen updates", async () => {
+  it("renders the active conversation title with accent foreground color even when it has unseen updates", async () => {
     vi.mocked(commands.listConversations).mockResolvedValue([
       {
         id: "active",
@@ -157,7 +157,7 @@ describe("ConversationList", () => {
 
     expect(await screen.findByText("Currently open")).toHaveClass(
       "font-medium",
-      "text-sidebar-foreground",
+      "text-sidebar-accent-foreground",
     );
   });
 
@@ -203,7 +203,7 @@ describe("ConversationList", () => {
     expect(first).toHaveClass("font-medium", "text-sidebar-foreground");
 
     await userEvent.click(first);
-    expect(first).toHaveClass("font-medium", "text-sidebar-foreground");
+    expect(first).toHaveClass("font-medium", "text-sidebar-accent-foreground");
 
     await userEvent.click(screen.getByText("Second chat"));
     expect(first).toHaveClass("font-medium", "text-sidebar-foreground/55");
@@ -235,6 +235,54 @@ describe("ConversationList", () => {
     const row = await screen.findByTestId("conversation-item");
     expect(row).toHaveClass("bg-sidebar-accent", "text-sidebar-accent-foreground");
     expect(row).not.toHaveClass("bg-transparent");
+  });
+
+  it("uses accent text styling for active-row title, workspace, timestamp, and work-state", async () => {
+    const now = new Date("2026-01-01T12:00:00Z").getTime();
+    const dateNow = vi.spyOn(Date, "now").mockReturnValue(now);
+
+    try {
+      const updatedAt = now - 2 * 60_000;
+      vi.mocked(commands.listConversations).mockResolvedValue([
+        {
+          id: "selected",
+          workspaceId: "ws-code",
+          title: "Selected thread",
+          createdAt: updatedAt - 60_000,
+          updatedAt,
+          lastSeenAt: updatedAt,
+          status: "in_progress",
+        },
+      ]);
+      vi.mocked(commands.listWorkspaces).mockResolvedValue([
+        {
+          id: "ws-code",
+          path: "/Users/tester/code/doce",
+          displayName: "doce",
+          createdAt: 1,
+          lastOpenedAt: 2,
+        },
+      ]);
+
+      render(
+        <ConversationList
+          activeId="selected"
+          onSelect={vi.fn()}
+          onNewConversation={vi.fn()}
+          onOpenSearch={vi.fn()}
+          onOpenSettings={vi.fn()}
+        />,
+      );
+
+      expect(await screen.findByText("Selected thread")).toHaveClass(
+        "text-sidebar-accent-foreground",
+      );
+      expect(screen.getByText("~/code/doce")).toHaveClass("text-sidebar-accent-foreground/70");
+      expect(screen.getByText("2m")).toHaveClass("text-sidebar-accent-foreground/80");
+      expect(screen.getByText("Working")).toHaveClass("text-sidebar-accent-foreground/70");
+    } finally {
+      dateNow.mockRestore();
+    }
   });
 
   it("archives a conversation from the hover trash button without selecting it", async () => {

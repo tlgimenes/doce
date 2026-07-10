@@ -280,21 +280,46 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
                     <span
                       className={cn(
                         "min-w-0 flex-1 truncate text-[13px] font-medium leading-4",
-                        isReadInactive ? "text-sidebar-foreground/55" : "text-sidebar-foreground",
+                        isActive
+                          ? "text-sidebar-accent-foreground"
+                          : isReadInactive
+                            ? "text-sidebar-foreground/55"
+                            : "text-sidebar-foreground",
                       )}
                     >
                       {c.title}
                     </span>
                   </span>
-                  <span className="min-w-0 truncate text-[11px] leading-4 text-sidebar-foreground/60">
+                  <span
+                    className={cn(
+                      "min-w-0 truncate text-[11px] leading-4",
+                      isActive
+                        ? "text-sidebar-accent-foreground/70"
+                        : "text-sidebar-foreground/60",
+                    )}
+                  >
                     {getConversationWorkspaceLabel(c.workspaceId, workspacesById, homePath)}
                   </span>
                 </span>
                 <span className="relative h-8 w-10 shrink-0 self-center">
-                  <span className="absolute right-0 top-0 text-[11px] leading-4 text-sidebar-foreground/55 tabular-nums transition-opacity group-hover:opacity-0">
+                  <span
+                    className={cn(
+                      "absolute right-0 top-0 text-[11px] leading-4 tabular-nums transition-opacity group-hover:opacity-0",
+                      isActive
+                        ? "text-sidebar-accent-foreground/80"
+                        : "text-sidebar-foreground/55",
+                    )}
+                  >
                     {formatConversationRelativeTime(c.updatedAt)}
                   </span>
-                  <span className="absolute bottom-0 right-0 text-[11px] leading-4 text-sidebar-foreground/60 transition-opacity group-hover:opacity-0">
+                  <span
+                    className={cn(
+                      "absolute bottom-0 right-0 text-[11px] leading-4 transition-opacity group-hover:opacity-0",
+                      isActive
+                        ? "text-sidebar-accent-foreground/70"
+                        : "text-sidebar-foreground/60",
+                    )}
+                  >
                     {getConversationWorkStateLabel(c.status)}
                   </span>
                   <Button
