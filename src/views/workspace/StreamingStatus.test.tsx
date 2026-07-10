@@ -22,6 +22,10 @@ describe("StreamingStatus", () => {
     expect(screen.getByTestId("agent-thinking")).toHaveTextContent("Working");
     const spinner = screen.getByTestId("agent-thinking-spinner");
     expect(spinner).toHaveAttribute("aria-hidden", "true");
+    const spinnerIcon = spinner.querySelector('[data-slot="spinner"]');
+    expect(spinnerIcon).not.toBeNull();
+    expect(spinnerIcon).toHaveAttribute("role", "presentation");
+    expect(spinnerIcon).not.toHaveAttribute("aria-label");
     expect(timer).toHaveTextContent("1.3s");
     expect(timer).toHaveAttribute("aria-live", "off");
     expect(timer).toHaveClass("tabular-nums");
