@@ -69,8 +69,9 @@ export default function SearchPanel({ onSelect, recentConversations = [] }: Sear
       setResults([]);
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      if (latestSearchRequestId.current !== requestId) return;
-      setLoading(false);
+      if (latestSearchRequestId.current === requestId) {
+        setLoading(false);
+      }
     }
   };
 

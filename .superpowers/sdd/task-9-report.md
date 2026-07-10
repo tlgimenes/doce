@@ -257,3 +257,19 @@ What I could not fully verify in this environment:
 - `npm run format` currently rewrites unrelated tracked frontend files when run repo-wide; I restored that churn to keep Task 9 scoped.
 - One `npm test` run timed out on `Workspace.test.tsx` when verification commands were being run in parallel, although the final standalone rerun passed cleanly.
 - Manual smoke coverage remains partial because interactive Tauri/browser verification was not available from this environment.
+
+## Task 9 follow-up: SearchPanel no-unsafe-finally fix
+
+- Updated `src/views/chat/SearchPanel.tsx` so the stale-request guard in `runSearch` no longer returns from `finally`; it now clears loading only when the completing request is still the latest request.
+- Added a focused regression test in `src/views/chat/SearchPanel.test.tsx` covering the stale rejected-request path so an older failure cannot steal loading/error ownership from a newer in-flight search.
+
+### Verification
+
+- `npm run lint`
+  - Exit code `0`
+  - No warnings
+- `npm test -- src/views/chat/SearchPanel.test.tsx`
+  - `Test Files  1 passed (1)`
+  - `Tests       9 passed (9)`
+- Wider Task 9 subset:
+  - Not run. The change is scoped to `SearchPanel` request-finalization control flow and the focused component test covers the affected stale-request behavior.

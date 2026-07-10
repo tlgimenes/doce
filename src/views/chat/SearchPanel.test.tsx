@@ -161,6 +161,39 @@ describe("SearchPanel", () => {
     expect(screen.queryByText("Stale result")).not.toBeInTheDocument();
   });
 
+  it("ignores stale rejected requests so a newer in-flight search keeps loading and error ownership", async () => {
+    const first = deferred<SearchResult[]>();
+    const second = deferred<SearchResult[]>();
+    vi.mocked(commands.searchConversations).mockImplementation((query) => {
+      if (query === "a") return first.promise;
+      if (query === "ab") return second.promise;
+      return Promise.resolve([]);
+    });
+
+    render(<SearchPanel onSelect={vi.fn()} />);
+
+    await userEvent.type(screen.getByTestId("search-input"), "ab");
+    expect(screen.getByTestId("search-loading")).toBeInTheDocument();
+
+    first.reject(new Error("stale failure"));
+
+    await waitFor(() => expect(screen.queryByTestId("search-error")).not.toBeInTheDocument());
+    expect(screen.getByTestId("search-loading")).toBeInTheDocument();
+
+    second.resolve([
+      {
+        conversationId: "latest-result",
+        title: "Latest result",
+        excerpt: "new match",
+        rank: -2,
+      },
+    ]);
+
+    expect(await screen.findByText("Latest result")).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByTestId("search-loading")).not.toBeInTheDocument());
+    expect(screen.queryByTestId("search-error")).not.toBeInTheDocument();
+  });
+
   it("omits an inline close button and renders a taller dialog body", () => {
     render(<SearchPanel onSelect={vi.fn()} />);
 
