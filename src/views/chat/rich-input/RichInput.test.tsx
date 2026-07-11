@@ -290,6 +290,49 @@ describe("RichInput (009-rich-chat-input, US1)", () => {
 
     expect(screen.getByTestId("test-submit")).toBeDisabled();
   });
+
+  it("does not put the group in its disabled state while merely empty", () => {
+    const onSubmit = vi.fn();
+    const { container } = render(
+      <RichInput
+        onSubmit={onSubmit}
+        skillsEnabled={false}
+        disabled={false}
+        placeholder="p"
+        inputTestId="test-input"
+        submitTestId="test-submit"
+      />,
+    );
+
+    // Stock InputGroup styles the whole group via `has-disabled:` off any
+    // `:disabled` descendant — an empty (but not composer-disabled)
+    // composer must not natively disable the send button, or the entire
+    // field renders washed-out gray at rest.
+    const group = container.querySelector('[data-slot="input-group"]');
+    expect(group?.querySelector(":disabled")).toBeNull();
+
+    const send = screen.getByTestId("test-submit");
+    expect(send).toHaveAttribute("aria-disabled", "true");
+    expect(send).not.toBeDisabled();
+  });
+
+  it("clicking send while empty does not call onSubmit", async () => {
+    const onSubmit = vi.fn();
+    render(
+      <RichInput
+        onSubmit={onSubmit}
+        skillsEnabled={false}
+        disabled={false}
+        placeholder="p"
+        inputTestId="test-input"
+        submitTestId="test-submit"
+      />,
+    );
+
+    await userEvent.click(screen.getByTestId("test-submit"));
+
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
 });
 
 /**

@@ -519,9 +519,10 @@ export default function RichInput({
           <InputGroupButton
             variant="default"
             size="icon-sm"
-            className="ml-auto"
+            className="ml-auto aria-disabled:opacity-50"
             onClick={submitCurrentContent}
-            disabled={disabled || isEmpty}
+            disabled={disabled}
+            aria-disabled={disabled || isEmpty}
             aria-label="Send message"
             data-testid={submitTestId}
           >
