@@ -1353,6 +1353,10 @@ fn plan_system_message(
 /// a real, temporary DB connection and skills directory, the same way
 /// `persist_tool_call`/`persist_tool_result` above already are.
 ///
+/// Also owns FR-012 title generation (moved here when chat mode was
+/// removed): the first user message in a conversation sets its title via
+/// `storage::conversations::generate_title`, atomically with the insert.
+///
 /// Returns `(sequence, model_text)` — the sequence `storage::messages::insert`
 /// allocated for this row (rather than a caller-precomputed one, now that
 /// the choke point owns allocation), which `send_agent_message` reuses for
@@ -1371,58 +1375,63 @@ async fn persist_user_turn(
         .transpose()
         .map_err(|e| format!("invalid rich_content: {e}"))?;
 
-    let seq = match &rich {
-        Some(_) => {
-            let json = rich_content
-                .expect("rich_content is Some whenever `rich` parsed above is Some")
-                .to_string();
-            let conversation_id = conversation_id.to_string();
-            let transcript_dir = transcript_dir.clone();
-            conn.call(move |conn: &mut Connection| -> rusqlite::Result<i64> {
-                crate::storage::messages::insert(
-                    conn,
-                    transcript_dir.as_deref(),
-                    &crate::storage::messages::NewMessage {
-                        conversation_id: &conversation_id,
-                        role: "user",
-                        content_type: "rich_text",
-                        content: &json,
-                        tool_name: None,
-                        tool_call_id: None,
-                        model_text: None,
-                        created_at: now,
-                        duration_ms: None,
-                        token_count: None,
-                    },
-                )
-            })
-            .await
-            .map_err(|e| e.to_string())?
-        }
-        None => {
-            let conversation_id = conversation_id.to_string();
-            let content = content.to_string();
-            conn.call(move |conn: &mut Connection| -> rusqlite::Result<i64> {
-                crate::storage::messages::insert(
-                    conn,
-                    transcript_dir.as_deref(),
-                    &crate::storage::messages::NewMessage {
-                        conversation_id: &conversation_id,
-                        role: "user",
-                        content_type: "text",
-                        content: &content,
-                        tool_name: None,
-                        tool_call_id: None,
-                        model_text: None,
-                        created_at: now,
-                        duration_ms: None,
-                        token_count: None,
-                    },
-                )
-            })
-            .await
-            .map_err(|e| e.to_string())?
-        }
+    // FR-012 (owned here since chat mode's removal): the title comes from
+    // the first user message only, no model call. For rich content the
+    // source is the segments' literal `/name` marker form (`expand_skills:
+    // false`) — never the raw JSON and never the full skill expansion,
+    // either of which would make a nonsensical auto-title — and it's
+    // resolved BEFORE the insert, so a failure here persists nothing,
+    // matching the JSON-parse failure above.
+    let title_source = match &rich {
+        Some(r) => expand_segments(&r.segments, skills_dir, false)?,
+        None => content.to_string(),
+    };
+    let (content_type, persisted_content) = match rich_content {
+        Some(json) => ("rich_text", json.to_string()),
+        None => ("text", content.to_string()),
+    };
+
+    let seq = {
+        let conversation_id = conversation_id.to_string();
+        let transcript_dir = transcript_dir.clone();
+        let title = crate::storage::conversations::generate_title(&title_source);
+        conn.call(move |conn: &mut Connection| -> rusqlite::Result<i64> {
+            let tx = conn.transaction()?;
+            // First-message check and title update ride the same
+            // transaction as the insert, so a crash can't leave a titled
+            // conversation with no message (or vice versa).
+            let is_first_message: bool = tx.query_row(
+                "SELECT NOT EXISTS(SELECT 1 FROM messages WHERE conversation_id = ?1)",
+                [&conversation_id],
+                |row| row.get(0),
+            )?;
+            let seq = crate::storage::messages::insert(
+                &tx,
+                transcript_dir.as_deref(),
+                &crate::storage::messages::NewMessage {
+                    conversation_id: &conversation_id,
+                    role: "user",
+                    content_type,
+                    content: &persisted_content,
+                    tool_name: None,
+                    tool_call_id: None,
+                    model_text: None,
+                    created_at: now,
+                    duration_ms: None,
+                    token_count: None,
+                },
+            )?;
+            if is_first_message {
+                tx.execute(
+                    "UPDATE conversations SET title = ?1 WHERE id = ?2",
+                    rusqlite::params![title, conversation_id],
+                )?;
+            }
+            tx.commit()?;
+            Ok(seq)
+        })
+        .await
+        .map_err(|e| e.to_string())?
     };
 
     let model_text = match &rich {
@@ -2015,6 +2024,81 @@ mod tests {
         assert_eq!(role, "user");
         assert_eq!(content_type, "rich_text");
         assert_eq!(content, rich_json);
+    }
+
+    async fn conversation_title(conn: &tokio_rusqlite::Connection, id: &str) -> String {
+        let id = id.to_string();
+        conn.call(move |conn: &mut Connection| {
+            conn.query_row(
+                "SELECT title FROM conversations WHERE id = ?1",
+                [&id],
+                |row| row.get(0),
+            )
+        })
+        .await
+        .unwrap()
+    }
+
+    // --- FR-012 title generation (owned by persist_user_turn since chat
+    // mode's removal) ---
+
+    #[tokio::test]
+    async fn persist_user_turn_titles_the_conversation_from_the_first_message_only() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_conversation(&conn, "c1").await;
+        let skills_dir = tempfile::tempdir().unwrap();
+
+        persist_user_turn(&conn, None, skills_dir.path(), "c1", 0, "fix the login bug", None)
+            .await
+            .unwrap();
+        assert_eq!(conversation_title(&conn, "c1").await, "fix the login bug");
+
+        persist_user_turn(&conn, None, skills_dir.path(), "c1", 1, "second message", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            conversation_title(&conn, "c1").await,
+            "fix the login bug",
+            "only the first message may set the title"
+        );
+    }
+
+    #[tokio::test]
+    async fn persist_user_turn_titles_rich_content_from_the_marker_form_not_the_raw_json() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_conversation(&conn, "c1").await;
+        let skills_dir = tempfile::tempdir().unwrap();
+        let rich_json = serde_json::json!({
+            "segments": [
+                {"type": "text", "text": "please run "},
+                {"type": "skill", "id": "s1", "name": "deploy"},
+            ]
+        })
+        .to_string();
+
+        // expand_skills=false never reads the skill file, so the missing
+        // skill doesn't matter for the title -- while expand_skills=true
+        // (model text) fails, matching the persist-then-error contract.
+        let _ = persist_user_turn(
+            &conn,
+            None,
+            skills_dir.path(),
+            "c1",
+            0,
+            "please run /deploy",
+            Some(&rich_json),
+        )
+        .await;
+
+        let title = conversation_title(&conn, "c1").await;
+        assert!(
+            title.contains("/deploy"),
+            "title should use the literal marker form, got: {title:?}"
+        );
+        assert!(
+            !title.contains("segments"),
+            "raw JSON must never leak into the title, got: {title:?}"
+        );
     }
 
     #[tokio::test]
