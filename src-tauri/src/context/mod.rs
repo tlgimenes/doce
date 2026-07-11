@@ -530,8 +530,8 @@ pub async fn maybe_compact(
 /// observations state instead. No persisted notice, no summarization
 /// `generate()` call, no DB dependency at all — engine + messages in,
 /// fitted messages out — which is also what makes this callable directly
-/// from the real-model agent benchmark (`tests/agent_benchmark.rs`)
-/// instead of the benchmark reimplementing its own version of this step.
+/// from the real-model agent task tests (`tests/agent_tasks.rs`)
+/// instead of that suite reimplementing its own version of this step.
 pub fn fit_turn_to_budget(
     engine: &InferenceEngine,
     messages: &[ChatMessage],
@@ -958,7 +958,7 @@ mod tests {
     // fit_turn_to_budget/fit_to_budget (see fit_to_budget's own tests
     // below; fit_turn_to_budget itself needs a real InferenceEngine, so
     // per this file's own testability note at the top, it's exercised by
-    // the real-model agent benchmark instead, not a unit test here).
+    // the real-model agent task tests instead, not a unit test here).
 
     // --- ContextSettings::from_raw ---
 

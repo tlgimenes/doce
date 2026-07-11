@@ -1,10 +1,14 @@
-//! Agent task-completion benchmark, built to get an objective before/after
-//! comparison when the context-management architecture changes (the
-//! plan-and-execute + retrieval redesign under discussion) rather than
-//! relying on intuition about whether a new design "feels" more convergent.
+//! Agent task-completion tests -- the hard pass/fail regression suite for
+//! the agent harness running against the real installed GGUF model. This
+//! file started life as a print-and-compare benchmark for the 2026-07
+//! context-management redesign; that comparison mission is over, and every
+//! tier now asserts. A red tier is the definition of done for whatever
+//! defect keeps it red, not a result to eyeball -- as of 2026-07-11 the
+//! known tier-4 offenders are the reference-line doom loop and the
+//! plan-nudge contradiction diagnosed in the last gate run (2/20).
 //! `#[ignore]`d like `real_model_smoke.rs` (needs the real installed GGUF).
 //! Run via:
-//!   cargo test --test agent_benchmark -- --ignored --nocapture --test-threads=1
+//!   cargo test --test agent_tasks -- --ignored --nocapture --test-threads=1
 //!
 //! Calls `doce_lib::agent::run_loop` + `dispatch::execute` directly against
 //! the real `InferenceEngine` -- the harness itself, no Tauri/UI involved,
@@ -12,27 +16,28 @@
 //! Deliberately calls `context::fit_turn_to_budget` (the exact function
 //! `commands::agent`'s real generate closure calls) rather than
 //! reimplementing its own version of the pre-generate context-fit step --
-//! this benchmark exists to test what actually ships, not a parallel
+//! this suite exists to test what actually ships, not a parallel
 //! implementation that could quietly drift from it.
 //!
-//! Four tiers of increasing difficulty. Tiers 1-2 are baseline sanity --
-//! they must always pass; a failure there means something is fundamentally
-//! broken, not that an architecture failed to converge. Tiers 3-4 are
-//! deliberately hard under today's pure-ReAct loop and are NOT hard-asserted
-//! to pass -- they print a clear result/score instead, so the same test can
-//! be re-run after an architecture change and the two runs compared by eye,
-//! without editing the test to "unskip" an expected failure.
-//!
-//! Tier 4 in particular is graded (N of 20 fixed), not pass/fail: it's the
-//! one that actually exercises whether the agent loses track of earlier
-//! progress as a task runs long across many small, independent units of
-//! work -- the exact failure mode motivating the redesign this benchmark
-//! exists to validate.
+//! Five tiers of increasing difficulty, all hard-asserted:
+//!   1-2: baseline sanity, single/few tool calls -- a failure here means
+//!        something is fundamentally broken.
+//!   3:   multi-step refactor, graded by whether `cargo build` succeeds on
+//!        the result.
+//!   4:   20 scattered single-file fixes, graded per file against ground
+//!        truth (the agent's own "Done" claim counts for nothing); must
+//!        score 20/20. This is the tier that exercises whether the agent
+//!        loses track of earlier progress as a task runs long across many
+//!        small, independent units of work.
+//!   5:   surgical edit inside a ~3000-line file; the target line must be
+//!        fixed and every other line left byte-identical.
 //!
 //! `_planned` variants (`tier1_planned_...`, `tier4_planned_...`) run the
-//! same task through `run_planned_benchmark_task`'s two-stage loop
-//! (`PlanningBackend`) instead of a single flat `run_loop` call, and are
-//! directly comparable against their flat counterparts.
+//! same task through `run_planned_task`'s two-state loop
+//! (`agent::plan::PlanState`) instead of a single flat `run_loop` call, and
+//! are directly comparable against their flat counterparts. Runs are
+//! stochastic (`DOCE_GEN_SEED` respected, entropy default) -- the
+//! three-seed gate protocol lives around this suite, not inside it.
 
 use doce_lib::agent::{dispatch, run_loop, AgentBackend, AgentContext, AgentError, SYSTEM_PROMPT};
 use doce_lib::context;
@@ -48,13 +53,13 @@ fn installed_model_path() -> PathBuf {
     )
 }
 
-struct BenchmarkRun {
+struct TaskRun {
     result: Result<String, AgentError>,
     turns_taken: u32,
     elapsed: Duration,
 }
 
-fn report(name: &str, run: &BenchmarkRun) {
+fn report(name: &str, run: &TaskRun) {
     match &run.result {
         Ok(answer) => println!(
             "[{name}] turns={} elapsed={:.1}s -> Done: {answer:?}",
@@ -75,17 +80,17 @@ fn report(name: &str, run: &BenchmarkRun) {
 /// every general tool result through `context::payload::stage_tool_result`
 /// before it enters message history (payload file written first, then an
 /// over-threshold result replaced by a status reference line), and this
-/// benchmark predates that move: it used to feed `dispatch::execute(...).
-/// model_text` straight into history, unstaged, so a benchmark run never
+/// suite predates that move: it used to feed `dispatch::execute(...).
+/// model_text` straight into history, unstaged, so a run here never
 /// exercised the production context economy at all. This is the one place
-/// both bench backends (`BenchBackend`, `PlanExecBackend`) route a general
+/// both backends (`FlatBackend`, `PlanExecBackend`) route a general
 /// tool result through, so the two call sites can't independently drift from
 /// what production actually does.
 ///
 /// `threshold_tokens` is `limits::DEFAULT_TOOL_OUTPUT_OFFLOAD_TOKENS`
-/// directly, not `ContextSettings::tool_output_offload_tokens` -- the bench
-/// has no DB/settings store to load one from, and that constant is exactly
-/// what an unconfigured install defaults to.
+/// directly, not `ContextSettings::tool_output_offload_tokens` -- this
+/// suite has no DB/settings store to load one from, and that constant is
+/// exactly what an unconfigured install defaults to.
 ///
 /// Deliberately takes a `count_tokens` closure rather than an
 /// `&InferenceEngine` like production's call sites do: production also
@@ -93,9 +98,9 @@ fn report(name: &str, run: &BenchmarkRun) {
 /// this block (detail-only, `model_text`-irrelevant token-count metadata),
 /// which the real call sites below apply themselves before calling in here
 /// -- but keeping that engine dependency out of this function itself is
-/// what lets `bench_wiring_stages_oversized_result_as_reference_line`
+/// what lets `staging_wiring_replaces_oversized_result_with_reference_line`
 /// exercise this exact wiring without a loaded model.
-fn stage_bench_tool_result(
+fn stage_general_tool_result(
     payload_dir: &Path,
     conversation_id: &str,
     tool_call_id: &str,
@@ -107,7 +112,7 @@ fn stage_bench_tool_result(
         // Carve-out: never write a copy of a file we just read -- the
         // payload reference IS the source. Production additionally stamps
         // `detail.payloadRef` from `detail.resolvedPath` here, but neither
-        // bench backend persists `detail` anywhere, so only `model_text`
+        // backend here persists `detail` anywhere, so only `model_text`
         // (what actually enters message history) matters.
         outcome.model_text
     } else {
@@ -123,13 +128,13 @@ fn stage_bench_tool_result(
     }
 }
 
-/// Sanity assertion (no real model, not `#[ignore]`d): proves the bench's
+/// Sanity assertion (no real model, not `#[ignore]`d): proves this suite's
 /// own wiring above -- not just `stage_tool_result` in isolation, which
 /// already has its own unit tests in `context/payload.rs` -- replaces an
 /// oversized synthetic result with a status reference line pointing at a
 /// payload file that holds the full text.
 #[test]
-fn bench_wiring_stages_oversized_result_as_reference_line() {
+fn staging_wiring_replaces_oversized_result_with_reference_line() {
     let dir = tempdir().unwrap();
     let big = "line of output\n".repeat(2000);
     let outcome = doce_lib::agent::dispatch::ToolOutcome {
@@ -140,9 +145,9 @@ fn bench_wiring_stages_oversized_result_as_reference_line() {
     // 1 char == 1 "token": comfortably trips
     // `DEFAULT_TOOL_OUTPUT_OFFLOAD_TOKENS` (1024) with a ~30,000-char fixture,
     // without needing a real tokenizer/loaded model.
-    let result = stage_bench_tool_result(
+    let result = stage_general_tool_result(
         dir.path(),
-        "bench-conv",
+        "wiring-conv",
         "call-1",
         "Grep",
         outcome,
@@ -169,13 +174,13 @@ fn bench_wiring_stages_oversized_result_as_reference_line() {
     );
 }
 
-/// `AgentBackend` for this benchmark -- the exact same shape
-/// `commands::agent`'s `SubagentBackend` uses (measure/compact call
-/// `context::fit_turn_to_budget`/its `InferenceEngine` counterparts
-/// directly, not a benchmark-only reimplementation), plus a turn counter
+/// `AgentBackend` for the flat (plan-less) `run_loop` path -- the exact
+/// same shape `commands::agent`'s `SubagentBackend` uses (measure/compact
+/// call `context::fit_turn_to_budget`/its `InferenceEngine` counterparts
+/// directly, not a test-only reimplementation), plus a turn counter
 /// `run_loop` itself has no reason to expose (it only reports turn count
 /// on the `TurnCapExceeded` error path, not on success).
-struct BenchBackend<'a> {
+struct FlatBackend<'a> {
     engine: &'a InferenceEngine,
     /// One persistent inference context per loop (KV-prefix reuse across
     /// turns) -- the same shape production's `RealBackend` now holds.
@@ -188,7 +193,7 @@ struct BenchBackend<'a> {
     /// against, instead of trusting the step's own final "Done" text (the
     /// exact thing tier 4 showed is not reliable on its own).
     trace: Vec<String>,
-    /// 2026-07-09 payload-files design: the root `stage_bench_tool_result`
+    /// 2026-07-09 payload-files design: the root `stage_general_tool_result`
     /// stages into (it joins its own `tool-outputs/` under this, exactly
     /// like production's `app_data_dir`) -- a tempdir SIBLING to the task's
     /// fixture dir (`cwd`), never nested inside it: Glob/Grep tool calls
@@ -200,7 +205,7 @@ struct BenchBackend<'a> {
     conversation_id: String,
 }
 
-impl AgentBackend for BenchBackend<'_> {
+impl AgentBackend for FlatBackend<'_> {
     fn measure(&mut self, messages: &[ChatMessage]) -> u32 {
         self.engine
             .render_chat_prompt(messages)
@@ -246,7 +251,7 @@ impl AgentBackend for BenchBackend<'_> {
     ) -> doce_lib::agent::ToolExecution {
         let outcome = dispatch::execute(&call, Some(self.cwd));
         let outcome = context::annotate_with_token_count(self.engine, outcome);
-        let result = stage_bench_tool_result(
+        let result = stage_general_tool_result(
             &self.payload_dir,
             &self.conversation_id,
             &tool_call_id,
@@ -275,12 +280,12 @@ impl AgentBackend for BenchBackend<'_> {
 
 /// Runs `task` through the real agent harness rooted at `cwd`, capturing
 /// turns taken and wall-clock time alongside the loop's own `Result`.
-async fn run_benchmark_task(
+async fn run_flat_task(
     engine: &InferenceEngine,
     task: &str,
     cwd: &Path,
     max_turns: u32,
-) -> BenchmarkRun {
+) -> TaskRun {
     let context = AgentContext {
         is_subagent: false,
         max_turns,
@@ -291,16 +296,16 @@ async fn run_benchmark_task(
 
     // Same measure/threshold/compact commands::agent's real generate
     // closure uses -- run_loop itself now makes the fit-to-budget decision
-    // on every turn, so this benchmark calls exactly what ships rather than
+    // on every turn, so this suite calls exactly what ships rather than
     // reimplementing its own version of the pre-generate step.
     let threshold = engine
         .context_window()
         .saturating_sub(doce_lib::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS);
     // 2026-07-09 payload-files design: a fresh tempdir SIBLING to `cwd`
-    // (never nested inside it -- see `BenchBackend::payload_dir`'s doc
+    // (never nested inside it -- see `FlatBackend::payload_dir`'s doc
     // comment), kept alive for this whole run by staying a local here.
     let payload_root = tempdir().expect("payload tempdir should create");
-    let mut backend = BenchBackend {
+    let mut backend = FlatBackend {
         engine,
         session: engine.new_session().expect("session should create"),
         cwd,
@@ -308,12 +313,12 @@ async fn run_benchmark_task(
         turns: 0,
         trace: Vec::new(),
         payload_dir: payload_root.path().to_path_buf(),
-        conversation_id: "bench-top".to_string(),
+        conversation_id: "flat-top".to_string(),
     };
 
     let result = run_loop(&context, initial_messages, &mut backend).await;
 
-    BenchmarkRun {
+    TaskRun {
         result,
         turns_taken: backend.turns,
         elapsed: start.elapsed(),
@@ -327,7 +332,7 @@ async fn run_benchmark_task(
 /// (`commands::agent::RealBackend`) -- this struct keeps only host
 /// concerns: dispatching regular tool calls that pass through the plan
 /// machine, the canned `AskUserQuestion` answer, the `Task` subagent, and
-/// benchmark tracing. See `agent::plan`'s own doc comment for why the
+/// per-turn trace printing. See `agent::plan`'s own doc comment for why the
 /// two-state design replaced an earlier two-backend/recursive-`run_loop`
 /// design.
 struct PlanExecBackend<'a> {
@@ -339,8 +344,8 @@ struct PlanExecBackend<'a> {
     threshold: u32,
     turns: u32,
     plan_state: doce_lib::agent::plan::PlanState,
-    /// See `BenchBackend::payload_dir`'s doc comment -- same tempdir-root
-    /// shape, shared with any `Task`-spawned `BenchBackend` below (mirroring
+    /// See `FlatBackend::payload_dir`'s doc comment -- same tempdir-root
+    /// shape, shared with any `Task`-spawned `FlatBackend` below (mirroring
     /// production's single shared `app_data_dir` across `RealBackend` and
     /// every `SubagentBackend` it spawns).
     payload_dir: PathBuf,
@@ -367,7 +372,7 @@ impl AgentBackend for PlanExecBackend<'_> {
         self.turns += 1;
         // Stable-prefix architecture, exactly as production's `RealBackend`:
         // `messages[0]` is the immutable union prompt + cwd line seeded by
-        // `run_planned_benchmark_task` and never touched here, so the
+        // `run_planned_task` and never touched here, so the
         // session's KV prefix survives every plan-state transition. All
         // volatile state (mode banner, current step framing, refusal,
         // recitation checklist) rides in ONE tail message; the current
@@ -411,7 +416,7 @@ impl AgentBackend for PlanExecBackend<'_> {
             }
         } else if call.name == "AskUserQuestion" {
             plan_finish = None;
-            "Error: no interactive user is available in this benchmark run -- proceed using your own best judgment".to_string()
+            "Error: no interactive user is available in this test run -- proceed using your own best judgment".to_string()
         } else if call.name == "Task" {
             plan_finish = None;
             // Mirrors commands::agent's real Task handling: an isolated
@@ -432,7 +437,7 @@ impl AgentBackend for PlanExecBackend<'_> {
             };
             let sub_messages =
                 vec![ChatMessage::system(SYSTEM_PROMPT), ChatMessage::user(prompt)];
-            let mut sub_backend = BenchBackend {
+            let mut sub_backend = FlatBackend {
                 engine: self.engine,
                 session: self
                     .engine
@@ -460,7 +465,7 @@ impl AgentBackend for PlanExecBackend<'_> {
             plan_finish = None;
             let outcome = dispatch::execute(&call, Some(self.cwd));
             let outcome = context::annotate_with_token_count(self.engine, outcome);
-            stage_bench_tool_result(
+            stage_general_tool_result(
                 &self.payload_dir,
                 &self.conversation_id,
                 &tool_call_id,
@@ -497,12 +502,12 @@ fn report_plan(name: &str, plan: &doce_lib::agent::plan::Plan) {
 /// Runs `task` through the single two-state loop (`PlanExecBackend`) --
 /// one `run_loop` call, not two, and one continuous conversation shared by
 /// planning and every step's execution.
-async fn run_planned_benchmark_task(
+async fn run_planned_task(
     engine: &InferenceEngine,
     task: &str,
     cwd: &Path,
     max_plan_turns: u32,
-) -> BenchmarkRun {
+) -> TaskRun {
     let context = AgentContext {
         is_subagent: false,
         max_turns: max_plan_turns,
@@ -531,7 +536,7 @@ async fn run_planned_benchmark_task(
         doce_lib::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS
             + doce_lib::context::limits::STATE_TAIL_RESERVE_TOKENS,
     );
-    // 2026-07-09 payload-files design: see `run_benchmark_task`'s identical
+    // 2026-07-09 payload-files design: see `run_flat_task`'s identical
     // tempdir -- a fresh root SIBLING to `cwd`, kept alive for this whole
     // run (including every `Task`-spawned subagent) by staying a local here.
     let payload_root = tempdir().expect("payload tempdir should create");
@@ -549,7 +554,7 @@ async fn run_planned_benchmark_task(
     let result = run_loop(&context, initial_messages, &mut backend).await;
     report_plan("planned", &backend.plan_state.plan);
 
-    BenchmarkRun {
+    TaskRun {
         result,
         turns_taken: backend.turns,
         elapsed: start.elapsed(),
@@ -565,7 +570,7 @@ async fn tier1_single_tool_call_reads_a_known_file() {
     let dir = tempdir().unwrap();
     std::fs::write(dir.path().join("config.txt"), "hello=world\nsecond=line\n").unwrap();
 
-    let run = run_benchmark_task(
+    let run = run_flat_task(
         &engine,
         "This directory has a file named config.txt. What's on its first line? \
          Answer with just the line's content, nothing else.",
@@ -593,7 +598,7 @@ async fn tier1_planned_single_tool_call_reads_a_known_file() {
     let dir = tempdir().unwrap();
     std::fs::write(dir.path().join("config.txt"), "hello=world\nsecond=line\n").unwrap();
 
-    let run = run_planned_benchmark_task(
+    let run = run_planned_task(
         &engine,
         "This directory has a file named config.txt. What's on its first line? \
          Answer with just the line's content, nothing else.",
@@ -624,7 +629,7 @@ async fn tier2_few_tool_calls_finds_todo_files() {
     std::fs::write(dir.path().join("e.rs"), "// TODO: cleanup\nfn e() {}\n").unwrap();
     std::fs::write(dir.path().join("f.rs"), "fn f() {}\n").unwrap();
 
-    let run = run_benchmark_task(
+    let run = run_flat_task(
         &engine,
         "List every .rs file in this directory that contains the string TODO, \
          and tell me how many there are.",
@@ -692,7 +697,7 @@ async fn tier3_multi_step_refactor_adds_a_field_and_updates_call_sites() {
     let dir = tempdir().unwrap();
     tier3_fixture(dir.path());
 
-    let run = run_benchmark_task(
+    let run = run_flat_task(
         &engine,
         "Add a `created_at: String` field to the `Widget` struct defined in \
          src/widget.rs. Then update every place in this crate (the files under \
@@ -714,22 +719,19 @@ async fn tier3_multi_step_refactor_adds_a_field_and_updates_call_sites() {
         .output()
         .expect("failed to invoke cargo build");
 
-    println!(
-        "[tier3] cargo build succeeded: {} (stderr tail: {})",
+    let stderr_tail = String::from_utf8_lossy(&build.stderr)
+        .lines()
+        .rev()
+        .take(15)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join(" | ");
+    assert!(
         build.status.success(),
-        String::from_utf8_lossy(&build.stderr)
-            .lines()
-            .rev()
-            .take(15)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect::<Vec<_>>()
-            .join(" | ")
+        "[tier3] crate must compile after the refactor; cargo build stderr tail: {stderr_tail}"
     );
-    // Not hard-asserted (see module doc): today's architecture may
-    // genuinely fail this. The printed line is what a before/after
-    // comparison actually reads.
 }
 
 // --- Tier 4: long-running, many discrete units (the real convergence stress test) ---
@@ -792,7 +794,7 @@ async fn tier4_long_running_fixes_many_scattered_bugs() {
         TIER4_BUG_COUNT - 1
     );
 
-    let run = run_benchmark_task(
+    let run = run_flat_task(
         &engine,
         &task,
         dir.path(),
@@ -811,8 +813,10 @@ async fn tier4_long_running_fixes_many_scattered_bugs() {
         run.elapsed.as_secs_f32(),
         std::env::var("DOCE_GEN_SEED").unwrap_or_else(|_| "entropy".into())
     );
-    // Deliberately not hard-asserted -- this is the graded stress test
-    // (see module doc). The printed score is the actual benchmark output.
+    assert_eq!(
+        fixed, total,
+        "[tier4] every bug must be fixed; failures: {failures:?}"
+    );
 }
 
 /// Same task as `tier4_long_running_fixes_many_scattered_bugs`, run through
@@ -843,7 +847,7 @@ async fn tier4_planned_long_running_fixes_many_scattered_bugs() {
     // separate one per step): CreatePlan + 20 x (a few tool calls per
     // file + StepDone) + occasional independent verification + final
     // review, matching production's own top-level cap (200).
-    let run = run_planned_benchmark_task(&engine, &task, dir.path(), 150).await;
+    let run = run_planned_task(&engine, &task, dir.path(), 150).await;
     report("tier4_planned", &run);
 
     let (fixed, total, failures) = tier4_score(dir.path());
@@ -856,7 +860,10 @@ async fn tier4_planned_long_running_fixes_many_scattered_bugs() {
         run.elapsed.as_secs_f32(),
         std::env::var("DOCE_GEN_SEED").unwrap_or_else(|_| "entropy".into())
     );
-    // Deliberately not hard-asserted, same reasoning as tier 4 itself.
+    assert_eq!(
+        fixed, total,
+        "[tier4_planned] every bug must be fixed; failures: {failures:?}"
+    );
 }
 
 // --- Tier 5: surgical edit inside one huge file ---
@@ -928,7 +935,7 @@ async fn tier5_surgical_edit_in_one_huge_file() {
     let dir = tempdir().unwrap();
     let original = tier5_fixture(dir.path());
 
-    let run = run_benchmark_task(
+    let run = run_flat_task(
         &engine,
         "The file big.txt in this directory has exactly one line containing the \
          word TARGET, somewhere among 3000 lines. Find that line and change it so \
@@ -940,9 +947,7 @@ async fn tier5_surgical_edit_in_one_huge_file() {
     .await;
     report("tier5", &run);
 
-    match tier5_check(dir.path(), &original) {
-        Ok(()) => println!("[tier5] check: PASS -- target fixed, rest of file untouched"),
-        Err(e) => println!("[tier5] check: FAIL -- {e}"),
+    if let Err(e) = tier5_check(dir.path(), &original) {
+        panic!("[tier5] target must be fixed with the rest of the file untouched: {e}");
     }
-    // Not hard-asserted, same reasoning as tiers 3-4.
 }

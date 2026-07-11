@@ -2,8 +2,8 @@
 //! whose available tools depend on an external state the backend itself
 //! carries (`LoopState`) — not two separate loops. The state machine
 //! itself lives here as `PlanState`: both production
-//! (`commands::agent::RealBackend`) and the benchmark's `PlanExecBackend`
-//! (`tests/agent_benchmark.rs`) embed this same struct as their
+//! (`commands::agent::RealBackend`) and the task tests' `PlanExecBackend`
+//! (`tests/agent_tasks.rs`) embed this same struct as their
 //! `AgentBackend`'s `plan_state` field, rather than each independently
 //! reimplementing the state shape and prompts.
 //!
