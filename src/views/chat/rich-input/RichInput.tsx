@@ -367,6 +367,7 @@ export default function RichInput({
         codeBlock: false,
         horizontalRule: false,
         dropcursor: false,
+        bold: false,
       }),
       Placeholder.configure({
         placeholder: () => placeholderRef.current,

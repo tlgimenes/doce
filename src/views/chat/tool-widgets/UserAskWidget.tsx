@@ -72,10 +72,6 @@ export default function UserAskWidget({ detail, initialMode = "options" }: UserA
   };
 
   const toggleOption = (label: string) => {
-    if (!detail.multiSelect) {
-      setSelected([label]);
-      return;
-    }
     setSelected((prev) =>
       prev.includes(label) ? prev.filter((l) => l !== label) : [...prev, label],
     );

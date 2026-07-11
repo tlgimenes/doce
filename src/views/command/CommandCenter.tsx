@@ -53,7 +53,6 @@ export default function CommandCenter({ open, onOpenChange, actions }: CommandCe
         >
           <CommandInput
             autoFocus
-            aria-label="Command search"
             placeholder="Type a command or search"
             value={query}
             onValueChange={setQuery}
