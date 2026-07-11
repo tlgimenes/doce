@@ -4,7 +4,6 @@ pub mod context;
 pub mod conversations;
 pub mod mcp;
 pub mod models;
-pub mod scheduler;
 pub mod search;
 pub mod settings;
 pub mod skills;
@@ -21,7 +20,6 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             models::list_models,
             models::set_active_model,
             conversations::create_conversation,
-            conversations::send_message,
             conversations::list_conversations,
             conversations::list_messages,
             conversations::mark_conversation_seen,
@@ -32,8 +30,6 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             search::search_conversations,
             settings::get_settings,
             settings::update_setting,
-            scheduler::set_focused_conversation,
-            scheduler::cancel_generation,
             workspaces::open_workspace,
             workspaces::list_workspaces,
             workspaces::search_folders,
@@ -48,10 +44,6 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
         ])
         .events(collect_events![
             crate::downloader::ModelInstallProgress,
-            conversations::AssistantToken,
-            conversations::AssistantMessageComplete,
-            conversations::AssistantMessageError,
-            crate::scheduler::GenerationQueueUpdate,
             agent::AskUserQuestionEvent,
             crate::context::ContextUsage,
             agent::AgentMessagePersisted,
@@ -65,4 +57,22 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
         .semantic_types(
             specta_typescript::semantic::Configuration::default().enable_lossless_bigints(),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    /// Regenerates `../src/lib/bindings.ts` without launching the app —
+    /// the exact export `lib::run` performs at debug startup. Run after
+    /// changing the command/event surface:
+    ///   cargo test --lib export_typescript_bindings -- --ignored
+    #[test]
+    #[ignore]
+    fn export_typescript_bindings() {
+        super::specta_builder()
+            .export(
+                specta_typescript::Typescript::default(),
+                "../src/lib/bindings.ts",
+            )
+            .expect("failed to export typescript bindings");
+    }
 }

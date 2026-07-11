@@ -37,7 +37,7 @@ use std::path::Path;
 
 /// Live per-conversation context-usage snapshot. `state` mirrors this
 /// codebase's existing convention for wire-level status fields
-/// (`Conversation.status`, `GenerationQueueUpdate.state`) of a plain
+/// (`Conversation.status`) of a plain
 /// `String` over a specta-derived Rust enum: one of `"normal"` /
 /// `"warning"` / `"justCompacted"`.
 #[derive(Debug, Clone, Serialize, specta::Type, tauri_specta::Event)]

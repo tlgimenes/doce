@@ -1,4 +1,5 @@
-use crate::commands::conversations::{InferenceState, CHAT_SYSTEM_PROMPT};
+use crate::commands::agent::{conversation_cwd, conversation_system_message};
+use crate::commands::conversations::InferenceState;
 use crate::context::{self, ContextUsage};
 use crate::storage::DbCell;
 use tauri::{AppHandle, Manager, State};
@@ -26,28 +27,26 @@ pub async fn get_context_usage(
     let guard = inference_state.0.lock().await;
     let engine = guard.as_ref().ok_or("No model loaded")?;
 
-    // Plain-chat system prompt is used as the default here: this command is
-    // called generically (e.g. right after opening any conversation, before
-    // the caller necessarily knows whether it'll be used for chat or agent
-    // mode this session) -- both prompts are short enough that the token
-    // count this produces is a close, honest estimate either way, and the
-    // live `context-usage-update` events emitted from the real send_message/
-    // send_agent_message paths (which do know their exact mode) supersede
-    // this snapshot the moment a turn actually runs.
-    context::compute_usage(
-        &conn,
-        engine,
-        &conversation_id,
-        &skills_dir,
-        CHAT_SYSTEM_PROMPT,
-    )
-    .await
+    // The exact system prompt the next real turn will run with (there is
+    // only agent mode), resolved through the same helpers
+    // `send_agent_message` uses — so this on-demand snapshot and the live
+    // `context-usage-update` events can never disagree about the prompt.
+    let cwd = conversation_cwd(&conn, &conversation_id).await?;
+    let transcript_dir = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|d| d.join("transcripts"));
+    let system_prompt =
+        conversation_system_message(cwd.as_deref(), transcript_dir.as_deref(), &conversation_id);
+
+    context::compute_usage(&conn, engine, &conversation_id, &skills_dir, &system_prompt).await
 }
 
 /// 010-context-window-management/US2 (FR-009): forces the same tiered
-/// compaction pipeline `send_message`/`send_agent_message` run pre-flight,
-/// immediately, regardless of whether the compaction threshold has actually
-/// been crossed. A no-op (returns the current, unchanged usage) if there's
+/// compaction pipeline `send_agent_message` runs pre-flight, immediately,
+/// regardless of whether the compaction threshold has actually been
+/// crossed. A no-op (returns the current, unchanged usage) if there's
 /// nothing eligible to clear or summarize -- never fabricates a notice.
 #[tauri::command]
 #[specta::specta]
@@ -72,13 +71,16 @@ pub async fn compact_conversation(
         .app_data_dir()
         .ok()
         .map(|d| d.join("transcripts"));
+    let cwd = conversation_cwd(&conn, &conversation_id).await?;
+    let system_prompt =
+        conversation_system_message(cwd.as_deref(), transcript_dir.as_deref(), &conversation_id);
     context::maybe_compact(
         &conn,
         transcript_dir,
         engine,
         &conversation_id,
         &skills_dir,
-        CHAT_SYSTEM_PROMPT,
+        &system_prompt,
         true,
     )
     .await

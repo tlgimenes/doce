@@ -6,7 +6,6 @@ pub mod hardware;
 pub mod inference;
 pub mod mcp;
 pub mod model_registry;
-pub mod scheduler;
 pub mod skills;
 pub mod storage;
 
@@ -14,7 +13,6 @@ use agent::tools::ask_user::PendingQuestions;
 use commands::agent::ActivePlans;
 use commands::conversations::{ActiveGenerations, InferenceState};
 use commands::models::InFlightDownloads;
-use scheduler::Scheduler;
 use storage::DbCell;
 
 pub fn run() {
@@ -67,10 +65,8 @@ pub fn run() {
         .manage(ActivePlans::default())
         .manage(PendingQuestions::default())
         .manage(DbCell::new())
-        .manage(Scheduler::new())
         .setup(move |app| {
             builder.mount_events(app);
-            scheduler::worker::spawn(app.handle().clone());
             Ok(())
         })
         .run(tauri::generate_context!())

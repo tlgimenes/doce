@@ -299,13 +299,6 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [shortcuts, showCommandCenter, showSearch, showShortcutsDialog]);
 
-  // US5/FR-026: the scheduler's priority is evaluated dynamically at pickup
-  // time against whichever conversation is currently focused — every view
-  // change needs to tell it, not just the initial selection.
-  useEffect(() => {
-    commands.setFocusedConversation(activeConversation?.id ?? null);
-  }, [activeConversation]);
-
   const markSeen = useCallback((conversationId: string) => {
     commands.markConversationSeen(conversationId).catch(console.error);
     setActiveConversation((current) =>

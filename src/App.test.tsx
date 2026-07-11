@@ -30,7 +30,6 @@ const originalStartViewTransition = (document as TestDocument).startViewTransiti
 vi.mock("@/lib/ipc", () => ({
   commands: {
     listModels: vi.fn(),
-    setFocusedConversation: vi.fn(),
     listConversations: vi.fn(),
     searchConversations: vi.fn(),
     markConversationSeen: vi.fn(),

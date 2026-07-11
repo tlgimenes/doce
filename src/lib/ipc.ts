@@ -407,13 +407,6 @@ export interface RichMessageContent {
   segments: RichTextSegment[];
 }
 
-export interface SendMessageResult {
-  messageId: string;
-  requestId: string;
-  assistantMessageId: string;
-  assistantCreatedAt: number;
-}
-
 export interface SearchResult {
   conversationId: string;
   title: string;
@@ -552,12 +545,6 @@ export const commands = {
   setActiveModel: (modelId: string) => invoke<void>("set_active_model", { modelId }),
   createConversation: (workspaceId?: string) =>
     invoke<Conversation>("create_conversation", { workspaceId }),
-  sendMessage: (conversationId: string, content: string, richContent?: string) =>
-    invoke<SendMessageResult>("send_message", {
-      conversationId,
-      content,
-      richContent,
-    }),
   listConversations: (workspaceId?: string) =>
     invoke<Conversation[]>("list_conversations", { workspaceId }),
   listMessages: (conversationId: string) => invoke<Message[]>("list_messages", { conversationId }),
@@ -571,9 +558,6 @@ export const commands = {
   getSettings: () => invoke<Record<string, string>>("get_settings"),
   updateSetting: (key: string, valueJson: string) =>
     invoke<void>("update_setting", { key, valueJson }),
-  setFocusedConversation: (conversationId: string | null) =>
-    invoke<void>("set_focused_conversation", { conversationId }),
-  cancelGeneration: (requestId: string) => invoke<boolean>("cancel_generation", { requestId }),
   openWorkspace: (path: string) => invoke<Workspace>("open_workspace", { path }),
   listWorkspaces: () => invoke<Workspace[]>("list_workspaces"),
   searchFolders: (query: string, maxResults?: number) =>
@@ -610,34 +594,6 @@ export interface ModelInstallProgressPayload {
   state: string;
 }
 
-export interface AssistantTokenPayload {
-  conversationId: string;
-  messageId: string;
-  token: string;
-}
-
-export interface AssistantMessageCompletePayload {
-  conversationId: string;
-  messageId: string;
-  durationMs: number;
-  tokenCount: number | null;
-}
-
-export interface AssistantMessageErrorPayload {
-  conversationId: string;
-  messageId: string;
-  error: string;
-}
-
-export type GenerationQueueState = "queued" | "generating";
-
-export interface GenerationQueueUpdatePayload {
-  requestId: string;
-  conversationId: string;
-  state: GenerationQueueState;
-  position: number | null;
-}
-
 // 004-tool-call-widgets/US3 — the one live event this feature adds
 // (contracts/tool-widgets.md; research.md § 3).
 export interface AskUserQuestionEventPayload {
@@ -663,16 +619,6 @@ export const events = {
     listen<ModelInstallProgressPayload>("model-install-progress", (e) => cb(e.payload)),
   onAskUserQuestion: (cb: (p: AskUserQuestionEventPayload) => void): Promise<UnlistenFn> =>
     listen<AskUserQuestionEventPayload>("ask-user-question", (e) => cb(e.payload)),
-  onAssistantToken: (cb: (p: AssistantTokenPayload) => void): Promise<UnlistenFn> =>
-    listen<AssistantTokenPayload>("assistant-token", (e) => cb(e.payload)),
-  onAssistantMessageComplete: (
-    cb: (p: AssistantMessageCompletePayload) => void,
-  ): Promise<UnlistenFn> =>
-    listen<AssistantMessageCompletePayload>("assistant-message-complete", (e) => cb(e.payload)),
-  onAssistantMessageError: (cb: (p: AssistantMessageErrorPayload) => void): Promise<UnlistenFn> =>
-    listen<AssistantMessageErrorPayload>("assistant-message-error", (e) => cb(e.payload)),
-  onGenerationQueueUpdate: (cb: (p: GenerationQueueUpdatePayload) => void): Promise<UnlistenFn> =>
-    listen<GenerationQueueUpdatePayload>("generation-queue-update", (e) => cb(e.payload)),
   onContextUsageUpdate: (cb: (p: ContextUsage) => void): Promise<UnlistenFn> =>
     listen<ContextUsage>("context-usage-update", (e) => cb(e.payload)),
   onAgentMessagePersisted: (cb: (p: AgentMessagePersistedPayload) => void): Promise<UnlistenFn> =>

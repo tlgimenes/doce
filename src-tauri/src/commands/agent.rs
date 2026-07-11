@@ -1325,6 +1325,50 @@ fn plan_system_message(
     message
 }
 
+/// The conversation's workspace path, resolved via the same LEFT JOIN
+/// every cwd-aware call site must agree on. `None` for a conversation with
+/// no workspace_id (the join's `w.path` column is simply NULL in that
+/// row). Shared with `commands::context` so the on-demand gauge/compaction
+/// commands resolve the exact cwd a real turn would.
+pub(crate) async fn conversation_cwd(
+    conn: &tokio_rusqlite::Connection,
+    conversation_id: &str,
+) -> Result<Option<std::path::PathBuf>, String> {
+    let workspace_path: Option<String> = conn
+        .call({
+            let conversation_id = conversation_id.to_string();
+            move |conn: &mut Connection| -> rusqlite::Result<Option<String>> {
+                conn.query_row(
+                    "SELECT w.path FROM conversations c LEFT JOIN workspaces w ON w.id = c.workspace_id WHERE c.id = ?1",
+                    [&conversation_id],
+                    |row| row.get(0),
+                )
+            }
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(workspace_path.map(std::path::PathBuf::from))
+}
+
+/// The exact system prompt a top-level turn in this conversation runs
+/// with: the plan union prompt + cwd line + transcript pointer. The single
+/// construction point for `send_agent_message` AND `commands::context`'s
+/// usage/compaction commands, so token estimates and real turns can never
+/// disagree about the prompt (they briefly did when chat mode's
+/// CHAT_SYSTEM_PROMPT doubled as the generic estimate).
+pub(crate) fn conversation_system_message(
+    cwd: Option<&std::path::Path>,
+    transcript_dir: Option<&std::path::Path>,
+    conversation_id: &str,
+) -> String {
+    let transcript_path = transcript_dir.map(|dir| {
+        crate::context::transcript::transcript_path(dir, conversation_id)
+            .display()
+            .to_string()
+    });
+    plan_system_message(cwd, true, transcript_path.as_deref())
+}
+
 /// 009-rich-chat-input/US2 (contracts/rich-chat-input.md): persists this
 /// turn's user message row and derives the text the model actually sees
 /// for it.
@@ -1586,23 +1630,9 @@ pub async fn send_agent_message(
 
     // 007-workspace-cwd-resolution: resolved once per turn, not per tool
     // call — a conversation's workspace can't change mid-turn. `None` for
-    // a conversation with no workspace_id (the LEFT JOIN's `w.path` column
-    // is simply NULL in that row), which every downstream cwd-aware
+    // a conversation with no workspace_id, which every downstream cwd-aware
     // function treats as "behave exactly as before this feature existed."
-    let workspace_path: Option<String> = conn
-        .call({
-            let conversation_id = conversation_id.clone();
-            move |conn: &mut Connection| -> rusqlite::Result<Option<String>> {
-                conn.query_row(
-                    "SELECT w.path FROM conversations c LEFT JOIN workspaces w ON w.id = c.workspace_id WHERE c.id = ?1",
-                    [&conversation_id],
-                    |row| row.get(0),
-                )
-            }
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-    let cwd = workspace_path.map(std::path::PathBuf::from);
+    let cwd = conversation_cwd(&conn, &conversation_id).await?;
 
     let context = AgentContext::top_level().with_cwd(cwd.clone());
     let guard = inference.0.lock().await;
@@ -1634,13 +1664,11 @@ pub async fn send_agent_message(
     let plan_state = crate::agent::plan::PlanState::default();
     // The top-level agent seed names ITS OWN conversation's transcript
     // (contrast the subagent seed above, which names `subagent_id`'s).
-    let top_level_transcript_path = transcript_dir.as_deref().map(|dir| {
-        crate::context::transcript::transcript_path(dir, &conversation_id)
-            .display()
-            .to_string()
-    });
-    let system_prompt =
-        plan_system_message(cwd.as_deref(), true, top_level_transcript_path.as_deref());
+    let system_prompt = conversation_system_message(
+        cwd.as_deref(),
+        transcript_dir.as_deref(),
+        &conversation_id,
+    );
     let usage = crate::context::maybe_compact(
         &conn,
         transcript_dir.clone(),
