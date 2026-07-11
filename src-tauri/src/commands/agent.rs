@@ -1354,8 +1354,7 @@ pub(crate) async fn conversation_cwd(
 /// with: the plan union prompt + cwd line + transcript pointer. The single
 /// construction point for `send_agent_message` AND `commands::context`'s
 /// usage/compaction commands, so token estimates and real turns can never
-/// disagree about the prompt (they briefly did when chat mode's
-/// CHAT_SYSTEM_PROMPT doubled as the generic estimate).
+/// disagree about the prompt.
 pub(crate) fn conversation_system_message(
     cwd: Option<&std::path::Path>,
     transcript_dir: Option<&std::path::Path>,
@@ -1397,8 +1396,8 @@ pub(crate) fn conversation_system_message(
 /// a real, temporary DB connection and skills directory, the same way
 /// `persist_tool_call`/`persist_tool_result` above already are.
 ///
-/// Also owns FR-012 title generation (moved here when chat mode was
-/// removed): the first user message in a conversation sets its title via
+/// Also owns FR-012 title generation: the first user message in a
+/// conversation sets its title via
 /// `storage::conversations::generate_title`, atomically with the insert.
 ///
 /// Returns `(sequence, model_text)` — the sequence `storage::messages::insert`
@@ -1419,8 +1418,8 @@ async fn persist_user_turn(
         .transpose()
         .map_err(|e| format!("invalid rich_content: {e}"))?;
 
-    // FR-012 (owned here since chat mode's removal): the title comes from
-    // the first user message only, no model call. For rich content the
+    // FR-012: the title comes from the first user message only, no model
+    // call. For rich content the
     // source is the segments' literal `/name` marker form (`expand_skills:
     // false`) — never the raw JSON and never the full skill expansion,
     // either of which would make a nonsensical auto-title — and it's
@@ -1488,16 +1487,12 @@ async fn persist_user_turn(
 
 /// FR-008/FR-009: runs the agent tool-use loop to completion for one user
 /// message in a workspace-scoped conversation, using the real built-in
-/// tools (`agent::dispatch`) and the same loaded model `send_message`
-/// uses. Two known, deliberate simplifications versus the full spec (both
-/// called out in `agent/mod.rs` too): this bypasses the scheduler's queue
-/// entirely rather than submitting turns through it (agent-mode work isn't
-/// yet scheduled alongside chat requests — a real gap if a chat message
-/// and an agent turn are in flight at once), and it runs synchronously to
-/// completion rather than streaming intermediate tool calls/reasoning to
-/// the UI live (FR-017's `agent-activity` events aren't wired up) — the
-/// frontend sees a single "thinking…" state and then the final answer,
-/// not a live trace of each tool call.
+/// tools (`agent::dispatch`) and the loaded model. One known, deliberate
+/// simplification versus the full spec (called out in `agent/mod.rs`
+/// too): it runs synchronously to completion rather than streaming
+/// tokens live (FR-017's `agent-activity` events aren't wired up) — the
+/// frontend follows the turn through per-row `agent-message-persisted`
+/// refreshes and then the final answer, not a live token trace.
 #[tauri::command]
 #[specta::specta]
 // 009-rich-chat-input/US2's `rich_content` param tips this over clippy's
@@ -1579,9 +1574,8 @@ pub async fn send_agent_message(
         },
     );
 
-    // 004-tool-call-widgets: registers this conversation as in-progress for
-    // the whole turn (matching the chat path's existing ActiveGenerations
-    // use) — without this, `compute_status` would see whatever
+    // 004-tool-call-widgets: registers this conversation as in-progress
+    // for the whole turn — without this, `compute_status` would see whatever
     // intermediate tool_call/tool_result row this turn's dispatch calls
     // just persisted as the "latest message" while polled mid-turn, and
     // its `role != "assistant"` fallback would misreport a still-running
@@ -1638,8 +1632,7 @@ pub async fn send_agent_message(
     let guard = inference.0.lock().await;
     let engine = guard.as_ref().expect("engine loaded above");
 
-    // 010-context-window-management (UI refactor): same follow-up-update
-    // pattern as commands::conversations::send_message -- the user turn was
+    // 010-context-window-management (UI refactor): the user turn was
     // already persisted above (by `persist_user_turn`, before the engine
     // was necessarily loaded), keyed back here by conversation_id+sequence
     // since `persist_user_turn` never returns its generated row id.

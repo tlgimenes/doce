@@ -70,11 +70,9 @@ fn parse_tool_row_flags(content: &str) -> (bool, Option<String>) {
 /// Builds the chat-template message history for a conversation: every
 /// non-error message so far, oldest first, role-mapped from the
 /// `messages` table's `role` column, still tagged with `content_type`/
-/// `sequence`. Shared by the plain chat path
-/// (`commands::conversations::send_message`) and agent mode
-/// (`commands::agent::send_agent_message`) — without this, every reply
-/// was generated with no memory of earlier turns in the same
-/// conversation, on top of the separate missing-chat-template bug.
+/// `sequence`. Used by `commands::agent::send_agent_message` — without
+/// this, every reply was generated with no memory of earlier turns in the
+/// same conversation, on top of the separate missing-chat-template bug.
 /// `content_type = 'error'` rows are UI-only failure notices, not real
 /// assistant output, so they're excluded rather than fed back to the
 /// model as if it had said them.

@@ -106,7 +106,7 @@ pub enum MessageContent {
 }
 
 /// How a `generate()` call treats tool calls. `Forbid`: no grammar at all
-/// (plain chat, summarization). `Allow`: lazy grammar — constrains output
+/// (summarization). `Allow`: lazy grammar — constrains output
 /// only once the model starts a `<tool_call>`, so plain-text final answers
 /// stay completely free. `Require`: non-lazy grammar — the response MUST
 /// be one well-formed tool call, used while the plan engine is Executing a
@@ -497,16 +497,15 @@ impl InferenceEngine {
         })
     }
 
-    /// Generation used for the chat path (User Story 2), tier-2
-    /// summarization, subagents (until migrated), and integration tests,
-    /// invoking `on_token` as each token is produced so the caller can emit
-    /// `assistant-token` events in real time rather than waiting for the full
-    /// response. `prompt` is expected to already be chat-template-rendered
-    /// (see `render_chat_prompt`) — this function just tokenizes and decodes
-    /// whatever string it's given. `tool_calls` gates the grammar-constrained
-    /// sampler above — the plain chat path and tier-2 summarization never set
-    /// it, since neither ever wants (or should be able to produce) a
-    /// `<tool_call>` response.
+    /// Generation used for tier-2 summarization, subagents (until
+    /// migrated), and integration tests, invoking `on_token` as each token
+    /// is produced so the caller can stream progress rather than waiting
+    /// for the full response. `prompt` is expected to already be
+    /// chat-template-rendered (see `render_chat_prompt`) — this function
+    /// just tokenizes and decodes whatever string it's given. `tool_calls`
+    /// gates the grammar-constrained sampler above — tier-2 summarization
+    /// never sets it, since it neither wants (nor should be able to
+    /// produce) a `<tool_call>` response.
     ///
     /// Implemented as a convenience wrapper over a throwaway `PromptSession`:
     /// it decodes the whole prompt from a clean context every call (no prefix

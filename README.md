@@ -6,18 +6,19 @@ model does the inference, chat history and workspace state live in a local
 SQLite database, and there is no account, no API key, and no cloud service
 in the loop. Opening the app is the entire setup: it profiles the host
 Mac, downloads a model sized to its hardware, and drops you into a working
-chat/agent session.
+agent session.
 
-This mirrors the Claude Desktop (chat) + Claude Code (agent) experience,
-but self-hosted on your own machine:
+This mirrors the Claude Code experience, but self-hosted on your own
+machine. There is exactly one mode — every conversation is an agent
+session:
 
-- **Chat**: streaming responses, markdown/code rendering, local persistence,
+- **Agent conversations**: every conversation is tool-enabled and scoped
+  to a working folder — the agent reads/writes files and runs shell
+  commands in an iterative plan-and-execute tool-use loop (`Read`,
+  `Write`, `Edit`, `Bash`, `Glob`, `Grep`, plus `AskUserQuestion` for
+  structured clarifying questions and one-level-deep subagent
+  delegation), with markdown/code rendering, local persistence, and
   full-text search across past conversations.
-- **Agent mode**: every conversation is tool-enabled and scoped to a
-  working folder — the agent reads/writes files and runs shell commands in
-  an iterative tool-use loop (`Read`, `Write`, `Edit`, `Bash`, `Glob`,
-  `Grep`, plus `AskUserQuestion` for structured clarifying questions and
-  one-level-deep subagent delegation).
 - **Extensibility**: an MCP client for connecting arbitrary MCP servers,
   and filesystem-based skill packs (bundled + user-added) the agent pulls
   into context contextually, or that you can invoke explicitly from the
@@ -30,8 +31,8 @@ principles — in particular:
   first launch).
 - **Local-by-default privacy** (no telemetry, nothing leaves the device
   by default).
-- **v1.0 has no permission/approval system**: once agent mode is engaged,
-  the agent can read, write, and execute anywhere on the local filesystem
+- **v1.0 has no permission/approval system**: the agent can read, write,
+  and execute anywhere on the local filesystem
   without confirmation prompts, not scoped to the opened folder — the one
   exception is a hard-coded block on a small set of catastrophic,
   irreversible shell commands (e.g. recursive home/root deletion). This is
@@ -144,8 +145,8 @@ mock.
   onboarding, workspace, settings, shortcuts), `components/` (shared
   UI), `state/`, `lib/`.
 - `src-tauri/` — Rust backend: `agent/` (tool-use loop, dispatch, built-in
-  tools), `inference/` (embedded llama.cpp), `scheduler/` (single-flight
-  generation queue), `storage/` (SQLite + migrations), `mcp/`, `skills/`,
+  tools), `inference/` (embedded llama.cpp), `storage/` (SQLite +
+  migrations), `mcp/`, `skills/`,
   `hardware/` + `downloader/` + `model_registry/` (zero-config model
   selection), `commands/` (Tauri IPC surface).
 - `specs/` — full spec-kit feature history (see below).

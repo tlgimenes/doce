@@ -3,8 +3,8 @@
 //! `commands::agent::send_agent_message`. The loop's control flow (turn
 //! counting, tool dispatch, subagent-nesting rejection, response parsing)
 //! is real and tested; a known simplification is called out where it
-//! lives (`commands/agent.rs`'s doc comment): agent turns bypass the
-//! scheduler queue.
+//! lives (`commands/agent.rs`'s doc comment): turns run synchronously to
+//! completion rather than streaming tokens live.
 //!
 //! Tool calls are prompted for (`SYSTEM_PROMPT` below) *and*
 //! grammar-constrained at generation time
