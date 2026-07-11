@@ -10,7 +10,7 @@ import {
 import { Archive, Cog, Plus, Search } from "lucide-react";
 import { homeDir } from "@tauri-apps/api/path";
 import { Button } from "@/components/ui/button";
-import { KeyboardShortcut } from "@/components/ui/KeyboardShortcut";
+import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import {
   SidebarContent,
   SidebarGroup,
@@ -216,10 +216,10 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
                     <Plus className="size-4" />
                     New Agent
                   </span>
-                  <KeyboardShortcut
-                    keys={["⌘", "N"]}
-                    className="text-xs text-sidebar-foreground/60 opacity-0 transition-opacity group-hover:opacity-100"
-                  />
+                  <KbdGroup className="text-xs text-sidebar-foreground/60 opacity-0 transition-opacity group-hover:opacity-100">
+                    <Kbd>⌘</Kbd>
+                    <Kbd>N</Kbd>
+                  </KbdGroup>
                 </SidebarMenuButton>
               </SidebarMenuItem>
               <SidebarMenuItem>
@@ -233,10 +233,10 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
                     <Search className="size-4" />
                     Search
                   </span>
-                  <KeyboardShortcut
-                    keys={["⌘", "F"]}
-                    className="text-xs text-sidebar-foreground/60 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
-                  />
+                  <KbdGroup className="text-xs text-sidebar-foreground/60 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+                    <Kbd>⌘</Kbd>
+                    <Kbd>F</Kbd>
+                  </KbdGroup>
                 </SidebarMenuButton>
               </SidebarMenuItem>
               <SidebarMenuItem>

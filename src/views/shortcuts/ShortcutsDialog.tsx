@@ -1,6 +1,7 @@
+import { Fragment } from "react";
 import Dialog from "@/components/Dialog";
 import { Button } from "@/components/ui/button";
-import { KeyboardShortcut } from "@/components/ui/KeyboardShortcut";
+import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { X } from "lucide-react";
 import type { Shortcut } from "@/lib/shortcuts";
 
@@ -43,7 +44,14 @@ export default function ShortcutsDialog({ open, onClose, shortcuts }: ShortcutsD
               data-testid="shortcut-item"
             >
               <span className="text-muted-foreground">{s.description}</span>
-              <KeyboardShortcut keys={s.combo.split("+")} data-testid={`shortcut-combo-${s.id}`} />
+              <KbdGroup data-testid={`shortcut-combo-${s.id}`}>
+                {s.combo.split("+").map((key, i) => (
+                  <Fragment key={`${key}-${i}`}>
+                    {i > 0 && <span aria-hidden="true">+</span>}
+                    <Kbd>{key}</Kbd>
+                  </Fragment>
+                ))}
+              </KbdGroup>
             </li>
           ))}
         </ul>
