@@ -22,7 +22,7 @@ export default function WriteWidget({ detail }: WriteWidgetProps) {
             <FilePlus />
           </ItemMedia>
           <ItemContent>
-            <ItemTitle>Write {detail.filePath}</ItemTitle>
+            <ItemTitle title={detail.filePath ?? undefined}>Write {detail.filePath}</ItemTitle>
           </ItemContent>
         </Item>
         <div className="p-3 pt-0">
@@ -45,7 +45,9 @@ export default function WriteWidget({ detail }: WriteWidgetProps) {
           <FilePlus />
         </ItemMedia>
         <ItemContent>
-          <ItemTitle data-testid="write-header">{detail.filePath}</ItemTitle>
+          <ItemTitle data-testid="write-header" title={detail.filePath ?? undefined}>
+            {detail.filePath}
+          </ItemTitle>
           <ItemDescription data-testid="write-body">
             Write · {detail.byteCount} bytes
           </ItemDescription>

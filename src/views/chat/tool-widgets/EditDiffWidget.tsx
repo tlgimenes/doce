@@ -3,7 +3,7 @@ import { ChevronRight, FilePen } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Item, ItemContent, ItemMedia, ItemTitle } from "@/components/ui/item";
+import { Item, ItemActions, ItemContent, ItemMedia, ItemTitle } from "@/components/ui/item";
 import type { EditDetail } from "@/lib/ipc";
 
 interface EditDiffWidgetProps {
@@ -36,7 +36,9 @@ export default function EditDiffWidget({ detail }: EditDiffWidgetProps) {
             <FilePen />
           </ItemMedia>
           <ItemContent>
-            <ItemTitle>{detail.filePath ?? "(no file path)"}</ItemTitle>
+            <ItemTitle title={detail.filePath ?? undefined}>
+              {detail.filePath ?? "(no file path)"}
+            </ItemTitle>
           </ItemContent>
         </Item>
         <div className="p-3 pt-0">
@@ -74,12 +76,12 @@ export default function EditDiffWidget({ detail }: EditDiffWidgetProps) {
           <FilePen />
         </ItemMedia>
         <ItemContent>
-          <ItemTitle>{detail.filePath}</ItemTitle>
+          <ItemTitle title={detail.filePath ?? undefined}>{detail.filePath}</ItemTitle>
         </ItemContent>
-        <span className="flex items-center gap-2">
+        <ItemActions>
           <Badge variant="outline">+{addedCount}</Badge>
           <Badge variant="outline">−{removedCount}</Badge>
-        </span>
+        </ItemActions>
         <ChevronRight
           aria-hidden="true"
           data-slot="widget-frame-chevron"
@@ -87,10 +89,10 @@ export default function EditDiffWidget({ detail }: EditDiffWidgetProps) {
         />
       </CollapsibleTrigger>
       <CollapsibleContent data-slot="widget-frame-content" className="border-t border-border">
-        <pre
+        <div
           data-slot="code-block"
           data-tone="default"
-          className="overflow-x-auto p-0 font-mono text-xs whitespace-pre wrap-break-word text-foreground"
+          className="overflow-x-auto p-0 font-mono text-xs whitespace-pre text-foreground"
         >
           {changes.map((change, i) => {
             const lines = change.value.replace(/\n$/, "").split("\n");
@@ -120,7 +122,7 @@ export default function EditDiffWidget({ detail }: EditDiffWidgetProps) {
               </div>
             );
           })}
-        </pre>
+        </div>
       </CollapsibleContent>
     </Collapsible>
   );

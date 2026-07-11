@@ -2,7 +2,7 @@ import { ChevronRight, FileText } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Item, ItemContent, ItemMedia, ItemTitle } from "@/components/ui/item";
+import { Item, ItemActions, ItemContent, ItemMedia, ItemTitle } from "@/components/ui/item";
 import type { ReadDetail } from "@/lib/ipc";
 import { formatByteCount } from "@/lib/formatByteCount";
 import { formatTokenCount } from "@/lib/formatTokenCount";
@@ -73,10 +73,10 @@ export default function ReadWidget({ detail }: ReadWidgetProps) {
             Read {detail.filePath}
           </ItemTitle>
         </ItemContent>
-        <span className="flex items-center gap-2">
+        <ItemActions>
           <Badge variant="outline">{byteCount}</Badge>
           {tokenCount != null && <Badge variant="outline">{tokenCount}</Badge>}
-        </span>
+        </ItemActions>
         <ChevronRight
           aria-hidden="true"
           data-slot="widget-frame-chevron"

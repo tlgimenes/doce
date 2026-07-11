@@ -2,7 +2,14 @@ import { ChevronRight, Search } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Empty, EmptyDescription, EmptyHeader } from "@/components/ui/empty";
-import { Item, ItemContent, ItemDescription, ItemMedia, ItemTitle } from "@/components/ui/item";
+import {
+  Item,
+  ItemActions,
+  ItemContent,
+  ItemDescription,
+  ItemMedia,
+  ItemTitle,
+} from "@/components/ui/item";
 import type { GlobDetail, GrepDetail } from "@/lib/ipc";
 import { formatTokenCount } from "@/lib/formatTokenCount";
 
@@ -26,7 +33,7 @@ export default function SearchResultsWidget({ detail }: SearchResultsWidgetProps
             <Search />
           </ItemMedia>
           <ItemContent>
-            <ItemTitle>
+            <ItemTitle title={detail.pattern ?? undefined}>
               {detail.toolName}{" "}
               <code data-slot="code-inline" className="font-mono text-xs">
                 {detail.pattern}
@@ -72,12 +79,12 @@ export default function SearchResultsWidget({ detail }: SearchResultsWidgetProps
             </code>
           </ItemTitle>
         </ItemContent>
-        <span className="flex items-center gap-2">
+        <ItemActions>
           <Badge variant="outline">{countLabel}</Badge>
           {detail.tokenCount != null && (
             <Badge variant="outline">{formatTokenCount(detail.tokenCount)} tok</Badge>
           )}
-        </span>
+        </ItemActions>
         <ChevronRight
           aria-hidden="true"
           data-slot="widget-frame-chevron"

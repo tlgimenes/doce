@@ -172,6 +172,24 @@ describe("BashWidget (004-tool-call-widgets, US2)", () => {
     );
   });
 
+  // --- empty-output completed commands render header-only, not a
+  // collapsible with an empty panel ---
+
+  it("renders a header-only frame (no trigger, no content panel) when a completed command produced no output", () => {
+    const detail: BashDetail = {
+      toolName: "Bash",
+      command: "touch file.txt",
+      timeoutMs: null,
+      outcome: { ok: true, exitCode: 0, stdout: "", stderr: "" },
+    };
+    const { container } = render(<BashWidget detail={detail} />);
+
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    expect(container.querySelector('[data-slot="widget-frame-content"]')).toBeNull();
+    expect(screen.getByTestId("bash-command")).toHaveTextContent("touch file.txt");
+    expect(screen.getByTestId("bash-status")).toHaveTextContent("Success");
+  });
+
   it("collapses completed output by default until the header is clicked", async () => {
     const detail: BashDetail = {
       toolName: "Bash",

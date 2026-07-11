@@ -2,7 +2,14 @@ import { ChevronRight, Terminal } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Item, ItemContent, ItemDescription, ItemMedia, ItemTitle } from "@/components/ui/item";
+import {
+  Item,
+  ItemActions,
+  ItemContent,
+  ItemDescription,
+  ItemMedia,
+  ItemTitle,
+} from "@/components/ui/item";
 import { Spinner } from "@/components/ui/spinner";
 import type { BashDetail } from "@/lib/ipc";
 import { formatTokenCount } from "@/lib/formatTokenCount";
@@ -113,6 +120,42 @@ export default function BashWidget({ detail }: BashWidgetProps) {
   const payloadPath = detail.payloadRef ?? detail.offloadedTo;
   const stdoutTrunc = truncatedLines(stdout);
   const stderrTrunc = truncatedLines(stderr);
+  const isEmpty =
+    !stdout && !stderr && !payloadPath && !stdoutTrunc.truncated && !stderrTrunc.truncated;
+
+  // Nothing to expand into: render the header-only, non-collapsible frame
+  // rather than a Collapsible whose panel would just be empty.
+  if (isEmpty) {
+    return (
+      <div
+        data-slot="widget-frame"
+        className="overflow-hidden rounded-lg border border-border bg-card text-sm"
+        data-testid="bash-widget"
+      >
+        <Item data-slot="widget-frame-header" size="xs" className="w-full">
+          <ItemMedia variant="icon">
+            <Terminal />
+          </ItemMedia>
+          <ItemContent>
+            <ItemTitle data-testid="bash-command" title={`$ ${detail.command}`}>
+              <code data-slot="code-inline" className="font-mono text-xs">
+                $ {detail.command}
+              </code>
+            </ItemTitle>
+          </ItemContent>
+          <ItemActions data-testid="bash-status">
+            <Badge variant={succeeded ? "secondary" : "destructive"}>
+              {succeeded ? "Success" : `Failed (exit ${exitCode})`}
+            </Badge>
+            <Badge variant="outline">
+              exit {exitCode}
+              {detail.tokenCount != null && ` · ${formatTokenCount(detail.tokenCount)} tok`}
+            </Badge>
+          </ItemActions>
+        </Item>
+      </div>
+    );
+  }
 
   return (
     <Collapsible
@@ -140,7 +183,7 @@ export default function BashWidget({ detail }: BashWidgetProps) {
             </code>
           </ItemTitle>
         </ItemContent>
-        <span className="flex items-center gap-2" data-testid="bash-status">
+        <ItemActions data-testid="bash-status">
           <Badge variant={succeeded ? "secondary" : "destructive"}>
             {succeeded ? "Success" : `Failed (exit ${exitCode})`}
           </Badge>
@@ -148,7 +191,7 @@ export default function BashWidget({ detail }: BashWidgetProps) {
             exit {exitCode}
             {detail.tokenCount != null && ` · ${formatTokenCount(detail.tokenCount)} tok`}
           </Badge>
-        </span>
+        </ItemActions>
         <ChevronRight
           aria-hidden="true"
           data-slot="widget-frame-chevron"

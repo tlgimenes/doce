@@ -48,6 +48,25 @@ describe("EditDiffWidget (004-tool-call-widgets, US1)", () => {
     expect(screen.getByText("−1")).toBeInTheDocument();
   });
 
+  it("sums added/removed lines across multiple non-adjacent hunks in the +N/−N badges", () => {
+    // Two separate single-line edits ("b"->"X", "d"->"Y") separated by
+    // unchanged lines produce two added/removed hunks each — the badges
+    // must sum across all of them, not just the first: +2/−2.
+    const detail: EditDetail = {
+      toolName: "Edit",
+      filePath: "/tmp/multi.md",
+      oldString: "a\nb\nc\nd\ne",
+      newString: "a\nX\nc\nY\ne",
+      replaceAll: false,
+      outcome: { ok: true },
+    };
+
+    render(<EditDiffWidget detail={detail} />);
+
+    expect(screen.getByText("+2")).toBeInTheDocument();
+    expect(screen.getByText("−2")).toBeInTheDocument();
+  });
+
   it("renders a failed-edit state, not an empty or misleading diff, when outcome.ok is false", () => {
     const detail: EditDetail = {
       toolName: "Edit",

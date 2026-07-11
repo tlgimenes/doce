@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   Item,
+  ItemActions,
   ItemContent,
   ItemDescription,
   ItemGroup,
@@ -165,7 +166,7 @@ export default function PlanTracker({ conversationId }: PlanTrackerProps) {
               {currentStep?.description ?? plan.goal}
             </ItemTitle>
           </ItemContent>
-          <span className="flex items-center gap-2">
+          <ItemActions>
             <Badge variant="secondary">
               {doneCount}/{plan.steps.length}
             </Badge>
@@ -173,7 +174,7 @@ export default function PlanTracker({ conversationId }: PlanTrackerProps) {
               aria-hidden="true"
               className="size-4 shrink-0 text-muted-foreground transition-transform group-aria-expanded/plan:rotate-180"
             />
-          </span>
+          </ItemActions>
         </CollapsibleTrigger>
       </Collapsible>
     </div>

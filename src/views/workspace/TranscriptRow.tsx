@@ -126,7 +126,7 @@ export default function TranscriptRow({ message: m, showTimer = false }: Transcr
         aria-label="doce replied"
       >
         <ChatMessageContent>
-          <Alert variant="destructive" data-testid="error-message">
+          <Alert variant="destructive" role="status" data-testid="error-message">
             <AlertDescription>{m.content}</AlertDescription>
           </Alert>
         </ChatMessageContent>

@@ -215,6 +215,13 @@ describe("TranscriptRow (004-tool-call-widgets, Foundational)", () => {
     expect(screen.getByTestId("error-message")).toHaveTextContent(/boom/);
   });
 
+  it("renders a persisted error row politely (role=status, not an assertive alert) on conversation load", () => {
+    render(<TranscriptRow message={baseMessage({ contentType: "error", content: "boom" })} />);
+    const errorMessage = screen.getByTestId("error-message");
+    expect(errorMessage).toHaveAttribute("role", "status");
+    expect(errorMessage).not.toHaveAttribute("role", "alert");
+  });
+
   it("renders nothing for a tool_call row (paired tool_result carries the widget)", () => {
     const { container } = render(
       <TranscriptRow
