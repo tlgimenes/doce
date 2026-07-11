@@ -27,8 +27,8 @@ pub async fn get_context_usage(
     let guard = inference_state.0.lock().await;
     let engine = guard.as_ref().ok_or("No model loaded")?;
 
-    // The exact system prompt the next real turn will run with (there is
-    // only agent mode), resolved through the same helpers
+    // The exact system prompt the next real turn will run with, resolved
+    // through the same helpers
     // `send_agent_message` uses — so this on-demand snapshot and the live
     // `context-usage-update` events can never disagree about the prompt.
     let cwd = conversation_cwd(&conn, &conversation_id).await?;

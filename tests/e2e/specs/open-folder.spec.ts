@@ -4,14 +4,14 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { startWorkspaceConversationViaComposer } from "./helpers";
 
-// Covers quickstart.md §3 (User Story 3: agent mode): opening a real folder
-// and giving the agent a task that requires it to actually use a real
-// built-in tool (Read) against a real file — not a mocked backend, the
-// real tool-use loop in src-tauri/src/agent/mod.rs against the real
-// installed model. Entry point updated for 006-chat-empty-state: every
-// workspace-scoped conversation now starts via the composer, folder and
-// first message together, not a separate "open a folder" step.
-describe("Agent mode (User Story 3: open a folder to enter agent mode)", () => {
+// Covers quickstart.md §3 (User Story 3): opening a real folder and giving
+// the agent a task that requires it to actually use a real built-in tool
+// (Read) against a real file — not a mocked backend, the real tool-use
+// loop in src-tauri/src/agent/mod.rs against the real installed model.
+// Entry point updated for 006-chat-empty-state: every workspace-scoped
+// conversation now starts via the composer, folder and first message
+// together, not a separate "open a folder" step.
+describe("Open a folder (User Story 3: workspace conversation uses real tools)", () => {
   it("reads a real file via the Read tool to answer a question about its contents", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "doce-agent-e2e-"));
     const markerContent = "The secret ingredient is DOCE_E2E_MARKER_PANCAKES.";

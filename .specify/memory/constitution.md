@@ -1,13 +1,13 @@
 <!--
 Sync Impact Report
-- Version change: 2.0.0 → 2.1.0
+- Version change: 2.1.0 → 2.1.1
 - Modified principles:
-  - V. v1 Scope Discipline: added one paragraph documenting that
-    006-chat-empty-state makes agent-mode-by-default (every new conversation
-    is tool-enabled and folder-scoped, not opt-in via a separate "open a
-    folder" action) the accepted v1.0 posture — a documentation-only
-    amendment per this feature's plan.md Constitution Check recommendation,
-    not a new capability or a reopened product decision.
+  - V. v1 Scope Discipline: wording-only cleanup. The app no longer has a
+    chat/agent mode split (agent behavior is the only behavior), so the
+    "agent mode" / "agent-mode-by-default" terminology is retired in favor
+    of describing the posture directly: every conversation is tool-enabled
+    and folder-scoped from the composer. No posture, capability, or
+    obligation changes — a PATCH amendment per the versioning policy.
 - Added sections: none
 - Removed sections: none
 - Templates requiring updates:
@@ -22,9 +22,10 @@ Sync Impact Report
   - TODO(V1_1_SECURITY_REVIEW) — before v1.1 WhatsApp bridging design begins,
     revisit whether shipping with no permission/approval system (Principle V)
     remains appropriate once inbound, potentially untrusted bridged messages
-    can reach and trigger the agent — now a materially more frequent exposure
-    given agent-mode-by-default (006-chat-empty-state). This amendment does
-    not resolve that question — it explicitly defers it, same as before.
+    can reach and trigger the agent — a materially more frequent exposure now
+    that every conversation is tool-enabled by default (006-chat-empty-state).
+    This amendment does not resolve that question — it explicitly defers it,
+    same as before.
 -->
 
 # doce Constitution
@@ -88,17 +89,17 @@ services, and RAG over arbitrary personal document stores are out of scope for
 v1. Channel bridging beyond WhatsApp (iMessage, Telegram, Discord, Signal,
 ...) is explicitly deferred until WhatsApp validates demand for bridging at
 all; WhatsApp bridging itself is v1.1 (fast-follow), not launch-blocking.
-doce v1.0 also ships with no permission/approval system: once agent mode is
-engaged, the agent may read, write, and execute without user confirmation,
-anywhere on the local filesystem, not scoped to the opened workspace folder.
+doce v1.0 also ships with no permission/approval system: the agent may read,
+write, and execute without user confirmation, anywhere on the local
+filesystem, not scoped to the opened workspace folder.
 This is an explicit v1.0 simplification, not an oversight, and MUST be
 revisited no later than when v1.1 WhatsApp bridging is designed — bridging
 introduces inbound, potentially untrusted triggers that materially change the
 risk calculus an unrestricted, unconfirmed agent operates under. Expanding
 scope beyond these boundaries (including reintroducing or further loosening
 any of them) requires an explicit constitution amendment, not an ad hoc
-feature decision. As of 006-chat-empty-state, agent-mode-by-default (not
-merely agent-mode-available) is the accepted v1.0 posture: every conversation
+feature decision. As of 006-chat-empty-state, tools-on-by-default (not
+merely tools-available) is the accepted v1.0 posture: every conversation
 created from the composer is always tool-enabled and folder-scoped — there is
 no longer a separate, deliberate "open a folder" action gating it. This does
 not introduce a new code-level capability (unrestricted tool access already
@@ -169,4 +170,4 @@ Check against the principles above before design proceeds to task generation.
 Deviations require explicit justification recorded in the plan's Complexity
 Tracking section; unjustified deviations block progression to `/speckit-tasks`.
 
-**Version**: 2.1.0 | **Ratified**: 2026-07-02 | **Last Amended**: 2026-07-03
+**Version**: 2.1.1 | **Ratified**: 2026-07-02 | **Last Amended**: 2026-07-11

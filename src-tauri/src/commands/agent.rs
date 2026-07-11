@@ -1212,7 +1212,7 @@ async fn handle_general_tool_call(
 /// 010-context-window-management/US1: recomputes and emits this
 /// conversation's context usage — called after each turn's persistence step
 /// in the agent loop (a tool_call/tool_result pair, or the final answer) so
-/// the indicator stays live through a whole agent-mode run, not just at the
+/// the indicator stays live through a whole agent run, not just at the
 /// start. Best-effort: a failure here (e.g. no model loaded, which can't
 /// actually happen mid-loop, but `compute_usage` still returns a `Result`)
 /// is swallowed rather than aborting the loop over a UI-only concern.
@@ -1535,7 +1535,7 @@ pub async fn send_agent_message(
         .map(|d| d.join("transcripts"));
 
     // Heal-on-open (2026-07-09 transcript design): this is the user-visible
-    // entry point where an agent-mode conversation's history first loads
+    // entry point where a conversation's history first loads
     // for this turn -- repair a stale/missing/torn transcript file (e.g.
     // left behind by a crash mid-write) here, once per turn-entry, not
     // inside the per-tool-call loop below. Best-effort: a transcript is a
@@ -1652,7 +1652,7 @@ pub async fn send_agent_message(
     // 010-context-window-management/US2 (FR-005/FR-006/FR-007): compacts
     // before the loop's first turn -- see `emit_context_usage_update`/the
     // per-turn `maybe_compact` calls inside the loop for why this alone
-    // isn't sufficient for agent mode (tool results can push a *later* turn
+    // isn't sufficient on its own (tool results can push a *later* turn
     // over budget even when the first turn was fine).
     let plan_state = crate::agent::plan::PlanState::default();
     // The top-level agent seed names ITS OWN conversation's transcript

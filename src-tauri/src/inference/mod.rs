@@ -22,7 +22,7 @@ pub enum InferenceError {
 /// The client-side `LlamaBatch`'s fixed capacity — llama.cpp can't decode
 /// more tokens than this in a single call, so any prompt longer than this
 /// (system prompt + tool list + growing conversation history routinely
-/// exceeds it in agent mode) must be prefilled across multiple `decode()`
+/// exceeds it) must be prefilled across multiple `decode()`
 /// calls via `prefill_chunks_from`, not one `batch.add()` loop over every
 /// token.
 const BATCH_CAPACITY: usize = 512;

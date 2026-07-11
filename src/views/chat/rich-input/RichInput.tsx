@@ -374,7 +374,7 @@ export default function RichInput({
       }),
       PastedText,
       // Unconditional — unlike `SkillMention` below, attachments aren't
-      // agent-mode-gated (spec.md's FR-006/FR-007 have no such
+      // gated behind a flag (spec.md's FR-006/FR-007 have no such
       // restriction; every composing surface can attach a file).
       Attachment,
       // `useEditor()`'s `extensions` array is only ever evaluated once, at

@@ -34,7 +34,7 @@ pub struct FolderSearchPage {
     pub truncated: bool,
 }
 
-/// FR-008: opens a folder for agent mode. Reuses the existing row (and
+/// FR-008: opens a folder as a workspace. Reuses the existing row (and
 /// bumps `last_opened_at`) if this path was opened before, rather than
 /// creating a duplicate — enforced at the database level too (`path
 /// UNIQUE`, `data-model.md`), not just here.

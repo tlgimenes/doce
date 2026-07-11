@@ -160,7 +160,7 @@ feature). `specs/001-doce-v1-core/` is the v1.0 baseline — spec, plan,
 research, data model, IPC contracts, task breakdown, and a
 `quickstart.md` manual validation walkthrough. Every feature shipped since
 (landing page, color theme, tool-call widgets, keyboard shortcuts,
-agent-mode-by-default, workspace cwd resolution, a shared design system,
+the composer empty state, workspace cwd resolution, a shared design system,
 rich chat input, and beyond) has its own `specs/NNN-*/` directory with the
 same structure. Start there — not this README — for the authoritative,
 feature-by-feature design record, including documented trade-offs and

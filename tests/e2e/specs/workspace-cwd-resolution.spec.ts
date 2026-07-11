@@ -8,7 +8,7 @@ import { startWorkspaceConversationViaComposer } from "./helpers";
 // path end to end — send_agent_message resolves the conversation's
 // workspace path, threads it through AgentContext into dispatch::execute,
 // and bash::run spawns with it as the working directory. Distinct from
-// agent-mode.spec.ts (which reads a file via its *absolute* path — that
+// open-folder.spec.ts (which reads a file via its *absolute* path — that
 // exercises FR-004's "absolute paths are unaffected," not this feature's
 // actual relative/default-path resolution). Entry point updated for
 // 006-chat-empty-state: every workspace-scoped conversation now starts via

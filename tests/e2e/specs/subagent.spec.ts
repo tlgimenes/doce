@@ -11,7 +11,7 @@ import { startWorkspaceConversationViaComposer } from "./helpers";
 // parent's reply — not just a unit-tested control-flow path. Entry point
 // updated for 006-chat-empty-state: every workspace-scoped conversation now
 // starts via the composer, folder and first message together.
-describe("Agent mode subagent spawning (FR-015)", () => {
+describe("Subagent spawning (FR-015)", () => {
   it("delegating a task via the Task tool produces a real subagent conversation with an isolated context", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "doce-subagent-e2e-"));
     writeFileSync(
