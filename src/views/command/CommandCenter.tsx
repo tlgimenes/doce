@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
+import { useEffect, useState } from "react";
 import Dialog from "@/components/Dialog";
 import {
   Command,
@@ -24,15 +24,6 @@ interface CommandCenterProps {
   actions: CommandCenterAction[];
 }
 
-function matchesActionQuery(action: CommandCenterAction, query: string) {
-  const normalizedQuery = query.trim().toLowerCase();
-  if (!normalizedQuery) return true;
-
-  return [action.label, action.id, action.shortcut ?? ""].some((candidate) =>
-    candidate.trim().toLowerCase().includes(normalizedQuery),
-  );
-}
-
 export default function CommandCenter({ open, onOpenChange, actions }: CommandCenterProps) {
   const [query, setQuery] = useState("");
 
@@ -47,21 +38,6 @@ export default function CommandCenter({ open, onOpenChange, actions }: CommandCe
     onOpenChange(false);
   };
 
-  const visibleEnabledActions = useMemo(
-    () => actions.filter((action) => !action.disabled && matchesActionQuery(action, query)),
-    [actions, query],
-  );
-
-  const handleInputKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key !== "Enter") return;
-
-    const action = visibleEnabledActions[0];
-    if (!action) return;
-
-    event.preventDefault();
-    runAction(action);
-  };
-
   return (
     <Dialog
       open={open}
@@ -71,16 +47,13 @@ export default function CommandCenter({ open, onOpenChange, actions }: CommandCe
       contentClassName="w-[34rem]"
     >
       <div className="w-full" data-testid="command-center">
-        <Command
-          className="rounded-lg border border-border/70 bg-popover p-0"
-          value={query}
-          onValueChange={setQuery}
-        >
+        <Command className="rounded-lg border border-border/70 bg-popover p-0">
           <CommandInput
             autoFocus
             aria-label="Command search"
             placeholder="Type a command or search"
-            onKeyDown={handleInputKeyDown}
+            value={query}
+            onValueChange={setQuery}
           />
           <CommandList className="max-h-80 p-1">
             <CommandEmpty>No matching actions.</CommandEmpty>

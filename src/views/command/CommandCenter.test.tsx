@@ -15,13 +15,38 @@ describe("CommandCenter", () => {
 
     expect(screen.getByTestId("command-center")).toBeInTheDocument();
     expect(screen.getByRole("dialog", { name: "Command center" })).toBeInTheDocument();
-    expect(screen.getByRole("textbox", { name: "Command search" })).toBeInTheDocument();
-    expect(screen.getByTestId("command-center").querySelector('[data-slot="command"]')).toBeTruthy();
-    expect(screen.getByTestId("command-center").querySelector('[data-slot="command-input"]')).toBeTruthy();
-    expect(screen.getByTestId("command-center").querySelector('[data-slot="command-list"]')).toBeTruthy();
-    expect(screen.getByTestId("command-center").querySelectorAll('[data-slot="command-item"]')).toHaveLength(3);
-    expect(screen.getByRole("button", { name: /New Agent/ })).toBeEnabled();
-    expect(screen.getByRole("button", { name: /Archive Current Conversation/ })).toBeDisabled();
+    // cmdk's <CommandInput> also wires its own aria-labelledby (pointing at
+    // its internal, otherwise-empty <label>), which wins over aria-label in
+    // the accessible-name computation — so the accessible *name* comes back
+    // empty even though the aria-label attribute is present. There's only
+    // one combobox here, so query by role alone and assert the attribute
+    // directly instead of via role name.
+    const commandInput = screen.getByRole("combobox");
+    expect(commandInput).toBeInTheDocument();
+    expect(commandInput).toHaveAttribute("aria-label", "Command search");
+    expect(
+      screen.getByTestId("command-center").querySelector('[data-slot="command"]'),
+    ).toBeTruthy();
+    expect(
+      screen.getByTestId("command-center").querySelector('[data-slot="command-input"]'),
+    ).toBeTruthy();
+    expect(
+      screen.getByTestId("command-center").querySelector('[data-slot="command-list"]'),
+    ).toBeTruthy();
+    expect(
+      screen.getByTestId("command-center").querySelectorAll('[data-slot="command-item"]'),
+    ).toHaveLength(3);
+    // cmdk renders items as role="option" (not "button") with aria-disabled
+    // reflecting the `disabled` prop — there's no native disabled attribute
+    // to assert with toBeDisabled()/toBeEnabled() since the element is a div.
+    expect(screen.getByRole("option", { name: /New Agent/ })).toHaveAttribute(
+      "aria-disabled",
+      "false",
+    );
+    expect(screen.getByRole("option", { name: /Archive Current Conversation/ })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
   });
 
   it("sizes the dialog shell to fit the command center without horizontal clipping", async () => {
@@ -43,7 +68,7 @@ describe("CommandCenter", () => {
       />,
     );
 
-    await userEvent.click(screen.getByRole("button", { name: /Open Settings/ }));
+    await userEvent.click(screen.getByRole("option", { name: /Open Settings/ }));
 
     expect(run).toHaveBeenCalledTimes(1);
     expect(onOpenChange).toHaveBeenCalledWith(false);
@@ -54,12 +79,18 @@ describe("CommandCenter", () => {
 
     await userEvent.type(screen.getByPlaceholderText("Type a command or search"), "archive");
 
-    expect(screen.getByRole("button", { name: /Archive Current Conversation/ })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /New Agent/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Search Conversations/ })).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: /Archive Current Conversation/ }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /New Agent/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /Search Conversations/ })).not.toBeInTheDocument();
   });
 
-  it("runs the focused command item with Enter and closes", async () => {
+  it("runs the default-highlighted action with Enter from the command input", async () => {
+    // cmdk highlights the first enabled item on mount (aria-selected="true")
+    // with no explicit focus/selection step needed — items aren't
+    // individually focusable the way the old hand-rolled buttons were, so
+    // this replaces the previous "focus the item, then Enter" case.
     const onOpenChange = vi.fn();
     const run = vi.fn();
 
@@ -71,9 +102,10 @@ describe("CommandCenter", () => {
       />,
     );
 
-    const action = screen.getByRole("button", { name: /Open Settings/ });
-    action.focus();
-    expect(action).toHaveFocus();
+    expect(screen.getByRole("option", { name: /Open Settings/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
 
     await userEvent.keyboard("{Enter}");
 
@@ -107,6 +139,11 @@ describe("CommandCenter", () => {
   });
 
   it("does not run or close when Enter is pressed from the command input and only disabled actions match", async () => {
+    // cmdk excludes aria-disabled items from its selectable set entirely, so
+    // a disabled-only filtered list ends up with nothing aria-selected and
+    // Enter is a no-op — verified directly against cmdk's source (the `ce`
+    // selector used for both auto-select-on-filter and Enter's lookup is
+    // `[cmdk-item]:not([aria-disabled="true"])`).
     const onOpenChange = vi.fn();
     const archiveRun = vi.fn();
 
@@ -127,6 +164,11 @@ describe("CommandCenter", () => {
 
     const input = screen.getByPlaceholderText("Type a command or search");
     await userEvent.type(input, "archive");
+
+    expect(
+      screen.getByRole("option", { name: /Archive Current Conversation/ }),
+    ).not.toHaveAttribute("aria-selected", "true");
+
     await userEvent.keyboard("{Enter}");
 
     expect(archiveRun).not.toHaveBeenCalled();
@@ -138,17 +180,17 @@ describe("CommandCenter", () => {
       <CommandCenter open={true} onOpenChange={vi.fn()} actions={actions} />,
     );
 
-    const input = screen.getByRole("textbox", { name: "Command search" });
+    const input = screen.getByRole("combobox");
     await userEvent.type(input, "search");
 
-    expect(screen.getByRole("button", { name: /Search Conversations/ })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /New Agent/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /Search Conversations/ })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /New Agent/ })).not.toBeInTheDocument();
 
     rerender(<CommandCenter open={false} onOpenChange={vi.fn()} actions={actions} />);
     rerender(<CommandCenter open={true} onOpenChange={vi.fn()} actions={actions} />);
 
-    expect(screen.getByRole("textbox", { name: "Command search" })).toHaveValue("");
-    expect(screen.getByRole("button", { name: /New Agent/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Search Conversations/ })).toBeInTheDocument();
+    expect(screen.getByRole("combobox")).toHaveValue("");
+    expect(screen.getByRole("option", { name: /New Agent/ })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /Search Conversations/ })).toBeInTheDocument();
   });
 });

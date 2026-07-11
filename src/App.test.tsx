@@ -586,7 +586,8 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
 
     pressCmd("k");
     expect(await screen.findByTestId("command-center")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /New Agent/ })).toBeInTheDocument();
+    // cmdk renders command-center actions as role="option", not "button".
+    expect(screen.getByRole("option", { name: /New Agent/ })).toBeInTheDocument();
 
     pressCmd("f");
     expect(screen.queryByTestId("search-panel")).not.toBeInTheDocument();
@@ -604,7 +605,7 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     expect(await screen.findByTestId("widget-gallery")).toBeInTheDocument();
 
     pressCmd("k");
-    await userEvent.click(screen.getByRole("button", { name: /Open Settings/i }));
+    await userEvent.click(screen.getByRole("option", { name: /Open Settings/i }));
 
     expect(await screen.findByTestId("settings-view")).toBeInTheDocument();
     expect(screen.queryByTestId("widget-gallery")).not.toBeInTheDocument();
@@ -618,7 +619,7 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     expect(await screen.findByTestId("settings-view")).toBeInTheDocument();
 
     pressCmd("k");
-    await userEvent.click(screen.getByRole("button", { name: /Open Widget Gallery/i }));
+    await userEvent.click(screen.getByRole("option", { name: /Open Widget Gallery/i }));
 
     expect(await screen.findByTestId("widget-gallery")).toBeInTheDocument();
     expect(screen.queryByTestId("settings-view")).not.toBeInTheDocument();
@@ -633,7 +634,12 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
 
     pressCmd("k");
 
-    expect(screen.getByRole("button", { name: /Focus Composer/i })).toBeDisabled();
+    // cmdk marks disabled items with aria-disabled on the role="option" div
+    // (not a native disabled attribute), so toBeDisabled() doesn't apply.
+    expect(screen.getByRole("option", { name: /Focus Composer/i })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
   });
 
   it("disables Focus Composer while Widget Gallery is covering the primary surface", async () => {
@@ -645,7 +651,12 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
 
     pressCmd("k");
 
-    expect(screen.getByRole("button", { name: /Focus Composer/i })).toBeDisabled();
+    // cmdk marks disabled items with aria-disabled on the role="option" div
+    // (not a native disabled attribute), so toBeDisabled() doesn't apply.
+    expect(screen.getByRole("option", { name: /Focus Composer/i })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
   });
 
   it("hands off from the shortcuts dialog to Cmd+K and lets Cmd+F open search after dismiss", async () => {

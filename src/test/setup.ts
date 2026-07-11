@@ -105,3 +105,15 @@ if (typeof globalThis.IntersectionObserver === "undefined") {
     }
   } as unknown as typeof IntersectionObserver;
 }
+
+// jsdom has no layout engine, so Element.prototype.scrollIntoView is
+// entirely absent (not just a no-op). cmdk's <Command> calls it in a layout
+// effect every time the highlighted item changes (mount, filter, arrow keys)
+// to keep the highlighted option in view — confirmed directly: without this
+// stub, every test that mounts stock cmdk (Task 5's command.tsx) throws
+// "scrollIntoView is not a function" from inside cmdk's effect, which
+// (like the other unhandled-exception cases documented above) doesn't fail
+// an individual expect() but flips the whole `vitest run` exit code to 1.
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = function () {};
+}
