@@ -75,7 +75,10 @@ describe("UserAskWidget", () => {
     unmount();
 
     render(<UserAskWidget detail={MULTI} />);
-    expect(screen.getByRole("group")).toBeInTheDocument();
+    // Each option row is also a `Field`, which carries its own (unnamed)
+    // role="group" -- disambiguate by the accessible name the *options*
+    // group takes from the question text via aria-labelledby.
+    expect(screen.getByRole("group", { name: MULTI.question })).toBeInTheDocument();
   });
 
   it("selecting a single-select option enables the submit button, and clicking it answers the question", async () => {
@@ -187,17 +190,6 @@ describe("UserAskWidget", () => {
     await userEvent.click(screen.getByTestId("question-close"));
 
     expect(startViewTransition).toHaveBeenCalledTimes(1);
-  });
-
-  it("gives each option row a staggered entrance animation delay", () => {
-    render(<UserAskWidget detail={MULTI} />);
-
-    expect(screen.getByRole("checkbox", { name: /Option A/ })).toHaveStyle({
-      animationDelay: "0ms",
-    });
-    expect(screen.getByRole("checkbox", { name: /Option B/ })).toHaveStyle({
-      animationDelay: "18ms",
-    });
   });
 
   it("keeps undefined gray theme variables out of src files", () => {

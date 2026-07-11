@@ -88,7 +88,16 @@ describe("Tool call widgets (004-tool-call-widgets)", () => {
     const composerInputWhilePending = await browser.$("[data-testid='agent-input']");
     expect(await composerInputWhilePending.isExisting()).toBe(false);
 
-    await (await widget.$("button=Red")).click();
+    // The 2026-07-08 redesign made picking an option select-only (never
+    // auto-submit) for both single- and multi-select -- "Red" is now a
+    // Field/FieldLabel row's text, not a <button>, and text lives two
+    // levels deep (FieldContent > FieldTitle), so it isn't a direct text
+    // node of the `question-option` element: a strict `=Red` match (xpath
+    // `text()`) finds nothing, only the partial `*=Red` match (xpath
+    // `contains(.)`) does. Answering also now requires an explicit,
+    // separate submit click.
+    await (await widget.$("[data-testid='question-option']*=Red")).click();
+    await (await widget.$("[data-testid='question-submit']")).click();
 
     // Answering must actually resume the loop and let the turn finish --
     // not just flip the widget to "answered" while the backend stays
