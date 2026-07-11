@@ -44,6 +44,21 @@ function Section({
   );
 }
 
+function Swatch({ name, variable }: { name: string; variable: string }) {
+  return (
+    <div className="rounded-md border border-border bg-card p-3">
+      <div
+        className="mb-2 h-12 rounded-sm border border-border"
+        style={{ backgroundColor: `var(${variable})` }}
+      />
+      <div className="space-y-0.5">
+        <p className="text-sm font-medium">{name}</p>
+        <p className="font-mono text-[11px] text-muted-foreground">{variable}</p>
+      </div>
+    </div>
+  );
+}
+
 /**
  * A live catalog of every tool-call widget (the components `TranscriptRow`
  * dispatches `tool_result` rows to), rendered with hand-built sample data
@@ -87,7 +102,10 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
           <Example label="Button variants">
             <div className="flex flex-wrap gap-2">
               <Button variant="default" size="sm">
-                Primary
+                Default
+              </Button>
+              <Button variant="outline" size="sm">
+                Outline
               </Button>
               <Button variant="secondary" size="sm">
                 Secondary
@@ -97,6 +115,29 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
               </Button>
               <Button variant="destructive" size="sm">
                 Destructive
+              </Button>
+              <Button variant="link" size="sm">
+                Link
+              </Button>
+            </div>
+          </Example>
+          <Example label="Button sizes">
+            <div className="flex flex-wrap items-center gap-2">
+              <Button size="xs">Extra small</Button>
+              <Button size="sm">Small</Button>
+              <Button size="default">Default size</Button>
+              <Button size="lg">Large</Button>
+              <Button size="icon-xs" aria-label="Icon extra small">
+                <Settings2 />
+              </Button>
+              <Button size="icon-sm" aria-label="Icon small">
+                <Settings2 />
+              </Button>
+              <Button size="icon" aria-label="Icon default">
+                <Settings2 />
+              </Button>
+              <Button size="icon-lg" aria-label="Icon large">
+                <Settings2 />
               </Button>
             </div>
           </Example>
@@ -139,6 +180,29 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
                   Test connection
                 </Button>
               </div>
+            </div>
+          </Example>
+        </Section>
+
+        <Section
+          title="Theme tokens"
+          description="The standard shadcn neutral theme's color tokens, rendered from their live CSS variables."
+        >
+          <Example label="Color tokens">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+              <Swatch name="Background" variable="--background" />
+              <Swatch name="Foreground" variable="--foreground" />
+              <Swatch name="Primary" variable="--primary" />
+              <Swatch name="Secondary" variable="--secondary" />
+              <Swatch name="Muted" variable="--muted" />
+              <Swatch name="Accent" variable="--accent" />
+              <Swatch name="Destructive" variable="--destructive" />
+              <Swatch name="Border" variable="--border" />
+              <Swatch name="Chart 1" variable="--chart-1" />
+              <Swatch name="Chart 2" variable="--chart-2" />
+              <Swatch name="Chart 3" variable="--chart-3" />
+              <Swatch name="Chart 4" variable="--chart-4" />
+              <Swatch name="Chart 5" variable="--chart-5" />
             </div>
           </Example>
         </Section>
