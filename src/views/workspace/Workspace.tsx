@@ -429,9 +429,9 @@ export default function Workspace({
       setOptimisticTurnStartedAt(submittedAt);
       setThinking(true);
       // Sending your own message always re-engages autoscroll and snaps to
-      // the end — the same ChatBox pattern the previous use-stick-to-bottom
-      // integration relied on, and still load-bearing here: the
-      // message-scroller only follows content growth while its internal
+      // the end. This used to be use-stick-to-bottom's job before the swap
+      // to the shadcn message-scroller, and it's still load-bearing here:
+      // the message-scroller only follows content growth while its internal
       // "following-bottom" mode is engaged, and ANY upward scroll/wheel
       // (even a stray trackpad flick) escapes it. Without this call a send
       // made after scrolling up would add content off-screen instead of
