@@ -57,6 +57,14 @@ vi.mock("@tauri-apps/api/path", () => ({
   homeDir: vi.fn(() => Promise.resolve("/Users/tester")),
 }));
 
+const startDragging = vi.fn();
+
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({
+    startDragging,
+  }),
+}));
+
 function pressCmd(key: string) {
   fireEvent.keyDown(window, { key, metaKey: true });
 }
@@ -128,6 +136,7 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     vi.mocked(commands.getActivePlan).mockResolvedValue(null);
     vi.mocked(events.onPlanUpdate).mockResolvedValue(() => {});
     vi.mocked(homeDir).mockResolvedValue("/Users/tester");
+    startDragging.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -217,6 +226,18 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     expect(mainTopbar).toHaveAttribute("data-tauri-drag-region");
     expect(mainTopbar).toBeEmptyDOMElement();
     expect(screen.getByTestId("empty-state-input")).toBeInTheDocument();
+  });
+
+  it("drags the window from the sidebar top strip but not from the shortcuts button", async () => {
+    render(<App />);
+    await waitForReady();
+
+    const sidebarTopbar = screen.getByTestId("topbar-sidebar");
+    fireEvent.mouseDown(sidebarTopbar, { button: 0 });
+    expect(startDragging).toHaveBeenCalledTimes(1);
+
+    fireEvent.mouseDown(screen.getByTestId("open-shortcuts-dialog"), { button: 0 });
+    expect(startDragging).toHaveBeenCalledTimes(1);
   });
 
   it("renders active conversation metadata in the main topbar and keeps context usage out of the composer", async () => {
