@@ -93,23 +93,34 @@ Collapsible marker (Bash-done, EditDiff, Read, Search, Unknown):
 
 ---
 
-### Task 3: Composer overlay inside the scroller
+### Task 3 (AMENDED per the user's pasted official demo): demo-aligned Provider + bubble-gray composer
 
 **Files:**
 
-- Modify: `src/views/workspace/Workspace.tsx`, `Workspace.test.tsx`, `PlanTracker.test.tsx` (placement guard)
+- Modify: `src/views/workspace/Workspace.tsx` (Provider span only), `src/views/chat/rich-input/RichInput.tsx` (+ its test)
 
-- [ ] **Step 1:** Test updates first: (a) Workspace docking test — tracker/status/composer now INSIDE `[data-slot="message-scroller"]`, in an overlay wrapper (`data-testid="composer-overlay"`), document order tracker → status(when shown) → composer shell; the old "tracker not inside scroller root" guard flips to "tracker inside the overlay"; (b) a new assertion: `workspace-transcript-content` (or its column) carries the clearance padding class; (c) scroll button still present.
-- [ ] **Step 2:** Restructure Workspace's return: move `<PlanTracker/>`, the `showGenericStreamingStatus && <StreamingStatus/>`, and the composer shell div into
+- [ ] **Step 1:** Workspace: widen `MessageScrollerProvider` so it wraps the tracker/status/composer block as well (move `</MessageScrollerProvider>` below the composer shell div, exactly like the demo wraps the whole Card). NO other placement change — the composer stays a sibling BELOW the scroller; the earlier overlay idea is superseded. `key={conversationId}` stays on the Provider.
+- [ ] **Step 2:** RichInput: the InputGroup goes bubble-gray per the directive ("same styles as the bubble, gray; remove the outline, shadow-sm when focused"):
 
 ```tsx
-<div className="absolute inset-x-0 bottom-0 z-10 flex flex-col bg-background" data-testid="composer-overlay">
+<InputGroup className="border-transparent bg-secondary shadow-none focus-within:shadow-sm has-[[data-slot=input-group-control]:focus-visible]:border-transparent has-[[data-slot=input-group-control]:focus-visible]:ring-0">
 ```
 
-as the LAST child inside `<MessageScroller>` (after `MessageScrollerButton`). Add `className="pb-40"` to the transcript column wrapper (the `mx-auto w-full max-w-3xl` div) for clearance, and `className="bottom-44"` to `MessageScrollerButton` so it floats above the overlay (adjust both numbers together; they are layout-tunable).
+(bg-secondary matches the user bubble's variant="secondary"; ring-0/border-transparent neutralize the stock focus ring; tailwind-merge resolves the has-[] conflicts — verify in the rendered class list that ring-0 wins, adjust ordering if not.)
 
-- [ ] **Step 3:** Keep the composer shell's `[view-transition-name:chat-composer]` and conditional border exactly; keep `key={conversationId}` Provider semantics.
-- [ ] **Step 4:** `npx vitest run src/views/workspace/` + `npx tsc -b` green; oxfmt; commit `refactor(workspace): composer floats inside the message scroller`.
+- [ ] **Step 3:** Test: RichInput.test gains an assertion that the group carries `bg-secondary` and `focus-within:shadow-sm` and not the stock ring (class-list assertion is acceptable here — it IS the styling contract). Run rich-input + workspace + EmptyState + UserAskWidget suites + `npx tsc -b`; oxfmt; commit `feat(composer): bubble-gray input aligned with the scroller demo`.
+
+---
+
+### Task 5: Sidebar top strip drags the window
+
+**Files:**
+
+- Modify: `src/App.tsx` (sidebar header strip) — read `src/components/Topbar.tsx` FIRST for the app's drag mechanism (Tauri `getCurrentWindow().startDragging()` wiring and the `data-topbar-no-drag` opt-out convention)
+- Test: `src/App.test.tsx` if the topbar drag has an existing test pattern to mirror
+
+- [ ] **Step 1:** Locate the sidebar's top strip in App.tsx (the row hosting the shortcuts/keyboard button above the sidebar content). Wire the SAME drag behavior the main topbar uses (reuse the exported handler/component from Topbar.tsx if one exists — do not duplicate logic; extract the smallest reusable piece if needed, e.g. an exported `useWindowDrag` or the existing mousedown handler). Interactive children (the shortcuts button) must keep working — apply the same `data-topbar-no-drag` guard the main topbar uses.
+- [ ] **Step 2:** Mirror the main topbar's test pattern (drag-region present, button still clickable). Run `npx vitest run src/App.test.tsx src/components/Topbar.test.tsx` + `npx tsc -b`; oxfmt; commit `feat(shell): sidebar top strip drags the window`.
 
 ---
 

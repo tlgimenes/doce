@@ -13,13 +13,22 @@ Three user directives, one coordinated change to the chat surface:
 2. **The Working status shimmers.** Per the Marker docs' streaming
    pattern: `Spinner` in `MarkerIcon`, `role="status"`, and the `shimmer`
    utility class on `MarkerContent`.
-3. **The composer floats inside the scroller.** Workspace's composer
-   shell (with PlanTracker and StreamingStatus stacked above it) moves
-   into an absolute bottom overlay INSIDE `MessageScroller` (which is
-   `relative`), with bottom padding on `MessageScrollerContent` so the
-   last message clears it, and the scroll-to-bottom button offset above
-   the overlay. MessageScroller keeps filling its height-constrained
-   parent per its docs.
+3. **The composer aligns with the official MessageScroller demo.**
+   SUPERSEDED READING (user later pasted ui.shadcn.com's MessageScroller
+   demo): the canonical composition keeps the composer BELOW the scroller
+   as a sibling, with ONE `MessageScrollerProvider` wrapping both. No
+   overlay. Change: widen the Provider to wrap the tracker/status/composer
+   block too (today it closes right after the scroller); placement
+   otherwise stays.
+4. **(Added directive) Composer renders bubble-gray.** The InputGroup
+   instance in RichInput matches the user bubble's look ("gray mode"):
+   `bg-secondary`, transparent border, NO focus outline/ring — just
+   `shadow-sm` when focused (`focus-within:shadow-sm`, stock focus-ring
+   has-classes overridden with ring-0/border-transparent utilities).
+5. **(Added directive) The sidebar's top strip drags the window**, wired
+   the same way as the main topbar's Tauri drag region (mirror
+   `src/components/Topbar.tsx`'s mechanism; interactive children keep
+   `data-topbar-no-drag` behavior).
 
 ## Decisions (autonomous; user directives verbatim: "refactor the widgets
 to use the new Marker component", "the Working status should be a Shimmer.
