@@ -491,6 +491,12 @@ export default function RichInput({
           "border-transparent bg-secondary shadow-none focus-within:shadow-sm",
           "has-[[data-slot=input-group-control]:focus-visible]:border-transparent",
           "has-[[data-slot=input-group-control]:focus-visible]:ring-0",
+          // Stock InputGroup ships `dark:bg-input/30`, which wins on
+          // specificity over the plain `bg-secondary` above in dark mode
+          // (verified against the compiled CSS) — pin the dark surface
+          // explicitly so the composer doesn't revert to the stock input
+          // background. tailwind-merge dedupes this against the stock class.
+          "dark:bg-secondary",
         )}
       >
         <div className="flex-1 w-full">

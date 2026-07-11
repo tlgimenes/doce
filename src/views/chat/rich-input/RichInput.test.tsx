@@ -70,6 +70,11 @@ describe("RichInput (009-rich-chat-input, US1)", () => {
     const className = group?.className ?? "";
     expect(className).toContain("bg-secondary");
     expect(className).toContain("focus-within:shadow-sm");
+    // Stock InputGroup ships `dark:bg-input/30`, which otherwise wins on
+    // specificity over the plain `bg-secondary` above in dark mode — pin
+    // the dark surface explicitly (twMerge dedupes it against the stock
+    // class) so the composer doesn't revert to the stock input background.
+    expect(className).toContain("dark:bg-secondary");
     // tailwind-merge dedupes the stock has-[…focus-visible] border/ring
     // group in favor of this override — the stock ring must not survive
     // (it's the same has-[] modifier as our ring-0/border-transparent, so

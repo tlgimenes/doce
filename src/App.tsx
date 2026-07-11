@@ -355,17 +355,19 @@ export default function App() {
       <SidebarProvider className="h-dvh">
         <Sidebar collapsible="none" className="w-64 shrink-0 border-r border-sidebar-border">
           <TopbarHost target="sidebar" className="px-2">
-            <div className="flex w-full items-center justify-end" data-topbar-no-drag>
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                className="rounded-md text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-                onClick={openShortcutsDialog}
-                data-testid="open-shortcuts-dialog"
-                aria-label="Keyboard shortcuts"
-              >
-                <KeyboardIcon size={14} />
-              </Button>
+            <div className="pointer-events-none flex w-full items-center justify-end">
+              <div className="pointer-events-auto" data-topbar-no-drag>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  className="rounded-md text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                  onClick={openShortcutsDialog}
+                  data-testid="open-shortcuts-dialog"
+                  aria-label="Keyboard shortcuts"
+                >
+                  <KeyboardIcon size={14} />
+                </Button>
+              </div>
             </div>
           </TopbarHost>
           <ConversationList

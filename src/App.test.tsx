@@ -233,6 +233,30 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     await waitForReady();
 
     const sidebarTopbar = screen.getByTestId("topbar-sidebar");
+
+    // Structural pins for the fix (review: the content wrapper used to span
+    // the whole strip with data-topbar-no-drag on it, vetoing drag
+    // everywhere — TopbarHost's startDrag bails as soon as
+    // `event.target.closest("[data-topbar-no-drag]")` matches anything, and
+    // that wrapper covered every pixel). jsdom has no layout engine, so it
+    // can't hit-test where a real mousedown "lands" the way a browser
+    // would — these classes/attributes ARE the contract (same rationale as
+    // WorkspaceTopbar.test.tsx's "falls through to the draggable topbar
+    // host" case). The wrapper must be pointer-events-none and carry no
+    // data-topbar-no-drag itself; only the button's own pointer-events-auto
+    // island opts out of dragging.
+    const contentWrapper = sidebarTopbar.querySelector(":scope > div");
+    expect(contentWrapper).toHaveClass("pointer-events-none");
+    expect(contentWrapper).not.toHaveAttribute("data-topbar-no-drag");
+
+    const noDragElements = sidebarTopbar.querySelectorAll("[data-topbar-no-drag]");
+    expect(noDragElements).toHaveLength(1);
+    const noDragIsland = noDragElements[0];
+    expect(noDragIsland).toHaveClass("pointer-events-auto");
+    expect(noDragIsland).toContainElement(screen.getByTestId("open-shortcuts-dialog"));
+
+    // Behavioral: an empty-strip mousedown falls through to TopbarHost's
+    // drag handler; a mousedown on the button island does not.
     fireEvent.mouseDown(sidebarTopbar, { button: 0 });
     expect(startDragging).toHaveBeenCalledTimes(1);
 
