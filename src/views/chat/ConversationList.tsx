@@ -49,7 +49,7 @@ export interface ConversationListHandle {
 const STATUS_COLOR: Record<ConversationStatus, string> = {
   done: "bg-muted-foreground/45",
   in_progress: "bg-primary animate-pulse",
-  requires_action: "bg-chart-1",
+  requires_action: "bg-amber-500",
   failed: "bg-destructive",
 };
 

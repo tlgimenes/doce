@@ -15,15 +15,11 @@ describe("CommandCenter", () => {
 
     expect(screen.getByTestId("command-center")).toBeInTheDocument();
     expect(screen.getByRole("dialog", { name: "Command center" })).toBeInTheDocument();
-    // cmdk's <CommandInput> also wires its own aria-labelledby (pointing at
-    // its internal, otherwise-empty <label>), which wins over aria-label in
-    // the accessible-name computation — so the accessible *name* comes back
-    // empty even though the aria-label attribute is present. There's only
-    // one combobox here, so query by role alone and assert the attribute
-    // directly instead of via role name.
-    const commandInput = screen.getByRole("combobox");
+    // The Command root element has label="Command search", which cmdk wires as
+    // the aria-labelledby reference for the input, making the accessible name
+    // "Command search".
+    const commandInput = screen.getByRole("combobox", { name: "Command search" });
     expect(commandInput).toBeInTheDocument();
-    expect(commandInput).toHaveAttribute("aria-label", "Command search");
     expect(
       screen.getByTestId("command-center").querySelector('[data-slot="command"]'),
     ).toBeTruthy();
@@ -77,7 +73,7 @@ describe("CommandCenter", () => {
   it("filters actions from the command input", async () => {
     render(<CommandCenter open={true} onOpenChange={vi.fn()} actions={actions} />);
 
-    await userEvent.type(screen.getByPlaceholderText("Type a command or search"), "archive");
+    await userEvent.type(screen.getByRole("combobox", { name: "Command search" }), "archive");
 
     expect(
       screen.getByRole("option", { name: /Archive Current Conversation/ }),
@@ -129,7 +125,7 @@ describe("CommandCenter", () => {
       />,
     );
 
-    const input = screen.getByPlaceholderText("Type a command or search");
+    const input = screen.getByRole("combobox", { name: "Command search" });
     await userEvent.type(input, "settings");
     await userEvent.keyboard("{Enter}");
 
@@ -162,7 +158,7 @@ describe("CommandCenter", () => {
       />,
     );
 
-    const input = screen.getByPlaceholderText("Type a command or search");
+    const input = screen.getByRole("combobox", { name: "Command search" });
     await userEvent.type(input, "archive");
 
     expect(
@@ -180,7 +176,7 @@ describe("CommandCenter", () => {
       <CommandCenter open={true} onOpenChange={vi.fn()} actions={actions} />,
     );
 
-    const input = screen.getByRole("combobox");
+    const input = screen.getByRole("combobox", { name: "Command search" });
     await userEvent.type(input, "search");
 
     expect(screen.getByRole("option", { name: /Search Conversations/ })).toBeInTheDocument();
@@ -189,7 +185,7 @@ describe("CommandCenter", () => {
     rerender(<CommandCenter open={false} onOpenChange={vi.fn()} actions={actions} />);
     rerender(<CommandCenter open={true} onOpenChange={vi.fn()} actions={actions} />);
 
-    expect(screen.getByRole("combobox")).toHaveValue("");
+    expect(screen.getByRole("combobox", { name: "Command search" })).toHaveValue("");
     expect(screen.getByRole("option", { name: /New Agent/ })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: /Search Conversations/ })).toBeInTheDocument();
   });

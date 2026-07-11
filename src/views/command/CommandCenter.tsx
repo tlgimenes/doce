@@ -47,7 +47,10 @@ export default function CommandCenter({ open, onOpenChange, actions }: CommandCe
       contentClassName="w-[34rem]"
     >
       <div className="w-full" data-testid="command-center">
-        <Command className="rounded-lg border border-border/70 bg-popover p-0">
+        <Command
+          label="Command search"
+          className="rounded-lg border border-border/70 bg-popover p-0"
+        >
           <CommandInput
             autoFocus
             aria-label="Command search"
