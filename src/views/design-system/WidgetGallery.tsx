@@ -44,21 +44,6 @@ function Section({
   );
 }
 
-function Swatch({ name, variable }: { name: string; variable: string }) {
-  return (
-    <div className="rounded-md border border-border bg-card p-3">
-      <div
-        className="mb-2 h-12 rounded-sm border border-border"
-        style={{ backgroundColor: `var(${variable})` }}
-      />
-      <div className="space-y-0.5">
-        <p className="text-sm font-medium">{name}</p>
-        <p className="font-mono text-[11px] text-muted-foreground">{variable}</p>
-      </div>
-    </div>
-  );
-}
-
 /**
  * A live catalog of every tool-call widget (the components `TranscriptRow`
  * dispatches `tool_result` rows to), rendered with hand-built sample data
@@ -97,7 +82,7 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
       <div className="flex flex-col gap-10 px-6 py-6">
         <Section
           title="Workbench"
-          description="Shared app primitives for command access, settings rows, button treatments, and brand accents."
+          description="Shared app primitives for command access, settings rows, and button treatments."
         >
           <Example label="Button variants">
             <div className="flex flex-wrap gap-2">
@@ -154,16 +139,6 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
                   Test connection
                 </Button>
               </div>
-            </div>
-          </Example>
-          <Example label="Brand Accent Workbench">
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-              <Swatch name="Chocolate" variable="--color-doce-chocolate" />
-              <Swatch name="Cacao" variable="--color-doce-cacao" />
-              <Swatch name="Caramel" variable="--color-doce-caramel" />
-              <Swatch name="Peach" variable="--color-doce-peach" />
-              <Swatch name="Coral" variable="--color-doce-coral" />
-              <Swatch name="Cream" variable="--color-doce-cream" />
             </div>
           </Example>
         </Section>
