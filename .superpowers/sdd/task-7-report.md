@@ -1,122 +1,75 @@
-# Task 7 Report: Chat Transcript, Composer, And Tool Widget Redesign
+# Task 7 Report: ReadWidget + ReadPreview onto WidgetFrame
 
 ## What I implemented
 
-- Added the transcript chat primitive marker on `TranscriptTurn` with `data-chat-turn="true"`, preserving sticky user anchoring, pending Bash/Task widget rendering, and error rendering behavior.
-- Added the required transcript/message marker coverage:
-  - `TranscriptTurn.test.tsx` now asserts `data-chat-turn="true"` and `min-w-0` on the body wrapper.
-  - `MessageContent.test.tsx` now asserts context notices render as `role="status"` marker rows with the expected notice text.
-- Restyled chat transcript message shells in `MessageContent.tsx` per the brief:
-  - user row wrapper `mb-5`
-  - assistant text row wrapper `mb-5 max-w-none`
-  - error row `mb-5 rounded-md border border-destructive/25 bg-destructive/10 p-3 text-sm text-destructive`
-  - summarized context notice `mb-5 rounded-md border border-border bg-muted p-3 text-sm text-muted-foreground`
-  - cleared context notice `mb-5 text-xs text-muted-foreground/70`
-- Restyled `UserMessageBubble.tsx` to the specified cream card shell while preserving props, test ids, token meter behavior, markdown rendering, and rich text rendering.
-- Kept `StickToBottom` in `Workspace.tsx` and added the required comment explaining why `MessageScroller` is not wired in this pass.
-- Restyled `RichInput.tsx` shell/actions without changing Tiptap setup, attachment flows, or submit semantics:
-  - shell: `rounded-lg border border-border bg-card shadow-sm`
-  - editor content: `min-h-12 px-3 py-2 text-sm`
-  - attach button: `variant="ghost" size="icon"`
-  - send button: `variant="primary" size="icon"` with the existing Brand Accent Workbench gradient token treatment
-- Restyled `ToolDisclosure.tsx` to the required `rounded-md`/`shadow-sm` disclosure shell and `px-3 py-2` header.
-- Replaced Phosphor control icons in the affected chat surfaces with lucide equivalents:
-  - `ArrowDownIcon` -> `ArrowDown`
-  - `PaperPlaneRightIcon` -> `SendHorizontal`
-  - `PlusIcon` -> `Plus`
-  - `CaretRightIcon` -> `ChevronRight`
-- Kept test ids unchanged throughout the touched chat/composer/tool widget surfaces.
-- Updated class-based tests to match the redesign where assertions depended on old shell classes.
+- `ReadWidget.tsx`: replaced the `ToolDisclosure` wrapper with `WidgetFrame` /
+  `WidgetFrameHeader` / `WidgetFrameContent` (per the brief's literal Step 3
+  code). Failure branch uses a plain `WidgetFrame` + `Alert
+  variant="destructive"`. Success branch is `collapsible` without
+  `defaultOpen` (collapsed by default), with `FileText` icon, `read-summary`
+  path title, and byte/token counts as `Badge` elements in the header. Body
+  (`WidgetFrameContent data-testid="read-preview"`) keeps the
+  `max-h-80 overflow-y-auto p-3` inner wrapper, renders `ReadPreview` +
+  `ViewFullOutput` when a payload path exists.
+- `ReadPreview.tsx`: kept extension tables, `readPreviewKind`, and
+  `NativeReadPreview`'s fetch effect byte-identical. Replaced only
+  presentational returns: text branch now renders `CodeBlock`; loading state
+  is a `Spinner` + text line; error and "preview unavailable" states use
+  `Empty`/`EmptyHeader`/`EmptyTitle`/`EmptyDescription`; media elements
+  (`img`/`video`/`audio`) keep their testids and sizing classes, dropping only
+  `rounded-md` (frame body now clips).
+- `ToolDisclosure.tsx` left untouched, per instructions (Task 8 deletes it).
 
-## TDD evidence
+## Test changes
 
-### RED
+- `ReadWidget.test.tsx`: rewrote the collapse-contract assertions from the old
+  `<details open>` check to `aria-expanded` on the header trigger button
+  (`getByRole("button")`), and `read-preview` presence/absence instead of
+  `<details>` semantics. Chevron assertion now checks for
+  `[data-slot="widget-frame-chevron"]` inside `read-widget` (the old
+  `tool-disclosure-chevron` testid no longer applies). Byte/token count
+  assertions switched from a single concatenated `read-summary` string to
+  `read-summary` holding just the path plus separate `getByText` checks for
+  the `Badge` text, since the brief's literal header structure puts those in
+  untagged sibling badges rather than inside the title. Failure-state test
+  now asserts `role="alert"` + error text and absence of a button/`read-summary`,
+  instead of the old `border-destructive/40` class check.
+- `ReadPreview.test.tsx`: added a new "shows a loading spinner" test (none
+  existed before) asserting `[data-slot="spinner"]` inside
+  `read-preview-loading`; unavailable/error tests now assert
+  `data-slot="empty"` on the same element in addition to existing text
+  assertions; text-preview test additionally asserts `data-slot="code-block"`.
+  Markdown/image/video/audio assertions unchanged.
 
-Command:
+## Verification
 
-```bash
-npm test -- src/components/MessageContent.test.tsx src/views/workspace/TranscriptTurn.test.tsx
-```
-
-Result:
-
-- `src/views/workspace/TranscriptTurn.test.tsx` failed on:
-  - `marks transcript turns with chat primitive data attributes`
-  - expected `data-chat-turn="true"`
-  - received `null`
-- `src/components/MessageContent.test.tsx` passed, confirming the new notice marker assertion already matched current behavior.
-
-### GREEN
-
-Command:
-
-```bash
-npm test -- src/components/MessageContent.test.tsx src/views/workspace/TranscriptTurn.test.tsx
-```
-
-Result:
-
-- `Test Files  2 passed (2)`
-- `Tests  27 passed (27)`
-
-## What I tested and exact results
-
-Focused marker suite:
-
-```bash
-npm test -- src/components/MessageContent.test.tsx src/views/workspace/TranscriptTurn.test.tsx
-```
-
-Result:
-
-- `Test Files  2 passed (2)`
-- `Tests  27 passed (27)`
-
-Required chat suite:
-
-```bash
-npm test -- src/components/MessageContent.test.tsx src/components/UserMessageBubble.test.tsx src/views/workspace/TranscriptTurn.test.tsx src/views/workspace/Workspace.test.tsx src/views/workspace/StreamingStatus.test.tsx src/views/chat/rich-input/RichInput.test.tsx src/views/chat/rich-input/RichInput.attachments.test.tsx src/views/chat/rich-input/RichInput.skills.test.tsx src/views/chat/rich-input/UserMessageContent.test.tsx src/views/chat/tool-widgets
-```
-
-Result:
-
-- `Test Files  20 passed (20)`
-- `Tests  178 passed (178)`
-
-Additional verification:
-
-```bash
-git diff --check
-```
-
-Result:
-
-- passed with no whitespace or patch-format issues
+- `npx vitest run src/views/chat/tool-widgets/ReadWidget.test.tsx src/views/chat/tool-widgets/ReadPreview.test.tsx`
+  → `Test Files 2 passed (2)`, `Tests 17 passed (17)`.
+- `npx vitest run` (full suite) → `Test Files 53 passed (53)`, `Tests 414 passed (414)`.
+- `npx tsc -b` → clean, no output.
+- `npx oxfmt src/views/chat/tool-widgets/ReadWidget.tsx src/views/chat/tool-widgets/ReadPreview.tsx src/views/chat/tool-widgets/ReadWidget.test.tsx src/views/chat/tool-widgets/ReadPreview.test.tsx` → formatted 4 files; re-ran tests + typecheck after, still clean.
 
 ## Files changed
 
-- `src/components/MessageContent.tsx`
-- `src/components/MessageContent.test.tsx`
-- `src/components/UserMessageBubble.tsx`
-- `src/components/UserMessageBubble.test.tsx`
-- `src/views/workspace/TranscriptTurn.tsx`
-- `src/views/workspace/TranscriptTurn.test.tsx`
-- `src/views/workspace/Workspace.tsx`
-- `src/views/chat/rich-input/RichInput.tsx`
-- `src/views/chat/rich-input/RichInput.test.tsx`
-- `src/views/chat/tool-widgets/ToolDisclosure.tsx`
-- `src/views/chat/tool-widgets/ToolDisclosure.test.tsx`
-- `src/views/chat/tool-widgets/UserAskWidget.tsx`
-- `.superpowers/sdd/task-7-report.md`
+- `src/views/chat/tool-widgets/ReadWidget.tsx`
+- `src/views/chat/tool-widgets/ReadPreview.tsx`
+- `src/views/chat/tool-widgets/ReadWidget.test.tsx`
+- `src/views/chat/tool-widgets/ReadPreview.test.tsx`
 
-## Self-review findings
-
-- The implementation stays within Task 7 scope and does not touch `site/`, IPC contracts, storage/model behavior, tool parsing/fallback behavior, or Tiptap setup.
-- Required test ids remain unchanged on the touched chat/composer/tool widget surfaces.
-- The required `StickToBottom` retention comment is present above the `StickToBottom` usage.
-- The Lucide replacements were applied only where the brief specified direct matches.
-- I also aligned `UserAskWidget`'s send button styling with the redesigned `RichInput` send button so the live question composer remains visually consistent after the shared icon/button treatment changed.
+Committed with explicit `git add <paths>` (not `-A`), since the working tree
+also has unrelated pre-existing uncommitted drift in
+`.superpowers/sdd/task-1..5-report.md` and other files from an earlier,
+differently-numbered SDD batch — left untouched.
 
 ## Concerns
 
-- None.
+- The brief's "Interfaces" prose says the summary text is
+  `Read <path> · <bytes>[ · N tok]` and to "assert via read-summary testid
+  text," but the brief's own literal Step 3 code puts byte/token counts in
+  separate `Badge` siblings outside the `read-summary` `ItemTitle`, with no
+  middot separator and no wrapping testid (unlike `BashWidget`'s
+  `bash-status` span). I followed the literal code as authoritative and
+  adjusted test assertions to match the actual rendered structure
+  (`read-summary` = path only; badge text checked via `getByText`). Worth a
+  glance from whoever wrote the brief in case a `data-testid` on that badge
+  span was intended but dropped.

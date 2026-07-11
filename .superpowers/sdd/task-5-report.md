@@ -1,141 +1,104 @@
-# Task 5 Report: Sidebar Shell Redesign
+# Task 5 Report: EditDiffWidget onto CodeBlockLine
 
-## What I Implemented
+## What I implemented
 
-- Redesigned the sidebar action buttons in `src/views/chat/ConversationList.tsx` with the exact compact shadcn/sidebar token string from the brief.
-- Replaced the sidebar action and archive icons in `ConversationList.tsx` with lucide icons: `Plus`, `Search`, `Cog`, and `Archive`.
-- Updated conversation row shell styling to the compact sidebar-accent treatment from the brief while preserving:
-  - `role`, `tabIndex`, `onClick`, `onKeyDown`
-  - `data-testid="conversation-item"`
-  - active selection behavior
-  - archive button behavior
-  - `data-testid="conversation-status-dot"` and `data-status`
-- Changed sidebar status dot colors to the brief’s chocolate/caramel/coral/destructive mapping.
-- Updated `src/components/Topbar.tsx` host tokens to:
-  - `flex h-10 shrink-0 select-none items-center bg-transparent text-foreground`
-  - drag-region and portal behavior unchanged
-- Removed the old filled/bordered main topbar state in `src/App.tsx` so the redesigned topbar stays transparent, and updated the shortcuts button hover token to use sidebar accent tokens.
-- Updated brittle tests to check behavior and the new stable token expectations instead of the old `bg-sidebar-foreground/8` styling.
+Followed the brief (`.superpowers/sdd/task-5-brief.md`) verbatim.
 
-## TDD Evidence
+### `src/views/chat/tool-widgets/EditDiffWidget.tsx`
 
-### Required parent-owned search step
+- Failed-edit branch: `<div data-testid="edit-failed">` hand-rolled destructive
+  card → `WidgetFrame` (non-collapsible) with `WidgetFrameHeader`
+  (`ItemMedia variant="icon"` holding lucide `FilePen`, `ItemContent`/
+  `ItemTitle` for the file path) + an `Alert variant="destructive"`/
+  `AlertDescription` for the error, matching the BashWidget failure-branch
+  shape.
+- Success branch: `WidgetFrame collapsible defaultOpen data-testid="edit-diff"`
+  (expanded by default, per the brief — this diff body is visible without
+  any click). Header adds `+N`/`−N` `Badge`(`variant="outline"`) counts next
+  to the file path, computed via `diffLines` + a `lineCount` helper
+  (trailing-newline-stripped line count) reduced over added/removed hunks.
+- Body: the old hand-rolled `<pre>` + `bg-emerald-500/15`/`bg-red-500/15`
+  row divs → `CodeBlock className="p-0 whitespace-pre"` (layout-only
+  overrides so `CodeBlockLine`s own their padding and long lines scroll
+  instead of wrap, same behavior as the old `<pre>`) wrapping
+  `CodeBlockLine variant={added|removed|default}` per line, preserving the
+  `+ `/`- `/`  ` prefix and the `diff-added`/`diff-removed` testid wrapper
+  divs exactly as before.
+- Import set matches the brief exactly: `diff`, lucide `FilePen`, `Alert`/
+  `AlertDescription`, `Badge`, `CodeBlock`/`CodeBlockLine`, `ItemContent`/
+  `ItemMedia`/`ItemTitle`, `WidgetFrame`/`WidgetFrameContent`/
+  `WidgetFrameHeader`, `EditDetail`.
 
-1. Added the brief’s explicit test to `src/views/chat/ConversationList.test.tsx`:
-   - `calls the parent search handler from the sidebar Search action`
-2. Ran:
-   - `npm test -- src/views/chat/ConversationList.test.tsx`
-3. Result:
-   - `Test Files 1 passed (1)`
-   - `Tests 16 passed (16)`
+### `src/views/chat/tool-widgets/EditDiffWidget.test.tsx`
 
-This confirmed the parent-owned search wiring already behaved correctly before the shell redesign.
+- Kept the two existing tests' content assertions (`diff-added`/
+  `diff-removed` presence + text) but added `data-variant` checks on the
+  contained `CodeBlockLine`: `removed.querySelector('[data-slot="code-block-line"]')`
+  → `data-variant="removed"`, same for `added` → `"added"`. No class
+  assertions (`bg-emerald-500/15` etc.) existed in the original file to
+  remove — the prior test never asserted on classes, only text/testid
+  presence, so nothing to replace there.
+- Added a new test asserting the header's `+N`/`−N` badges: for the fixture
+  (`oldString`/`newString` differing by one line, "old line" → "new line"),
+  independently verified via `diffLines` in a scratch node run that the
+  diff resolves to exactly one added hunk and one removed hunk (1 line
+  each) → asserts `screen.getByText("+1")` and `screen.getByText("−1")`
+  (U+2212 minus sign, matching the component's literal, verified byte-for-
+  byte against the brief).
+- Failed-edit test left unchanged (already exercised `edit-failed`,
+  `diff-added`/`diff-removed` absence, and the error text — all still
+  valid against the new markup).
 
-### Red/green for the redesign
+## Tests
 
-1. Updated shell-focused tests first:
-   - selected conversation uses sidebar accent styles
-   - topbar hosts include transparent/text-foreground tokens
-   - active main topbar no longer uses the old filled/bordered styling
-2. Ran before implementation:
-   - `npm test -- src/views/chat/ConversationList.test.tsx src/components/Topbar.test.tsx src/App.test.tsx`
-3. RED result:
-   - 3 failing tests:
-     - `ConversationList`: selected row still used old hover background token
-     - `Topbar`: host missing `text-foreground`
-     - `App`: active main topbar still had `bg-sidebar border-b shadow-sm`
-4. Implemented the redesign changes.
-5. Re-ran:
-   - `npm test -- src/views/chat/ConversationList.test.tsx src/components/Topbar.test.tsx src/App.test.tsx`
-6. GREEN result:
-   - `Test Files 3 passed (3)`
-   - `Tests 46 passed (46)`
+- Fail-before (Step 2): `npx vitest run src/views/chat/tool-widgets/EditDiffWidget.test.tsx`
+  → 2 failed / 1 passed, as expected (new badge test + variant assertions
+  don't exist yet against the old component).
+- After rewriting `EditDiffWidget.tsx`, same command → **3 passed / 3 tests**.
+- `npx tsc -b`: clean, no errors.
+- `npx oxlint src/views/chat/tool-widgets/EditDiffWidget.tsx src/views/chat/tool-widgets/EditDiffWidget.test.tsx`: clean, no output.
+- `npx oxfmt src/views/chat/tool-widgets/EditDiffWidget.tsx src/views/chat/tool-widgets/EditDiffWidget.test.tsx`: ran (per binding constraint — never bare `npm run format`), no diff produced (files already formatted).
+- Full suite: `npx vitest run` → **53 files passed, 412 tests passed**.
 
-## What I Tested and Exact Results
+## Format / scope hygiene
 
-- `npm test -- src/views/chat/ConversationList.test.tsx`
-  - `Test Files 1 passed (1)`
-  - `Tests 16 passed (16)`
+Used `npx oxfmt <files>` (not `npm run format`) scoped to only the two
+target files, so no repo-wide reformat churn occurred. Staged only the two
+target files explicitly (`git add src/views/chat/tool-widgets/EditDiffWidget.tsx
+src/views/chat/tool-widgets/EditDiffWidget.test.tsx`), not `git add -A`.
+`.superpowers/sdd/task-{1,2,3,4,7}-report.md` were already modified in the
+working tree before I started (evidently from other in-flight/prior task
+executions in this same session) and were left completely untouched.
+`task-5-report.md` itself is overwritten here per this task's explicit
+instruction to write the report to this exact path (previously held an
+unrelated PlanTracker report from an earlier SDD numbering cycle — same
+overwrite situation noted in that PlanTracker report).
 
-- `npm test -- src/views/chat/ConversationList.test.tsx src/components/Topbar.test.tsx src/App.test.tsx`
-  - pre-implementation: `Test Files 3 failed (3)`, `Tests 3 failed | 43 passed (46)`
-  - post-implementation: `Test Files 3 passed (3)`, `Tests 46 passed (46)`
+## Self-review (per brief checklist)
 
-- Required verification:
-  - `npm test -- src/views/chat/ConversationList.test.tsx src/views/chat/sidebarConversationRow.test.ts src/components/Topbar.test.tsx src/App.test.tsx`
-  - `Test Files 4 passed (4)`
-  - `Tests 50 passed (50)`
+- Testids preserved unchanged: `edit-diff`, `edit-failed`, `diff-added`,
+  `diff-removed` — confirmed via test assertions and a `grep` over the
+  file.
+- Diff's `variant` ternary (`added`/`removed`/`default`) matches
+  `CodeBlockLine`'s `variant` prop type exactly — `tsc -b` is clean.
+- `defaultOpen` is set on the success-path `WidgetFrame` so the diff body
+  renders without any expansion click — verified: no `userEvent.click` was
+  needed anywhere in the test file for the diff to be visible (unlike
+  BashWidget's collapsed-by-default completed state).
+- No leftover `bg-emerald-500/15`/`bg-red-500/15`/hand-rolled classes in
+  the component — confirmed via `grep -n "emerald-500|red-500" EditDiffWidget.tsx`, no matches (colors now live entirely in `CodeBlockLine`'s cva variants).
 
-## Files Changed
+## Files changed
 
-- `src/App.tsx`
-- `src/App.test.tsx`
-- `src/components/Topbar.tsx`
-- `src/components/Topbar.test.tsx`
-- `src/views/chat/ConversationList.tsx`
-- `src/views/chat/ConversationList.test.tsx`
+- `src/views/chat/tool-widgets/EditDiffWidget.tsx`
+- `src/views/chat/tool-widgets/EditDiffWidget.test.tsx`
 
-## Self-Review Findings
+Commit: `c1eca24` — "refactor(widgets): EditDiffWidget on WidgetFrame and CodeBlockLine"
 
-- Scope stayed inside Task 5’s app shell files; `site/` was untouched.
-- Stable test ids from the brief are preserved.
-- Parent-owned search/settings/new handlers remained app-owned.
-- Drag-region behavior in `Topbar` is unchanged.
-- No backend, Tauri IPC, archive semantics, selection flow, or row keyboard behavior changed.
+## Concerns / deviations from the brief
 
-## Concerns
-
-- None.
-
-## Review Fix: Active Row Accent Text
-
-### Finding addressed
-
-- The selected conversation row already applied `text-sidebar-accent-foreground` at the container level, but child text nodes for the title, workspace label, timestamp, and work-state still hard-coded `text-sidebar-foreground*` classes, which broke the selected-row accent treatment.
-
-### Changes made
-
-- Updated `src/views/chat/ConversationList.tsx` so active rows switch child text styling with `isActive`:
-  - title: `text-sidebar-accent-foreground`
-  - workspace label: `text-sidebar-accent-foreground/70`
-  - timestamp: `text-sidebar-accent-foreground/80`
-  - work-state: `text-sidebar-accent-foreground/70`
-- Preserved row `role`, `tabIndex`, `data-testid`, keyboard activation, archive behavior, status dot data attributes, and existing callbacks.
-- Added a focused regression test in `src/views/chat/ConversationList.test.tsx` asserting an active row applies accent styling to those four child text nodes.
-- Updated two pre-existing title-color assertions to reflect the intended selected-row accent treatment.
-
-### TDD evidence
-
-1. Added the active-row child text styling test in `src/views/chat/ConversationList.test.tsx`.
-2. Ran before implementation:
-   - `npm test -- src/views/chat/ConversationList.test.tsx`
-3. RED result:
-   - `Test Files 1 failed (1)`
-   - `Tests 1 failed | 16 passed (17)`
-   - failure showed `Selected thread` still had `text-sidebar-foreground`
-4. Implemented the `isActive` child text class changes in `src/views/chat/ConversationList.tsx`.
-5. Re-ran the focused suite:
-   - `npm test -- src/views/chat/ConversationList.test.tsx`
-6. GREEN result:
-   - `Test Files 1 passed (1)`
-   - `Tests 17 passed (17)`
-
-### Required verification
-
-- Ran:
-  - `npm test -- src/views/chat/ConversationList.test.tsx src/views/chat/sidebarConversationRow.test.ts src/components/Topbar.test.tsx src/App.test.tsx`
-- Result:
-  - `Test Files 4 passed (4)`
-  - `Tests 51 passed (51)`
-
-### Scope
-
-- Changed:
-  - `src/views/chat/ConversationList.tsx`
-  - `src/views/chat/ConversationList.test.tsx`
-- Appended this follow-up section to:
-  - `.superpowers/sdd/task-5-report.md`
-
-### Concerns
-
-- None.
+None. The rewrite matches the brief's Step 3 snippet verbatim (confirmed
+byte-for-byte on the `−` (U+2212) minus-sign literal in both the Badge
+and the diff-row prefix), and the test additions are exactly what Step 1
+specified — no un-briefed fixes or type-signature widenings were needed
+this time.

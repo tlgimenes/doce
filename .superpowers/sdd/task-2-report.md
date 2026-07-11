@@ -1,457 +1,103 @@
-# Task 2 Report
+# Task 2 Report: `ui/widget-frame.tsx` primitive
 
-## What I implemented
+## Summary
 
-- Added `src/lib/shortcuts.test.ts` and updated `src/lib/shortcuts.ts` so the shortcut registry now owns:
-  - `openCommandCenter(): void`
-  - `open-command-center` on `Cmd+K`
-  - `Cmd+F` remaining dedicated to conversation search
-- Moved app-owned surface state into `src/App.tsx`:
-  - `showSearch`
-  - `showCommandCenter`
-  - existing `showShortcutsDialog`
-  - existing `showSettings`
-  - existing `showWidgetGallery`
-- Moved the search dialog surface out of `src/views/chat/ConversationList.tsx` and into `src/App.tsx`, while keeping sidebar Search and `Cmd+F` opening the same search panel.
-- Added `ConversationListProps.onOpenSearch` and removed the imperative `openSearch()` handle so `ConversationList` reports search intent upward instead of owning the dialog locally.
-- Updated the global keydown gate in `App` so app-owned surfaces block other shortcuts unless the matched shortcut is `open-command-center`.
-- Added the required skipped app-level test in `src/App.test.tsx` with the exact Task 2 body.
+Implemented `WidgetFrame` / `WidgetFrameHeader` / `WidgetFrameContent` exactly
+per the brief's Step 3 code, with one required adaptation to the trigger
+composition (see below) and one adaptation to the test's visibility
+assertions (documented in the brief as expected/likely).
 
 ## TDD evidence
 
-### RED
+**RED** (`npx vitest run src/components/ui/widget-frame.test.tsx` before
+creating `widget-frame.tsx`):
 
-Command:
-
-```bash
-npm test -- src/lib/shortcuts.test.ts
+```
+FAIL  src/components/ui/widget-frame.test.tsx [ src/components/ui/widget-frame.test.tsx ]
+Error: Failed to resolve import "./widget-frame" from "src/components/ui/widget-frame.test.tsx". Does the file exist?
 ```
 
-Result:
+**GREEN** (final run, after implementation + both adaptations below):
 
-- Exit code: `1`
-- `src/lib/shortcuts.test.ts` failed `2` tests
-- Failure 1: `open-command-center` shortcut was `undefined`
-- Failure 2: `search-conversations` still exposed the old `⌘F` / `Open conversation search` metadata instead of the Task 2 values
-
-### GREEN
-
-Command:
-
-```bash
-npm test -- src/lib/shortcuts.test.ts
+```
+ Test Files  1 passed (1)
+      Tests  3 passed (3)
 ```
 
-Result:
+## Adaptation 1: trigger composition needed `nativeButton={false}`
 
-- Exit code: `0`
-- `Test Files  1 passed (1)`
-- `Tests  2 passed (2)`
+The brief's `<CollapsibleTrigger render={<Item .../>}>` composition (the
+primary approach, not the fallback) worked structurally — `aria-expanded`,
+`aria-controls`, click handling, and keyboard support all wired up correctly.
+However, the first GREEN attempt still failed 2/3 tests because
+`screen.getByRole("button")` couldn't find the trigger.
 
-## What I tested and exact results
+Root cause: Base UI's `CollapsibleTrigger` defaults `nativeButton={true}`,
+which assumes the `render` target ultimately resolves to a real `<button>`
+element. In that mode it merges `{ type: "button" }` into the rendered
+element's props and does **not** add `role="button"`. Since `Item` (a
+`useRender`-based component) defaults to rendering a `<div>`, the resulting
+DOM node was a `<div type="button" aria-expanded="...">` with no accessible
+button role — confirmed by Base UI's own dev-mode console warning:
 
-1. Required Task 2 verification:
-
-```bash
-npm test -- src/lib/shortcuts.test.ts src/views/chat/ConversationList.test.tsx
+```
+Base UI: A component that acts as a button expected a native <button> because the
+`nativeButton` prop is true. Rendering a non-<button> removes native button
+semantics... Use a real <button> in the `render` prop, or set `nativeButton` to `false`.
 ```
 
-Result:
+Fix: added `nativeButton={false}` to the `CollapsibleTrigger` in
+`WidgetFrameHeader`. This is Base UI's own documented escape hatch for
+exactly this case — with it, `useButton` merges `{ role: "button" }` instead
+of `{ type: "button" }`, and `getByRole("button")` resolves correctly, along
+with proper Enter/Space keyboard activation for a non-native-button element.
+This is a one-line addition on top of the brief's primary
+`render={<Item/>}` composition — I did **not** need the brief's documented
+div-wrapping fallback (`<CollapsibleTrigger render={<div/>}>` wrapping the
+`Item`); the `render={<Item/>}` composition stands as designed, just with
+`nativeButton={false}` set.
 
-- Exit code: `0`
-- `Test Files  2 passed (2)`
-- `Tests  16 passed (16)`
+## Adaptation 2: visibility assertion for the closed state
 
-2. Focused app-shell regression coverage for the new state wiring:
+The brief flagged this as a likely necessary adaptation. Base UI's
+`Collapsible.Panel` unmounts its content when closed by default (no
+`keepMounted` prop set), rather than rendering it hidden via CSS/attributes.
+Confirmed empirically: with the frame collapsed (no `defaultOpen`),
+`screen.queryByText("body text")` returned `null` (not a hidden element), so
+`not.toBeVisible()` threw ("received value must be an HTMLElement... Received
+has type: Null") rather than passing.
 
-```bash
-npm test -- src/App.test.tsx
+Per the brief's explicit guidance ("match the primitive's real behavior, do
+not force it"), changed that one assertion in `widget-frame.test.tsx` from:
+
+```tsx
+expect(screen.queryByText("body text")).not.toBeVisible();
 ```
 
-Result:
+to:
 
-- Exit code: `0`
-- `Test Files  1 passed (1)`
-- `Tests  19 passed | 1 skipped (20)`
+```tsx
+expect(screen.queryByText("body text")).not.toBeInTheDocument();
+```
+
+with a comment explaining why. The subsequent open-state assertions
+(`toBeVisible()` after click, and the `defaultOpen` test) needed no change —
+once mounted/open, the panel content is a real visible element.
 
 ## Files changed
 
-- `src/lib/shortcuts.ts`
-- `src/lib/shortcuts.test.ts`
-- `src/App.tsx`
-- `src/App.test.tsx`
-- `src/views/chat/ConversationList.tsx`
-- `src/views/chat/ConversationList.test.tsx`
-
-## Self-review findings
-
-- Search ownership is now at the app shell boundary, but the existing search panel behavior remains intact for both sidebar Search and `Cmd+F`.
-- `ConversationList` stayed scoped to sidebar concerns; it no longer owns a modal surface.
-- I kept backend commands, storage behavior, and Tauri IPC contracts unchanged.
-- I deliberately made `openCommandCenter` toggle the app-owned boolean while Task 4 UI is absent, so `Cmd+K` cannot leave the global shortcut gate stuck in an invisible open state.
-
-## Concerns
-
-- No blocking concerns. `Cmd+K` now routes to app-owned command-center state, but the visible command-center surface remains deferred to Task 4 as intended.
-
-## Review fixes: shortcut reachability and command-center open semantics
-
-### What I changed
-
-- Added an app-shell entry point in `src/App.tsx`: a sidebar topbar button (`data-testid="open-shortcuts-dialog"`) that opens the existing `ShortcutsDialog`.
-- Kept the change app-owned and small: no Task 4 command-center UI was introduced.
-- Changed `openCommandCenter` from a toggle to an idempotent open (`setShowCommandCenter(true)`).
-- Added a minimal hidden-state close path for the interim Task 4 gap: pressing `Escape` clears `showCommandCenter`.
-- Cleared the hidden command-center state before opening the visible search or shortcuts surfaces so the app cannot stay stuck behind an invisible gate.
-- Restored active App-level coverage for:
-  - shortcuts dialog reachability from the shell
-  - shortcut blocking while that dialog is open
-  - dialog dismissal and resumed `Cmd+F` behavior
-  - idempotent `Cmd+K` routing while the command-center UI remains deferred
-
-### TDD evidence
-
-#### RED
-
-Command:
-
-```bash
-npm test -- src/App.test.tsx
-```
-
-Result:
-
-- Exit code: `1`
-- `2` failing tests
-- Failure 1: `open-shortcuts-dialog` did not exist, so the shortcuts dialog was unreachable from the app shell
-- Failure 2: after pressing `Cmd+K` twice, `Cmd+F` opened `search-panel`, proving `openCommandCenter` was still toggling closed
-
-#### GREEN
-
-Command:
-
-```bash
-npm test -- src/App.test.tsx
-```
-
-Result:
-
-- Exit code: `0`
-- `Test Files  1 passed (1)`
-- `Tests  21 passed | 1 skipped (22)`
-
-### Verification commands and exact results
-
-1. Required Task 2 regression suite:
-
-```bash
-npm test -- src/lib/shortcuts.test.ts src/views/chat/ConversationList.test.tsx
-```
-
-Result:
-
-- Exit code: `0`
-- `Test Files  2 passed (2)`
-- `Tests  16 passed (16)`
-
-2. Required App shortcut routing suite:
-
-```bash
-npm test -- src/App.test.tsx
-```
-
-Result:
-
-- Exit code: `0`
-- `Test Files  1 passed (1)`
-- `Tests  21 passed | 1 skipped (22)`
-
-3. Build verification:
-
-```bash
-npm run build
-```
-
-Result:
-
-- Exit code: `0`
-- `tsc -b && vite build` completed successfully
-- Existing Vite chunk-size warning remains: `Some chunks are larger than 500 kB after minification`
-
-## Final re-review fix: clear hidden command-center latch when visible surfaces close after Cmd+K
-
-### What I changed
-
-- Kept `openCommandCenter` idempotent as an opener for the interim Task 2 latch state.
-- Added small named close helpers in `src/App.tsx`:
-  - `closeSettings()`
-  - `closeSearch()`
-  - `closeShortcutsDialog()`
-  - `closeWidgetGallery()`
-- Routed Settings and Search through latch-aware close helpers so a hidden `showCommandCenter` state cannot survive after `Cmd+K` is pressed behind those visible surfaces.
-- Folded Widget Gallery into the same close-helper pattern because it is another app-owned surface that can remain visible after `Cmd+K`.
-- Preserved the existing skipped future Task 3/4 integration test unchanged.
-
-### Root cause
-
-- `openCommandCenter()` already reconciled `ShortcutsDialog`, but not Settings or Search.
-- If Settings or Search was already visible, pressing `Cmd+K` set `showCommandCenter` to `true` while the visible surface stayed mounted.
-- Those surfaces then closed through inline `setShowX(false)` handlers, leaving the hidden command-center latch behind and blocking later shortcuts like `Cmd+F`.
-
-### TDD evidence
-
-#### RED
-
-Command:
-
-```bash
-npm test -- src/App.test.tsx
-```
-
-Result:
-
-- Exit code: `1`
-- `Test Files  1 failed (1)`
-- `Tests  2 failed | 22 passed | 1 skipped (25)`
-- Failure 1: `lets Cmd+F reopen search after Cmd+K lands behind an already-open Settings view`
-- Failure 2: `lets Cmd+F reopen search after Cmd+K lands behind an already-open search dialog`
-- Both failures ended with `Unable to find an element by: [data-testid="search-panel"]`, confirming the hidden latch still blocked `Cmd+F` after close.
-
-#### GREEN
-
-Command:
-
-```bash
-npm test -- src/App.test.tsx
-```
-
-Result:
-
-- Exit code: `0`
-- `Test Files  1 passed (1)`
-- `Tests  24 passed | 1 skipped (25)`
-
-### Focused regression coverage added
-
-- `Settings -> Cmd+K -> close Settings -> Cmd+F opens search`
-- `Cmd+F -> Cmd+K -> close Search -> Cmd+F opens search again`
-
-### Required verification commands and exact results
-
-1. App-level regression suite:
-
-```bash
-npm test -- src/App.test.tsx
-```
-
-Result:
-
-- Exit code: `0`
-- `Test Files  1 passed (1)`
-- `Tests  24 passed | 1 skipped (25)`
-
-2. Task 2 regression suite:
-
-```bash
-npm test -- src/lib/shortcuts.test.ts src/views/chat/ConversationList.test.tsx
-```
-
-Result:
-
-- Exit code: `0`
-- `Test Files  2 passed (2)`
-- `Tests  16 passed (16)`
-
-3. Build verification:
-
-```bash
-npm run build
-```
-
-Result:
-
-- Exit code: `0`
-- `tsc -b && vite build` completed successfully
-- Existing Vite chunk-size warning remains: `Some chunks are larger than 500 kB after minification`
-
-### Files changed for this review fix
-
-- `src/App.tsx`
-- `src/App.test.tsx`
-
-## Re-review fix: clear the hidden command-center latch on settings and other app-owned takeovers
-
-### What I changed
-
-- Added `clearCommandCenterLatch()` in `src/App.tsx` so the interim Task 2 `showCommandCenter` state yields through one shared helper instead of ad hoc clears.
-- Routed search, shortcuts dialog, settings, widget gallery, and workspace/empty-state takeovers through that helper so visible app-owned surfaces are not blocked behind invisible command-center state.
-- Kept `openCommandCenter` idempotent as `setShowCommandCenter(true)`.
-- Added focused App coverage for the settings regression path:
-  - `Cmd+K`
-  - open Settings
-  - close Settings
-  - `Cmd+F` opens search again
-- Preserved the existing skipped future Task 3/4 integration test.
-
-### TDD evidence
-
-#### RED
-
-Command:
-
-```bash
-npm test -- src/App.test.tsx
-```
-
-Result:
-
-- Exit code: `1`
-- `Test Files  1 failed (1)`
-- `Tests  1 failed | 21 passed | 1 skipped (23)`
-- Failure: `search-panel` was not found after `Cmd+K -> Settings -> close Settings -> Cmd+F`, proving the hidden command-center gate stayed latched through the settings transition
-
-#### GREEN
-
-Command:
-
-```bash
-npm test -- src/App.test.tsx
-```
-
-Result:
-
-- Exit code: `0`
-- `Test Files  1 passed (1)`
-- `Tests  22 passed | 1 skipped (23)`
-
-### Verification commands and exact results
-
-1. Required App shortcut routing suite:
-
-```bash
-npm test -- src/App.test.tsx
-```
-
-Result:
-
-- Exit code: `0`
-- `Test Files  1 passed (1)`
-- `Tests  22 passed | 1 skipped (23)`
-
-2. Required Task 2 regression suite:
-
-```bash
-npm test -- src/lib/shortcuts.test.ts src/views/chat/ConversationList.test.tsx
-```
-
-Result:
-
-- Exit code: `0`
-- `Test Files  2 passed (2)`
-- `Tests  16 passed (16)`
-
-3. Build verification:
-
-```bash
-npm run build
-```
-
-Result:
-
-- Exit code: `0`
-- `tsc -b && vite build` completed successfully
-- Existing Vite chunk-size warning remains: `Some chunks are larger than 500 kB after minification`
-
-### Files changed for this re-review fix
-
-- `src/App.tsx`
-- `src/App.test.tsx`
-
-## Final re-review fix: reconcile ShortcutsDialog when Cmd+K opens command-center state
-
-### What I changed
-
-- Made `openCommandCenter` in `src/App.tsx` explicitly own the transition out of `ShortcutsDialog` by closing `showShortcutsDialog` before opening the command-center latch.
-- Kept `openCommandCenter` idempotent as an opener by continuing to set `showCommandCenter(true)`.
-- Replaced the older App-level shortcuts-dialog regression with focused coverage for:
-  - open shortcuts dialog from the shell
-  - verify `Cmd+F` stays blocked while it is open
-  - press `Cmd+K`
-  - confirm the shortcuts dialog closes as part of the handoff
-  - dismiss the command-center latch with `Escape`
-  - verify `Cmd+F` opens search
-- Preserved the skipped future Task 3/4 integration test unchanged.
-
-### TDD evidence
-
-#### RED
-
-Command:
-
-```bash
-npm test -- src/App.test.tsx
-```
-
-Result:
-
-- Exit code: `1`
-- `Test Files  1 failed (1)`
-- `Tests  1 failed | 21 passed | 1 skipped (23)`
-- Failure: `shortcuts-dialog` remained mounted after `Cmd+K`, proving `openCommandCenter` did not reconcile the visible shortcuts surface
-
-#### GREEN
-
-Command:
-
-```bash
-npm test -- src/App.test.tsx
-```
-
-Result:
-
-- Exit code: `0`
-- `Test Files  1 passed (1)`
-- `Tests  22 passed | 1 skipped (23)`
-
-### Verification commands and exact results
-
-1. Required App shortcut routing suite:
-
-```bash
-npm test -- src/App.test.tsx
-```
-
-Result:
-
-- Exit code: `0`
-- `Test Files  1 passed (1)`
-- `Tests  22 passed | 1 skipped (23)`
-
-2. Required Task 2 regression suite:
-
-```bash
-npm test -- src/lib/shortcuts.test.ts src/views/chat/ConversationList.test.tsx
-```
-
-Result:
-
-- Exit code: `0`
-- `Test Files  2 passed (2)`
-- `Tests  16 passed (16)`
-
-3. Build verification:
-
-```bash
-npm run build
-```
-
-Result:
-
-- Exit code: `0`
-- `tsc -b && vite build` completed successfully
-- Existing Vite chunk-size warning remains: `Some chunks are larger than 500 kB after minification`
-
-### Files changed for this final re-review fix
-
-- `src/App.tsx`
-- `src/App.test.tsx`
+- `src/components/ui/widget-frame.tsx` (new) — `WidgetFrame`,
+  `WidgetFrameHeader`, `WidgetFrameContent`, matching the brief's produced
+  interfaces exactly, plus the `nativeButton={false}` addition on the
+  collapsible trigger.
+- `src/components/ui/widget-frame.test.tsx` (new) — brief's three tests, with
+  the one visibility-assertion adaptation described above.
+
+## Self-review
+
+- Typecheck: `npx tsc -b` — clean, no output/errors.
+- Lint: `npx oxlint src/components/ui/widget-frame.tsx src/components/ui/widget-frame.test.tsx` — clean.
+- Format: `npx oxfmt src/components/ui/widget-frame.tsx src/components/ui/widget-frame.test.tsx` — applied (reflowed a few multi-prop JSX lines); re-ran tests after formatting, still 3/3 pass.
+- Confirmed the non-collapsible frame (`WidgetFrame` without `collapsible`) renders a plain `<div data-slot="widget-frame">` with an `Item` header and no button role (test 1).
+- Confirmed `defaultOpen` renders the collapsible frame already expanded with `aria-expanded="true"` and visible body content (test 3).
+- Did not touch any other files. `tsc -b` implicitly typechecks the whole project and passed, so no regressions from this addition.

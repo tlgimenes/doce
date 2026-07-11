@@ -1,120 +1,139 @@
-# Task 4 Report: Universal Command Center
+# Task 4 Report: BashWidget onto the frame
 
-## What I implemented
+## Implementation
 
-- Added `src/views/command/CommandCenter.tsx` as the visible universal command center surface using the Task 1 `Dialog`, `Button`, and `KeyboardShortcut` primitives.
-- Added `CommandCenterAction` and wired `App.tsx` to render `<CommandCenter open={showCommandCenter} onOpenChange={setShowCommandCenter} actions={commandActions} />`.
-- Replaced the Task 2 hidden interim behavior with a real visible command center opened by `Cmd+K`.
-- Built the Task 4 app action list in `App.tsx`:
-  - `New Agent`
-  - `Search Conversations`
-  - `Open Settings`
-  - `Open Shortcuts`
-  - `Open Widget Gallery`
-  - `Focus Composer`
-  - `Archive Current Conversation`
-  - `Close Current Surface`
-- Kept dedicated conversation search on `Cmd+F` and exposed it as a command-center action.
-- Extended `ConversationListHandle` with `archiveById(conversationId)` and reused the existing archive update / IPC path for both row-button archive and imperative archive.
-- Updated the shortcuts dialog to render shortcut combos from `Shortcut.combo` via `KeyboardShortcut`.
-- Unskipped the Task 2 app integration test and updated it to assert the visible command-center surface.
+Rewrote `src/views/chat/tool-widgets/BashWidget.tsx` to consume the landed
+shadcn/base-nova primitives instead of hand-rolled divs/prose/borders:
 
-## TDD evidence
+- **Pending branch** (`!detail.outcome`): `WidgetFrame collapsible defaultOpen`
+  with `WidgetFrameHeader` containing `ItemMedia` (Terminal icon), `ItemContent`
+  → `ItemTitle` holding a `Spinner` + "Running…" text (`data-testid="bash-status"`),
+  and `WidgetFrameContent` → `CodeBlock` for the command (`data-testid="bash-command"`).
+- **Spawn-failed branch** (`outcome.ok === false`): non-collapsible `WidgetFrame`
+  (no trigger), header shows `CodeInline` command + `ItemDescription` "Failed to
+  run" status, body is an `Alert variant="destructive"` wrapping `AlertDescription`
+  with the error text (renders `role="alert"`).
+- **Completed branch**: collapsible `WidgetFrame` (closed by default), header
+  shows `CodeInline` command plus a `bash-status` span with two `Badge`s
+  (Success/secondary vs `Failed (exit N)`/destructive, and an `outline` exit/token
+  badge). `WidgetFrameContent` holds `CodeBlock` for stdout, `CodeBlock
+  tone="destructive"` for stderr, an `ItemDescription` "Output truncated" note,
+  and `ViewFullOutput` when a payload path exists.
+- Kept `OUTPUT_LINE_CAP`, `truncatedLines`, the header doc-comment, and all prop
+  contracts (`detail: BashDetail`) verbatim per the brief.
 
-### RED
+This matches the task brief's full component listing exactly (verified via
+`git diff` — the replacement matches the brief's Step 3 code block character
+for character).
 
-Command:
+## RED evidence
 
-```bash
-npm test -- src/views/command/CommandCenter.test.tsx
+Updated `BashWidget.test.tsx` first (before touching the component) and ran:
+
+```
+npx vitest run src/views/chat/tool-widgets/BashWidget.test.tsx
 ```
 
-Result:
+Result against the *old* component: `Test Files 1 failed (1)`, `Tests 7 failed
+| 4 passed (11)`. Failures were exactly the ones expected from the frame
+migration: no `role="button"` yet (collapsible header didn't exist), no
+`[data-slot="spinner"]` inside `bash-status`, and `bash-stdout` was present
+without a click (old markup never collapsed).
 
-- Exit code: `1`
-- Failure matched expectation: Vite could not resolve `./CommandCenter` from `src/views/command/CommandCenter.test.tsx` because the component did not exist yet.
+## GREEN evidence
 
-### GREEN
+After rewriting the component:
 
-Command:
-
-```bash
-npm test -- src/views/command/CommandCenter.test.tsx
+```
+npx vitest run src/views/chat/tool-widgets/BashWidget.test.tsx src/views/workspace/TranscriptTurn.test.tsx
 ```
 
-Result:
+Result: `Test Files 2 passed (2)`, `Tests 16 passed (16)`.
 
-- Exit code: `0`
-- `Test Files  1 passed (1)`
-- `Tests  2 passed (2)`
+Also ran the full tool-widgets directory and the whole suite as a broader
+safety check (no other widget files were touched):
 
-Follow-up focused suite after implementation:
-
-```bash
-npm test -- src/views/command/CommandCenter.test.tsx src/views/shortcuts/ShortcutsDialog.test.tsx src/views/chat/ConversationList.test.tsx src/App.test.tsx
+```
+npx vitest run src/views/chat/tool-widgets/   → Test Files 11 passed (11), Tests 67 passed (67)
+npx vitest run                                → Test Files 53 passed (53), Tests 411 passed (411)
 ```
 
-Result:
+`npx tsc -b` produced no output (clean typecheck).
 
-- Exit code: `0`
-- `Test Files  4 passed (4)`
-- `Tests  45 passed (45)`
+## Which BashWidget.test.tsx assertions changed, and why
 
-## What I tested and exact results
-
-Required Task 4 verification:
-
-```bash
-npm test -- src/views/command/CommandCenter.test.tsx src/views/shortcuts/ShortcutsDialog.test.tsx src/App.test.tsx
-```
-
-Result:
-
-- Exit code: `0`
-- `Test Files  3 passed (3)`
-- `Tests  30 passed (30)`
-
-Additional required coverage because `ConversationListHandle` was extended with `archiveById`:
-
-```bash
-npm test -- src/views/chat/ConversationList.test.tsx
-```
-
-Result:
-
-- Exit code: `0`
-- `Test Files  1 passed (1)`
-- `Tests  15 passed (15)`
-
-Self-check:
-
-```bash
-git diff --check
-```
-
-Result:
-
-- Exit code: `0`
-- No whitespace / patch-format issues reported.
+- Added `userEvent` import; most `it()` callbacks are now `async` and click
+  `screen.getByRole("button")` before asserting on `bash-stdout`/`bash-stderr`,
+  because the completed-Bash `WidgetFrame` is collapsible and closed by
+  default — Base UI's `Collapsible.Panel` unmounts closed content, so those
+  testids simply aren't in the DOM until expanded (per Task 2's real
+  visibility behavior).
+- "shows a dispatch-level failure…" now asserts `screen.getByRole("alert")`
+  (the `Alert variant="destructive"` renders `role="alert"`) instead of a
+  loose `getByText` on the error string alone, tightening the check that the
+  spawn-failed branch uses the real Alert primitive.
+- "visually distinguishes success from failure": replaced the old regex
+  assertions (`/success|0/i`, `/fail|1/i`) with exact text assertions
+  ("Success", "Failed (exit 1)") since the component now renders the literal
+  text contract from the brief rather than ad hoc class-driven wording; also
+  clicks the header before checking `bash-stderr` (closed-by-default).
+- Pending-state test: added an explicit assertion that `bash-status` contains
+  a `[data-slot="spinner"]` node (replacing the old implicit color-class
+  check), and dropped the earlier bare regex-only check in favor of the same
+  strengthened structural check. Did **not** assert "no button" for the
+  pending branch — it's still `collapsible defaultOpen`, so a trigger with
+  `role="button"` exists (just already expanded); only `bash-command` being
+  visible without a click was asserted, per the brief.
+- Added a new test, "collapses completed output by default until the header
+  is clicked", mirroring `widget-frame.test.tsx`'s collapsed-by-default
+  pattern: header (`bash-command`, `bash-status`) renders immediately;
+  `bash-stdout` is `queryByTestId(...).not.toBeInTheDocument()` before the
+  click, then visible after.
+- Left all fixtures, IDs, and text contracts (`Running…`, `Failed to run`,
+  `Success`, `Failed (exit N)`, `Output truncated`, `$ <command>`, `89 tok`,
+  `view-full-output-button`) unchanged — only the interaction/visibility
+  mechanics around them changed. No class-based assertions existed in the
+  prior test file to drop (the brief anticipated some; this file had none).
 
 ## Files changed
 
-- `src/App.tsx`
-- `src/App.test.tsx`
-- `src/views/command/CommandCenter.tsx`
-- `src/views/command/CommandCenter.test.tsx`
-- `src/views/chat/ConversationList.tsx`
-- `src/views/chat/ConversationList.test.tsx`
-- `src/views/shortcuts/ShortcutsDialog.tsx`
-- `src/views/shortcuts/ShortcutsDialog.test.tsx`
+- `src/views/chat/tool-widgets/BashWidget.tsx` (rewritten onto `WidgetFrame`/`CodeBlock`/`CodeInline`/`Badge`/`Spinner`/`Alert`/`Item*`)
+- `src/views/chat/tool-widgets/BashWidget.test.tsx` (updated for real collapsible visibility + structural assertions)
 
-## Self-review findings
+Staged explicitly (not `git add -A`, to avoid sweeping up other in-flight
+parallel tasks' report/working files):
 
-- The command center is scoped to app-owned UI state only and does not touch backend commands, storage, model behavior, or Tauri IPC contracts.
-- `archiveById` reuses the existing archive behavior instead of duplicating a second archive path.
-- The shortcut dialog now renders from the canonical `combo` string, which removes the old drift between displayed combos and the shortcut registry.
-- No additional issues found in the final diff or focused verification pass.
+```
+git add src/views/chat/tool-widgets/BashWidget.tsx src/views/chat/tool-widgets/BashWidget.test.tsx
+```
+
+## Self-review
+
+- Testids preserved exactly: `bash-widget`, `bash-status`, `bash-command`,
+  `bash-stdout`, `bash-stderr`, `bash-output-truncated`. Text contracts
+  preserved exactly.
+- Did not touch `ViewFullOutput.tsx` (already migrated) or any other widget
+  file (`ReadWidget`, `TaskWidget`, `EditDiffWidget`, etc.) — grep confirms no
+  other files under `src/views/chat/tool-widgets/` or `src/views/workspace/`
+  were modified by this task.
+- `TranscriptTurn.test.tsx`'s pending-Bash-widget assertion
+  (`getByTestId("bash-widget")`) still passes because the pending branch keeps
+  `defaultOpen` (expanded), matching the brief's explicit callout.
+- The ui `Badge` component has no `data-slot` attribute (confirmed by reading
+  `src/components/ui/badge.tsx`), so the test asserts `Badge` text content
+  via `bash-status`'s `toHaveTextContent` rather than any slot selector, as
+  instructed.
+- No stray console errors/warnings observed in the vitest runs (checked
+  output tail; only pass/fail summaries and no act()-warning noise from the
+  new async/userEvent clicks).
+- Commit is scoped to exactly these two files; other modified files present
+  in the working tree (`.superpowers/sdd/task-{1,2,3,5,7}-report.md`) belong
+  to concurrently running sibling tasks and were left untouched/unstaged.
 
 ## Concerns
 
-- None.
+None. The rewrite is a literal, verified transcription of the brief's Step 3
+listing; all pre-existing behavioral fixtures still pass, plus the two
+suites the brief calls out (`BashWidget.test.tsx`,
+`TranscriptTurn.test.tsx`), plus a full-repo `vitest run` and `tsc -b` as an
+extra safety net.
