@@ -1,8 +1,7 @@
 import { Bot } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { ItemContent, ItemDescription, ItemMedia, ItemTitle } from "@/components/ui/item";
+import { Item, ItemContent, ItemDescription, ItemMedia, ItemTitle } from "@/components/ui/item";
 import { Spinner } from "@/components/ui/spinner";
-import { WidgetFrame, WidgetFrameHeader } from "@/components/ui/widget-frame";
 import type { TaskDetail } from "@/lib/ipc";
 
 interface TaskWidgetProps {
@@ -21,8 +20,12 @@ export default function TaskWidget({ detail }: TaskWidgetProps) {
   const interrupted = detail.interrupted === true;
   const running = !interrupted && detail.state === "running";
   return (
-    <WidgetFrame data-testid="task-widget">
-      <WidgetFrameHeader>
+    <div
+      data-slot="widget-frame"
+      className="overflow-hidden rounded-lg border border-border bg-card text-sm"
+      data-testid="task-widget"
+    >
+      <Item data-slot="widget-frame-header" size="xs" className="w-full">
         <ItemMedia variant="icon">
           <Bot />
         </ItemMedia>
@@ -42,7 +45,7 @@ export default function TaskWidget({ detail }: TaskWidgetProps) {
             {interrupted ? "Interrupted" : "Complete"}
           </Badge>
         )}
-      </WidgetFrameHeader>
-    </WidgetFrame>
+      </Item>
+    </div>
   );
 }

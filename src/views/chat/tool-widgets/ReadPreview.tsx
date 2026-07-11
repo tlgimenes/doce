@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import MarkdownPreview from "@/components/MarkdownPreview";
-import { CodeBlock } from "@/components/ui/code-block";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { Spinner } from "@/components/ui/spinner";
 import { commands } from "@/lib/ipc";
@@ -104,7 +103,16 @@ export default function ReadPreview({ detail }: ReadPreviewProps) {
   }
 
   if (kind === "text") {
-    return <CodeBlock data-testid="read-text-preview">{content}</CodeBlock>;
+    return (
+      <pre
+        data-slot="code-block"
+        data-tone="default"
+        data-testid="read-text-preview"
+        className="overflow-x-auto px-3 py-2 font-mono text-xs whitespace-pre-wrap wrap-break-word text-foreground"
+      >
+        {content}
+      </pre>
+    );
   }
 
   if (kind === "native" && detail.filePath) {

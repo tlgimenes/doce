@@ -1,9 +1,8 @@
-import { Search } from "lucide-react";
+import { ChevronRight, Search } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { CodeInline } from "@/components/ui/code-block";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Empty, EmptyDescription, EmptyHeader } from "@/components/ui/empty";
-import { ItemContent, ItemDescription, ItemMedia, ItemTitle } from "@/components/ui/item";
-import { WidgetFrame, WidgetFrameContent, WidgetFrameHeader } from "@/components/ui/widget-frame";
+import { Item, ItemContent, ItemDescription, ItemMedia, ItemTitle } from "@/components/ui/item";
 import type { GlobDetail, GrepDetail } from "@/lib/ipc";
 import { formatTokenCount } from "@/lib/formatTokenCount";
 
@@ -17,22 +16,29 @@ export default function SearchResultsWidget({ detail }: SearchResultsWidgetProps
 
   if (detail.interrupted) {
     return (
-      <WidgetFrame data-testid="search-widget">
-        <WidgetFrameHeader>
+      <div
+        data-slot="widget-frame"
+        className="overflow-hidden rounded-lg border border-border bg-card text-sm"
+        data-testid="search-widget"
+      >
+        <Item data-slot="widget-frame-header" size="xs" className="w-full">
           <ItemMedia variant="icon">
             <Search />
           </ItemMedia>
           <ItemContent>
             <ItemTitle>
-              {detail.toolName} <CodeInline>{detail.pattern}</CodeInline>
+              {detail.toolName}{" "}
+              <code data-slot="code-inline" className="font-mono text-xs">
+                {detail.pattern}
+              </code>
             </ItemTitle>
             <ItemDescription data-testid="search-interrupted">
               Interrupted — the app closed before this search finished
             </ItemDescription>
           </ItemContent>
           <Badge variant="outline">Interrupted</Badge>
-        </WidgetFrameHeader>
-      </WidgetFrame>
+        </Item>
+      </div>
     );
   }
 
@@ -40,14 +46,30 @@ export default function SearchResultsWidget({ detail }: SearchResultsWidgetProps
   const countLabel = isGrep ? `${count} ${count === 1 ? "match" : "matches"}` : `${count} files`;
 
   return (
-    <WidgetFrame collapsible data-testid="search-widget">
-      <WidgetFrameHeader>
+    <Collapsible
+      data-slot="widget-frame"
+      className="overflow-hidden rounded-lg border border-border bg-card text-sm"
+      data-testid="search-widget"
+    >
+      <CollapsibleTrigger
+        nativeButton={false}
+        render={
+          <Item
+            data-slot="widget-frame-header"
+            size="xs"
+            className="group/widget-frame w-full cursor-pointer rounded-none hover:bg-accent"
+          />
+        }
+      >
         <ItemMedia variant="icon">
           <Search />
         </ItemMedia>
         <ItemContent>
           <ItemTitle data-testid="search-summary" title={detail.pattern ?? undefined}>
-            {detail.toolName} <CodeInline>{detail.pattern}</CodeInline>
+            {detail.toolName}{" "}
+            <code data-slot="code-inline" className="font-mono text-xs">
+              {detail.pattern}
+            </code>
           </ItemTitle>
         </ItemContent>
         <span className="flex items-center gap-2">
@@ -56,14 +78,23 @@ export default function SearchResultsWidget({ detail }: SearchResultsWidgetProps
             <Badge variant="outline">{formatTokenCount(detail.tokenCount)} tok</Badge>
           )}
         </span>
-      </WidgetFrameHeader>
-      <WidgetFrameContent data-testid="search-results">
+        <ChevronRight
+          aria-hidden="true"
+          data-slot="widget-frame-chevron"
+          className="ml-auto size-4 shrink-0 text-muted-foreground transition-transform group-aria-expanded/widget-frame:rotate-90"
+        />
+      </CollapsibleTrigger>
+      <CollapsibleContent
+        data-slot="widget-frame-content"
+        className="border-t border-border"
+        data-testid="search-results"
+      >
         <div className="max-h-80 space-y-2 overflow-y-auto p-3">
           <SearchContext detail={detail} />
           {isGrep ? <GrepResults detail={detail} /> : <GlobResults detail={detail} />}
         </div>
-      </WidgetFrameContent>
-    </WidgetFrame>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 
@@ -77,7 +108,9 @@ function SearchContext({ detail }: { detail: GlobDetail | GrepDetail }) {
 
   return (
     <ItemDescription data-testid="search-context">
-      <CodeInline>{parts.join(" · ")}</CodeInline>
+      <code data-slot="code-inline" className="font-mono text-xs">
+        {parts.join(" · ")}
+      </code>
     </ItemDescription>
   );
 }
@@ -97,7 +130,9 @@ function GlobResults({ detail }: { detail: GlobDetail }) {
     <ul className="space-y-0.5">
       {detail.matches.map((path, i) => (
         <li key={i} data-testid="search-match" className="truncate">
-          <CodeInline>{path}</CodeInline>
+          <code data-slot="code-inline" className="font-mono text-xs">
+            {path}
+          </code>
         </li>
       ))}
     </ul>
@@ -119,9 +154,9 @@ function GrepResults({ detail }: { detail: GrepDetail }) {
     <ul className="space-y-0.5">
       {detail.matches.map((m, i) => (
         <li key={i} data-testid="search-match" className="truncate">
-          <CodeInline>
+          <code data-slot="code-inline" className="font-mono text-xs">
             {m.path}:{m.lineNumber}: {m.line}
-          </CodeInline>
+          </code>
         </li>
       ))}
     </ul>

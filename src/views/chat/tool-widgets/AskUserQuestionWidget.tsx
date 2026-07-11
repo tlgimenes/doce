@@ -1,7 +1,6 @@
 import { MessageCircleQuestion } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { ItemContent, ItemDescription, ItemMedia, ItemTitle } from "@/components/ui/item";
-import { WidgetFrame, WidgetFrameHeader } from "@/components/ui/widget-frame";
+import { Item, ItemContent, ItemDescription, ItemMedia, ItemTitle } from "@/components/ui/item";
 import type { AskUserQuestionDetail } from "@/lib/ipc";
 
 interface AskUserQuestionWidgetProps {
@@ -25,8 +24,12 @@ export default function AskUserQuestionWidget({ detail }: AskUserQuestionWidgetP
   const isFreeText = !answer.every((a) => detail.options.some((o) => o.label === a));
 
   return (
-    <WidgetFrame data-testid="question-answered">
-      <WidgetFrameHeader>
+    <div
+      data-slot="widget-frame"
+      className="overflow-hidden rounded-lg border border-border bg-card text-sm"
+      data-testid="question-answered"
+    >
+      <Item data-slot="widget-frame-header" size="xs" className="w-full">
         <ItemMedia variant="icon">
           <MessageCircleQuestion />
         </ItemMedia>
@@ -43,7 +46,7 @@ export default function AskUserQuestionWidget({ detail }: AskUserQuestionWidgetP
           )}
         </ItemContent>
         {detail.interrupted && <Badge variant="outline">Interrupted</Badge>}
-      </WidgetFrameHeader>
-    </WidgetFrame>
+      </Item>
+    </div>
   );
 }

@@ -1,10 +1,9 @@
-import { Terminal } from "lucide-react";
+import { ChevronRight, Terminal } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
-import { CodeBlock, CodeInline } from "@/components/ui/code-block";
-import { ItemContent, ItemDescription, ItemMedia, ItemTitle } from "@/components/ui/item";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Item, ItemContent, ItemDescription, ItemMedia, ItemTitle } from "@/components/ui/item";
 import { Spinner } from "@/components/ui/spinner";
-import { WidgetFrame, WidgetFrameContent, WidgetFrameHeader } from "@/components/ui/widget-frame";
 import type { BashDetail } from "@/lib/ipc";
 import { formatTokenCount } from "@/lib/formatTokenCount";
 import ViewFullOutput from "./ViewFullOutput";
@@ -30,8 +29,22 @@ export default function BashWidget({ detail }: BashWidgetProps) {
   // Pending branch: outcome absent means the command is still running
   if (!detail.outcome) {
     return (
-      <WidgetFrame collapsible defaultOpen data-testid="bash-widget">
-        <WidgetFrameHeader>
+      <Collapsible
+        data-slot="widget-frame"
+        defaultOpen
+        className="overflow-hidden rounded-lg border border-border bg-card text-sm"
+        data-testid="bash-widget"
+      >
+        <CollapsibleTrigger
+          nativeButton={false}
+          render={
+            <Item
+              data-slot="widget-frame-header"
+              size="xs"
+              className="group/widget-frame w-full cursor-pointer rounded-none hover:bg-accent"
+            />
+          }
+        >
           <ItemMedia variant="icon">
             <Terminal />
           </ItemMedia>
@@ -41,34 +54,52 @@ export default function BashWidget({ detail }: BashWidgetProps) {
               Running…
             </ItemTitle>
           </ItemContent>
-        </WidgetFrameHeader>
-        <WidgetFrameContent>
-          <CodeBlock data-testid="bash-command">$ {detail.command}</CodeBlock>
-        </WidgetFrameContent>
-      </WidgetFrame>
+          <ChevronRight
+            aria-hidden="true"
+            data-slot="widget-frame-chevron"
+            className="ml-auto size-4 shrink-0 text-muted-foreground transition-transform group-aria-expanded/widget-frame:rotate-90"
+          />
+        </CollapsibleTrigger>
+        <CollapsibleContent data-slot="widget-frame-content" className="border-t border-border">
+          <pre
+            data-slot="code-block"
+            data-tone="default"
+            data-testid="bash-command"
+            className="overflow-x-auto px-3 py-2 font-mono text-xs whitespace-pre-wrap wrap-break-word text-foreground"
+          >
+            $ {detail.command}
+          </pre>
+        </CollapsibleContent>
+      </Collapsible>
     );
   }
 
   if (!detail.outcome.ok) {
     return (
-      <WidgetFrame data-testid="bash-widget">
-        <WidgetFrameHeader>
+      <div
+        data-slot="widget-frame"
+        className="overflow-hidden rounded-lg border border-border bg-card text-sm"
+        data-testid="bash-widget"
+      >
+        <Item data-slot="widget-frame-header" size="xs" className="w-full">
           <ItemMedia variant="icon">
             <Terminal />
           </ItemMedia>
           <ItemContent>
             <ItemTitle data-testid="bash-command" title={`$ ${detail.command}`}>
-              <CodeInline>$ {detail.command}</CodeInline>
+              <code data-slot="code-inline" className="font-mono text-xs">
+                $ {detail.command}
+              </code>
             </ItemTitle>
             <ItemDescription data-testid="bash-status">Failed to run</ItemDescription>
           </ItemContent>
-        </WidgetFrameHeader>
+        </Item>
         <div className="p-3 pt-0">
           <Alert variant="destructive">
             <AlertDescription>{detail.outcome.error}</AlertDescription>
           </Alert>
         </div>
-      </WidgetFrame>
+      </div>
     );
   }
 
@@ -84,14 +115,29 @@ export default function BashWidget({ detail }: BashWidgetProps) {
   const stderrTrunc = truncatedLines(stderr);
 
   return (
-    <WidgetFrame collapsible data-testid="bash-widget">
-      <WidgetFrameHeader>
+    <Collapsible
+      data-slot="widget-frame"
+      className="overflow-hidden rounded-lg border border-border bg-card text-sm"
+      data-testid="bash-widget"
+    >
+      <CollapsibleTrigger
+        nativeButton={false}
+        render={
+          <Item
+            data-slot="widget-frame-header"
+            size="xs"
+            className="group/widget-frame w-full cursor-pointer rounded-none hover:bg-accent"
+          />
+        }
+      >
         <ItemMedia variant="icon">
           <Terminal />
         </ItemMedia>
         <ItemContent>
           <ItemTitle data-testid="bash-command" title={`$ ${detail.command}`}>
-            <CodeInline>$ {detail.command}</CodeInline>
+            <code data-slot="code-inline" className="font-mono text-xs">
+              $ {detail.command}
+            </code>
           </ItemTitle>
         </ItemContent>
         <span className="flex items-center gap-2" data-testid="bash-status">
@@ -103,13 +149,32 @@ export default function BashWidget({ detail }: BashWidgetProps) {
             {detail.tokenCount != null && ` · ${formatTokenCount(detail.tokenCount)} tok`}
           </Badge>
         </span>
-      </WidgetFrameHeader>
-      <WidgetFrameContent>
-        {stdout && <CodeBlock data-testid="bash-stdout">{stdoutTrunc.shown}</CodeBlock>}
+        <ChevronRight
+          aria-hidden="true"
+          data-slot="widget-frame-chevron"
+          className="ml-auto size-4 shrink-0 text-muted-foreground transition-transform group-aria-expanded/widget-frame:rotate-90"
+        />
+      </CollapsibleTrigger>
+      <CollapsibleContent data-slot="widget-frame-content" className="border-t border-border">
+        {stdout && (
+          <pre
+            data-slot="code-block"
+            data-tone="default"
+            data-testid="bash-stdout"
+            className="overflow-x-auto px-3 py-2 font-mono text-xs whitespace-pre-wrap wrap-break-word text-foreground"
+          >
+            {stdoutTrunc.shown}
+          </pre>
+        )}
         {stderr && (
-          <CodeBlock tone="destructive" data-testid="bash-stderr">
+          <pre
+            data-slot="code-block"
+            data-tone="destructive"
+            data-testid="bash-stderr"
+            className="overflow-x-auto px-3 py-2 font-mono text-xs whitespace-pre-wrap wrap-break-word text-destructive"
+          >
             {stderrTrunc.shown}
-          </CodeBlock>
+          </pre>
         )}
         {(stdoutTrunc.truncated || stderrTrunc.truncated) && (
           <ItemDescription className="px-3 py-1" data-testid="bash-output-truncated">
@@ -117,7 +182,7 @@ export default function BashWidget({ detail }: BashWidgetProps) {
           </ItemDescription>
         )}
         {payloadPath && <ViewFullOutput path={payloadPath} />}
-      </WidgetFrameContent>
-    </WidgetFrame>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }

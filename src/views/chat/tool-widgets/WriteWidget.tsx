@@ -1,8 +1,7 @@
 import { FilePlus } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
-import { ItemContent, ItemDescription, ItemMedia, ItemTitle } from "@/components/ui/item";
-import { WidgetFrame, WidgetFrameHeader } from "@/components/ui/widget-frame";
+import { Item, ItemContent, ItemDescription, ItemMedia, ItemTitle } from "@/components/ui/item";
 import type { WriteDetail } from "@/lib/ipc";
 
 interface WriteWidgetProps {
@@ -13,27 +12,35 @@ interface WriteWidgetProps {
 export default function WriteWidget({ detail }: WriteWidgetProps) {
   if (!detail.outcome.ok) {
     return (
-      <WidgetFrame data-testid="write-widget">
-        <WidgetFrameHeader>
+      <div
+        data-slot="widget-frame"
+        className="overflow-hidden rounded-lg border border-border bg-card text-sm"
+        data-testid="write-widget"
+      >
+        <Item data-slot="widget-frame-header" size="xs" className="w-full">
           <ItemMedia variant="icon">
             <FilePlus />
           </ItemMedia>
           <ItemContent>
             <ItemTitle>Write {detail.filePath}</ItemTitle>
           </ItemContent>
-        </WidgetFrameHeader>
+        </Item>
         <div className="p-3 pt-0">
           <Alert variant="destructive">
             <AlertDescription>{detail.outcome.error}</AlertDescription>
           </Alert>
         </div>
-      </WidgetFrame>
+      </div>
     );
   }
 
   return (
-    <WidgetFrame data-testid="write-widget">
-      <WidgetFrameHeader>
+    <div
+      data-slot="widget-frame"
+      className="overflow-hidden rounded-lg border border-border bg-card text-sm"
+      data-testid="write-widget"
+    >
+      <Item data-slot="widget-frame-header" size="xs" className="w-full">
         <ItemMedia variant="icon">
           <FilePlus />
         </ItemMedia>
@@ -44,7 +51,7 @@ export default function WriteWidget({ detail }: WriteWidgetProps) {
           </ItemDescription>
         </ItemContent>
         <Badge variant="secondary">Written</Badge>
-      </WidgetFrameHeader>
-    </WidgetFrame>
+      </Item>
+    </div>
   );
 }

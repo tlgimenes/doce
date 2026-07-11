@@ -1,8 +1,8 @@
-import { FileText } from "lucide-react";
+import { ChevronRight, FileText } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
-import { ItemContent, ItemMedia, ItemTitle } from "@/components/ui/item";
-import { WidgetFrame, WidgetFrameContent, WidgetFrameHeader } from "@/components/ui/widget-frame";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Item, ItemContent, ItemMedia, ItemTitle } from "@/components/ui/item";
 import type { ReadDetail } from "@/lib/ipc";
 import { formatByteCount } from "@/lib/formatByteCount";
 import { formatTokenCount } from "@/lib/formatTokenCount";
@@ -17,21 +17,25 @@ interface ReadWidgetProps {
 export default function ReadWidget({ detail }: ReadWidgetProps) {
   if (!detail.outcome.ok) {
     return (
-      <WidgetFrame data-testid="read-widget">
-        <WidgetFrameHeader>
+      <div
+        data-slot="widget-frame"
+        className="overflow-hidden rounded-lg border border-border bg-card text-sm"
+        data-testid="read-widget"
+      >
+        <Item data-slot="widget-frame-header" size="xs" className="w-full">
           <ItemMedia variant="icon">
             <FileText />
           </ItemMedia>
           <ItemContent>
             <ItemTitle>Read {detail.filePath}</ItemTitle>
           </ItemContent>
-        </WidgetFrameHeader>
+        </Item>
         <div className="p-3 pt-0">
           <Alert variant="destructive">
             <AlertDescription>{detail.outcome.error}</AlertDescription>
           </Alert>
         </div>
-      </WidgetFrame>
+      </div>
     );
   }
 
@@ -46,8 +50,21 @@ export default function ReadWidget({ detail }: ReadWidgetProps) {
   const payloadPath = detail.payloadRef ?? detail.offloadedTo;
 
   return (
-    <WidgetFrame collapsible data-testid="read-widget">
-      <WidgetFrameHeader>
+    <Collapsible
+      data-slot="widget-frame"
+      className="overflow-hidden rounded-lg border border-border bg-card text-sm"
+      data-testid="read-widget"
+    >
+      <CollapsibleTrigger
+        nativeButton={false}
+        render={
+          <Item
+            data-slot="widget-frame-header"
+            size="xs"
+            className="group/widget-frame w-full cursor-pointer rounded-none hover:bg-accent"
+          />
+        }
+      >
         <ItemMedia variant="icon">
           <FileText />
         </ItemMedia>
@@ -60,13 +77,22 @@ export default function ReadWidget({ detail }: ReadWidgetProps) {
           <Badge variant="outline">{byteCount}</Badge>
           {tokenCount != null && <Badge variant="outline">{tokenCount}</Badge>}
         </span>
-      </WidgetFrameHeader>
-      <WidgetFrameContent data-testid="read-preview">
+        <ChevronRight
+          aria-hidden="true"
+          data-slot="widget-frame-chevron"
+          className="ml-auto size-4 shrink-0 text-muted-foreground transition-transform group-aria-expanded/widget-frame:rotate-90"
+        />
+      </CollapsibleTrigger>
+      <CollapsibleContent
+        data-slot="widget-frame-content"
+        className="border-t border-border"
+        data-testid="read-preview"
+      >
         <div className="max-h-80 overflow-y-auto p-3">
           <ReadPreview detail={detail} />
           {payloadPath && <ViewFullOutput path={payloadPath} />}
         </div>
-      </WidgetFrameContent>
-    </WidgetFrame>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
