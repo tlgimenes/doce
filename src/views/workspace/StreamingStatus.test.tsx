@@ -29,6 +29,7 @@ describe("StreamingStatus", () => {
     expect(timer).toHaveTextContent("1.3s");
     expect(timer).toHaveAttribute("aria-live", "off");
     expect(timer).toHaveClass("tabular-nums");
+    expect(screen.getByText("Working")).toHaveClass("shimmer");
   });
 
   it("uses a fresh fallback startedAt on each mount when no timestamp is provided", async () => {

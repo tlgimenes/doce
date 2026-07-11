@@ -29,7 +29,7 @@ export default function StreamingStatus({ startedAt }: StreamingStatusProps) {
             <Spinner role="presentation" aria-label={undefined} />
           </MarkerIcon>
           <MarkerContent>
-            <span role="status" aria-atomic="true" aria-label="Working">
+            <span role="status" aria-atomic="true" aria-label="Working" className="shimmer">
               Working
             </span>
           </MarkerContent>
