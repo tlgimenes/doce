@@ -486,7 +486,13 @@ export default function RichInput({
 
   return (
     <div className="flex flex-col gap-1">
-      <InputGroup>
+      <InputGroup
+        className={cn(
+          "border-transparent bg-secondary shadow-none focus-within:shadow-sm",
+          "has-[[data-slot=input-group-control]:focus-visible]:border-transparent",
+          "has-[[data-slot=input-group-control]:focus-visible]:ring-0",
+        )}
+      >
         <div className="flex-1 w-full">
           <EditorContent
             editor={editor}

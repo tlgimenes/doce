@@ -523,31 +523,31 @@ export default function Workspace({
           </MessageScrollerViewport>
           <MessageScrollerButton data-testid="scroll-to-bottom" />
         </MessageScroller>
+        <PlanTracker conversationId={conversationId} />
+        {showGenericStreamingStatus && <StreamingStatus startedAt={activeTurnStartedAt} />}
+        <div
+          className={cn(
+            "p-4 [view-transition-name:chat-composer]",
+            showGenericStreamingStatus ? "" : "border-t border-border",
+          )}
+          data-testid="workspace-composer-shell"
+        >
+          {pendingQuestion ? (
+            <UserAskWidget detail={pendingQuestion} />
+          ) : (
+            <RichInput
+              onSubmit={(content, richContent) => {
+                send(content, richContent);
+              }}
+              skillsEnabled={true}
+              disabled={turnInFlight || pendingToolCall !== null}
+              placeholder="Describe a task…"
+              inputTestId="agent-input"
+              submitTestId="agent-send"
+            />
+          )}
+        </div>
       </MessageScrollerProvider>
-      <PlanTracker conversationId={conversationId} />
-      {showGenericStreamingStatus && <StreamingStatus startedAt={activeTurnStartedAt} />}
-      <div
-        className={cn(
-          "p-4 [view-transition-name:chat-composer]",
-          showGenericStreamingStatus ? "" : "border-t border-border",
-        )}
-        data-testid="workspace-composer-shell"
-      >
-        {pendingQuestion ? (
-          <UserAskWidget detail={pendingQuestion} />
-        ) : (
-          <RichInput
-            onSubmit={(content, richContent) => {
-              send(content, richContent);
-            }}
-            skillsEnabled={true}
-            disabled={turnInFlight || pendingToolCall !== null}
-            placeholder="Describe a task…"
-            inputTestId="agent-input"
-            submitTestId="agent-send"
-          />
-        )}
-      </div>
     </div>
   );
 }

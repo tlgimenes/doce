@@ -53,6 +53,39 @@ describe("RichInput (009-rich-chat-input, US1)", () => {
     expect(editable).toHaveAttribute("data-slot", "input-group-control");
   });
 
+  it("styles the group bubble-gray (matching the user bubble's secondary variant), with no stock focus ring", () => {
+    const { container } = render(
+      <RichInput
+        onSubmit={vi.fn()}
+        skillsEnabled={false}
+        disabled={false}
+        placeholder="p"
+        inputTestId="test-input"
+        submitTestId="test-submit"
+      />,
+    );
+
+    const group = container.querySelector('[data-slot="input-group"]');
+    expect(group).toBeInstanceOf(HTMLElement);
+    const className = group?.className ?? "";
+    expect(className).toContain("bg-secondary");
+    expect(className).toContain("focus-within:shadow-sm");
+    // tailwind-merge dedupes the stock has-[…focus-visible] border/ring
+    // group in favor of this override — the stock ring must not survive
+    // (it's the same has-[] modifier as our ring-0/border-transparent, so
+    // twMerge keeps only the later-declared value).
+    expect(className).not.toMatch(
+      /has-\[\[data-slot=input-group-control\]:focus-visible\]:ring-3(?:\s|$)/,
+    );
+    expect(className).not.toMatch(
+      /has-\[\[data-slot=input-group-control\]:focus-visible\]:border-ring(?:\s|$)/,
+    );
+    expect(className).toContain("has-[[data-slot=input-group-control]:focus-visible]:ring-0");
+    expect(className).toContain(
+      "has-[[data-slot=input-group-control]:focus-visible]:border-transparent",
+    );
+  });
+
   it("typing produces the expected doc text", async () => {
     render(
       <RichInput
