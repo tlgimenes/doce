@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
-import { Spinner } from "@/components/ui/spinner";
+import { Marker, MarkerContent } from "@/components/ui/marker";
 
 interface StreamingStatusProps {
   startedAt: number | null;
@@ -25,9 +24,6 @@ export default function StreamingStatus({ startedAt }: StreamingStatusProps) {
     <div className="px-4" data-testid="agent-thinking">
       <div className="mx-auto max-w-3xl py-2">
         <Marker>
-          <MarkerIcon data-testid="agent-thinking-spinner">
-            <Spinner role="presentation" aria-label={undefined} />
-          </MarkerIcon>
           <MarkerContent>
             <span role="status" aria-atomic="true" aria-label="Working" className="shimmer">
               Working

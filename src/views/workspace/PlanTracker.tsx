@@ -12,7 +12,6 @@ import {
   ItemTitle,
 } from "@/components/ui/item";
 import { Progress } from "@/components/ui/progress";
-import { Spinner } from "@/components/ui/spinner";
 import { commands, events, type PlanSnapshot } from "@/lib/ipc";
 
 /** Card caps (spec): completed steps collapse into one "✓ n done" line
@@ -124,15 +123,7 @@ export default function PlanTracker({ conversationId }: PlanTrackerProps) {
                 data-current={index === plan.currentStepIndex ? "true" : undefined}
                 data-testid="plan-step"
               >
-                <ItemMedia variant="icon">
-                  {step.done ? (
-                    <Check />
-                  ) : index === plan.currentStepIndex ? (
-                    <Spinner role="presentation" aria-label={undefined} />
-                  ) : (
-                    <Circle />
-                  )}
-                </ItemMedia>
+                <ItemMedia variant="icon">{step.done ? <Check /> : <Circle />}</ItemMedia>
                 <ItemContent>
                   <ItemTitle className="truncate" title={step.description}>
                     {step.description}
@@ -158,9 +149,7 @@ export default function PlanTracker({ conversationId }: PlanTrackerProps) {
             />
           }
         >
-          <ItemMedia variant="icon">
-            {allDone ? <Check /> : <Spinner role="presentation" aria-label={undefined} />}
-          </ItemMedia>
+          <ItemMedia variant="icon">{allDone ? <Check /> : <Circle />}</ItemMedia>
           <ItemContent>
             <ItemTitle className="truncate" title={currentStep?.description ?? plan.goal}>
               {currentStep?.description ?? plan.goal}

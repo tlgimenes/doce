@@ -181,7 +181,8 @@ describe("PlanTracker", () => {
     expect(trigger).toHaveTextContent("Implement");
     expect(trigger).toHaveTextContent("1/3");
     expect(trigger).toHaveAttribute("aria-expanded", "false");
-    expect(trigger.querySelector('[data-slot="spinner"]')).not.toBeNull();
+    // Spinner removed by user directive — no spinner anywhere in the panel.
+    expect(trigger.querySelector('[data-slot="spinner"]')).toBeNull();
   });
 
   it("falls back to the goal while planning (currentStepIndex null)", async () => {

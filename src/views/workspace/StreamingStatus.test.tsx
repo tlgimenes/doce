@@ -20,12 +20,9 @@ describe("StreamingStatus", () => {
     expect(status).toHaveTextContent("Working");
     expect(status).not.toContainElement(timer);
     expect(screen.getByTestId("agent-thinking")).toHaveTextContent("Working");
-    const spinner = screen.getByTestId("agent-thinking-spinner");
-    expect(spinner).toHaveAttribute("aria-hidden", "true");
-    const spinnerIcon = spinner.querySelector('[data-slot="spinner"]');
-    expect(spinnerIcon).not.toBeNull();
-    expect(spinnerIcon).toHaveAttribute("role", "presentation");
-    expect(spinnerIcon).not.toHaveAttribute("aria-label");
+    // The working signal is shimmer-only — no spinner icon at all.
+    expect(screen.queryByTestId("agent-thinking-spinner")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agent-thinking").querySelector('[data-slot="spinner"]')).toBeNull();
     expect(timer).toHaveTextContent("1.3s");
     expect(timer).toHaveAttribute("aria-live", "off");
     expect(timer).toHaveClass("tabular-nums");
