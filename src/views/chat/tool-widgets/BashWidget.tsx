@@ -1,15 +1,7 @@
 import { ChevronRight, Terminal } from "lucide-react";
-import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import {
-  Item,
-  ItemActions,
-  ItemContent,
-  ItemDescription,
-  ItemMedia,
-  ItemTitle,
-} from "@/components/ui/item";
+import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
 import { Spinner } from "@/components/ui/spinner";
 import type { BashDetail } from "@/lib/ipc";
 import { formatTokenCount } from "@/lib/formatTokenCount";
@@ -36,41 +28,29 @@ export default function BashWidget({ detail }: BashWidgetProps) {
   // Pending branch: outcome absent means the command is still running
   if (!detail.outcome) {
     return (
-      <Collapsible
-        data-slot="widget-frame"
-        defaultOpen
-        className="overflow-hidden rounded-lg border border-border bg-card text-sm"
-        data-testid="bash-widget"
-      >
+      <Collapsible data-testid="bash-widget" defaultOpen>
         <CollapsibleTrigger
           nativeButton={false}
-          render={
-            <Item
-              data-slot="widget-frame-header"
-              size="xs"
-              className="group/widget-frame w-full cursor-pointer rounded-none hover:bg-accent"
-            />
-          }
+          render={<Marker className="group/marker-row cursor-pointer" />}
         >
-          <ItemMedia variant="icon">
-            <Terminal />
-          </ItemMedia>
-          <ItemContent>
-            <ItemTitle data-testid="bash-status">
-              <Spinner role="presentation" aria-label={undefined} />
+          <MarkerIcon>
+            <Spinner role="presentation" aria-label={undefined} />
+          </MarkerIcon>
+          <MarkerContent className="flex min-w-0 flex-col">
+            <span data-testid="bash-status" className="shimmer truncate">
               Running…
-            </ItemTitle>
-          </ItemContent>
+            </span>
+            <span className="truncate text-xs" title={`$ ${detail.command}`}>
+              $ {detail.command}
+            </span>
+          </MarkerContent>
           <ChevronRight
             aria-hidden="true"
-            data-slot="widget-frame-chevron"
-            className="ml-auto size-4 shrink-0 text-muted-foreground transition-transform group-aria-expanded/widget-frame:rotate-90"
+            className="ml-auto size-4 shrink-0 transition-transform group-aria-expanded/marker-row:rotate-90"
           />
         </CollapsibleTrigger>
-        <CollapsibleContent data-slot="widget-frame-content" className="border-t border-border">
+        <CollapsibleContent className="pl-6">
           <pre
-            data-slot="code-block"
-            data-tone="default"
             data-testid="bash-command"
             className="overflow-x-auto px-3 py-2 font-mono text-xs whitespace-pre-wrap wrap-break-word text-foreground"
           >
@@ -83,30 +63,25 @@ export default function BashWidget({ detail }: BashWidgetProps) {
 
   if (!detail.outcome.ok) {
     return (
-      <div
-        data-slot="widget-frame"
-        className="overflow-hidden rounded-lg border border-border bg-card text-sm"
-        data-testid="bash-widget"
-      >
-        <Item data-slot="widget-frame-header" size="xs" className="w-full">
-          <ItemMedia variant="icon">
-            <Terminal />
-          </ItemMedia>
-          <ItemContent>
-            <ItemTitle data-testid="bash-command" title={`$ ${detail.command}`}>
-              <code data-slot="code-inline" className="font-mono text-xs">
-                $ {detail.command}
-              </code>
-            </ItemTitle>
-            <ItemDescription data-testid="bash-status">Failed to run</ItemDescription>
-          </ItemContent>
-        </Item>
-        <div className="p-3 pt-0">
-          <Alert variant="destructive">
-            <AlertDescription>{detail.outcome.error}</AlertDescription>
-          </Alert>
-        </div>
-      </div>
+      <Marker data-testid="bash-widget">
+        <MarkerIcon>
+          <Terminal />
+        </MarkerIcon>
+        <MarkerContent className="flex min-w-0 flex-col">
+          <span data-testid="bash-command" className="truncate" title={`$ ${detail.command}`}>
+            <code data-slot="code-inline" className="font-mono text-xs">
+              $ {detail.command}
+            </code>
+          </span>
+          <span data-testid="bash-status" className="text-xs">
+            Failed to run
+          </span>
+          <span className="text-xs">{detail.outcome.error}</span>
+        </MarkerContent>
+        <Badge variant="destructive" className="ml-auto shrink-0">
+          Failed
+        </Badge>
+      </Marker>
     );
   }
 
@@ -123,86 +98,71 @@ export default function BashWidget({ detail }: BashWidgetProps) {
   const isEmpty =
     !stdout && !stderr && !payloadPath && !stdoutTrunc.truncated && !stderrTrunc.truncated;
 
+  const statusBadges = (
+    <>
+      <Badge variant={succeeded ? "secondary" : "destructive"}>
+        {succeeded ? "Success" : `Failed (exit ${exitCode})`}
+      </Badge>
+      <Badge variant="outline">
+        exit {exitCode}
+        {detail.tokenCount != null && ` · ${formatTokenCount(detail.tokenCount)} tok`}
+      </Badge>
+    </>
+  );
+
   // Nothing to expand into: render the header-only, non-collapsible frame
   // rather than a Collapsible whose panel would just be empty.
   if (isEmpty) {
     return (
-      <div
-        data-slot="widget-frame"
-        className="overflow-hidden rounded-lg border border-border bg-card text-sm"
-        data-testid="bash-widget"
-      >
-        <Item data-slot="widget-frame-header" size="xs" className="w-full">
-          <ItemMedia variant="icon">
-            <Terminal />
-          </ItemMedia>
-          <ItemContent>
-            <ItemTitle data-testid="bash-command" title={`$ ${detail.command}`}>
-              <code data-slot="code-inline" className="font-mono text-xs">
-                $ {detail.command}
-              </code>
-            </ItemTitle>
-          </ItemContent>
-          <ItemActions data-testid="bash-status">
-            <Badge variant={succeeded ? "secondary" : "destructive"}>
-              {succeeded ? "Success" : `Failed (exit ${exitCode})`}
-            </Badge>
-            <Badge variant="outline">
-              exit {exitCode}
-              {detail.tokenCount != null && ` · ${formatTokenCount(detail.tokenCount)} tok`}
-            </Badge>
-          </ItemActions>
-        </Item>
-      </div>
+      <Marker data-testid="bash-widget">
+        <MarkerIcon>
+          <Terminal />
+        </MarkerIcon>
+        <MarkerContent
+          data-testid="bash-command"
+          className="min-w-0 truncate"
+          title={`$ ${detail.command}`}
+        >
+          <code data-slot="code-inline" className="font-mono text-xs">
+            $ {detail.command}
+          </code>
+        </MarkerContent>
+        <span data-testid="bash-status" className="ml-auto flex shrink-0 items-center gap-2">
+          {statusBadges}
+        </span>
+      </Marker>
     );
   }
 
   return (
-    <Collapsible
-      data-slot="widget-frame"
-      className="overflow-hidden rounded-lg border border-border bg-card text-sm"
-      data-testid="bash-widget"
-    >
+    <Collapsible data-testid="bash-widget">
       <CollapsibleTrigger
         nativeButton={false}
-        render={
-          <Item
-            data-slot="widget-frame-header"
-            size="xs"
-            className="group/widget-frame w-full cursor-pointer rounded-none hover:bg-accent"
-          />
-        }
+        render={<Marker className="group/marker-row cursor-pointer" />}
       >
-        <ItemMedia variant="icon">
+        <MarkerIcon>
           <Terminal />
-        </ItemMedia>
-        <ItemContent>
-          <ItemTitle data-testid="bash-command" title={`$ ${detail.command}`}>
-            <code data-slot="code-inline" className="font-mono text-xs">
-              $ {detail.command}
-            </code>
-          </ItemTitle>
-        </ItemContent>
-        <ItemActions data-testid="bash-status">
-          <Badge variant={succeeded ? "secondary" : "destructive"}>
-            {succeeded ? "Success" : `Failed (exit ${exitCode})`}
-          </Badge>
-          <Badge variant="outline">
-            exit {exitCode}
-            {detail.tokenCount != null && ` · ${formatTokenCount(detail.tokenCount)} tok`}
-          </Badge>
-        </ItemActions>
-        <ChevronRight
-          aria-hidden="true"
-          data-slot="widget-frame-chevron"
-          className="ml-auto size-4 shrink-0 text-muted-foreground transition-transform group-aria-expanded/widget-frame:rotate-90"
-        />
+        </MarkerIcon>
+        <MarkerContent
+          data-testid="bash-command"
+          className="min-w-0 truncate"
+          title={`$ ${detail.command}`}
+        >
+          <code data-slot="code-inline" className="font-mono text-xs">
+            $ {detail.command}
+          </code>
+        </MarkerContent>
+        <span data-testid="bash-status" className="ml-auto flex shrink-0 items-center gap-2">
+          {statusBadges}
+          <ChevronRight
+            aria-hidden="true"
+            className="size-4 shrink-0 transition-transform group-aria-expanded/marker-row:rotate-90"
+          />
+        </span>
       </CollapsibleTrigger>
-      <CollapsibleContent data-slot="widget-frame-content" className="border-t border-border">
+      <CollapsibleContent className="pl-6">
         {stdout && (
           <pre
-            data-slot="code-block"
-            data-tone="default"
             data-testid="bash-stdout"
             className="overflow-x-auto px-3 py-2 font-mono text-xs whitespace-pre-wrap wrap-break-word text-foreground"
           >
@@ -211,8 +171,6 @@ export default function BashWidget({ detail }: BashWidgetProps) {
         )}
         {stderr && (
           <pre
-            data-slot="code-block"
-            data-tone="destructive"
             data-testid="bash-stderr"
             className="overflow-x-auto px-3 py-2 font-mono text-xs whitespace-pre-wrap wrap-break-word text-destructive"
           >
@@ -220,9 +178,12 @@ export default function BashWidget({ detail }: BashWidgetProps) {
           </pre>
         )}
         {(stdoutTrunc.truncated || stderrTrunc.truncated) && (
-          <ItemDescription className="px-3 py-1" data-testid="bash-output-truncated">
+          <p
+            className="px-3 py-1 text-xs text-muted-foreground"
+            data-testid="bash-output-truncated"
+          >
             Output truncated
-          </ItemDescription>
+          </p>
         )}
         {payloadPath && <ViewFullOutput path={payloadPath} />}
       </CollapsibleContent>

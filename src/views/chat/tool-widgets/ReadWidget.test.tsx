@@ -21,9 +21,7 @@ describe("ReadWidget (004-tool-call-widgets, US4)", () => {
     expect(screen.getByTestId("read-summary")).toHaveTextContent("Read /tmp/notes.txt");
     expect(screen.getByText("11B")).toBeInTheDocument();
     expect(screen.getByText("312 tok")).toBeInTheDocument();
-    expect(
-      screen.getByTestId("read-widget").querySelector('[data-slot="widget-frame-chevron"]'),
-    ).toBeInTheDocument();
+    expect(screen.getByTestId("read-widget").querySelectorAll("svg")).toHaveLength(2);
     expect(screen.queryByTestId("read-preview")).not.toBeInTheDocument();
   });
 
@@ -156,7 +154,7 @@ describe("ReadWidget (004-tool-call-widgets, US4)", () => {
 
     render(<ReadWidget detail={detail} />);
 
-    expect(screen.getByRole("alert")).toHaveTextContent(/No such file or directory/);
+    expect(screen.getByTestId("read-widget")).toHaveTextContent(/No such file or directory/);
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
     expect(screen.queryByTestId("read-summary")).not.toBeInTheDocument();
   });

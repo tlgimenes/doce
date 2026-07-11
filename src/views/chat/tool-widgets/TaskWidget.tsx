@@ -1,6 +1,6 @@
 import { Bot } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { Item, ItemContent, ItemDescription, ItemMedia, ItemTitle } from "@/components/ui/item";
+import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
 import { Spinner } from "@/components/ui/spinner";
 import type { TaskDetail } from "@/lib/ipc";
 
@@ -20,32 +20,28 @@ export default function TaskWidget({ detail }: TaskWidgetProps) {
   const interrupted = detail.interrupted === true;
   const running = !interrupted && detail.state === "running";
   return (
-    <div
-      data-slot="widget-frame"
-      className="overflow-hidden rounded-lg border border-border bg-card text-sm"
-      data-testid="task-widget"
-    >
-      <Item data-slot="widget-frame-header" size="xs" className="w-full">
-        <ItemMedia variant="icon">
-          <Bot />
-        </ItemMedia>
-        <ItemContent>
-          <ItemTitle data-testid="task-status">
-            {running && <Spinner role="presentation" aria-label={undefined} />}
-            {interrupted
-              ? "Interrupted — the app closed before this finished"
-              : running
-                ? "Running…"
-                : "Complete"}
-          </ItemTitle>
-          <ItemDescription title={detail.prompt}>{detail.prompt}</ItemDescription>
-        </ItemContent>
-        {!running && (
-          <Badge variant={interrupted ? "outline" : "secondary"}>
-            {interrupted ? "Interrupted" : "Complete"}
-          </Badge>
-        )}
-      </Item>
-    </div>
+    <Marker data-testid="task-widget">
+      <MarkerIcon>
+        <Bot />
+      </MarkerIcon>
+      <MarkerContent className="flex min-w-0 flex-col">
+        <span data-testid="task-status" className="truncate">
+          {running && <Spinner role="presentation" aria-label={undefined} />}
+          {interrupted
+            ? "Interrupted — the app closed before this finished"
+            : running
+              ? "Running…"
+              : "Complete"}
+        </span>
+        <span className="text-xs" title={detail.prompt}>
+          {detail.prompt}
+        </span>
+      </MarkerContent>
+      {!running && (
+        <Badge variant={interrupted ? "outline" : "secondary"} className="ml-auto shrink-0">
+          {interrupted ? "Interrupted" : "Complete"}
+        </Badge>
+      )}
+    </Marker>
   );
 }

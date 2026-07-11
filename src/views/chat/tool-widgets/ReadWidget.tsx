@@ -1,8 +1,7 @@
 import { ChevronRight, FileText } from "lucide-react";
-import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Item, ItemActions, ItemContent, ItemMedia, ItemTitle } from "@/components/ui/item";
+import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
 import type { ReadDetail } from "@/lib/ipc";
 import { formatByteCount } from "@/lib/formatByteCount";
 import { formatTokenCount } from "@/lib/formatTokenCount";
@@ -17,25 +16,18 @@ interface ReadWidgetProps {
 export default function ReadWidget({ detail }: ReadWidgetProps) {
   if (!detail.outcome.ok) {
     return (
-      <div
-        data-slot="widget-frame"
-        className="overflow-hidden rounded-lg border border-border bg-card text-sm"
-        data-testid="read-widget"
-      >
-        <Item data-slot="widget-frame-header" size="xs" className="w-full">
-          <ItemMedia variant="icon">
-            <FileText />
-          </ItemMedia>
-          <ItemContent>
-            <ItemTitle>Read {detail.filePath}</ItemTitle>
-          </ItemContent>
-        </Item>
-        <div className="p-3 pt-0">
-          <Alert variant="destructive">
-            <AlertDescription>{detail.outcome.error}</AlertDescription>
-          </Alert>
-        </div>
-      </div>
+      <Marker data-testid="read-widget">
+        <MarkerIcon>
+          <FileText />
+        </MarkerIcon>
+        <MarkerContent className="flex min-w-0 flex-col">
+          <span className="truncate">Read {detail.filePath}</span>
+          <span className="text-xs">{detail.outcome.error}</span>
+        </MarkerContent>
+        <Badge variant="destructive" className="ml-auto shrink-0">
+          Failed
+        </Badge>
+      </Marker>
     );
   }
 
@@ -50,44 +42,31 @@ export default function ReadWidget({ detail }: ReadWidgetProps) {
   const payloadPath = detail.payloadRef ?? detail.offloadedTo;
 
   return (
-    <Collapsible
-      data-slot="widget-frame"
-      className="overflow-hidden rounded-lg border border-border bg-card text-sm"
-      data-testid="read-widget"
-    >
+    <Collapsible data-testid="read-widget">
       <CollapsibleTrigger
         nativeButton={false}
-        render={
-          <Item
-            data-slot="widget-frame-header"
-            size="xs"
-            className="group/widget-frame w-full cursor-pointer rounded-none hover:bg-accent"
-          />
-        }
+        render={<Marker className="group/marker-row cursor-pointer" />}
       >
-        <ItemMedia variant="icon">
+        <MarkerIcon>
           <FileText />
-        </ItemMedia>
-        <ItemContent>
-          <ItemTitle data-testid="read-summary" title={detail.filePath ?? undefined}>
-            Read {detail.filePath}
-          </ItemTitle>
-        </ItemContent>
-        <ItemActions>
+        </MarkerIcon>
+        <MarkerContent
+          data-testid="read-summary"
+          className="min-w-0 truncate"
+          title={detail.filePath ?? undefined}
+        >
+          Read {detail.filePath}
+        </MarkerContent>
+        <span className="ml-auto flex shrink-0 items-center gap-2">
           <Badge variant="outline">{byteCount}</Badge>
           {tokenCount != null && <Badge variant="outline">{tokenCount}</Badge>}
-        </ItemActions>
-        <ChevronRight
-          aria-hidden="true"
-          data-slot="widget-frame-chevron"
-          className="ml-auto size-4 shrink-0 text-muted-foreground transition-transform group-aria-expanded/widget-frame:rotate-90"
-        />
+          <ChevronRight
+            aria-hidden="true"
+            className="size-4 shrink-0 transition-transform group-aria-expanded/marker-row:rotate-90"
+          />
+        </span>
       </CollapsibleTrigger>
-      <CollapsibleContent
-        data-slot="widget-frame-content"
-        className="border-t border-border"
-        data-testid="read-preview"
-      >
+      <CollapsibleContent className="pl-6" data-testid="read-preview">
         <div className="max-h-80 overflow-y-auto p-3">
           <ReadPreview detail={detail} />
           {payloadPath && <ViewFullOutput path={payloadPath} />}

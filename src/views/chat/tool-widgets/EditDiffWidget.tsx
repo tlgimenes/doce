@@ -1,9 +1,8 @@
 import { diffLines } from "diff";
 import { ChevronRight, FilePen } from "lucide-react";
-import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Item, ItemActions, ItemContent, ItemMedia, ItemTitle } from "@/components/ui/item";
+import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
 import type { EditDetail } from "@/lib/ipc";
 
 interface EditDiffWidgetProps {
@@ -26,27 +25,20 @@ const lineClass: Record<DiffLineVariant, string> = {
 export default function EditDiffWidget({ detail }: EditDiffWidgetProps) {
   if (!detail.outcome.ok) {
     return (
-      <div
-        data-slot="widget-frame"
-        className="overflow-hidden rounded-lg border border-border bg-card text-sm"
-        data-testid="edit-failed"
-      >
-        <Item data-slot="widget-frame-header" size="xs" className="w-full">
-          <ItemMedia variant="icon">
-            <FilePen />
-          </ItemMedia>
-          <ItemContent>
-            <ItemTitle title={detail.filePath ?? undefined}>
-              {detail.filePath ?? "(no file path)"}
-            </ItemTitle>
-          </ItemContent>
-        </Item>
-        <div className="p-3 pt-0">
-          <Alert variant="destructive">
-            <AlertDescription>{detail.outcome.error}</AlertDescription>
-          </Alert>
-        </div>
-      </div>
+      <Marker data-testid="edit-failed">
+        <MarkerIcon>
+          <FilePen />
+        </MarkerIcon>
+        <MarkerContent className="flex min-w-0 flex-col">
+          <span className="truncate" title={detail.filePath ?? undefined}>
+            {detail.filePath ?? "(no file path)"}
+          </span>
+          <span className="text-xs">{detail.outcome.error}</span>
+        </MarkerContent>
+        <Badge variant="destructive" className="ml-auto shrink-0">
+          Failed
+        </Badge>
+      </Marker>
     );
   }
 
@@ -56,44 +48,28 @@ export default function EditDiffWidget({ detail }: EditDiffWidgetProps) {
   const removedCount = changes.filter((c) => c.removed).reduce((n, c) => n + lineCount(c.value), 0);
 
   return (
-    <Collapsible
-      data-slot="widget-frame"
-      defaultOpen
-      className="overflow-hidden rounded-lg border border-border bg-card text-sm"
-      data-testid="edit-diff"
-    >
+    <Collapsible data-testid="edit-diff" defaultOpen>
       <CollapsibleTrigger
         nativeButton={false}
-        render={
-          <Item
-            data-slot="widget-frame-header"
-            size="xs"
-            className="group/widget-frame w-full cursor-pointer rounded-none hover:bg-accent"
-          />
-        }
+        render={<Marker className="group/marker-row cursor-pointer" />}
       >
-        <ItemMedia variant="icon">
+        <MarkerIcon>
           <FilePen />
-        </ItemMedia>
-        <ItemContent>
-          <ItemTitle title={detail.filePath ?? undefined}>{detail.filePath}</ItemTitle>
-        </ItemContent>
-        <ItemActions>
+        </MarkerIcon>
+        <MarkerContent className="min-w-0 truncate" title={detail.filePath ?? undefined}>
+          {detail.filePath}
+        </MarkerContent>
+        <span className="ml-auto flex shrink-0 items-center gap-2">
           <Badge variant="outline">+{addedCount}</Badge>
           <Badge variant="outline">−{removedCount}</Badge>
-        </ItemActions>
-        <ChevronRight
-          aria-hidden="true"
-          data-slot="widget-frame-chevron"
-          className="ml-auto size-4 shrink-0 text-muted-foreground transition-transform group-aria-expanded/widget-frame:rotate-90"
-        />
+          <ChevronRight
+            aria-hidden="true"
+            className="size-4 shrink-0 transition-transform group-aria-expanded/marker-row:rotate-90"
+          />
+        </span>
       </CollapsibleTrigger>
-      <CollapsibleContent data-slot="widget-frame-content" className="border-t border-border">
-        <div
-          data-slot="code-block"
-          data-tone="default"
-          className="overflow-x-auto p-0 font-mono text-xs whitespace-pre text-foreground"
-        >
+      <CollapsibleContent className="pl-6">
+        <div className="overflow-x-auto p-0 font-mono text-xs whitespace-pre text-foreground">
           {changes.map((change, i) => {
             const lines = change.value.replace(/\n$/, "").split("\n");
             const testId = change.added
@@ -112,7 +88,6 @@ export default function EditDiffWidget({ detail }: EditDiffWidgetProps) {
                 {lines.map((line, j) => (
                   <div
                     key={j}
-                    data-slot="code-block-line"
                     data-variant={variant}
                     className={`px-3 py-0.5 whitespace-pre ${lineClass[variant]}`}
                   >

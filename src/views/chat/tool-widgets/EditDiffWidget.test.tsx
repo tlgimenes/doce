@@ -21,14 +21,8 @@ describe("EditDiffWidget (004-tool-call-widgets, US1)", () => {
     const added = screen.getByTestId("diff-added");
     expect(removed).toHaveTextContent("old line");
     expect(added).toHaveTextContent("new line");
-    expect(removed.querySelector('[data-slot="code-block-line"]')).toHaveAttribute(
-      "data-variant",
-      "removed",
-    );
-    expect(added.querySelector('[data-slot="code-block-line"]')).toHaveAttribute(
-      "data-variant",
-      "added",
-    );
+    expect(removed.querySelector('[data-variant="removed"]')).not.toBeNull();
+    expect(added.querySelector('[data-variant="added"]')).not.toBeNull();
   });
 
   it("shows the file path and +N/−N change-count badges in the header (FR-002)", () => {

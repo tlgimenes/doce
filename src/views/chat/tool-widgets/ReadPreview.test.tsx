@@ -41,7 +41,7 @@ describe("ReadPreview", () => {
 
     const preview = screen.getByTestId("read-text-preview");
     expect(preview).toHaveTextContent("captured text");
-    expect(preview).toHaveAttribute("data-slot", "code-block");
+    expect(preview.tagName).toBe("PRE");
     expect(commands.readAttachedFile).not.toHaveBeenCalled();
   });
 

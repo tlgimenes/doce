@@ -47,7 +47,7 @@ describe("Tool call widgets (004-tool-call-widgets)", () => {
     // Completed Bash widgets are collapsed by default with the body
     // unmounted (Base UI) -- click the header trigger to expand before
     // reading stdout.
-    const bashHeader = await bash.$("[data-slot='widget-frame-header']");
+    const bashHeader = await browser.$("[data-testid='bash-widget'] [role='button']");
     await bashHeader.click();
     const stdout = await browser.$("[data-testid='bash-stdout']");
     await stdout.waitForExist({ timeout: 10000 });

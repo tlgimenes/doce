@@ -51,8 +51,11 @@ describe("BashWidget (004-tool-call-widgets, US2)", () => {
       outcome: { ok: false, error: "blocked: catastrophic command" },
     };
     render(<BashWidget detail={detail} />);
-    expect(screen.getByTestId("bash-status")).toBeInTheDocument();
-    expect(screen.getByRole("alert")).toHaveTextContent(/catastrophic command/);
+    expect(screen.getByTestId("bash-status")).toHaveTextContent("Failed to run");
+    expect(screen.getByTestId("bash-widget")).toHaveTextContent(/catastrophic command/);
+    expect(
+      screen.getByTestId("bash-widget").querySelector('[data-slot="badge"]'),
+    ).toHaveTextContent("Failed");
   });
 
   it("truncates or collapses very long output rather than rendering it in full inline (FR-004)", async () => {
@@ -164,7 +167,7 @@ describe("BashWidget (004-tool-call-widgets, US2)", () => {
     };
     render(<BashWidget detail={detail} />);
     expect(screen.getByTestId("bash-status")).toHaveTextContent(/running/i);
-    expect(screen.getByTestId("bash-status").querySelector('[data-slot="spinner"]')).not.toBeNull();
+    expect(screen.getByTestId("bash-widget").querySelector('[data-slot="spinner"]')).not.toBeNull();
     // Pending/running Bash stays expanded (defaultOpen) — command visible
     // without clicking, even though the header is still a collapsible trigger.
     expect(screen.getByTestId("bash-command")).toHaveTextContent(
@@ -185,7 +188,7 @@ describe("BashWidget (004-tool-call-widgets, US2)", () => {
     const { container } = render(<BashWidget detail={detail} />);
 
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
-    expect(container.querySelector('[data-slot="widget-frame-content"]')).toBeNull();
+    expect(container.querySelector('[data-slot="collapsible"]')).toBeNull();
     expect(screen.getByTestId("bash-command")).toHaveTextContent("touch file.txt");
     expect(screen.getByTestId("bash-status")).toHaveTextContent("Success");
   });

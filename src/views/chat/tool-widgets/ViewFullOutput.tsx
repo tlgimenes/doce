@@ -38,8 +38,6 @@ export default function ViewFullOutput({ path }: ViewFullOutputProps) {
   if (fullText != null) {
     return (
       <pre
-        data-slot="code-block"
-        data-tone="default"
         data-testid="view-full-output-content"
         className="overflow-x-auto px-3 py-2 font-mono text-xs whitespace-pre-wrap wrap-break-word text-foreground"
       >

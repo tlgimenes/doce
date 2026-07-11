@@ -1,6 +1,6 @@
 import { ChevronRight, Wrench } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Item, ItemContent, ItemMedia, ItemTitle } from "@/components/ui/item";
+import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
 import type { ToolResultDetail, UnknownToolDetail } from "@/lib/ipc";
 
 interface UnknownToolWidgetProps {
@@ -15,39 +15,22 @@ interface UnknownToolWidgetProps {
  */
 export default function UnknownToolWidget({ detail }: UnknownToolWidgetProps) {
   return (
-    <Collapsible
-      data-slot="widget-frame"
-      className="overflow-hidden rounded-lg border border-border bg-card text-sm"
-      data-testid="unknown-tool-widget"
-    >
+    <Collapsible data-testid="unknown-tool-widget">
       <CollapsibleTrigger
         nativeButton={false}
-        render={
-          <Item
-            data-slot="widget-frame-header"
-            size="xs"
-            className="group/widget-frame w-full cursor-pointer rounded-none hover:bg-accent"
-          />
-        }
+        render={<Marker className="group/marker-row cursor-pointer" />}
       >
-        <ItemMedia variant="icon">
+        <MarkerIcon>
           <Wrench />
-        </ItemMedia>
-        <ItemContent>
-          <ItemTitle>{detail.toolName}</ItemTitle>
-        </ItemContent>
+        </MarkerIcon>
+        <MarkerContent className="min-w-0 truncate">{detail.toolName}</MarkerContent>
         <ChevronRight
           aria-hidden="true"
-          data-slot="widget-frame-chevron"
-          className="ml-auto size-4 shrink-0 text-muted-foreground transition-transform group-aria-expanded/widget-frame:rotate-90"
+          className="ml-auto size-4 shrink-0 transition-transform group-aria-expanded/marker-row:rotate-90"
         />
       </CollapsibleTrigger>
-      <CollapsibleContent data-slot="widget-frame-content" className="border-t border-border">
-        <pre
-          data-slot="code-block"
-          data-tone="default"
-          className="overflow-x-auto px-3 py-2 font-mono text-xs whitespace-pre-wrap wrap-break-word text-foreground"
-        >
+      <CollapsibleContent className="pl-6">
+        <pre className="overflow-x-auto px-3 py-2 font-mono text-xs whitespace-pre-wrap wrap-break-word text-foreground">
           {JSON.stringify(detail, null, 2)}
         </pre>
       </CollapsibleContent>

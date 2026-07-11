@@ -31,7 +31,7 @@ describe("AskUserQuestionWidget", () => {
     render(<AskUserQuestionWidget detail={answered} />);
 
     const widget = screen.getByTestId("question-answered");
-    expect(widget).toHaveAttribute("data-slot", "widget-frame");
+    expect(widget).toHaveAttribute("data-slot", "marker");
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
     expect(screen.getByText("Which way should I go?")).toBeVisible();
     expect(screen.getByText(/You chose: Option A/)).toBeVisible();

@@ -38,7 +38,7 @@ describe("ViewFullOutput (010-context-window-management/US3)", () => {
       expect(commands.readAttachedFile).toHaveBeenCalledWith("/data/tool-outputs/conv1/call1.txt"),
     );
     const content = await screen.findByTestId("view-full-output-content");
-    expect(content).toHaveAttribute("data-slot", "code-block");
+    expect(content.tagName).toBe("PRE");
     expect(content).toHaveTextContent("hello world");
   });
 

@@ -29,7 +29,7 @@ describe("WriteWidget (004-tool-call-widgets, US4)", () => {
 
     render(<WriteWidget detail={detail} />);
 
-    expect(screen.getByTestId("write-widget")).toHaveAttribute("data-slot", "widget-frame");
+    expect(screen.getByTestId("write-widget")).toHaveAttribute("data-slot", "marker");
     // Header-only: nothing to expand, so there's no button affordance.
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
     expect(screen.getByTestId("write-header")).toHaveTextContent("/tmp/new-file.txt");
@@ -45,7 +45,7 @@ describe("WriteWidget (004-tool-call-widgets, US4)", () => {
       outcome: { ok: false, error: "permission denied" },
     };
     render(<WriteWidget detail={detail} />);
-    expect(screen.getByRole("alert")).toHaveTextContent(/permission denied/);
+    expect(screen.getByTestId("write-widget")).toHaveTextContent(/permission denied/);
   });
 
   it("is visually distinguishable from ReadWidget for the same file path (FR-006)", () => {
