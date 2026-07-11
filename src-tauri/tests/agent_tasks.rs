@@ -19,7 +19,10 @@
 //! this suite exists to test what actually ships, not a parallel
 //! implementation that could quietly drift from it.
 //!
-//! Five tiers of increasing difficulty, all hard-asserted:
+//! Tiers 0-5 of increasing difficulty, all hard-asserted:
+//!   0:   conversational baselines -- a plain greeting answered directly
+//!        with zero tool calls, and a two-turn exchange that must recall
+//!        the user's name from the first turn.
 //!   1-2: baseline sanity, single/few tool calls -- a failure here means
 //!        something is fundamentally broken.
 //!   3:   multi-step refactor, graded by whether `cargo build` succeeds on
@@ -57,6 +60,10 @@ struct TaskRun {
     result: Result<String, AgentError>,
     turns_taken: u32,
     elapsed: Duration,
+    /// Every tool call this run made (name + arg/result previews), copied
+    /// from the backend's trace -- empty when the model answered directly
+    /// without a single tool call, which tier 0 asserts on.
+    trace: Vec<String>,
 }
 
 fn report(name: &str, run: &TaskRun) {
@@ -278,21 +285,24 @@ impl AgentBackend for FlatBackend<'_> {
     }
 }
 
-/// Runs `task` through the real agent harness rooted at `cwd`, capturing
-/// turns taken and wall-clock time alongside the loop's own `Result`.
-async fn run_flat_task(
+/// Runs a multi-turn conversation through the flat loop rooted at `cwd`:
+/// one `run_loop` call per user turn, with each turn's final answer
+/// appended back into the running history as an assistant message before
+/// the next user turn -- the same accumulation shape `send_agent_message`
+/// gives a real conversation. One backend (and one inference session) for
+/// the whole conversation. Returns one `TaskRun` per user turn; its
+/// turns/elapsed/trace are per-turn, not cumulative.
+async fn run_flat_conversation(
     engine: &InferenceEngine,
-    task: &str,
+    user_turns: &[&str],
     cwd: &Path,
     max_turns: u32,
-) -> TaskRun {
+) -> Vec<TaskRun> {
     let context = AgentContext {
         is_subagent: false,
         max_turns,
         cwd: Some(cwd.to_path_buf()),
     };
-    let initial_messages = vec![ChatMessage::system(SYSTEM_PROMPT), ChatMessage::user(task)];
-    let start = Instant::now();
 
     // Same measure/threshold/compact commands::agent's real generate
     // closure uses -- run_loop itself now makes the fit-to-budget decision
@@ -303,7 +313,8 @@ async fn run_flat_task(
         .saturating_sub(doce_lib::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS);
     // 2026-07-09 payload-files design: a fresh tempdir SIBLING to `cwd`
     // (never nested inside it -- see `FlatBackend::payload_dir`'s doc
-    // comment), kept alive for this whole run by staying a local here.
+    // comment), kept alive for this whole conversation by staying a local
+    // here.
     let payload_root = tempdir().expect("payload tempdir should create");
     let mut backend = FlatBackend {
         engine,
@@ -316,13 +327,42 @@ async fn run_flat_task(
         conversation_id: "flat-top".to_string(),
     };
 
-    let result = run_loop(&context, initial_messages, &mut backend).await;
+    let mut history = vec![ChatMessage::system(SYSTEM_PROMPT)];
+    let mut runs = Vec::new();
+    for turn in user_turns {
+        history.push(ChatMessage::user(*turn));
+        let turns_before = backend.turns;
+        let trace_before = backend.trace.len();
+        let start = Instant::now();
 
-    TaskRun {
-        result,
-        turns_taken: backend.turns,
-        elapsed: start.elapsed(),
+        let result = run_loop(&context, history.clone(), &mut backend).await;
+
+        if let Ok(answer) = &result {
+            history.push(ChatMessage::assistant(answer.clone()));
+        }
+        runs.push(TaskRun {
+            result,
+            turns_taken: backend.turns - turns_before,
+            elapsed: start.elapsed(),
+            trace: backend.trace[trace_before..].to_vec(),
+        });
     }
+    runs
+}
+
+/// Runs a single `task` through the real agent harness rooted at `cwd`,
+/// capturing turns taken and wall-clock time alongside the loop's own
+/// `Result` -- the one-user-turn case of `run_flat_conversation`.
+async fn run_flat_task(
+    engine: &InferenceEngine,
+    task: &str,
+    cwd: &Path,
+    max_turns: u32,
+) -> TaskRun {
+    run_flat_conversation(engine, &[task], cwd, max_turns)
+        .await
+        .pop()
+        .expect("one run per user turn")
 }
 
 /// `AgentBackend` for the single two-state loop (`agent::plan::LoopState`):
@@ -343,6 +383,9 @@ struct PlanExecBackend<'a> {
     cwd: &'a Path,
     threshold: u32,
     turns: u32,
+    /// Same shape as `FlatBackend::trace`: every tool call this run made
+    /// (plan tools included), source of `TaskRun::trace`.
+    trace: Vec<String>,
     plan_state: doce_lib::agent::plan::PlanState,
     /// See `FlatBackend::payload_dir`'s doc comment -- same tempdir-root
     /// shape, shared with any `Task`-spawned `FlatBackend` below (mirroring
@@ -481,6 +524,10 @@ impl AgentBackend for PlanExecBackend<'_> {
             "  [{:?}] turn {} tool={} args={args_preview} -> {result_preview:?}",
             self.plan_state.state, self.turns, call.name
         );
+        self.trace.push(format!(
+            "tool={} args={args_preview} -> {result_preview}",
+            call.name
+        ));
         match plan_finish {
             Some(answer) => doce_lib::agent::ToolExecution::Finish(answer),
             None => doce_lib::agent::ToolExecution::Result(result),
@@ -546,6 +593,7 @@ async fn run_planned_task(
         cwd,
         threshold,
         turns: 0,
+        trace: Vec::new(),
         plan_state: doce_lib::agent::plan::PlanState::default(),
         payload_dir: payload_root.path().to_path_buf(),
         conversation_id: "planned-top".to_string(),
@@ -558,7 +606,67 @@ async fn run_planned_task(
         result,
         turns_taken: backend.turns,
         elapsed: start.elapsed(),
+        trace: backend.trace,
     }
+}
+
+// --- Tier 0: conversational baselines (no tools involved) ---
+
+#[tokio::test]
+#[ignore]
+async fn tier0_greeting_answers_directly_without_tools() {
+    let engine = InferenceEngine::load(&installed_model_path(), 4).expect("model should load");
+    let dir = tempdir().unwrap();
+
+    let run = run_flat_task(
+        &engine,
+        "Hello!",
+        dir.path(),
+        AgentContext::top_level().max_turns,
+    )
+    .await;
+    report("tier0_greeting", &run);
+
+    let answer = run.result.expect("tier 0 must always succeed");
+    assert!(
+        !answer.trim().is_empty(),
+        "expected a non-empty greeting reply"
+    );
+    assert!(
+        run.trace.is_empty(),
+        "a plain greeting must be answered directly, without tool calls; got: {:?}",
+        run.trace
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn tier0_multi_turn_recalls_user_name() {
+    let engine = InferenceEngine::load(&installed_model_path(), 4).expect("model should load");
+    let dir = tempdir().unwrap();
+
+    let runs = run_flat_conversation(
+        &engine,
+        &["Hi! My name is Heitor.", "What is my name?"],
+        dir.path(),
+        AgentContext::top_level().max_turns,
+    )
+    .await;
+    report("tier0_name_turn1", &runs[0]);
+    report("tier0_name_turn2", &runs[1]);
+
+    runs[0]
+        .result
+        .as_ref()
+        .expect("first turn must always succeed");
+    let answer = runs[1]
+        .result
+        .as_ref()
+        .expect("second turn must always succeed");
+    assert!(
+        answer.contains("Heitor"),
+        "expected the model to recall the name from the first turn, got: {answer:?}"
+    );
 }
 
 // --- Tier 1: single tool call (baseline sanity) ---
