@@ -137,12 +137,10 @@ describe("SearchPanel", () => {
   });
 
   it("keeps only the latest in-flight search request in control of results and loading state", async () => {
-    const first = deferred<
-      Array<{ conversationId: string; title: string; excerpt: string; rank: number }>
-    >();
-    const second = deferred<
-      Array<{ conversationId: string; title: string; excerpt: string; rank: number }>
-    >();
+    const first =
+      deferred<Array<{ conversationId: string; title: string; excerpt: string; rank: number }>>();
+    const second =
+      deferred<Array<{ conversationId: string; title: string; excerpt: string; rank: number }>>();
     vi.mocked(commands.searchConversations).mockImplementation((query) => {
       if (query === "a") return first.promise;
       if (query === "ab") return second.promise;

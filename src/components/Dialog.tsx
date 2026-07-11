@@ -1,5 +1,5 @@
-import { type ReactNode } from "react"
-import { cn } from "@/lib/cn"
+import { type ReactNode } from "react";
+import { cn } from "@/lib/cn";
 
 import {
   Dialog as DialogRoot,
@@ -7,15 +7,15 @@ import {
   DialogDescription,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog"
+} from "@/components/ui/dialog";
 
 export interface DialogProps {
-  open: boolean
-  onClose: () => void
-  title: string
-  description?: string
-  contentClassName?: string
-  children: ReactNode
+  open: boolean;
+  onClose: () => void;
+  title: string;
+  description?: string;
+  contentClassName?: string;
+  children: ReactNode;
 }
 
 export default function Dialog({
@@ -31,7 +31,7 @@ export default function Dialog({
       open={open}
       onOpenChange={(nextOpen) => {
         if (!nextOpen) {
-          onClose()
+          onClose();
         }
       }}
     >
@@ -47,5 +47,5 @@ export default function Dialog({
         {children}
       </DialogContent>
     </DialogRoot>
-  )
+  );
 }

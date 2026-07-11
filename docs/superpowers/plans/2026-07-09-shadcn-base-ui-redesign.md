@@ -78,6 +78,7 @@
 ## Task 1: Bootstrap Shadcn Base UI And Brand Theme
 
 **Files:**
+
 - Create: `components.json`
 - Create/Modify: `src/components/ui/*`
 - Modify: `package.json`
@@ -89,6 +90,7 @@
 - Test: `src/components/Dialog.test.tsx`
 
 **Interfaces:**
+
 - Consumes: existing Vite alias `@ -> ./src`, existing Tailwind v4 Vite plugin, existing `cn()` helper from `src/lib/cn.ts`.
 - Produces: shadcn Base UI component files under `src/components/ui`, Brand Accent Workbench CSS tokens, and a Radix-free `Button` API with:
   - `ButtonVariant = "primary" | "secondary" | "destructive" | "ghost"`
@@ -324,10 +326,7 @@ Update `src/components/Dialog.tsx` to preserve the existing app-facing props whi
 
 ```tsx
 import { type ReactNode } from "react";
-import {
-  Dialog as DialogRoot,
-  DialogContent,
-} from "@/components/ui/dialog";
+import { Dialog as DialogRoot, DialogContent } from "@/components/ui/dialog";
 
 export interface DialogProps {
   open: boolean;
@@ -419,6 +418,7 @@ If `src/lib/utils.ts` was not created, omit it from `git add`.
 ## Task 2: Global Shortcuts And App-Owned Surface State
 
 **Files:**
+
 - Modify: `src/lib/shortcuts.ts`
 - Create: `src/lib/shortcuts.test.ts`
 - Modify: `src/App.tsx`
@@ -426,6 +426,7 @@ If `src/lib/utils.ts` was not created, omit it from `git add`.
 - Modify: `src/views/chat/ConversationList.tsx`
 
 **Interfaces:**
+
 - Consumes: `Button` from Task 1.
 - Produces:
   - `ShortcutHandlers.openCommandCenter(): void`
@@ -652,6 +653,7 @@ git commit -m "feat(app): move global surface shortcuts into app shell"
 ## Task 3: Dedicated Conversation Search Dialog
 
 **Files:**
+
 - Create: `src/views/chat/ConversationSearchDialog.tsx`
 - Create: `src/views/chat/ConversationSearchDialog.test.tsx`
 - Modify: `src/views/chat/SearchPanel.tsx`
@@ -660,6 +662,7 @@ git commit -m "feat(app): move global surface shortcuts into app shell"
 - Modify: `src/App.test.tsx`
 
 **Interfaces:**
+
 - Consumes: `showSearch` state from Task 2, `Conversation[]`, `commands.searchConversations`.
 - Produces:
   - `<ConversationSearchDialog open onOpenChange recentConversations onSelectConversationId />`
@@ -808,16 +811,20 @@ const runSearch = async (value: string) => {
 Render before results:
 
 ```tsx
-{loading && (
-  <p className="text-sm text-muted-foreground" data-testid="search-loading">
-    Searching
-  </p>
-)}
-{error && (
-  <p className="text-sm text-destructive" data-testid="search-error">
-    {error}
-  </p>
-)}
+{
+  loading && (
+    <p className="text-sm text-muted-foreground" data-testid="search-loading">
+      Searching
+    </p>
+  );
+}
+{
+  error && (
+    <p className="text-sm text-destructive" data-testid="search-error">
+      {error}
+    </p>
+  );
+}
 ```
 
 Keep the existing no-results message only when `!loading && !error`.
@@ -898,6 +905,7 @@ git commit -m "feat(search): add dedicated conversation search dialog"
 ## Task 4: Universal Command Center
 
 **Files:**
+
 - Create: `src/views/command/CommandCenter.tsx`
 - Create: `src/views/command/CommandCenter.test.tsx`
 - Modify: `src/App.tsx`
@@ -906,6 +914,7 @@ git commit -m "feat(search): add dedicated conversation search dialog"
 - Modify: `src/views/shortcuts/ShortcutsDialog.test.tsx`
 
 **Interfaces:**
+
 - Consumes: app state callbacks from Task 2 and search dialog from Task 3.
 - Produces:
   - `CommandCenterAction`
@@ -995,9 +1004,7 @@ export default function CommandCenter({ open, onOpenChange, actions }: CommandCe
   return (
     <Dialog open={open} onClose={() => onOpenChange(false)}>
       <div className="w-[34rem] max-w-[90vw] p-2" data-testid="command-center">
-        <div className="px-2 py-2 text-xs font-medium uppercase text-muted-foreground">
-          Actions
-        </div>
+        <div className="px-2 py-2 text-xs font-medium uppercase text-muted-foreground">Actions</div>
         <div className="space-y-1">
           {actions.map((action) => (
             <Button
@@ -1035,11 +1042,26 @@ Add a memoized `commandActions`:
 ```ts
 const commandActions = useMemo<CommandCenterAction[]>(
   () => [
-    { id: "new-agent", label: "New Agent", shortcut: "Cmd+N", run: () => conversationListRef.current?.createNew() },
-    { id: "search", label: "Search Conversations", shortcut: "Cmd+F", run: () => setShowSearch(true) },
+    {
+      id: "new-agent",
+      label: "New Agent",
+      shortcut: "Cmd+N",
+      run: () => conversationListRef.current?.createNew(),
+    },
+    {
+      id: "search",
+      label: "Search Conversations",
+      shortcut: "Cmd+F",
+      run: () => setShowSearch(true),
+    },
     { id: "settings", label: "Open Settings", run: () => setShowSettings(true) },
     { id: "shortcuts", label: "Open Shortcuts", run: () => setShowShortcutsDialog(true) },
-    { id: "widget-gallery", label: "Open Widget Gallery", shortcut: "Cmd+D", run: () => setShowWidgetGallery(true) },
+    {
+      id: "widget-gallery",
+      label: "Open Widget Gallery",
+      shortcut: "Cmd+D",
+      run: () => setShowWidgetGallery(true),
+    },
     {
       id: "focus-composer",
       label: "Focus Composer",
@@ -1141,6 +1163,7 @@ git commit -m "feat(app): add universal command center"
 ## Task 5: Sidebar Shell Redesign
 
 **Files:**
+
 - Modify: `src/App.tsx`
 - Modify: `src/views/chat/ConversationList.tsx`
 - Modify: `src/views/chat/ConversationList.test.tsx`
@@ -1150,6 +1173,7 @@ git commit -m "feat(app): add universal command center"
 - Modify: `src/components/Topbar.test.tsx`
 
 **Interfaces:**
+
 - Consumes: app-owned search/settings/new handlers from Tasks 2-4.
 - Produces: redesigned sidebar with stable test ids:
   - `data-testid="conversation-list"`
@@ -1235,7 +1259,7 @@ const STATUS_COLOR: Record<ConversationStatus, string> = {
 In `src/components/Topbar.tsx`, keep drag behavior and portal logic unchanged. Adjust host classes to remain `h-10 shrink-0` and use:
 
 ```ts
-"flex h-10 shrink-0 select-none items-center bg-transparent text-foreground"
+"flex h-10 shrink-0 select-none items-center bg-transparent text-foreground";
 ```
 
 Do not change `data-testid="topbar-sidebar"` or `data-testid="topbar-main"`.
@@ -1275,10 +1299,12 @@ git commit -m "feat(shell): redesign sidebar and topbar"
 ## Task 6: Settings Tabs Redesign
 
 **Files:**
+
 - Modify: `src/views/settings/Settings.tsx`
 - Modify: `src/views/settings/Settings.test.tsx`
 
 **Interfaces:**
+
 - Consumes: existing `commands.listMcpServers`, `commands.addMcpServer`, `commands.listMcpServerTools`, `commands.listSkills`.
 - Produces:
   - `data-testid="settings-view"`
@@ -1307,7 +1333,14 @@ it("renders MCP and Skills tabs and switches between them", async () => {
 
 it("shows an inline add-server error and keeps existing rows visible", async () => {
   vi.mocked(commands.listMcpServers).mockResolvedValue([
-    { id: "srv-1", name: "existing", transport: "stdio", config: "{}", enabled: true, createdAt: 1 },
+    {
+      id: "srv-1",
+      name: "existing",
+      transport: "stdio",
+      config: "{}",
+      enabled: true,
+      createdAt: 1,
+    },
   ]);
   vi.mocked(commands.addMcpServer).mockRejectedValue(new Error("bad command"));
 
@@ -1369,7 +1402,11 @@ Add this after the settings header:
 <div className="mb-6 inline-flex rounded-md border border-border bg-card p-1">
   <button
     type="button"
-    className={activeTab === "mcp" ? "rounded bg-primary px-3 py-1 text-sm text-primary-foreground" : "px-3 py-1 text-sm text-muted-foreground"}
+    className={
+      activeTab === "mcp"
+        ? "rounded bg-primary px-3 py-1 text-sm text-primary-foreground"
+        : "px-3 py-1 text-sm text-muted-foreground"
+    }
     aria-selected={activeTab === "mcp"}
     data-testid="settings-tab-mcp"
     onClick={() => setActiveTab("mcp")}
@@ -1378,7 +1415,11 @@ Add this after the settings header:
   </button>
   <button
     type="button"
-    className={activeTab === "skills" ? "rounded bg-primary px-3 py-1 text-sm text-primary-foreground" : "px-3 py-1 text-sm text-muted-foreground"}
+    className={
+      activeTab === "skills"
+        ? "rounded bg-primary px-3 py-1 text-sm text-primary-foreground"
+        : "px-3 py-1 text-sm text-muted-foreground"
+    }
     aria-selected={activeTab === "skills"}
     data-testid="settings-tab-skills"
     onClick={() => setActiveTab("skills")}
@@ -1395,38 +1436,46 @@ If shadcn generated `Tabs`, use it for markup, but preserve the two test ids and
 Wrap the current MCP form and server list section with this condition, preserving every existing MCP test id inside the section:
 
 ```tsx
-{activeTab === "mcp" && (
-  <section data-testid="settings-mcp-panel">
-    {addError && (
-      <p className="mt-2 text-sm text-destructive" data-testid="mcp-add-error">
-        {addError}
-      </p>
-    )}
-  </section>
-)}
+{
+  activeTab === "mcp" && (
+    <section data-testid="settings-mcp-panel">
+      {addError && (
+        <p className="mt-2 text-sm text-destructive" data-testid="mcp-add-error">
+          {addError}
+        </p>
+      )}
+    </section>
+  );
+}
 ```
 
 Wrap the current skills list section with this condition, preserving the `skill-item` test id inside the section:
 
 ```tsx
-{activeTab === "skills" && (
-  <section data-testid="settings-skills-panel">
-    {skills.length === 0 ? (
-      <p className="text-sm text-muted-foreground">
-        No skills found. Add a folder with a SKILL.md to your skills directory.
-      </p>
-    ) : (
-      <ul className="space-y-2">
-        {skills.map((s) => (
-          <li key={s.name} className="rounded-md border border-border bg-card p-3 text-sm" data-testid="skill-item">
-            <span className="font-medium">{s.name}</span>
-            <span className="ml-2 text-muted-foreground">{s.description}</span>
-          </li>
-        ))}
-      </ul>
-    )}
-  </section>
-)}
+{
+  activeTab === "skills" && (
+    <section data-testid="settings-skills-panel">
+      {skills.length === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          No skills found. Add a folder with a SKILL.md to your skills directory.
+        </p>
+      ) : (
+        <ul className="space-y-2">
+          {skills.map((s) => (
+            <li
+              key={s.name}
+              className="rounded-md border border-border bg-card p-3 text-sm"
+              data-testid="skill-item"
+            >
+              <span className="font-medium">{s.name}</span>
+              <span className="ml-2 text-muted-foreground">{s.description}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
 ```
 
 - [ ] **Step 6: Restyle fields and rows with shadcn tokens**
@@ -1464,6 +1513,7 @@ git commit -m "feat(settings): redesign settings with tabs"
 ## Task 7: Chat Transcript, Composer, And Tool Widget Redesign
 
 **Files:**
+
 - Modify: `src/components/MessageContent.tsx`
 - Modify: `src/components/MessageContent.test.tsx`
 - Modify: `src/components/UserMessageBubble.tsx`
@@ -1480,6 +1530,7 @@ git commit -m "feat(settings): redesign settings with tabs"
 - Modify: `src/views/chat/tool-widgets/*.test.tsx`
 
 **Interfaces:**
+
 - Consumes: existing message and tool detail types from `src/lib/ipc.ts`.
 - Produces: transcript rows styled through shadcn chat primitives where available, preserving all current test ids and fallback behavior.
 
@@ -1573,19 +1624,20 @@ For assistant text:
 For error rows:
 
 ```tsx
-className="mb-5 rounded-md border border-destructive/25 bg-destructive/10 p-3 text-sm text-destructive"
+className =
+  "mb-5 rounded-md border border-destructive/25 bg-destructive/10 p-3 text-sm text-destructive";
 ```
 
 For summarized context notices:
 
 ```tsx
-className="mb-5 rounded-md border border-border bg-muted p-3 text-sm text-muted-foreground"
+className = "mb-5 rounded-md border border-border bg-muted p-3 text-sm text-muted-foreground";
 ```
 
 For cleared context notices:
 
 ```tsx
-className="mb-5 text-xs text-muted-foreground/70"
+className = "mb-5 text-xs text-muted-foreground/70";
 ```
 
 - [ ] **Step 6: Redesign user bubble**
@@ -1632,13 +1684,15 @@ Keep these test ids unchanged:
 In `src/views/chat/tool-widgets/ToolDisclosure.tsx`, keep native `<details>` behavior and test ids. Update classes:
 
 ```tsx
-className="group overflow-hidden rounded-md border border-border bg-card text-sm shadow-sm [&>summary::-webkit-details-marker]:hidden"
+className =
+  "group overflow-hidden rounded-md border border-border bg-card text-sm shadow-sm [&>summary::-webkit-details-marker]:hidden";
 ```
 
 and:
 
 ```tsx
-className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 font-mono text-xs text-muted-foreground focus-visible:outline-offset-[-2px]"
+className =
+  "flex cursor-pointer list-none items-center gap-2 px-3 py-2 font-mono text-xs text-muted-foreground focus-visible:outline-offset-[-2px]";
 ```
 
 - [ ] **Step 10: Replace Phosphor control icons in chat surfaces**
@@ -1674,6 +1728,7 @@ git commit -m "feat(chat): redesign transcript and composer surfaces"
 ## Task 8: Onboarding, Shortcuts, Widget Gallery, And Folder Picker Polish
 
 **Files:**
+
 - Modify: `src/views/onboarding/Onboarding.tsx`
 - Modify: `src/views/onboarding/Onboarding.test.tsx`
 - Modify: `src/views/shortcuts/ShortcutsDialog.tsx`
@@ -1686,6 +1741,7 @@ git commit -m "feat(chat): redesign transcript and composer surfaces"
 - Modify: `src/views/chat/EmptyState.test.tsx`
 
 **Interfaces:**
+
 - Consumes: theme tokens from Task 1, command center from Task 4, current `FolderPicker` behavior.
 - Produces: restyled onboarding/shortcuts/gallery/folder selection without behavior changes.
 
@@ -1714,19 +1770,21 @@ it("uses the logo-forward onboarding shell", async () => {
 In `src/views/onboarding/Onboarding.tsx`, keep the effect and install progress logic unchanged. Update wrapper classes:
 
 ```tsx
-className="flex h-dvh flex-col items-center justify-center gap-6 bg-background px-6 text-center text-foreground"
+className =
+  "flex h-dvh flex-col items-center justify-center gap-6 bg-background px-6 text-center text-foreground";
 ```
 
 Update the progress bar track:
 
 ```tsx
-className="h-2 w-full overflow-hidden rounded-full bg-muted"
+className = "h-2 w-full overflow-hidden rounded-full bg-muted";
 ```
 
 Update progress fill:
 
 ```tsx
-className="h-full w-full origin-left bg-[var(--color-doce-caramel)] transition-transform duration-300 ease-out"
+className =
+  "h-full w-full origin-left bg-[var(--color-doce-caramel)] transition-transform duration-300 ease-out";
 ```
 
 - [ ] **Step 3: Restyle shortcuts dialog**
@@ -1780,13 +1838,13 @@ Do not convert to a new popover implementation if it breaks existing path-prefix
 In `src/views/chat/EmptyState.tsx`, keep `submit` behavior unchanged. Update layout:
 
 ```tsx
-className="flex h-full flex-col items-center justify-center bg-background px-6 text-foreground"
+className = "flex h-full flex-col items-center justify-center bg-background px-6 text-foreground";
 ```
 
 Wrap the composer:
 
 ```tsx
-className="relative w-full max-w-2xl space-y-3 [view-transition-name:chat-composer]"
+className = "relative w-full max-w-2xl space-y-3 [view-transition-name:chat-composer]";
 ```
 
 - [ ] **Step 6: Update widget gallery sections**
@@ -1823,12 +1881,14 @@ git commit -m "feat(ui): polish secondary app surfaces"
 ## Task 9: Radix And Icon Cleanup, Full Verification
 
 **Files:**
+
 - Modify: `package.json`
 - Modify: `package-lock.json`
 - Modify: any remaining `src/**/*.tsx` importing `@radix-ui` or old control icons
 - Modify: tests with stale shortcut/icon text
 
 **Interfaces:**
+
 - Consumes: all previous tasks.
 - Produces: final verified app with no Radix references.
 

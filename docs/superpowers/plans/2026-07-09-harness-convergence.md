@@ -26,9 +26,11 @@
 ### Task 1: Deterministic generation seed
 
 **Files:**
+
 - Modify: `src-tauri/src/inference/mod.rs` (seed derivation in `generate()`)
 
 **Interfaces:**
+
 - Produces: env var `DOCE_GEN_SEED` (u32) — when set and parseable, every `generate()` call uses it verbatim; otherwise the existing per-call nanosecond seed. Pure helper `fn generation_seed() -> u32`.
 
 - [ ] **Step 1: Write the failing test** (append to `inference/mod.rs`'s tests module):
@@ -88,9 +90,11 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ### Task 2: Benchmark scorer diagnostics + metrics line
 
 **Files:**
+
 - Modify: `src-tauri/tests/agent_benchmark.rs` (`tier4_score` + both tier4 tests' reporting)
 
 **Interfaces:**
+
 - Produces: per-file failure reasons on stdout (`bug_07: marker still present` / `bug_07: fixed line missing`), and one machine-greppable metrics line per run: `[metrics] score=N/20 turns=T elapsed_s=E seed=S`.
 
 - [ ] **Step 1: Extend `tier4_score` to return reasons.** Change its signature and body (current version returns `(usize, usize)` around `tests/agent_benchmark.rs:575`):
@@ -161,9 +165,11 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ### Task 3: Sampling alignment with Qwen's recommendation
 
 **Files:**
+
 - Modify: `src-tauri/src/inference/mod.rs` (`generate()`'s sampler chain)
 
 **Interfaces:**
+
 - Produces: chain = grammar → penalties(64, **1.0**, 0.0, **1.0**) → top_k(**20**) → top_p(**0.8**, 1) → **min_p(0.0, 1)** → temp(0.7) → dist(seed). (Repeat-penalty retired to 1.0 = off; presence-penalty 1.0 takes over repetition control per Qwen 2507 guidance; top-k/top-p per the model card.)
 
 - [ ] **Step 1: Implement** — replace the `chain.extend([...])` block in `generate()`:
@@ -203,10 +209,12 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ### Task 4: §4.11 correctness fixes (dead n_threads; usage-prompt mismatch)
 
 **Files:**
+
 - Modify: `src-tauri/src/inference/mod.rs` (store + apply `n_threads`)
 - Modify: `src-tauri/src/commands/agent.rs` (`emit_context_usage_update` measures with the plan seed prompt)
 
 **Interfaces:**
+
 - Consumes: `InferenceEngine::load(path, n_threads)` already receives the value (hardcoded 4 at call sites).
 - Produces: `InferenceEngine` gains field `n_threads: i32`; `generate()`'s ctx params apply it. `emit_context_usage_update` gains no new signature — internally builds the prompt via a fresh `PlanState`'s `plan_system_message`.
 
@@ -250,9 +258,11 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ### Task 5: JSON-schema argument validation before dispatch
 
 **Files:**
+
 - Modify: `src-tauri/src/agent/dispatch.rs` (validation table + check in `execute`)
 
 **Interfaces:**
+
 - Produces: `fn validate_required_args(call: &ToolCall) -> Option<String>` — `Some(error_text)` when a required argument is missing/mistyped, naming every missing key and the expected shape; wired as the first thing `execute()` does. Generalizes `wrong_key_hint` from 3 tools to all.
 
 - [ ] **Step 1: Failing tests** (dispatch.rs tests module):
@@ -354,10 +364,12 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ### Task 6: Zero-match Grep regex-literalness hint
 
 **Files:**
+
 - Modify: `src-tauri/src/agent/dispatch.rs` (Grep zero-match arm)
 - Test: same file
 
 **Interfaces:**
+
 - Produces: when Grep matches nothing AND the pattern contains an unescaped regex metacharacter (`+ * ? ( ) [ ] { } |`), the model_text appends a hint naming the metacharacter and the escaped form.
 
 - [ ] **Step 1: Failing test:**
@@ -434,9 +446,11 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ### Task 7: Subagents run the plan engine
 
 **Files:**
+
 - Modify: `src-tauri/src/commands/agent.rs` (`SubagentBackend` gains `plan_state`; `execute_top_level_tool`'s Task branch seeds it)
 
 **Interfaces:**
+
 - Consumes: `PlanState`, `plan_system_message`, `ToolCallMode::Require`, `PlanToolReply` (all existing).
 - Produces: `SubagentBackend { .., plan_state: crate::agent::plan::PlanState }`; its `generate` swaps `messages[0]` with `plan_system_message(&mut self.plan_state, self.cwd)` and uses `ToolCallMode::Require`; its `execute_tool` handles plan tools first (persisting under the subagent's own conversation with the `"plan": true` marker, `app: None`, no ActivePlans/events — subagents have no tracker), mapping `Finish` to `ToolExecution::Finish`.
 
@@ -489,9 +503,11 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ### Task 8: Bash output cap (tail-biased) at the tool
 
 **Files:**
+
 - Modify: `src-tauri/src/agent/tools/bash.rs` (truncation) and `src-tauri/src/agent/dispatch.rs` (notice text)
 
 **Interfaces:**
+
 - Produces: `pub const BASH_OUTPUT_MAX_BYTES: usize = 65536;` — stdout and stderr independently capped: first 20 lines + last 200 lines + `"... [{omitted} bytes omitted — full output offloaded]"` marker when over. The generic offload still runs afterward and stores the FULL output (pass the untruncated text to the offload call; the capped text is what enters `model_text`).
 
 - [ ] **Step 1: Failing test** (bash.rs tests):
@@ -552,9 +568,11 @@ applied where `run()` builds its result: `stdout: truncate_tail_biased(&stdout),
 ### Task 9: Restorable clearing (offload pointers) + plan-row clearing
 
 **Files:**
+
 - Modify: `src-tauri/src/context/mod.rs` (`apply_lightweight_clearing`), `src-tauri/src/context/limits.rs` (placeholder text)
 
 **Interfaces:**
+
 - Produces: tier-1 clearing replaces an old tool result with `"[Old tool result cleared; full output saved at {path} — Read it to recover]"` when the row's detail carries `offloadedTo`, else the existing placeholder. Plan-marked rows (`"plan": true` in detail) are cleared beyond the most recent 2 regardless of `TOOL_KEEP_N` (they re-state nothing the state prompt doesn't already carry).
 
 - [ ] **Step 1: Failing tests** (context/mod.rs tests): (a) a cleared row with `offloadedTo` in its detail JSON gets the pointer text (seed a history row whose content JSON includes `"offloadedTo": "/tmp/x.txt"`); (b) plan rows older than the last 2 clear even when regular `TOOL_KEEP_N` would keep them; (c) tier-2's summarization input always pins the FIRST user message (the task statement) — extend `summarize_and_persist`'s test to assert the first user message survives outside the summarized span (OpenHands keep-first behavior; the report's P7 point that generative compression by a 4B is the riskiest link, so it must never eat the task statement).
@@ -565,9 +583,11 @@ applied where `run()` builds its result: `stdout: truncate_tail_biased(&stdout),
 ### Task 10: Plan recitation at the context tail
 
 **Files:**
+
 - Modify: `src-tauri/src/agent/plan.rs` (pure `recitation_text`), `src-tauri/src/commands/agent.rs` + `src-tauri/tests/agent_benchmark.rs` (inject in both plan-engine `generate`s)
 
 **Interfaces:**
+
 - Produces: `pub fn recitation_text(&self) -> Option<String>` on `PlanState` — `None` without a plan; else e.g. `"Plan status — goal: {goal}\n[x] step0 …\n[>] step3 (current)\n[ ] step4 …\n(3/7 done)"`. Both plan-engine hosts append `ChatMessage::user(recitation)` as the LAST message of the local clone before rendering (in-memory only, never persisted).
 
 - [ ] **Step 1: Failing test** (plan.rs): create a 3-step plan, mark one done, set Executing{1}; assert the text contains the goal, a `[x]`, a `[>]` on the current step, and the `1/3` counter; assert `None` for a fresh state.
@@ -615,10 +635,12 @@ applied where `run()` builds its result: `stdout: truncate_tail_biased(&stdout),
 ### Task 11: `PromptSession` — persistent context with prefix reuse
 
 **Files:**
+
 - Create: session type inside `src-tauri/src/inference/mod.rs`
 - Modify: `src-tauri/src/commands/agent.rs`, `src-tauri/tests/agent_benchmark.rs` (hosts hold a session per turn)
 
 **Interfaces:**
+
 - Produces:
 
 ```rust
@@ -658,9 +680,11 @@ impl PromptSession<'_> {
 ### Task 12: Stable-prefix prompt architecture
 
 **Files:**
+
 - Modify: `src-tauri/src/agent/plan.rs` (unified prompt + tail state message), `src-tauri/src/commands/agent.rs`, `src-tauri/tests/agent_benchmark.rs`
 
 **Interfaces:**
+
 - Produces: `pub const PLAN_SYSTEM_PROMPT: &str` — ONE immutable system prompt containing the union `<tools>` block (all Planning + Executing tools incl. FinishTask/StepDone/RefuseStep) and both rules sections; `PlanState::state_tail(&mut self) -> String` — the per-turn tail message: mode banner + (for Executing) goal + current step + the refusal context when present; folds Task 10's recitation into itself (one tail message total). `system_prompt()` is deleted; hosts render `[PLAN_SYSTEM_PROMPT+cwd, ...history..., tail]` — messages[0] NEVER changes within a turn (with Task 11, the KV prefix now survives every state transition).
 - Grammar-level state gating compensates for the union tool list: extend `tool_call_grammar_sampler` with an optional `allowed_names: Option<&[&str]>` that, when set, constrains the `name` field to an enum (generate the GBNF alternation directly: `name-value ::= "\"CreatePlan\"" | "\"AddStep\"" | ...`); hosts pass the current state's tool set each call. (Sampler is rebuilt per call already — no cache impact.)
 
@@ -677,9 +701,11 @@ impl PromptSession<'_> {
 ### Task 13: 16K window + proportional constants
 
 **Files:**
+
 - Modify: `src-tauri/src/inference/mod.rs` (`CONTEXT_WINDOW_TOKENS`), `src-tauri/src/context/limits.rs` (re-derived constants + guard test)
 
 **Interfaces:**
+
 - Produces: `CONTEXT_WINDOW_TOKENS: u32 = 16384`; `SUMMARY_MAX_TOKENS = (CONTEXT_WINDOW_TOKENS / 16) as i32` (=1024); `DEFAULT_TOOL_OUTPUT_OFFLOAD_CHARS = 2000`; comments rewritten as current fractions; a test asserting the ratios hold so the next window change trips it.
 
 - [ ] **Step 1: Failing test** (limits.rs):

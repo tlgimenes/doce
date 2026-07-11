@@ -59,9 +59,7 @@ function AttachmentChip({ node }: ReactNodeViewProps) {
         {isImage ? <ImageIcon className="size-3" /> : <Paperclip className="size-3" />}
       </span>
       <span className="min-w-0" data-slot="attachment-content">
-        <AttachmentTitle className="inline align-baseline">
-          {name}
-        </AttachmentTitle>
+        <AttachmentTitle className="inline align-baseline">{name}</AttachmentTitle>
         {!isImage ? (
           <AttachmentDescription className="ml-1 inline align-baseline">
             {mimeType}

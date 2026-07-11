@@ -75,9 +75,7 @@ function collectFiles(directoryPath: string): string[] {
 }
 
 function collectDefinedVariables(source: string): Set<string> {
-  return new Set(
-    Array.from(source.matchAll(/["']?--([a-z0-9-]+)["']?\s*:/g), (match) => match[1]),
-  );
+  return new Set(Array.from(source.matchAll(/["']?--([a-z0-9-]+)["']?\s*:/g), (match) => match[1]));
 }
 
 function collectReferencedVariables(source: string): Set<string> {
@@ -89,9 +87,7 @@ describe("theme.css compatibility bridge", () => {
     const themeSource = readFileSync(themePath, "utf8");
     const definedThemeVariables = collectDefinedVariables(themeSource);
 
-    expect([...definedThemeVariables]).toEqual(
-      expect.arrayContaining([...classicThemeAliases]),
-    );
+    expect([...definedThemeVariables]).toEqual(expect.arrayContaining([...classicThemeAliases]));
   });
 
   it("defines every non-local CSS variable referenced by source-owned UI primitives", () => {

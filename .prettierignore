@@ -7,3 +7,6 @@
 .specify/
 site/
 specs/
+# Byte-stock shadcn/base-ui components, vendored as-is -- must never be
+# reformatted so upstream diffs stay clean.
+src/components/ui/
