@@ -60,7 +60,7 @@ export default function TranscriptRow({ message: m, showTimer = false }: Transcr
         aria-label="You said"
       >
         <ChatMessageContent>
-          <Bubble align="end" variant="user">
+          <Bubble align="end" variant="secondary">
             <BubbleContent data-testid="user-message-bubble">
               {m.contentType === "rich_text" ? (
                 <UserMessageContent content={m.content} />

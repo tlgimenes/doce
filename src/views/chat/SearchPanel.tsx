@@ -160,7 +160,7 @@ export default function SearchPanel({ onSelect, recentConversations = [] }: Sear
           <Button
             key={r.conversationId}
             id={`search-result-option-${index}`}
-            variant="secondary"
+            variant="outline"
             role="option"
             aria-selected={activeResultIndex === index}
             className={

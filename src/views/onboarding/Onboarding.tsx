@@ -82,7 +82,7 @@ export default function Onboarding({ onReady }: OnboardingProps) {
         <div className="w-64">
           <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
             <div
-              className="h-full w-full origin-left bg-[var(--color-doce-caramel)] transition-transform duration-300 ease-out"
+              className="h-full w-full origin-left bg-primary transition-transform duration-300 ease-out"
               style={{ transform: `scaleX(${pct / 100})` }}
             />
           </div>

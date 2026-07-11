@@ -348,7 +348,8 @@ describe("ConversationList", () => {
       expect(line).not.toHaveClass("w-full");
       expect(line).not.toHaveClass("truncate");
     }
-    expect(archiveButton).toHaveClass("bg-transparent", "size-6");
+    expect(archiveButton).toHaveAttribute("aria-label", "Archive Archive me");
+    expect(archiveButton).toHaveClass("size-6");
     expect(archiveButton.querySelector("svg")).toBeInTheDocument();
 
     await userEvent.click(archiveButton);

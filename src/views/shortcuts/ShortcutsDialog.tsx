@@ -27,7 +27,7 @@ export default function ShortcutsDialog({ open, onClose, shortcuts }: ShortcutsD
           <h2 className="text-sm font-semibold">Keyboard shortcuts</h2>
           <Button
             variant="ghost"
-            size="icon-sm"
+            size="icon-xs"
             className="text-muted-foreground hover:bg-accent"
             onClick={onClose}
             data-testid="close-shortcuts-dialog"

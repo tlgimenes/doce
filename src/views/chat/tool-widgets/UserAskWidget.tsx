@@ -99,7 +99,7 @@ export default function UserAskWidget({ detail, initialMode = "options" }: UserA
         <Button
           type="button"
           variant="ghost"
-          size="icon-sm"
+          size="icon-xs"
           className="shrink-0 text-muted-foreground hover:bg-transparent"
           disabled={submitting}
           onClick={() => switchMode(mode === "options" ? "text" : "options")}
@@ -173,7 +173,7 @@ export default function UserAskWidget({ detail, initialMode = "options" }: UserA
             </span>
             <Button
               type="button"
-              variant="primary"
+              variant="default"
               size="icon"
               disabled={selected.length === 0 || submitting}
               onClick={() => submit(selected)}

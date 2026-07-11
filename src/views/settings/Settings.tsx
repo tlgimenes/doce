@@ -75,13 +75,7 @@ export default function Settings({ onClose }: SettingsProps) {
     >
       <div className="mb-6 flex items-center justify-between">
         <h2 className="text-balance text-lg font-medium">Settings</h2>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="p-0 text-muted-foreground underline hover:bg-transparent"
-          onClick={onClose}
-          data-testid="close-settings"
-        >
+        <Button variant="link" size="sm" onClick={onClose} data-testid="close-settings">
           Close
         </Button>
       </div>
@@ -144,10 +138,7 @@ export default function Settings({ onClose }: SettingsProps) {
                     />
                   </Field>
                   <Field className="min-w-56 flex-[2] gap-1">
-                    <FieldLabel
-                      htmlFor="mcp-args-input"
-                      className="text-xs text-muted-foreground"
-                    >
+                    <FieldLabel htmlFor="mcp-args-input" className="text-xs text-muted-foreground">
                       Arguments
                     </FieldLabel>
                     <Input
@@ -159,8 +150,8 @@ export default function Settings({ onClose }: SettingsProps) {
                     />
                   </Field>
                   <Button
-                    variant="primary"
-                    size="sm"
+                    variant="default"
+                    size="default"
                     className="self-start"
                     onClick={addServer}
                     disabled={!name.trim() || !command.trim()}
@@ -210,9 +201,8 @@ export default function Settings({ onClose }: SettingsProps) {
                     </ItemContent>
                     <ItemActions className="ml-auto self-start">
                       <Button
-                        variant="ghost"
+                        variant="link"
                         size="sm"
-                        className="h-auto px-0 text-xs text-muted-foreground underline hover:bg-transparent"
                         onClick={() => testServer(s.id)}
                         data-testid="test-mcp-server"
                       >

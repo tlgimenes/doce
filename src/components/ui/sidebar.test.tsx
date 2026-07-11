@@ -19,27 +19,27 @@ describe("SidebarProvider", () => {
     vi.restoreAllMocks()
   })
 
-  it("does not register a global keydown listener", () => {
-    const windowAddEventListenerSpy = vi.spyOn(window, "addEventListener")
-    const documentAddEventListenerSpy = vi.spyOn(document, "addEventListener")
+  it("toggles sidebar state via the Cmd/Ctrl+B keyboard shortcut", async () => {
+    const user = userEvent.setup()
 
     render(
-      <SidebarProvider>
+      <SidebarProvider defaultOpen={true}>
         <SidebarStateProbe />
       </SidebarProvider>
     )
 
-    expect(windowAddEventListenerSpy).not.toHaveBeenCalledWith(
-      "keydown",
-      expect.any(Function)
-    )
-    expect(documentAddEventListenerSpy).not.toHaveBeenCalledWith(
-      "keydown",
-      expect.any(Function)
-    )
+    expect(screen.getByTestId("sidebar-state")).toHaveTextContent("expanded")
+
+    await user.keyboard("{Meta>}b{/Meta}")
+
+    expect(screen.getByTestId("sidebar-state")).toHaveTextContent("collapsed")
+
+    await user.keyboard("{Control>}b{/Control}")
+
+    expect(screen.getByTestId("sidebar-state")).toHaveTextContent("expanded")
   })
 
-  it("toggles sidebar state without writing document.cookie", async () => {
+  it("toggles sidebar state and writes the state cookie", async () => {
     const user = userEvent.setup()
     const cookieSetterSpy = vi.spyOn(Document.prototype, "cookie", "set")
 
@@ -55,6 +55,6 @@ describe("SidebarProvider", () => {
     await user.click(screen.getByRole("button", { name: "Toggle Sidebar" }))
 
     expect(screen.getByTestId("sidebar-state")).toHaveTextContent("collapsed")
-    expect(cookieSetterSpy).not.toHaveBeenCalled()
+    expect(cookieSetterSpy).toHaveBeenCalledWith("sidebar_state=false; path=/; max-age=604800")
   })
 })

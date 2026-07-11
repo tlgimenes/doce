@@ -85,7 +85,7 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
         <Button
           type="button"
           variant="ghost"
-          size="icon-sm"
+          size="icon-xs"
           onClick={onClose}
           aria-label="Close widget gallery"
           data-testid="widget-gallery-close"
@@ -101,7 +101,7 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
         >
           <Example label="Button variants">
             <div className="flex flex-wrap gap-2">
-              <Button variant="primary" size="sm">
+              <Button variant="default" size="sm">
                 Primary
               </Button>
               <Button variant="secondary" size="sm">

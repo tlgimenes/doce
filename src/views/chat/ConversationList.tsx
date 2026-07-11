@@ -48,8 +48,8 @@ export interface ConversationListHandle {
 
 const STATUS_COLOR: Record<ConversationStatus, string> = {
   done: "bg-muted-foreground/45",
-  in_progress: "bg-[var(--color-doce-caramel)] animate-pulse",
-  requires_action: "bg-[var(--color-doce-coral)]",
+  in_progress: "bg-primary animate-pulse",
+  requires_action: "bg-chart-1",
   failed: "bg-destructive",
 };
 
@@ -358,8 +358,8 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
                         >
                           <Button
                             type="button"
-                            variant="icon"
-                            size="icon-sm"
+                            variant="ghost"
+                            size="icon-xs"
                             aria-label={`Archive ${c.title}`}
                             onClick={(event) => handleArchiveConversation(event, c)}
                           >

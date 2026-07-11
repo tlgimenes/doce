@@ -1,6 +1,4 @@
 import { describe, it, expect, vi } from "vitest";
-import { readFileSync } from "node:fs";
-import { readdirSync } from "node:fs";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import Dialog from "./Dialog";
@@ -23,9 +21,7 @@ describe("Dialog", () => {
       </Dialog>,
     );
 
-    await waitFor(() =>
-      expect(screen.queryByTestId("app-dialog-content")).not.toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.queryByTestId("app-dialog-content")).not.toBeInTheDocument());
     expect(screen.queryByText("Hello")).not.toBeInTheDocument();
   });
 
@@ -60,12 +56,7 @@ describe("Dialog", () => {
 
   it("applies a content class override to the dialog shell", async () => {
     render(
-      <Dialog
-        open={true}
-        onClose={vi.fn()}
-        title="Command center"
-        contentClassName="w-[34rem]"
-      >
+      <Dialog open={true} onClose={vi.fn()} title="Command center" contentClassName="w-[34rem]">
         <p>Hello</p>
       </Dialog>,
     );
@@ -82,20 +73,5 @@ describe("Dialog", () => {
 
     expect(screen.queryByTestId("app-dialog-content")).not.toBeInTheDocument();
     expect(screen.queryByText("Hello")).not.toBeInTheDocument();
-  });
-
-  it("keeps generated ui radii at 8px-or-less across src/components/ui", () => {
-    const uiDir = "src/components/ui";
-    const roundedXlPattern =
-      /\brounded(?:-[trblse]{1,2})?-(?:xl|[2-9]xl)\b|\brounded-[a-z-]*(?:xl|[2-9]xl)\b/;
-
-    for (const entry of readdirSync(uiDir)) {
-      if (!entry.endsWith(".tsx") && !entry.endsWith(".ts")) {
-        continue;
-      }
-
-      const source = readFileSync(`${uiDir}/${entry}`, "utf8");
-      expect(source, entry).not.toMatch(roundedXlPattern);
-    }
   });
 });

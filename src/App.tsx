@@ -285,7 +285,8 @@ export default function App() {
       // FR-009 / Task 2: once an app-owned surface is open, only Cmd+K may
       // continue through the global handler until that surface yields.
       const modalShortcutBlocked =
-        match.id !== "open-command-center" && (showSearch || showShortcutsDialog || showCommandCenter);
+        match.id !== "open-command-center" &&
+        (showSearch || showShortcutsDialog || showCommandCenter);
       if (modalShortcutBlocked) {
         e.preventDefault();
         return;
@@ -364,7 +365,7 @@ export default function App() {
             <div className="flex w-full items-center justify-end" data-topbar-no-drag>
               <Button
                 variant="ghost"
-                size="icon-sm"
+                size="icon-xs"
                 className="rounded-md text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
                 onClick={openShortcutsDialog}
                 data-testid="open-shortcuts-dialog"
