@@ -6,7 +6,7 @@ import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Plus, SendHorizontal } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { InputGroup, InputGroupAddon, InputGroupButton } from "@/components/ui/input-group";
 import { cn } from "@/lib/cn";
 import { commands, type RichMessageContent } from "@/lib/ipc";
 import PastedText from "./extensions/pasted-text-node";
@@ -394,6 +394,7 @@ export default function RichInput({
     editorProps: {
       attributes: {
         ...(inputTestId ? { "data-testid": inputTestId } : {}),
+        "data-slot": "input-group-control",
         class: "min-h-12 w-full px-3 py-2 text-sm leading-6 outline-none [&_p]:m-0",
       },
       handleKeyDown: (view, event) => {
@@ -485,52 +486,49 @@ export default function RichInput({
 
   return (
     <div className="flex flex-col gap-1">
-      <div className="flex flex-col rounded-lg border border-border bg-card shadow-sm">
-        <EditorContent
-          editor={editor}
-          className={cn(
-            "w-full",
-            "[&_.ProseMirror]:!outline-none [&_.ProseMirror:focus-visible]:!outline-none [&_.ProseMirror:focus]:!outline-none",
-            "[&_.ProseMirror_p.is-editor-empty:first-child::before]:content-[attr(data-placeholder)]",
-            "[&_.ProseMirror_p.is-editor-empty:first-child::before]:text-muted-foreground",
-            "[&_.ProseMirror_p.is-editor-empty:first-child::before]:float-left",
-            "[&_.ProseMirror_p.is-editor-empty:first-child::before]:pointer-events-none",
-            "[&_.ProseMirror_p.is-editor-empty:first-child::before]:h-0",
-          )}
-        />
-        <div className="flex items-center justify-between px-3 pb-2">
-          <div className="flex items-center gap-1">
-            {/* T047: the file-picker button (paperclip, matching this
-                codebase's existing icon-button styling — same shape as the
-                submit button below, `variant="ghost"` since this is a
-                secondary action). */}
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="shrink-0"
-              onClick={() => void pickAttachment()}
-              disabled={disabled}
-              aria-label="Attach a file"
-              data-testid="rich-input-attach"
-            >
-              <Plus size={16} />
-            </Button>
-            {contextGauge}
-          </div>
-          <Button
-            type="button"
+      <InputGroup>
+        <div className="flex-1 w-full">
+          <EditorContent
+            editor={editor}
+            className={cn(
+              "w-full",
+              "[&_.ProseMirror]:!outline-none [&_.ProseMirror:focus-visible]:!outline-none [&_.ProseMirror:focus]:!outline-none",
+              "[&_.ProseMirror_p.is-editor-empty:first-child::before]:content-[attr(data-placeholder)]",
+              "[&_.ProseMirror_p.is-editor-empty:first-child::before]:text-muted-foreground",
+              "[&_.ProseMirror_p.is-editor-empty:first-child::before]:float-left",
+              "[&_.ProseMirror_p.is-editor-empty:first-child::before]:pointer-events-none",
+              "[&_.ProseMirror_p.is-editor-empty:first-child::before]:h-0",
+            )}
+          />
+        </div>
+        <InputGroupAddon align="block-end">
+          {/* T047: the file-picker button (paperclip, matching this
+              codebase's existing icon-button styling — same shape as the
+              submit button below, ghost-default since this is a
+              secondary action). */}
+          <InputGroupButton
+            size="icon-xs"
+            onClick={() => void pickAttachment()}
+            disabled={disabled}
+            aria-label="Attach a file"
+            data-testid="rich-input-attach"
+          >
+            <Plus size={16} />
+          </InputGroupButton>
+          {contextGauge}
+          <InputGroupButton
             variant="default"
-            size="icon"
+            size="icon-sm"
+            className="ml-auto"
             onClick={submitCurrentContent}
             disabled={disabled || isEmpty}
             aria-label="Send message"
             data-testid={submitTestId}
           >
             <SendHorizontal size={16} />
-          </Button>
-        </div>
-      </div>
+          </InputGroupButton>
+        </InputGroupAddon>
+      </InputGroup>
       {/* Inline error surface for an oversized/unreadable attachment —
           same pattern as EmptyState.tsx's own `data-testid="empty-state-error"`
           submit-error paragraph, not a new error-UI convention. */}

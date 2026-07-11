@@ -33,8 +33,8 @@ describe("RichInput (009-rich-chat-input, US1)", () => {
     expect(screen.getByTestId("test-submit")).toBeInTheDocument();
   });
 
-  it("renders the redesigned composer shell with a persistent base shadow", () => {
-    render(
+  it("renders the composer shell on stock InputGroup", () => {
+    const { container } = render(
       <RichInput
         onSubmit={vi.fn()}
         skillsEnabled={false}
@@ -46,11 +46,11 @@ describe("RichInput (009-rich-chat-input, US1)", () => {
     );
 
     const editable = screen.getByTestId("test-input");
-    const frame = editable.parentElement?.parentElement;
+    const group = container.querySelector('[data-slot="input-group"]');
 
-    expect(frame).toBeInstanceOf(HTMLElement);
-    expect(frame).toHaveClass("rounded-lg", "border", "border-border", "bg-card", "shadow-sm");
-    expect(frame).not.toHaveClass("focus-within:shadow-sm");
+    expect(group).toBeInstanceOf(HTMLElement);
+    expect(group).toContainElement(editable);
+    expect(editable).toHaveAttribute("data-slot", "input-group-control");
   });
 
   it("typing produces the expected doc text", async () => {
