@@ -117,3 +117,21 @@ if (typeof globalThis.IntersectionObserver === "undefined") {
 if (!Element.prototype.scrollIntoView) {
   Element.prototype.scrollIntoView = function () {};
 }
+
+// jsdom has no matchMedia implementation. next-themes' ThemeProvider calls
+// window.matchMedia("(prefers-color-scheme: dark)") on mount (to resolve
+// "system" theme) regardless of whether a test cares about theming, so
+// without this stub every suite that renders anything under the app's
+// ThemeProvider (main.tsx) throws "matchMedia is not a function".
+if (typeof window.matchMedia === "undefined") {
+  window.matchMedia = ((query: string) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addListener: () => {},
+    removeListener: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    dispatchEvent: () => false,
+  })) as unknown as typeof window.matchMedia;
+}

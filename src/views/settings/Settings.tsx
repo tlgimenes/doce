@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
+import { useTheme } from "next-themes";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Field, FieldLabel } from "@/components/ui/field";
+import { Field, FieldContent, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import {
   Item,
@@ -11,12 +12,28 @@ import {
   ItemGroup,
   ItemTitle,
 } from "@/components/ui/item";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { commands, type McpServerConnection, type SkillSummary } from "@/lib/ipc";
 
 interface SettingsProps {
   onClose: () => void;
 }
+
+// Maps next-themes' raw theme values to display labels — without an
+// `items` map, Base UI's <Select.Value> renders the raw selected value
+// verbatim (e.g. "system"), not the matching <SelectItem>'s children.
+const THEME_LABELS: Record<string, string> = {
+  system: "System",
+  light: "Light",
+  dark: "Dark",
+};
 
 /**
  * User Story 4: MCP server registration (FR-018/FR-019) and filesystem
@@ -26,6 +43,7 @@ interface SettingsProps {
  * `<app data dir>/skills`, not managed through this UI yet).
  */
 export default function Settings({ onClose }: SettingsProps) {
+  const { theme, setTheme } = useTheme();
   const [servers, setServers] = useState<McpServerConnection[]>([]);
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [activeTab, setActiveTab] = useState<"mcp" | "skills">("mcp");
@@ -79,6 +97,38 @@ export default function Settings({ onClose }: SettingsProps) {
           Close
         </Button>
       </div>
+
+      <section
+        className="mb-6 rounded-md border border-border bg-card p-4"
+        data-testid="settings-appearance-panel"
+      >
+        <h3 className="mb-3 text-sm font-medium">Appearance</h3>
+        <Field orientation="horizontal" className="max-w-sm items-center justify-between gap-4">
+          <FieldContent>
+            <FieldLabel htmlFor="theme-select">Theme</FieldLabel>
+            <FieldDescription>Match your system, or force light or dark.</FieldDescription>
+          </FieldContent>
+          <Select
+            items={THEME_LABELS}
+            value={theme ?? "system"}
+            onValueChange={(value) => setTheme(value ?? "system")}
+          >
+            <SelectTrigger
+              id="theme-select"
+              data-testid="theme-select"
+              aria-label="Theme"
+              size="sm"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="system">System</SelectItem>
+              <SelectItem value="light">Light</SelectItem>
+              <SelectItem value="dark">Dark</SelectItem>
+            </SelectContent>
+          </Select>
+        </Field>
+      </section>
 
       <Tabs
         value={activeTab}

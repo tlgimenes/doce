@@ -1,6 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { type ReactElement } from "react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render as rtlRender, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { ThemeProvider } from "next-themes";
 import Settings from "./Settings";
 import { commands } from "@/lib/ipc";
 
@@ -13,11 +15,35 @@ vi.mock("@/lib/ipc", () => ({
   },
 }));
 
+// Task 1 (dark-mode toggler): Settings' Appearance row reads/writes theme
+// through next-themes' useTheme(), which throws outside a ThemeProvider —
+// every render() in this file goes through one, same as ConversationList's
+// SidebarProvider wrapper.
+function render(ui: ReactElement) {
+  return rtlRender(
+    <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
+      {ui}
+    </ThemeProvider>,
+  );
+}
+
 describe("Settings (User Story 4: MCP servers + skills)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(commands.listMcpServers).mockResolvedValue([]);
     vi.mocked(commands.listSkills).mockResolvedValue([]);
+  });
+
+  // next-themes mirrors the active theme onto the real
+  // document.documentElement, which outlives a single test's render()
+  // (this file's jsdom document is shared across the whole file) — without
+  // resetting it here, selecting Dark in one test would leak into every
+  // test that runs after it. (This jsdom environment has no
+  // window.localStorage at all — confirmed directly — so there's no
+  // persisted-storage side channel to reset too; next-themes swallows
+  // that internally via try/catch and falls back to defaultTheme.)
+  afterEach(() => {
+    document.documentElement.classList.remove("dark");
   });
 
   it("fills the shell content area instead of forcing viewport height", () => {
@@ -178,5 +204,53 @@ describe("Settings (User Story 4: MCP servers + skills)", () => {
 
     expect(await screen.findByTestId("mcp-add-error")).toHaveTextContent("bad command");
     expect(screen.getByText("existing")).toBeInTheDocument();
+  });
+});
+
+describe("Settings appearance (dark-mode toggler)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(commands.listMcpServers).mockResolvedValue([]);
+    vi.mocked(commands.listSkills).mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    document.documentElement.classList.remove("dark");
+  });
+
+  it("defaults the theme select to System", async () => {
+    render(<Settings onClose={vi.fn()} />);
+
+    expect(await screen.findByTestId("theme-select")).toHaveTextContent("System");
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
+  });
+
+  it("selecting Dark flips <html> to the dark class", async () => {
+    render(<Settings onClose={vi.fn()} />);
+
+    const trigger = await screen.findByTestId("theme-select");
+    await userEvent.click(trigger);
+    await userEvent.click(await screen.findByRole("option", { name: "Dark" }));
+
+    await waitFor(() => {
+      expect(document.documentElement.classList.contains("dark")).toBe(true);
+    });
+    expect(trigger).toHaveTextContent("Dark");
+  });
+
+  it("selecting Light after Dark removes the dark class again", async () => {
+    render(<Settings onClose={vi.fn()} />);
+
+    const trigger = await screen.findByTestId("theme-select");
+    await userEvent.click(trigger);
+    await userEvent.click(await screen.findByRole("option", { name: "Dark" }));
+    await waitFor(() => expect(document.documentElement.classList.contains("dark")).toBe(true));
+
+    await userEvent.click(trigger);
+    await userEvent.click(await screen.findByRole("option", { name: "Light" }));
+
+    await waitFor(() => {
+      expect(document.documentElement.classList.contains("dark")).toBe(false);
+    });
   });
 });
