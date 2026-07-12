@@ -1190,12 +1190,18 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     });
   });
 
-  it("marks the workspace composer shell for chat composer view transitions", async () => {
+  it("marks the composer COLUMN (not the full-width shell) for view transitions", async () => {
     render(<Workspace conversationId="conv-1" />);
 
     const shell = await screen.findByTestId("workspace-composer-shell");
     expect(shell).toHaveClass("border-t", "border-border", "p-4");
-    expect(shell.className).toContain("[view-transition-name:chat-composer]");
+    // The view-transition name must live on an element with the SAME width
+    // as EmptyState's named element (max-w-xl) — naming the full-width
+    // shell makes the empty-state -> chat transition morph on the x axis.
+    expect(shell.className).not.toContain("[view-transition-name:chat-composer]");
+    const named = shell.querySelector('[class*="view-transition-name:chat-composer"]');
+    expect(named).not.toBeNull();
+    expect(named).toHaveClass("max-w-xl", "mx-auto");
   });
 
   it("switching to a different conversationId reloads its own messages", async () => {
