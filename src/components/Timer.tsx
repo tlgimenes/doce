@@ -21,5 +21,5 @@ export default function Timer({ createdAt, durationMs }: TimerProps) {
   }, [durationMs]);
 
   const elapsedMs = durationMs ?? Math.max(0, now - createdAt);
-  return <span className="tabular-nums">{(elapsedMs / 1000).toFixed(1)}s</span>;
+  return <span className="font-mono tabular-nums">{(elapsedMs / 1000).toFixed(1)}s</span>;
 }
