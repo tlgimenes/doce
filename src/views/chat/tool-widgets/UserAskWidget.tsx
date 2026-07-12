@@ -1,5 +1,5 @@
 import { useId, useState } from "react";
-import { ArrowLeft, SendHorizontal, X } from "lucide-react";
+import { ArrowLeft, ArrowUp, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -176,7 +176,7 @@ export default function UserAskWidget({ detail, initialMode = "options" }: UserA
               aria-label="Send answer"
               data-testid="question-submit"
             >
-              <SendHorizontal size={16} />
+              <ArrowUp size={16} />
             </Button>
           </div>
         </div>

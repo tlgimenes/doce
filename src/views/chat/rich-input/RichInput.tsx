@@ -5,7 +5,7 @@ import { Placeholder } from "@tiptap/extension-placeholder";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Plus, SendHorizontal } from "lucide-react";
+import { ArrowUp, Plus } from "lucide-react";
 import { InputGroup, InputGroupAddon, InputGroupButton } from "@/components/ui/input-group";
 import { cn } from "@/lib/cn";
 import { commands, type RichMessageContent } from "@/lib/ipc";
@@ -538,7 +538,7 @@ export default function RichInput({
             aria-label="Send message"
             data-testid={submitTestId}
           >
-            <SendHorizontal size={16} />
+            <ArrowUp size={16} />
           </InputGroupButton>
         </InputGroupAddon>
       </InputGroup>
