@@ -500,7 +500,7 @@ export default function Workspace({
         <MessageScroller className="h-auto min-h-0 flex-1">
           <MessageScrollerViewport className="p-4" data-testid="workspace-scroll-container">
             <MessageScrollerContent data-testid="workspace-transcript-content">
-              <div className="mx-auto w-full max-w-xl">
+              <div className="mx-auto w-full max-w-lg">
                 {transcriptTurns.map((turn, index) => {
                   const isLastTurn = index === transcriptTurns.length - 1;
                   return (
@@ -532,7 +532,7 @@ export default function Workspace({
           )}
           data-testid="workspace-composer-shell"
         >
-          <div className="mx-auto w-full max-w-xl">
+          <div className="mx-auto w-full max-w-lg">
             {pendingQuestion ? (
               <UserAskWidget detail={pendingQuestion} />
             ) : (
