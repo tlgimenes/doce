@@ -22,7 +22,7 @@ export default function StreamingStatus({ startedAt }: StreamingStatusProps) {
 
   return (
     <div className="px-4" data-testid="agent-thinking">
-      <div className="mx-auto max-w-2xl py-2">
+      <div className="mx-auto max-w-xl py-2">
         <Marker>
           <MarkerContent>
             <span role="status" aria-atomic="true" aria-label="Working" className="shimmer">
