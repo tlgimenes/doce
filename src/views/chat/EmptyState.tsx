@@ -87,7 +87,7 @@ export default function EmptyState({ autoFocusToken, onConversationCreated }: Em
       data-testid="empty-state"
     >
       <div
-        className="relative w-full max-w-lg space-y-3 [view-transition-name:chat-composer]"
+        className="relative w-full max-w-xl space-y-3 [view-transition-name:chat-composer]"
         data-testid="empty-state-composer"
       >
         {/* 008-shared-design-system exemption: a compact inline text+caret

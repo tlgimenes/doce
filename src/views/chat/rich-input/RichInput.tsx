@@ -395,7 +395,7 @@ export default function RichInput({
       attributes: {
         ...(inputTestId ? { "data-testid": inputTestId } : {}),
         "data-slot": "input-group-control",
-        class: "min-h-20 w-full px-3 py-2 text-sm leading-6 outline-none [&_p]:m-0",
+        class: "min-h-22 w-full px-3 py-2 text-sm leading-6 outline-none [&_p]:m-0",
       },
       handleKeyDown: (view, event) => {
         // `editorProps.handleKeyDown` (this function) is checked by
