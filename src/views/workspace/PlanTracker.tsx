@@ -100,7 +100,7 @@ export default function PlanTracker({ conversationId }: PlanTrackerProps) {
 
   return (
     <div className="px-4">
-      <Collapsible className="mx-auto max-w-3xl" data-testid="plan-tracker">
+      <Collapsible className="mx-auto max-w-2xl" data-testid="plan-tracker">
         {/* Content BEFORE the trigger: the list expands upward, Claude
             Code style — the one-liner stays anchored just above the
             composer. */}

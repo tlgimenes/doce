@@ -500,7 +500,7 @@ export default function Workspace({
         <MessageScroller className="h-auto min-h-0 flex-1">
           <MessageScrollerViewport className="p-4" data-testid="workspace-scroll-container">
             <MessageScrollerContent data-testid="workspace-transcript-content">
-              <div className="mx-auto w-full max-w-3xl">
+              <div className="mx-auto w-full max-w-2xl">
                 {transcriptTurns.map((turn, index) => {
                   const isLastTurn = index === transcriptTurns.length - 1;
                   return (
@@ -532,20 +532,22 @@ export default function Workspace({
           )}
           data-testid="workspace-composer-shell"
         >
-          {pendingQuestion ? (
-            <UserAskWidget detail={pendingQuestion} />
-          ) : (
-            <RichInput
-              onSubmit={(content, richContent) => {
-                send(content, richContent);
-              }}
-              skillsEnabled={true}
-              disabled={turnInFlight || pendingToolCall !== null}
-              placeholder="Describe a task…"
-              inputTestId="agent-input"
-              submitTestId="agent-send"
-            />
-          )}
+          <div className="mx-auto w-full max-w-2xl">
+            {pendingQuestion ? (
+              <UserAskWidget detail={pendingQuestion} />
+            ) : (
+              <RichInput
+                onSubmit={(content, richContent) => {
+                  send(content, richContent);
+                }}
+                skillsEnabled={true}
+                disabled={turnInFlight || pendingToolCall !== null}
+                placeholder="Describe a task…"
+                inputTestId="agent-input"
+                submitTestId="agent-send"
+              />
+            )}
+          </div>
         </div>
       </MessageScrollerProvider>
     </div>
