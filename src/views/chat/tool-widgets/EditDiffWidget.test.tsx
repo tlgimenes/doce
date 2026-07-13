@@ -16,7 +16,7 @@ describe("EditDiffWidget (004-tool-call-widgets, US1)", () => {
 
     render(<EditDiffWidget detail={detail} />);
 
-    expect(screen.getByText("/tmp/notes.md")).toBeInTheDocument();
+    expect(screen.getByText(/Edited notes\.md/)).toBeInTheDocument();
     const removed = screen.getByTestId("diff-removed");
     const added = screen.getByTestId("diff-added");
     expect(removed).toHaveTextContent("old line");
@@ -25,7 +25,7 @@ describe("EditDiffWidget (004-tool-call-widgets, US1)", () => {
     expect(added.querySelector('[data-variant="added"]')).not.toBeNull();
   });
 
-  it("shows the file path and +N/−N change-count badges in the header (FR-002)", () => {
+  it("shows the basename and inline +N/−N change counts in the header (FR-002)", () => {
     // oldString has one line replaced ("old line" -> "new line"): +1/-1.
     const detail: EditDetail = {
       toolName: "Edit",
@@ -38,13 +38,12 @@ describe("EditDiffWidget (004-tool-call-widgets, US1)", () => {
 
     render(<EditDiffWidget detail={detail} />);
 
-    expect(screen.getByText("+1")).toBeInTheDocument();
-    expect(screen.getByText("−1")).toBeInTheDocument();
+    expect(screen.getByText("+1 −1")).toBeInTheDocument();
   });
 
-  it("sums added/removed lines across multiple non-adjacent hunks in the +N/−N badges", () => {
+  it("sums added/removed lines across multiple non-adjacent hunks in the +N/−N counts", () => {
     // Two separate single-line edits ("b"->"X", "d"->"Y") separated by
-    // unchanged lines produce two added/removed hunks each — the badges
+    // unchanged lines produce two added/removed hunks each — the counts
     // must sum across all of them, not just the first: +2/−2.
     const detail: EditDetail = {
       toolName: "Edit",
@@ -57,8 +56,7 @@ describe("EditDiffWidget (004-tool-call-widgets, US1)", () => {
 
     render(<EditDiffWidget detail={detail} />);
 
-    expect(screen.getByText("+2")).toBeInTheDocument();
-    expect(screen.getByText("−2")).toBeInTheDocument();
+    expect(screen.getByText("+2 −2")).toBeInTheDocument();
   });
 
   it("renders a failed-edit state, not an empty or misleading diff, when outcome.ok is false", () => {

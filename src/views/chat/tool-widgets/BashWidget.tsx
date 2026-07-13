@@ -98,17 +98,15 @@ export default function BashWidget({ detail }: BashWidgetProps) {
   const isEmpty =
     !stdout && !stderr && !payloadPath && !stdoutTrunc.truncated && !stderrTrunc.truncated;
 
-  const statusBadges = (
-    <>
-      <Badge variant={succeeded ? "secondary" : "destructive"}>
-        {succeeded ? "Success" : `Failed (exit ${exitCode})`}
-      </Badge>
-      <Badge variant="outline">
-        exit {exitCode}
-        {detail.tokenCount != null && ` · ${formatTokenCount(detail.tokenCount)} tok`}
-      </Badge>
-    </>
-  );
+  // Success is the quiet default — only failure earns a collapsed-row
+  // badge; exit code and token count live in the expanded panel's footer.
+  const statusBadges = !succeeded && <Badge variant="destructive">Failed (exit {exitCode})</Badge>;
+  const meta = [
+    `exit ${exitCode}`,
+    detail.tokenCount != null ? `${formatTokenCount(detail.tokenCount)} tok` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   // Nothing to expand into: render the header-only, non-collapsible frame
   // rather than a Collapsible whose panel would just be empty.
@@ -186,6 +184,9 @@ export default function BashWidget({ detail }: BashWidgetProps) {
           </p>
         )}
         {payloadPath && <ViewFullOutput path={payloadPath} />}
+        <p data-testid="bash-meta" className="px-3 py-1 text-xs text-muted-foreground">
+          {meta}
+        </p>
       </CollapsibleContent>
     </Collapsible>
   );

@@ -1,9 +1,9 @@
 import { diffLines } from "diff";
 import { ChevronRight, FilePen } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
 import type { EditDetail } from "@/lib/ipc";
+import { pathBasename } from "@/lib/pathBasename";
 
 interface EditDiffWidgetProps {
   detail: EditDetail;
@@ -23,6 +23,8 @@ const lineClass: Record<DiffLineVariant, string> = {
  * already captured (research.md § 6/§ 4), not a heavier editor component.
  */
 export default function EditDiffWidget({ detail }: EditDiffWidgetProps) {
+  const fileLabel = detail.filePath ? pathBasename(detail.filePath) : "file";
+
   if (!detail.outcome.ok) {
     return (
       <Marker data-testid="edit-failed">
@@ -31,13 +33,10 @@ export default function EditDiffWidget({ detail }: EditDiffWidgetProps) {
         </MarkerIcon>
         <MarkerContent className="flex min-w-0 flex-col">
           <span className="truncate" title={detail.filePath ?? undefined}>
-            {detail.filePath ?? "(no file path)"}
+            Couldn&apos;t edit {fileLabel}
           </span>
           <span className="text-xs">{detail.outcome.error}</span>
         </MarkerContent>
-        <Badge variant="destructive" className="ml-auto shrink-0">
-          Failed
-        </Badge>
       </Marker>
     );
   }
@@ -57,16 +56,15 @@ export default function EditDiffWidget({ detail }: EditDiffWidgetProps) {
           <FilePen />
         </MarkerIcon>
         <MarkerContent className="min-w-0 truncate" title={detail.filePath ?? undefined}>
-          {detail.filePath}
+          Edited {fileLabel}{" "}
+          <span className="text-xs text-muted-foreground tabular-nums">
+            +{addedCount} −{removedCount}
+          </span>
         </MarkerContent>
-        <span className="ml-auto flex shrink-0 items-center gap-2">
-          <Badge variant="outline">+{addedCount}</Badge>
-          <Badge variant="outline">−{removedCount}</Badge>
-          <ChevronRight
-            aria-hidden="true"
-            className="size-4 shrink-0 transition-transform group-aria-expanded/marker-row:rotate-90"
-          />
-        </span>
+        <ChevronRight
+          aria-hidden="true"
+          className="ml-auto size-4 shrink-0 transition-transform group-aria-expanded/marker-row:rotate-90"
+        />
       </CollapsibleTrigger>
       <CollapsibleContent className="pl-6">
         <div className="overflow-x-auto p-0 font-mono text-xs whitespace-pre text-foreground">

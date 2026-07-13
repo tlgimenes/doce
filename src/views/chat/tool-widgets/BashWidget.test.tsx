@@ -29,7 +29,8 @@ describe("BashWidget (004-tool-call-widgets, US2)", () => {
       outcome: { ok: true, exitCode: 0, stdout: "", stderr: "" },
     };
     const { rerender } = render(<BashWidget detail={success} />);
-    expect(screen.getByTestId("bash-status")).toHaveTextContent("Success");
+    // Success is the quiet default: no badge at all on the collapsed row.
+    expect(screen.getByTestId("bash-status").querySelector('[data-slot="badge"]')).toBeNull();
 
     const failure: BashDetail = {
       toolName: "Bash",
@@ -102,7 +103,7 @@ describe("BashWidget (004-tool-call-widgets, US2)", () => {
     expect(screen.queryByTestId("view-full-output-button")).not.toBeInTheDocument();
   });
 
-  it("shows a token cost badge in the status row when tokenCount is present", () => {
+  it("shows exit code and token cost in the expanded panel footer, not the status row", async () => {
     const detail: BashDetail = {
       toolName: "Bash",
       command: "cargo test --lib",
@@ -111,7 +112,9 @@ describe("BashWidget (004-tool-call-widgets, US2)", () => {
       tokenCount: 89,
     };
     render(<BashWidget detail={detail} />);
-    expect(screen.getByTestId("bash-status")).toHaveTextContent("89 tok");
+    expect(screen.getByTestId("bash-status")).not.toHaveTextContent("89 tok");
+    await userEvent.click(screen.getByRole("button"));
+    expect(screen.getByTestId("bash-meta")).toHaveTextContent("exit 0 · 89 tok");
   });
 
   // --- Task 9 (payload-files design): slimmed detail shapes ---
@@ -190,7 +193,7 @@ describe("BashWidget (004-tool-call-widgets, US2)", () => {
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
     expect(container.querySelector('[data-slot="collapsible"]')).toBeNull();
     expect(screen.getByTestId("bash-command")).toHaveTextContent("touch file.txt");
-    expect(screen.getByTestId("bash-status")).toHaveTextContent("Success");
+    expect(screen.getByTestId("bash-status").querySelector('[data-slot="badge"]')).toBeNull();
   });
 
   it("collapses completed output by default until the header is clicked", async () => {
@@ -202,9 +205,9 @@ describe("BashWidget (004-tool-call-widgets, US2)", () => {
     };
     render(<BashWidget detail={detail} />);
 
-    // Header (command + status) renders without expanding.
+    // Header (command, no badge) renders without expanding.
     expect(screen.getByTestId("bash-command")).toHaveTextContent("ls -la");
-    expect(screen.getByTestId("bash-status")).toHaveTextContent("Success");
+    expect(screen.getByTestId("bash-status").querySelector('[data-slot="badge"]')).toBeNull();
     expect(screen.queryByTestId("bash-stdout")).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button"));

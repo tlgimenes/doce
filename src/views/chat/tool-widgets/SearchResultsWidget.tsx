@@ -39,7 +39,6 @@ export default function SearchResultsWidget({ detail }: SearchResultsWidgetProps
   }
 
   const count = detail.matches.length;
-  const countLabel = isGrep ? `${count} ${count === 1 ? "match" : "matches"}` : `${count} files`;
 
   return (
     <Collapsible data-testid="search-widget">
@@ -55,26 +54,42 @@ export default function SearchResultsWidget({ detail }: SearchResultsWidgetProps
           className="min-w-0 truncate"
           title={detail.pattern ?? undefined}
         >
-          {detail.toolName}{" "}
-          <code data-slot="code-inline" className="font-mono text-xs">
-            {detail.pattern}
-          </code>
-        </MarkerContent>
-        <span className="ml-auto flex shrink-0 items-center gap-2">
-          <Badge variant="outline">{countLabel}</Badge>
-          {detail.tokenCount != null && (
-            <Badge variant="outline">{formatTokenCount(detail.tokenCount)} tok</Badge>
+          {isGrep ? (
+            count === 0 ? (
+              <>
+                No matches for{" "}
+                <code data-slot="code-inline" className="font-mono text-xs">
+                  {detail.pattern}
+                </code>
+              </>
+            ) : (
+              <>
+                Found {count} {count === 1 ? "match" : "matches"} for{" "}
+                <code data-slot="code-inline" className="font-mono text-xs">
+                  {detail.pattern}
+                </code>
+              </>
+            )
+          ) : count === 0 ? (
+            "No files matched"
+          ) : (
+            `Found ${count} ${count === 1 ? "file" : "files"}`
           )}
-          <ChevronRight
-            aria-hidden="true"
-            className="size-4 shrink-0 transition-transform group-aria-expanded/marker-row:rotate-90"
-          />
-        </span>
+        </MarkerContent>
+        <ChevronRight
+          aria-hidden="true"
+          className="ml-auto size-4 shrink-0 transition-transform group-aria-expanded/marker-row:rotate-90"
+        />
       </CollapsibleTrigger>
       <CollapsibleContent className="pl-6" data-testid="search-results">
         <div className="max-h-80 space-y-2 overflow-y-auto p-3">
           <SearchContext detail={detail} />
           {isGrep ? <GrepResults detail={detail} /> : <GlobResults detail={detail} />}
+          {detail.tokenCount != null && (
+            <p data-testid="search-meta" className="text-xs text-muted-foreground">
+              {formatTokenCount(detail.tokenCount)} tok
+            </p>
+          )}
         </div>
       </CollapsibleContent>
     </Collapsible>
@@ -83,6 +98,9 @@ export default function SearchResultsWidget({ detail }: SearchResultsWidgetProps
 
 function SearchContext({ detail }: { detail: GlobDetail | GrepDetail }) {
   const parts = [
+    // Glob's collapsed row is an outcome sentence ("Found 8 files"), so the
+    // pattern itself is only shown here in the expanded panel.
+    detail.toolName === "Glob" && detail.pattern ? `pattern: ${detail.pattern}` : null,
     detail.path ? `path: ${detail.path}` : null,
     detail.toolName === "Grep" && detail.glob ? `glob: ${detail.glob}` : null,
   ].filter(Boolean);

@@ -5,7 +5,7 @@ import ReadWidget from "./ReadWidget";
 import type { ReadDetail } from "@/lib/ipc";
 
 describe("ReadWidget (004-tool-call-widgets, US4)", () => {
-  it("renders successful reads collapsed with path, bytes, tokens, and a chevron", () => {
+  it("renders successful reads collapsed with the basename and a chevron, metadata demoted to the expanded panel", async () => {
     const detail: ReadDetail = {
       toolName: "Read",
       filePath: "/tmp/notes.txt",
@@ -18,11 +18,14 @@ describe("ReadWidget (004-tool-call-widgets, US4)", () => {
     render(<ReadWidget detail={detail} />);
 
     expect(screen.getByRole("button")).toHaveAttribute("aria-expanded", "false");
-    expect(screen.getByTestId("read-summary")).toHaveTextContent("Read /tmp/notes.txt");
-    expect(screen.getByText("11B")).toBeInTheDocument();
-    expect(screen.getByText("312 tok")).toBeInTheDocument();
+    expect(screen.getByTestId("read-summary")).toHaveTextContent("Read notes.txt");
+    expect(screen.getByTestId("read-summary")).toHaveAttribute("title", "/tmp/notes.txt");
+    expect(screen.queryByText(/tok/)).not.toBeInTheDocument();
     expect(screen.getByTestId("read-widget").querySelectorAll("svg")).toHaveLength(2);
     expect(screen.queryByTestId("read-preview")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button"));
+    expect(screen.getByTestId("read-meta")).toHaveTextContent("/tmp/notes.txt · 11B · 312 tok");
   });
 
   it("expands inline to show captured text preview", async () => {
@@ -57,11 +60,10 @@ describe("ReadWidget (004-tool-call-widgets, US4)", () => {
 
     expect(screen.queryByTestId("read-truncated")).not.toBeInTheDocument();
     expect(screen.queryByText("Output truncated")).not.toBeInTheDocument();
-    expect(screen.getByTestId("read-summary")).toHaveTextContent("Read /tmp/big.txt");
-    expect(screen.getByText("16B")).toBeInTheDocument();
-    expect(screen.getByText("42 tok")).toBeInTheDocument();
+    expect(screen.getByTestId("read-summary")).toHaveTextContent("Read big.txt");
     await userEvent.click(screen.getByRole("button"));
     expect(screen.queryByText("Output truncated")).not.toBeInTheDocument();
+    expect(screen.getByTestId("read-meta")).toHaveTextContent("16B · 42 tok");
   });
 
   it("does not present offload as a separate summary-level state, but still offers the payload file once expanded (legacy row)", async () => {
@@ -77,9 +79,8 @@ describe("ReadWidget (004-tool-call-widgets, US4)", () => {
 
     render(<ReadWidget detail={detail} />);
 
-    expect(screen.getByTestId("read-summary")).toHaveTextContent("Read /tmp/huge.txt");
-    expect(screen.getByText("15B")).toBeInTheDocument();
-    expect(screen.getByText("2.0k tok")).toBeInTheDocument();
+    expect(screen.getByTestId("read-summary")).toHaveTextContent("Read huge.txt");
+    expect(screen.queryByText(/2\.0k tok/)).not.toBeInTheDocument();
     expect(screen.queryByTestId("view-full-output-button")).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button"));
@@ -127,7 +128,7 @@ describe("ReadWidget (004-tool-call-widgets, US4)", () => {
     expect(screen.queryByTestId("view-full-output-button")).not.toBeInTheDocument();
   });
 
-  it("renders byte metadata and omits only the token segment for older rows without tokenCount", () => {
+  it("renders byte metadata and omits only the token segment for older rows without tokenCount", async () => {
     const detail: ReadDetail = {
       toolName: "Read",
       filePath: "/tmp/legacy.txt",
@@ -138,8 +139,9 @@ describe("ReadWidget (004-tool-call-widgets, US4)", () => {
 
     render(<ReadWidget detail={detail} />);
 
-    expect(screen.getByTestId("read-summary")).toHaveTextContent("Read /tmp/legacy.txt");
-    expect(screen.getByText("11B")).toBeInTheDocument();
+    expect(screen.getByTestId("read-summary")).toHaveTextContent("Read legacy.txt");
+    await userEvent.click(screen.getByRole("button"));
+    expect(screen.getByTestId("read-meta")).toHaveTextContent("/tmp/legacy.txt · 11B");
     expect(screen.queryByText(/tok/)).not.toBeInTheDocument();
   });
 

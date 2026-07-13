@@ -1,10 +1,10 @@
 import { ChevronRight, FileText } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
 import type { ReadDetail } from "@/lib/ipc";
 import { formatByteCount } from "@/lib/formatByteCount";
 import { formatTokenCount } from "@/lib/formatTokenCount";
+import { pathBasename } from "@/lib/pathBasename";
 import ReadPreview from "./ReadPreview";
 import ViewFullOutput from "./ViewFullOutput";
 
@@ -12,8 +12,15 @@ interface ReadWidgetProps {
   detail: ReadDetail;
 }
 
-/** US4/FR-005: a compact file-reference card, not a plain-text dump of the file's contents. */
+/**
+ * US4/FR-005: a compact file-reference card, not a plain-text dump of the
+ * file's contents. The collapsed row reads as an activity sentence
+ * ("Read composer.tsx"); the technical payload — full path, byte size,
+ * token count — lives in the expanded panel and the hover title.
+ */
 export default function ReadWidget({ detail }: ReadWidgetProps) {
+  const fileLabel = detail.filePath ? pathBasename(detail.filePath) : "file";
+
   if (!detail.outcome.ok) {
     return (
       <Marker data-testid="read-widget">
@@ -21,12 +28,11 @@ export default function ReadWidget({ detail }: ReadWidgetProps) {
           <FileText />
         </MarkerIcon>
         <MarkerContent className="flex min-w-0 flex-col">
-          <span className="truncate">Read {detail.filePath}</span>
+          <span className="truncate" title={detail.filePath ?? undefined}>
+            Couldn&apos;t read {fileLabel}
+          </span>
           <span className="text-xs">{detail.outcome.error}</span>
         </MarkerContent>
-        <Badge variant="destructive" className="ml-auto shrink-0">
-          Failed
-        </Badge>
       </Marker>
     );
   }
@@ -40,6 +46,7 @@ export default function ReadWidget({ detail }: ReadWidgetProps) {
   const tokenCount =
     detail.tokenCount != null ? `${formatTokenCount(detail.tokenCount)} tok` : null;
   const payloadPath = detail.payloadRef ?? detail.offloadedTo;
+  const meta = [detail.filePath, byteCount, tokenCount].filter(Boolean).join(" · ");
 
   return (
     <Collapsible data-testid="read-widget">
@@ -55,21 +62,20 @@ export default function ReadWidget({ detail }: ReadWidgetProps) {
           className="min-w-0 truncate"
           title={detail.filePath ?? undefined}
         >
-          Read {detail.filePath}
+          Read {fileLabel}
         </MarkerContent>
-        <span className="ml-auto flex shrink-0 items-center gap-2">
-          <Badge variant="outline">{byteCount}</Badge>
-          {tokenCount != null && <Badge variant="outline">{tokenCount}</Badge>}
-          <ChevronRight
-            aria-hidden="true"
-            className="size-4 shrink-0 transition-transform group-aria-expanded/marker-row:rotate-90"
-          />
-        </span>
+        <ChevronRight
+          aria-hidden="true"
+          className="ml-auto size-4 shrink-0 transition-transform group-aria-expanded/marker-row:rotate-90"
+        />
       </CollapsibleTrigger>
       <CollapsibleContent className="pl-6" data-testid="read-preview">
         <div className="max-h-80 overflow-y-auto p-3">
           <ReadPreview detail={detail} />
           {payloadPath && <ViewFullOutput path={payloadPath} />}
+          <p data-testid="read-meta" className="mt-2 text-xs text-muted-foreground">
+            {meta}
+          </p>
         </div>
       </CollapsibleContent>
     </Collapsible>

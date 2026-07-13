@@ -122,7 +122,11 @@ export default function UserAskWidget({ detail, initialMode = "options" }: UserA
           {detail.multiSelect ? (
             <div className="flex flex-col gap-0.5" role="group" aria-labelledby={questionId}>
               {detail.options.map((option, index) => (
-                <FieldLabel key={option.label} htmlFor={`${questionId}-option-${index}`}>
+                <FieldLabel
+                  key={option.label}
+                  htmlFor={`${questionId}-option-${index}`}
+                  className="cursor-pointer border-none transition-colors hover:bg-muted"
+                >
                   <Field orientation="horizontal" data-testid="question-option">
                     <Checkbox
                       id={`${questionId}-option-${index}`}
@@ -149,7 +153,11 @@ export default function UserAskWidget({ detail, initialMode = "options" }: UserA
               className="flex flex-col gap-0.5"
             >
               {detail.options.map((option, index) => (
-                <FieldLabel key={option.label} htmlFor={`${questionId}-option-${index}`}>
+                <FieldLabel
+                  key={option.label}
+                  htmlFor={`${questionId}-option-${index}`}
+                  className="cursor-pointer border-none transition-colors hover:bg-muted"
+                >
                   <Field orientation="horizontal" data-testid="question-option">
                     <RadioGroupItem id={`${questionId}-option-${index}`} value={option.label} />
                     <FieldContent>
