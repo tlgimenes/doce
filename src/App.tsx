@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { KeyboardIcon } from "lucide-react";
 import { TopbarHost, TopbarProvider } from "@/components/Topbar";
+import { cn } from "@/lib/cn";
 import { Button } from "@/components/ui/button";
 import { Sidebar, SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import Onboarding from "@/views/onboarding/Onboarding";
@@ -391,7 +392,18 @@ export default function App() {
           />
         </Sidebar>
         <SidebarInset className="min-w-0">
-          <TopbarHost target="main" className="px-4" />
+          {/* The bottom shadow marks the boundary to a scrollable transcript,
+              so it only belongs above an open conversation — not over the
+              empty state, settings, or the widget gallery. `relative` lifts
+              the host's paint order so the shadow isn't covered by the
+              content pane that follows it in the DOM. */}
+          <TopbarHost
+            target="main"
+            className={cn(
+              "px-4",
+              !showWidgetGallery && !showSettings && activeConversation && "relative shadow-sm",
+            )}
+          />
           <div
             className="min-h-0 flex-1 [view-transition-name:chat-surface]"
             data-testid="app-content-pane"

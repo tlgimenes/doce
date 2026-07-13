@@ -31,7 +31,7 @@ export default function StreamingStatus({ startedAt }: StreamingStatusProps) {
           </MarkerContent>
           <span
             aria-live="off"
-            className="ml-auto shrink-0 font-mono text-xs tabular-nums"
+            className="shrink-0 font-mono text-xs tabular-nums"
             data-testid="agent-thinking-timer"
           >
             {formatElapsedMs(now - effectiveStartedAt)}

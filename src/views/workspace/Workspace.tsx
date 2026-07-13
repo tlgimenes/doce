@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { cn } from "@/lib/cn";
 import { runViewTransition } from "@/lib/viewTransition";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
@@ -525,10 +524,7 @@ export default function Workspace({
         </MessageScroller>
         <PlanTracker conversationId={conversationId} />
         {showGenericStreamingStatus && <StreamingStatus startedAt={activeTurnStartedAt} />}
-        <div
-          className={cn("p-4", showGenericStreamingStatus ? "" : "border-t border-border")}
-          data-testid="workspace-composer-shell"
-        >
+        <div className="p-4" data-testid="workspace-composer-shell">
           {/* The view-transition name lives on the max-w-xl column, matching
               EmptyState's named element exactly — same width on both sides
               of the transition, so the morph never grows on the x axis. */}

@@ -745,7 +745,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     render(<Workspace conversationId="conv-1" />);
 
     const status = await screen.findByTestId("task-status");
-    expect(status).toHaveTextContent(/running/i);
+    expect(status).toHaveTextContent(/exploring/i);
     expect(status.closest('[data-testid="transcript-turn"]')).toHaveTextContent(
       "investigate the bug",
     );
@@ -879,12 +879,12 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     nowSpy.mockRestore();
   });
 
-  it("keeps the composer divider when the streaming status is hidden", async () => {
+  it("renders the composer without a divider when the streaming status is hidden", async () => {
     vi.mocked(commands.listMessages).mockResolvedValue([]);
 
     render(<Workspace conversationId="conv-1" />);
 
-    expect(await screen.findByTestId("workspace-composer-shell")).toHaveClass("border-t");
+    expect(await screen.findByTestId("workspace-composer-shell")).not.toHaveClass("border-t");
     expect(screen.queryByTestId("agent-thinking")).not.toBeInTheDocument();
   });
 
@@ -1194,7 +1194,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     render(<Workspace conversationId="conv-1" />);
 
     const shell = await screen.findByTestId("workspace-composer-shell");
-    expect(shell).toHaveClass("border-t", "border-border", "p-4");
+    expect(shell).toHaveClass("p-4");
     // The view-transition name must live on an element with the SAME width
     // as EmptyState's named element (max-w-xl) — naming the full-width
     // shell makes the empty-state -> chat transition morph on the x axis.
