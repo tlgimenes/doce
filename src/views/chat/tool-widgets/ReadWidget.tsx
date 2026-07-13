@@ -2,7 +2,6 @@ import { FileText } from "lucide-react";
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
 import type { ReadDetail } from "@/lib/ipc";
 import { formatByteCount } from "@/lib/formatByteCount";
-import { formatTokenCount } from "@/lib/formatTokenCount";
 import { pathBasename } from "@/lib/pathBasename";
 
 interface ReadWidgetProps {
@@ -38,10 +37,9 @@ export default function ReadWidget({ detail }: ReadWidgetProps) {
   // output, NOT the source file's size); legacy rows persisted before the
   // payload-files design still carry the full content inline.
   const previewLength = (detail.outcome.contentPreview ?? detail.outcome.content ?? "").length;
-  const byteCount = formatByteCount(detail.outcome.contentBytes ?? previewLength);
-  const tokenCount =
-    detail.tokenCount != null ? `${formatTokenCount(detail.tokenCount)} tok` : null;
-  const meta = [byteCount, tokenCount].filter(Boolean).join(" · ");
+  // Token counts live on the turn accumulator (StreamingStatus + the final
+  // reply's footer), not on individual widgets.
+  const meta = formatByteCount(detail.outcome.contentBytes ?? previewLength);
 
   return (
     <Marker data-testid="read-widget">

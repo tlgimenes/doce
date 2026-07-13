@@ -2,7 +2,6 @@ import { Terminal } from "lucide-react";
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { BashDetail } from "@/lib/ipc";
-import { formatTokenCount } from "@/lib/formatTokenCount";
 
 interface BashWidgetProps {
   detail: BashDetail;
@@ -96,7 +95,6 @@ export default function BashWidget({ detail }: BashWidgetProps) {
         <span data-testid="bash-exit" className={succeeded ? undefined : "text-destructive"}>
           exit {exitCode}
         </span>
-        {detail.tokenCount != null && <> · {formatTokenCount(detail.tokenCount)} tok</>}
       </span>
     </Marker>
   );

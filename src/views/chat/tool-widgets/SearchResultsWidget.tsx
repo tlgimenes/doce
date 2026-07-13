@@ -2,7 +2,6 @@ import { Search } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
 import type { GlobDetail, GrepDetail } from "@/lib/ipc";
-import { formatTokenCount } from "@/lib/formatTokenCount";
 
 interface SearchResultsWidgetProps {
   detail: GlobDetail | GrepDetail;
@@ -41,6 +40,9 @@ export default function SearchResultsWidget({ detail }: SearchResultsWidgetProps
   }
 
   const count = detail.matches.length;
+  // "10000+" when the safety bound chopped the set — a bare count would
+  // present the prefix as the whole truth.
+  const countLabel = `${count}${detail.truncated ? "+" : ""}`;
 
   return (
     <Marker data-testid="search-widget">
@@ -62,7 +64,7 @@ export default function SearchResultsWidget({ detail }: SearchResultsWidgetProps
             </>
           ) : (
             <>
-              Found {count} {count === 1 ? "match" : "matches"} for{" "}
+              Found {countLabel} {count === 1 && !detail.truncated ? "match" : "matches"} for{" "}
               <code data-slot="code-inline" className="font-mono text-xs">
                 {detail.pattern}
               </code>
@@ -71,14 +73,9 @@ export default function SearchResultsWidget({ detail }: SearchResultsWidgetProps
         ) : count === 0 ? (
           "No files matched"
         ) : (
-          `Found ${count} ${count === 1 ? "file" : "files"}`
+          `Found ${countLabel} ${count === 1 && !detail.truncated ? "file" : "files"}`
         )}
       </MarkerContent>
-      {detail.tokenCount != null && (
-        <span data-testid="search-meta" className="shrink-0 self-end text-xs text-muted-foreground">
-          {formatTokenCount(detail.tokenCount)} tok
-        </span>
-      )}
     </Marker>
   );
 }

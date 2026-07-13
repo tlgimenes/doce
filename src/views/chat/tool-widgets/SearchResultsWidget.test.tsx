@@ -4,7 +4,7 @@ import SearchResultsWidget from "./SearchResultsWidget";
 import type { GlobDetail, GrepDetail } from "@/lib/ipc";
 
 describe("SearchResultsWidget (004-tool-call-widgets, US4: Glob + Grep)", () => {
-  it("renders Glob as a single outcome sentence with muted token info, no match list", () => {
+  it("renders Glob as a single outcome sentence, no match list", () => {
     const detail: GlobDetail = {
       toolName: "Glob",
       pattern: "*.rs",
@@ -18,7 +18,7 @@ describe("SearchResultsWidget (004-tool-call-widgets, US4: Glob + Grep)", () => 
     expect(screen.getByTestId("search-summary")).toHaveTextContent("Found 2 files");
     // The pattern lives in the hover title, not the sentence.
     expect(screen.getByTestId("search-summary")).toHaveAttribute("title", "*.rs");
-    expect(screen.getByTestId("search-meta")).toHaveTextContent("42 tok");
+    expect(screen.queryByTestId("search-meta")).not.toBeInTheDocument();
     // No accordion, no match list in the transcript.
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
     expect(screen.queryByText("/tmp/project/a.rs")).not.toBeInTheDocument();
@@ -43,7 +43,6 @@ describe("SearchResultsWidget (004-tool-call-widgets, US4: Glob + Grep)", () => 
     render(<SearchResultsWidget detail={detail} />);
 
     expect(screen.getByTestId("search-summary")).toHaveTextContent("Found 1 match for TODO");
-    expect(screen.getByTestId("search-meta")).toHaveTextContent("99 tok");
     expect(screen.queryByText(/fix this/)).not.toBeInTheDocument();
   });
 
@@ -86,5 +85,38 @@ describe("SearchResultsWidget (004-tool-call-widgets, US4: Glob + Grep)", () => 
     const badge = screen.getByTestId("search-widget").querySelector('[data-slot="badge"]');
     expect(badge).toHaveTextContent("Interrupted");
     expect(screen.queryByTestId("search-summary")).not.toBeInTheDocument();
+  });
+});
+
+describe("SearchResultsWidget safety-bound truncation", () => {
+  it("marks a bounded Glob result as a floor, not an exact count", () => {
+    render(
+      <SearchResultsWidget
+        detail={{
+          toolName: "Glob",
+          pattern: "**/*",
+          path: "/Users/tester",
+          matches: Array.from({ length: 3 }, (_, i) => `/Users/tester/f${i}`),
+          truncated: true,
+        }}
+      />,
+    );
+    expect(screen.getByTestId("search-summary")).toHaveTextContent("Found 3+ files");
+  });
+
+  it("marks a bounded Grep result the same way", () => {
+    render(
+      <SearchResultsWidget
+        detail={{
+          toolName: "Grep",
+          pattern: "needle",
+          path: "/tmp",
+          glob: null,
+          matches: [{ path: "/tmp/a.rs", lineNumber: 1, line: "needle" }],
+          truncated: true,
+        }}
+      />,
+    );
+    expect(screen.getByTestId("search-summary")).toHaveTextContent("Found 1+ matches for needle");
   });
 });

@@ -63,3 +63,29 @@ describe("StreamingStatus", () => {
     expect(screen.getByTestId("agent-thinking-timer")).toHaveClass("tabular-nums");
   });
 });
+
+describe("StreamingStatus turn token accumulator", () => {
+  it("renders live in/out totals next to the chron when provided", () => {
+    render(<StreamingStatus startedAt={Date.now()} tokens={{ input: 986, output: 78 }} />);
+    expect(screen.getByTestId("agent-thinking-tokens")).toHaveTextContent("↑ 986 ↓ 78");
+  });
+
+  it("renders no token counter when the caller has no turn yet", () => {
+    render(<StreamingStatus startedAt={Date.now()} />);
+    expect(screen.queryByTestId("agent-thinking-tokens")).not.toBeInTheDocument();
+  });
+});
+
+describe("StreamingStatus zero-value hiding", () => {
+  it("hides the zero-valued direction", () => {
+    render(<StreamingStatus startedAt={Date.now()} tokens={{ input: 42, output: 0 }} />);
+    const tokens = screen.getByTestId("agent-thinking-tokens");
+    expect(tokens).toHaveTextContent("↑ 42");
+    expect(tokens).not.toHaveTextContent("↓");
+  });
+
+  it("renders nothing when both directions are zero", () => {
+    render(<StreamingStatus startedAt={Date.now()} tokens={{ input: 0, output: 0 }} />);
+    expect(screen.queryByTestId("agent-thinking-tokens")).not.toBeInTheDocument();
+  });
+});

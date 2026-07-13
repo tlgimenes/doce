@@ -59,7 +59,7 @@ describe("TranscriptRow (004-tool-call-widgets, Foundational)", () => {
     expect(screen.getByTestId("token-meter")).toHaveTextContent(/^\d+\.\d+s$/);
   });
 
-  it("shows assistant duration and tokens together for completed text replies", () => {
+  it("shows assistant duration and the turn's accumulated in/out tokens together", () => {
     render(
       <TranscriptRow
         message={baseMessage({
@@ -67,10 +67,11 @@ describe("TranscriptRow (004-tool-call-widgets, Foundational)", () => {
           content: "the answer",
           tokenCount: 15600,
         })}
+        turnTokens={{ input: 986, output: 15600 }}
       />,
     );
 
-    expect(screen.getByTestId("token-meter")).toHaveTextContent("0.5s↓ 15.6k tokens");
+    expect(screen.getByTestId("token-meter")).toHaveTextContent("0.5s↑ 986 ↓ 15.6k tokens");
   });
 
   it("shows only assistant duration when tokens are unavailable for a completed text reply", () => {
@@ -79,7 +80,7 @@ describe("TranscriptRow (004-tool-call-widgets, Foundational)", () => {
     expect(screen.getByTestId("token-meter")).toHaveTextContent("0.5s");
   });
 
-  it("shows only assistant tokens when duration is unavailable", () => {
+  it("shows only turn tokens when duration is unavailable", () => {
     render(
       <TranscriptRow
         message={baseMessage({
@@ -88,15 +89,18 @@ describe("TranscriptRow (004-tool-call-widgets, Foundational)", () => {
           durationMs: null,
           tokenCount: 100,
         })}
+        turnTokens={{ input: 0, output: 100 }}
       />,
     );
 
     const meter = screen.getByTestId("token-meter");
+    // The zero-valued ↑ direction is hidden entirely.
     expect(meter).toHaveTextContent("↓ 100 tokens");
+    expect(meter).not.toHaveTextContent("↑");
     expect(meter).not.toHaveTextContent("0.5s");
   });
 
-  it("shows no assistant metadata footer when neither duration nor tokens are available", () => {
+  it("shows no assistant metadata footer when neither duration nor turn tokens are available", () => {
     render(
       <TranscriptRow
         message={baseMessage({
@@ -109,6 +113,22 @@ describe("TranscriptRow (004-tool-call-widgets, Foundational)", () => {
     );
 
     expect(screen.queryByTestId("token-meter")).not.toBeInTheDocument();
+  });
+
+  it("hides the token segment entirely on rows without turnTokens (intermediate replies)", () => {
+    render(
+      <TranscriptRow
+        message={baseMessage({
+          contentType: "text",
+          content: "the answer",
+          tokenCount: 100,
+        })}
+      />,
+    );
+
+    // Per-message ↓ counters are gone — only the turn's final row (which
+    // receives turnTokens from TranscriptTurn) shows token info.
+    expect(screen.getByTestId("token-meter")).not.toHaveTextContent("tokens");
   });
 
   it("continues to render markdown after the markdown renderer is shared", () => {
@@ -132,20 +152,7 @@ describe("TranscriptRow (004-tool-call-widgets, Foundational)", () => {
 
   // --- 010-context-window-management (UI refactor): token meter ---
 
-  it("shows an input-token meter (↑) on a user message when tokenCount is known", () => {
-    render(
-      <TranscriptRow
-        message={baseMessage({
-          role: "user",
-          content: "hi there",
-          tokenCount: 42,
-        })}
-      />,
-    );
-    expect(screen.getByTestId("token-meter")).toHaveTextContent("↑ 42 tokens");
-  });
-
-  it("keeps the user token meter wired through the top-level TranscriptRow row", () => {
+  it("shows no token meter on user messages — input flows into the turn accumulator instead", () => {
     render(
       <TranscriptRow
         message={baseMessage({
@@ -159,19 +166,6 @@ describe("TranscriptRow (004-tool-call-widgets, Foundational)", () => {
     const row = screen.getByTestId("chat-message");
     expect(row).toHaveAttribute("role", "group");
     expect(row).toHaveAttribute("aria-label", "You said");
-    expect(screen.getByTestId("token-meter")).toHaveTextContent("↑ 42 tokens");
-  });
-
-  it("shows no token meter on a user message when tokenCount is unknown yet", () => {
-    render(
-      <TranscriptRow
-        message={baseMessage({
-          role: "user",
-          content: "hi there",
-          tokenCount: null,
-        })}
-      />,
-    );
     expect(screen.queryByTestId("token-meter")).not.toBeInTheDocument();
   });
 
@@ -191,7 +185,7 @@ describe("TranscriptRow (004-tool-call-widgets, Foundational)", () => {
     expect(screen.getByTestId("user-message-bubble")).toHaveTextContent("rich hello");
   });
 
-  it("combines the live elapsed-time chron and an output-token meter (↓) on an assistant message when showTimer is enabled", () => {
+  it("combines the live elapsed-time chron and the turn token meter when showTimer is enabled", () => {
     render(
       <TranscriptRow
         message={baseMessage({
@@ -201,10 +195,11 @@ describe("TranscriptRow (004-tool-call-widgets, Foundational)", () => {
           tokenCount: 15600,
         })}
         showTimer
+        turnTokens={{ input: 986, output: 15600 }}
       />,
     );
     const meter = screen.getByTestId("token-meter");
-    expect(meter).toHaveTextContent(/↓ 15\.6k tokens/);
+    expect(meter).toHaveTextContent(/↑ 986 ↓ 15\.6k tokens/);
   });
 
   it("renders an error message distinctly", () => {

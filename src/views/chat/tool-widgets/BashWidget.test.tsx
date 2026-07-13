@@ -5,7 +5,7 @@ import BashWidget from "./BashWidget";
 import type { BashDetail } from "@/lib/ipc";
 
 describe("BashWidget (004-tool-call-widgets, US2)", () => {
-  it("renders a completed command as a single line with muted exit/token info, no output", () => {
+  it("renders a completed command as a single line with muted exit info, no output", () => {
     const detail: BashDetail = {
       toolName: "Bash",
       command: "ls -la",
@@ -16,7 +16,7 @@ describe("BashWidget (004-tool-call-widgets, US2)", () => {
     render(<BashWidget detail={detail} />);
 
     expect(screen.getByTestId("bash-command")).toHaveTextContent("$ ls -la");
-    expect(screen.getByTestId("bash-meta")).toHaveTextContent("exit 0 · 89 tok");
+    expect(screen.getByTestId("bash-meta")).toHaveTextContent("exit 0");
     // No accordion, no output in the transcript.
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
     expect(screen.queryByText(/a\.txt/)).not.toBeInTheDocument();

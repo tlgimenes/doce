@@ -5,7 +5,10 @@ import { MessageGroup } from "@/components/ui/message";
 import BashWidget from "@/views/chat/tool-widgets/BashWidget";
 import TaskWidget from "@/views/chat/tool-widgets/TaskWidget";
 import type { BashDetail, TaskDetail } from "@/lib/ipc";
-import type { TranscriptTurn as TranscriptTurnModel } from "./transcriptTurns";
+import {
+  accumulateTurnTokens,
+  type TranscriptTurn as TranscriptTurnModel,
+} from "./transcriptTurns";
 
 export type PendingTurnWidget =
   | { kind: "bash"; detail: BashDetail }
@@ -33,9 +36,22 @@ export default function TranscriptTurn({
     >
       {turn.user && <TranscriptRow message={turn.user} />}
       <div data-testid="transcript-turn-body" className="min-w-0">
-        {turn.rows.map((message) => (
-          <TranscriptRow key={message.id} message={message} />
-        ))}
+        {(() => {
+          // The turn's accumulated in/out totals render once, on the final
+          // reply — not on every message (widgets and the user bubble no
+          // longer carry their own counters).
+          const lastTextRow = [...turn.rows]
+            .reverse()
+            .find((row) => row.role === "assistant" && row.contentType === "text");
+          const turnTokens = lastTextRow ? accumulateTurnTokens(turn) : null;
+          return turn.rows.map((message) => (
+            <TranscriptRow
+              key={message.id}
+              message={message}
+              turnTokens={message.id === lastTextRow?.id ? turnTokens : null}
+            />
+          ));
+        })()}
         {pendingWidget && (
           <div className="mb-6" data-testid="chat-message" role="group" aria-label="doce replied">
             {pendingWidget.kind === "bash" ? (

@@ -158,9 +158,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
 
     render(<Workspace conversationId="conv-1" />);
 
-    await waitFor(() =>
-      expect(screen.getByTestId("token-meter")).toHaveTextContent("0.5s↓ 15.6k tokens"),
-    );
+    await waitFor(() => expect(screen.getByTestId("token-meter")).toHaveTextContent("0.5s"));
   });
 
   it("fills the shell content area instead of forcing viewport height", async () => {
@@ -453,6 +451,12 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     const composerShell = screen.getByTestId("workspace-composer-shell");
     expect(status).toHaveTextContent("Working");
     expect(screen.getByTestId("agent-thinking-timer")).toHaveTextContent("0.0s");
+    // The prompt's ↑ cost shows immediately on submit (chars/4 estimate for
+    // the optimistic row — "list the files here" is 19 chars → 5); the
+    // zero-valued ↓ stays hidden until real output lands.
+    const thinkingTokens = screen.getByTestId("agent-thinking-tokens");
+    expect(thinkingTokens).toHaveTextContent("↑ 5");
+    expect(thinkingTokens).not.toHaveTextContent("↓");
     expect(status.closest('[data-testid="chat-message"]')).toBeNull();
     expect(status.closest('[data-testid="transcript-turn"]')).toBeNull();
     expectElementBefore(status, composerShell);

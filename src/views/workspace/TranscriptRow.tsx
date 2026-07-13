@@ -26,6 +26,7 @@ import {
   type UnknownToolDetail,
   type WriteDetail,
 } from "@/lib/ipc";
+import type { TurnTokenTotals } from "@/views/workspace/transcriptTurns";
 import UnknownToolWidget from "@/views/chat/tool-widgets/UnknownToolWidget";
 import EditDiffWidget from "@/views/chat/tool-widgets/EditDiffWidget";
 import BashWidget from "@/views/chat/tool-widgets/BashWidget";
@@ -41,6 +42,9 @@ interface TranscriptRowProps {
   // this off by default because `send_agent_message` has no useful
   // per-message duration for the optimistic in-progress turn.
   showTimer?: boolean;
+  /** The whole turn's accumulated in/out token totals — set only on the
+   * turn's final assistant text row (TranscriptTurn decides which). */
+  turnTokens?: TurnTokenTotals | null;
 }
 
 /**
@@ -49,7 +53,11 @@ interface TranscriptRowProps {
  * ordinary text/rich-text/context rows render through the shared message
  * components below.
  */
-export default function TranscriptRow({ message: m, showTimer = false }: TranscriptRowProps) {
+export default function TranscriptRow({
+  message: m,
+  showTimer = false,
+  turnTokens = null,
+}: TranscriptRowProps) {
   if (m.role === "user") {
     return (
       <ChatMessage
@@ -69,11 +77,6 @@ export default function TranscriptRow({ message: m, showTimer = false }: Transcr
               )}
             </BubbleContent>
           </Bubble>
-          {m.tokenCount != null && (
-            <MessageFooter data-testid="token-meter">
-              ↑ {formatTokenCount(m.tokenCount)} tokens
-            </MessageFooter>
-          )}
         </ChatMessageContent>
       </ChatMessage>
     );
@@ -152,9 +155,10 @@ export default function TranscriptRow({ message: m, showTimer = false }: Transcr
     );
   }
 
+  const showTurnTokens = turnTokens != null && (turnTokens.input > 0 || turnTokens.output > 0);
   const showAssistantDuration = showTimer || m.durationMs != null;
   const showAssistantMetadata =
-    m.contentType === "text" && (showAssistantDuration || m.tokenCount != null);
+    m.contentType === "text" && (showAssistantDuration || showTurnTokens);
 
   return (
     <ChatMessage className="mb-5" data-testid="chat-message" role="group" aria-label="doce replied">
@@ -167,11 +171,17 @@ export default function TranscriptRow({ message: m, showTimer = false }: Transcr
         {showAssistantMetadata && (
           <MessageFooter data-testid="token-meter" className="gap-3">
             {showAssistantDuration && <Timer createdAt={m.createdAt} durationMs={m.durationMs} />}
-            {/* 010-context-window-management (UI refactor): output tokens
-                for this reply, combined with the elapsed-time chron on the
-                same line — a wider gap separates the two segments instead
-                of a dot. */}
-            {m.tokenCount != null && <span>↓ {formatTokenCount(m.tokenCount)} tokens</span>}
+            {/* The TURN's accumulated token flow, not this one message's:
+                ↑ everything the turn added to context (prompt + tool
+                results), ↓ everything the model generated as text
+                (transcriptTurns.accumulateTurnTokens). */}
+            {showTurnTokens && (
+              <span>
+                {turnTokens.input > 0 && <>↑ {formatTokenCount(turnTokens.input)} </>}
+                {turnTokens.output > 0 && <>↓ {formatTokenCount(turnTokens.output)} </>}
+                tokens
+              </span>
+            )}
           </MessageFooter>
         )}
       </ChatMessageContent>

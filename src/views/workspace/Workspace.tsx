@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { estimateTokenCount } from "@/lib/estimateTokenCount";
 import { runViewTransition } from "@/lib/viewTransition";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
@@ -15,7 +16,7 @@ import PlanTracker from "@/views/workspace/PlanTracker";
 import StreamingStatus from "@/views/workspace/StreamingStatus";
 import WorkspaceTopbar from "@/views/workspace/WorkspaceTopbar";
 import TranscriptTurn, { type PendingTurnWidget } from "@/views/workspace/TranscriptTurn";
-import { groupTranscriptTurns } from "@/views/workspace/transcriptTurns";
+import { accumulateTurnTokens, groupTranscriptTurns } from "@/views/workspace/transcriptTurns";
 import {
   commands,
   events,
@@ -358,6 +359,12 @@ export default function Workspace({
     ? (activeTurnStartedAtCandidate ?? genericStatusFallbackStartedAtRef.current)
     : null;
   const transcriptTurns = useMemo(() => groupTranscriptTurns(messages), [messages]);
+  // Live in/out accumulation for the in-flight turn — feeds the working
+  // shimmer's token counter and grows as tool results land.
+  const activeTurnTokens = useMemo(() => {
+    const lastTurn = transcriptTurns[transcriptTurns.length - 1];
+    return lastTurn ? accumulateTurnTokens(lastTurn) : null;
+  }, [transcriptTurns]);
   const pendingTurnWidget: PendingTurnWidget | null =
     pendingToolCall?.kind === "bash" || pendingToolCall?.kind === "task" ? pendingToolCall : null;
 
@@ -419,10 +426,11 @@ export default function Workspace({
           toolName: null,
           createdAt: submittedAt,
           durationMs: null,
-          // Not known until reload -- these are optimistic/synthetic
-          // messages, not the real persisted row (which does get a real
-          // token_count via a backend follow-up update).
-          tokenCount: null,
+          // A chars/4 estimate so the streaming counter shows the prompt's
+          // ↑ cost immediately on submit. The real tokenizer count lands
+          // with the first agent-message-persisted refetch (the backend
+          // UPDATEs the persisted row before the loop's first generation).
+          tokenCount: estimateTokenCount(content),
         },
       ]);
       setOptimisticTurnStartedAt(submittedAt);
@@ -523,7 +531,9 @@ export default function Workspace({
           <MessageScrollerButton data-testid="scroll-to-bottom" />
         </MessageScroller>
         <PlanTracker conversationId={conversationId} />
-        {showGenericStreamingStatus && <StreamingStatus startedAt={activeTurnStartedAt} />}
+        {showGenericStreamingStatus && (
+          <StreamingStatus startedAt={activeTurnStartedAt} tokens={activeTurnTokens} />
+        )}
         <div className="p-4" data-testid="workspace-composer-shell">
           {/* The view-transition name lives on the max-w-xl column, matching
               EmptyState's named element exactly — same width on both sides

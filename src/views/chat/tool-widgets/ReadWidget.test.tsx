@@ -4,7 +4,7 @@ import ReadWidget from "./ReadWidget";
 import type { ReadDetail } from "@/lib/ipc";
 
 describe("ReadWidget (004-tool-call-widgets, US4)", () => {
-  it("renders a single quiet line: basename plus muted size/token info, nothing expandable", () => {
+  it("renders a single quiet line: basename plus muted size info, nothing expandable", () => {
     const detail: ReadDetail = {
       toolName: "Read",
       filePath: "/tmp/notes.txt",
@@ -18,7 +18,7 @@ describe("ReadWidget (004-tool-call-widgets, US4)", () => {
 
     expect(screen.getByTestId("read-summary")).toHaveTextContent("Read notes.txt");
     expect(screen.getByTestId("read-summary")).toHaveAttribute("title", "/tmp/notes.txt");
-    expect(screen.getByTestId("read-meta")).toHaveTextContent("11B · 312 tok");
+    expect(screen.getByTestId("read-meta")).toHaveTextContent("11B");
     // No accordion: no trigger button, no content panel.
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
     expect(screen.queryByText("hello world")).not.toBeInTheDocument();
@@ -38,7 +38,7 @@ describe("ReadWidget (004-tool-call-widgets, US4)", () => {
     render(<ReadWidget detail={detail} />);
 
     expect(screen.getByTestId("read-summary")).toHaveTextContent("Read huge.txt");
-    expect(screen.getByTestId("read-meta")).toHaveTextContent("15B · 2.0k tok");
+    expect(screen.getByTestId("read-meta")).toHaveTextContent("15B");
     expect(screen.queryByText(/truncated/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/offload/i)).not.toBeInTheDocument();
   });
