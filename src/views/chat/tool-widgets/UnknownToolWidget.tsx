@@ -26,7 +26,7 @@ export default function UnknownToolWidget({ detail }: UnknownToolWidgetProps) {
         <MarkerContent className="min-w-0 truncate">{detail.toolName}</MarkerContent>
         <ChevronRight
           aria-hidden="true"
-          className="ml-auto size-4 shrink-0 transition-transform group-aria-expanded/marker-row:rotate-90"
+          className="mt-0.5 ml-auto size-4 shrink-0 transition-transform group-aria-expanded/marker-row:rotate-90"
         />
       </CollapsibleTrigger>
       <CollapsibleContent className="pl-6">
