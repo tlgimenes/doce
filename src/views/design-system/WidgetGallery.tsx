@@ -209,7 +209,7 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
 
         <Section
           title="Read"
-          description="A collapsed file-reference card with inline expandable preview."
+          description="A single quiet file-reference line — basename plus muted size/token info; full path on hover."
         >
           <Example label="Text read">
             <ReadWidget
@@ -324,7 +324,7 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
 
         <Section
           title="Bash"
-          description="Command + status + stdout/stderr, terminal-style. Success / non-zero exit / offloaded / dispatch failure."
+          description="A single terminal-style command line with muted exit/token info — output never renders in the transcript. Success / non-zero exit / dispatch failure / pending."
         >
           <Example label="Success (exit 0)">
             <BashWidget
@@ -412,7 +412,7 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
 
         <Section
           title="Glob / Grep"
-          description="Collapsed search summaries with inline expandable result lists."
+          description="Outcome sentences for Glob and Grep with muted token info — the pattern lives in the hover title."
         >
           <Example label="Glob, with files">
             <SearchResultsWidget

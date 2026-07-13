@@ -10,11 +10,13 @@ describe("WidgetGallery", () => {
     expect(screen.getByTestId("widget-gallery")).not.toHaveClass("h-dvh");
   });
 
-  it("documents Read as collapsed expandable previews", () => {
+  it("documents Read as a single quiet file-reference line", () => {
     render(<WidgetGallery onClose={vi.fn()} />);
 
     expect(
-      screen.getByText("A collapsed file-reference card with inline expandable preview."),
+      screen.getByText(
+        "A single quiet file-reference line — basename plus muted size/token info; full path on hover.",
+      ),
     ).toBeInTheDocument();
     expect(screen.getByText("Text read")).toBeInTheDocument();
     expect(screen.getByText("Native preview candidate")).toBeInTheDocument();
@@ -62,11 +64,13 @@ describe("WidgetGallery", () => {
     expect(screen.queryByText("Brand Accent Workbench")).not.toBeInTheDocument();
   });
 
-  it("documents search widgets as collapsed expandable result lists", () => {
+  it("documents search widgets as outcome sentences", () => {
     render(<WidgetGallery onClose={vi.fn()} />);
 
     expect(
-      screen.getByText("Collapsed search summaries with inline expandable result lists."),
+      screen.getByText(
+        "Outcome sentences for Glob and Grep with muted token info — the pattern lives in the hover title.",
+      ),
     ).toBeInTheDocument();
     expect(screen.getByText("Glob, with files")).toBeInTheDocument();
     expect(screen.getByText("Glob, no files")).toBeInTheDocument();

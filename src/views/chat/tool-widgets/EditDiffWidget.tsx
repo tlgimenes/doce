@@ -1,6 +1,5 @@
 import { diffLines } from "diff";
-import { ChevronRight, FilePen } from "lucide-react";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { FilePen } from "lucide-react";
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
 import type { EditDetail } from "@/lib/ipc";
 import { pathBasename } from "@/lib/pathBasename";
@@ -46,12 +45,11 @@ export default function EditDiffWidget({ detail }: EditDiffWidgetProps) {
   const addedCount = changes.filter((c) => c.added).reduce((n, c) => n + lineCount(c.value), 0);
   const removedCount = changes.filter((c) => c.removed).reduce((n, c) => n + lineCount(c.value), 0);
 
+  // The diff is the one widget panel that keeps its always-visible body —
+  // it carries real review value; every other widget is a single line.
   return (
-    <Collapsible data-testid="edit-diff" defaultOpen>
-      <CollapsibleTrigger
-        nativeButton={false}
-        render={<Marker className="group/marker-row cursor-pointer" />}
-      >
+    <div data-testid="edit-diff">
+      <Marker>
         <MarkerIcon>
           <FilePen />
         </MarkerIcon>
@@ -61,12 +59,8 @@ export default function EditDiffWidget({ detail }: EditDiffWidgetProps) {
             +{addedCount} −{removedCount}
           </span>
         </MarkerContent>
-        <ChevronRight
-          aria-hidden="true"
-          className="ml-auto size-4 shrink-0 transition-transform group-aria-expanded/marker-row:rotate-90"
-        />
-      </CollapsibleTrigger>
-      <CollapsibleContent className="pl-6">
+      </Marker>
+      <div className="pl-6">
         <div className="overflow-x-auto p-0 font-mono text-xs whitespace-pre text-foreground">
           {changes.map((change, i) => {
             const lines = change.value.replace(/\n$/, "").split("\n");
@@ -96,7 +90,7 @@ export default function EditDiffWidget({ detail }: EditDiffWidgetProps) {
             );
           })}
         </div>
-      </CollapsibleContent>
-    </Collapsible>
+      </div>
+    </div>
   );
 }

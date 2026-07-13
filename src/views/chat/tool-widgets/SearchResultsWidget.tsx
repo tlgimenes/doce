@@ -1,7 +1,5 @@
-import { ChevronRight, Search } from "lucide-react";
+import { Search } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Empty, EmptyDescription, EmptyHeader } from "@/components/ui/empty";
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
 import type { GlobDetail, GrepDetail } from "@/lib/ipc";
 import { formatTokenCount } from "@/lib/formatTokenCount";
@@ -10,7 +8,11 @@ interface SearchResultsWidgetProps {
   detail: GlobDetail | GrepDetail;
 }
 
-/** US4/FR-007: a match list for Glob (filenames) and Grep (file:line:content), not an undifferentiated data dump. */
+/**
+ * US4/FR-007: an outcome sentence for Glob and Grep ("Found 12 matches
+ * for `useChat`"), not a data dump — brief muted token info after the
+ * line, the pattern in the hover title.
+ */
 export default function SearchResultsWidget({ detail }: SearchResultsWidgetProps) {
   const isGrep = detail.toolName === "Grep";
 
@@ -41,125 +43,42 @@ export default function SearchResultsWidget({ detail }: SearchResultsWidgetProps
   const count = detail.matches.length;
 
   return (
-    <Collapsible data-testid="search-widget">
-      <CollapsibleTrigger
-        nativeButton={false}
-        render={<Marker className="group/marker-row cursor-pointer" />}
+    <Marker data-testid="search-widget">
+      <MarkerIcon>
+        <Search />
+      </MarkerIcon>
+      <MarkerContent
+        data-testid="search-summary"
+        className="min-w-0 truncate"
+        title={detail.pattern ?? undefined}
       >
-        <MarkerIcon>
-          <Search />
-        </MarkerIcon>
-        <MarkerContent
-          data-testid="search-summary"
-          className="min-w-0 truncate"
-          title={detail.pattern ?? undefined}
-        >
-          {isGrep ? (
-            count === 0 ? (
-              <>
-                No matches for{" "}
-                <code data-slot="code-inline" className="font-mono text-xs">
-                  {detail.pattern}
-                </code>
-              </>
-            ) : (
-              <>
-                Found {count} {count === 1 ? "match" : "matches"} for{" "}
-                <code data-slot="code-inline" className="font-mono text-xs">
-                  {detail.pattern}
-                </code>
-              </>
-            )
-          ) : count === 0 ? (
-            "No files matched"
+        {isGrep ? (
+          count === 0 ? (
+            <>
+              No matches for{" "}
+              <code data-slot="code-inline" className="font-mono text-xs">
+                {detail.pattern}
+              </code>
+            </>
           ) : (
-            `Found ${count} ${count === 1 ? "file" : "files"}`
-          )}
-        </MarkerContent>
-        <ChevronRight
-          aria-hidden="true"
-          className="ml-auto size-4 shrink-0 transition-transform group-aria-expanded/marker-row:rotate-90"
-        />
-      </CollapsibleTrigger>
-      <CollapsibleContent className="pl-6" data-testid="search-results">
-        <div className="max-h-80 space-y-2 overflow-y-auto p-3">
-          <SearchContext detail={detail} />
-          {isGrep ? <GrepResults detail={detail} /> : <GlobResults detail={detail} />}
-          {detail.tokenCount != null && (
-            <p data-testid="search-meta" className="text-xs text-muted-foreground">
-              {formatTokenCount(detail.tokenCount)} tok
-            </p>
-          )}
-        </div>
-      </CollapsibleContent>
-    </Collapsible>
-  );
-}
-
-function SearchContext({ detail }: { detail: GlobDetail | GrepDetail }) {
-  const parts = [
-    // Glob's collapsed row is an outcome sentence ("Found 8 files"), so the
-    // pattern itself is only shown here in the expanded panel.
-    detail.toolName === "Glob" && detail.pattern ? `pattern: ${detail.pattern}` : null,
-    detail.path ? `path: ${detail.path}` : null,
-    detail.toolName === "Grep" && detail.glob ? `glob: ${detail.glob}` : null,
-  ].filter(Boolean);
-
-  if (parts.length === 0) return null;
-
-  return (
-    <p data-testid="search-context" className="text-xs text-muted-foreground">
-      <code data-slot="code-inline" className="font-mono text-xs">
-        {parts.join(" · ")}
-      </code>
-    </p>
-  );
-}
-
-function GlobResults({ detail }: { detail: GlobDetail }) {
-  if (detail.matches.length === 0) {
-    return (
-      <Empty data-testid="search-no-matches">
-        <EmptyHeader>
-          <EmptyDescription>No files matched</EmptyDescription>
-        </EmptyHeader>
-      </Empty>
-    );
-  }
-
-  return (
-    <ul className="space-y-0.5">
-      {detail.matches.map((path, i) => (
-        <li key={i} data-testid="search-match" className="truncate">
-          <code data-slot="code-inline" className="font-mono text-xs">
-            {path}
-          </code>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function GrepResults({ detail }: { detail: GrepDetail }) {
-  if (detail.matches.length === 0) {
-    return (
-      <Empty data-testid="search-no-matches">
-        <EmptyHeader>
-          <EmptyDescription>No matches found</EmptyDescription>
-        </EmptyHeader>
-      </Empty>
-    );
-  }
-
-  return (
-    <ul className="space-y-0.5">
-      {detail.matches.map((m, i) => (
-        <li key={i} data-testid="search-match" className="truncate">
-          <code data-slot="code-inline" className="font-mono text-xs">
-            {m.path}:{m.lineNumber}: {m.line}
-          </code>
-        </li>
-      ))}
-    </ul>
+            <>
+              Found {count} {count === 1 ? "match" : "matches"} for{" "}
+              <code data-slot="code-inline" className="font-mono text-xs">
+                {detail.pattern}
+              </code>
+            </>
+          )
+        ) : count === 0 ? (
+          "No files matched"
+        ) : (
+          `Found ${count} ${count === 1 ? "file" : "files"}`
+        )}
+      </MarkerContent>
+      {detail.tokenCount != null && (
+        <span data-testid="search-meta" className="shrink-0 self-end text-xs text-muted-foreground">
+          {formatTokenCount(detail.tokenCount)} tok
+        </span>
+      )}
+    </Marker>
   );
 }

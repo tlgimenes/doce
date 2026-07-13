@@ -18,7 +18,7 @@ describe("WriteWidget (004-tool-call-widgets, US4)", () => {
     expect(screen.getByText("Created new-file.txt")).toBeInTheDocument();
   });
 
-  it("renders as a header-only widget frame with the full path and byte count in the hover title", () => {
+  it("renders as a header-only line with muted byte info and the full path in the hover title", () => {
     const detail: WriteDetail = {
       toolName: "Write",
       filePath: "/tmp/new-file.txt",
@@ -33,10 +33,8 @@ describe("WriteWidget (004-tool-call-widgets, US4)", () => {
     // Header-only: nothing to expand, so there's no button affordance.
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
     expect(screen.getByTestId("write-header")).toHaveTextContent("Created new-file.txt");
-    expect(screen.getByTestId("write-header")).toHaveAttribute(
-      "title",
-      "/tmp/new-file.txt · 170 bytes",
-    );
+    expect(screen.getByTestId("write-header")).toHaveAttribute("title", "/tmp/new-file.txt");
+    expect(screen.getByTestId("write-meta")).toHaveTextContent("170B");
   });
 
   it("renders a failure state distinctly", () => {

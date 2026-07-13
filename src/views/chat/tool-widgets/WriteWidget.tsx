@@ -1,6 +1,7 @@
 import { FilePlus } from "lucide-react";
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
 import type { WriteDetail } from "@/lib/ipc";
+import { formatByteCount } from "@/lib/formatByteCount";
 import { pathBasename } from "@/lib/pathBasename";
 
 interface WriteWidgetProps {
@@ -31,16 +32,21 @@ export default function WriteWidget({ detail }: WriteWidgetProps) {
     );
   }
 
-  const title = [detail.filePath, `${detail.byteCount} bytes`].filter(Boolean).join(" · ");
-
   return (
     <Marker data-testid="write-widget">
       <MarkerIcon>
         <FilePlus />
       </MarkerIcon>
-      <MarkerContent data-testid="write-header" className="min-w-0 truncate" title={title}>
+      <MarkerContent
+        data-testid="write-header"
+        className="min-w-0 truncate"
+        title={detail.filePath ?? undefined}
+      >
         Created {fileLabel}
       </MarkerContent>
+      <span data-testid="write-meta" className="shrink-0 self-end text-xs text-muted-foreground">
+        {formatByteCount(detail.byteCount)}
+      </span>
     </Marker>
   );
 }

@@ -159,7 +159,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     render(<Workspace conversationId="conv-1" />);
 
     await waitFor(() =>
-      expect(screen.getByTestId("token-meter")).toHaveTextContent("0.5s · ↓ 15.6k tokens"),
+      expect(screen.getByTestId("token-meter")).toHaveTextContent("0.5s↓ 15.6k tokens"),
     );
   });
 
@@ -707,7 +707,8 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     render(<Workspace conversationId="conv-1" />);
 
     const status = await screen.findByTestId("bash-status");
-    expect(status).toHaveTextContent(/running/i);
+    expect(status).toHaveTextContent("$ cargo test --lib");
+    expect(status).toHaveClass("shimmer");
     expect(screen.getByTestId("bash-command")).toHaveTextContent("cargo test --lib");
     expect(status.closest('[data-testid="transcript-turn"]')).toHaveTextContent("run the tests");
     expect(screen.queryByTestId("agent-thinking")).not.toBeInTheDocument();
@@ -921,9 +922,11 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     render(<Workspace conversationId="conv-1" />);
 
     await screen.findByTestId("bash-widget");
-    const statuses = screen.getAllByTestId("bash-status");
-    expect(statuses).toHaveLength(1);
-    expect(statuses[0]).not.toHaveTextContent(/running/i);
+    // Exactly one widget (the result), and no pending shimmer status — a
+    // successful completed command renders quietly with meta only.
+    expect(screen.getAllByTestId("bash-widget")).toHaveLength(1);
+    expect(screen.queryByTestId("bash-status")).not.toBeInTheDocument();
+    expect(screen.getByTestId("bash-meta")).toHaveTextContent("exit 0");
   });
 
   it("009-rich-chat-input regression: a message containing a chip forwards richContent to sendAgentMessage, not just the flat text", async () => {
