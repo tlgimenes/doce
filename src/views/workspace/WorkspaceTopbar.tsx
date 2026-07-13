@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { homeDir } from "@tauri-apps/api/path";
 import { TopbarPortal } from "@/components/Topbar";
-import { Item, ItemContent, ItemDescription, ItemTitle } from "@/components/ui/item";
+import { Item, ItemDescription, ItemTitle } from "@/components/ui/item";
 import { Progress } from "@/components/ui/progress";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { commands, type Conversation, type Workspace } from "@/lib/ipc";
@@ -109,15 +109,16 @@ export default function WorkspaceTopbar({ conversation }: WorkspaceTopbarProps) 
         className="pointer-events-none flex min-w-0 flex-1 items-center justify-between gap-3"
         data-testid="workspace-topbar"
       >
-        <Item size="xs" className="w-auto min-w-0 p-0">
-          <ItemContent>
-            <ItemTitle className="truncate" data-testid="workspace-topbar-title">
-              {conversation.title}
-            </ItemTitle>
-            <ItemDescription className="truncate" data-testid="workspace-topbar-path">
-              {workspaceLabel}
-            </ItemDescription>
-          </ItemContent>
+        {/* One row, not a column: the title anchors left and grows; the
+            path sits right — both give way with truncation when the
+            window narrows. */}
+        <Item size="xs" className="min-w-0 flex-1 justify-between gap-3 p-0">
+          <ItemTitle className="min-w-0 flex-1 truncate" data-testid="workspace-topbar-title">
+            {conversation.title}
+          </ItemTitle>
+          <ItemDescription className="min-w-0 truncate" data-testid="workspace-topbar-path">
+            {workspaceLabel}
+          </ItemDescription>
         </Item>
         <div className="pointer-events-auto" data-topbar-no-drag>
           <ContextUsageIndicator conversationId={conversation.id} />
