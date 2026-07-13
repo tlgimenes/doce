@@ -161,6 +161,9 @@ export interface GlobDetail {
   pattern: string | null;
   path: string | null;
   matches: string[];
+  /** More matches existed beyond the safety bound (`GLOB_RESULT_CAP`) —
+   * `matches` is a newest-first prefix, not the complete set. */
+  truncated?: boolean;
   /** Set by storage::heal_interrupted_tool_calls on a synthetic result for
    * a tool call orphaned by the app closing mid-run — the widget must not
    * present the empty/complete-looking payload as a real outcome. */
@@ -184,6 +187,9 @@ export interface GrepDetail {
   path: string | null;
   glob: string | null;
   matches: GrepMatch[];
+  /** More matches existed beyond the safety bound (`GREP_RESULT_CAP`) —
+   * `matches` is a walk-order prefix, not the complete set. */
+  truncated?: boolean;
   /** Set by storage::heal_interrupted_tool_calls on a synthetic result for
    * a tool call orphaned by the app closing mid-run — the widget must not
    * present the empty/complete-looking payload as a real outcome. */
