@@ -3,7 +3,7 @@ import Dialog from "@/components/Dialog";
 import { Button } from "@/components/ui/button";
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { X } from "lucide-react";
-import type { Shortcut } from "@/lib/shortcuts";
+import { formatComboParts, isMacPlatform, type Shortcut } from "@/lib/shortcuts";
 
 export interface ShortcutsDialogProps {
   open: boolean;
@@ -45,9 +45,10 @@ export default function ShortcutsDialog({ open, onClose, shortcuts }: ShortcutsD
             >
               <span className="text-muted-foreground">{s.description}</span>
               <KbdGroup data-testid={`shortcut-combo-${s.id}`}>
-                {s.combo.split("+").map((key, i) => (
+                {/* macOS convention: adjacent keycaps (⌘ K), no plus. */}
+                {formatComboParts(s.combo).map((key, i) => (
                   <Fragment key={`${key}-${i}`}>
-                    {i > 0 && <span aria-hidden="true">+</span>}
+                    {i > 0 && !isMacPlatform() && <span aria-hidden="true">+</span>}
                     <Kbd>{key}</Kbd>
                   </Fragment>
                 ))}

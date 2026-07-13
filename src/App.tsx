@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { KeyboardIcon } from "lucide-react";
+import { Archive, Cog, KeyboardIcon, Plus, Search } from "lucide-react";
 import { TopbarHost, TopbarProvider } from "@/components/Topbar";
 import { cn } from "@/lib/cn";
 import { Button } from "@/components/ui/button";
@@ -14,7 +14,7 @@ import ShortcutsDialog from "@/views/shortcuts/ShortcutsDialog";
 import CommandCenter, { type CommandCenterAction } from "@/views/command/CommandCenter";
 import WidgetGallery from "@/views/design-system/WidgetGallery";
 import { commands, type Conversation } from "@/lib/ipc";
-import { buildShortcuts } from "@/lib/shortcuts";
+import { buildShortcuts, formatCombo, isMacPlatform } from "@/lib/shortcuts";
 import { wireContextUsageEvents } from "@/state/contextUsageStore";
 import { withTimeout } from "@/lib/withTimeout";
 import { runViewTransition } from "@/lib/viewTransition";
@@ -191,6 +191,11 @@ export default function App() {
           }
           openWidgetGallery();
         },
+        archiveCurrent: () => {
+          if (activeConversation) {
+            conversationListRef.current?.archiveById(activeConversation.id);
+          }
+        },
       }),
     [
       activeConversation,
@@ -208,31 +213,30 @@ export default function App() {
       {
         id: "new-agent",
         label: "New Agent",
-        shortcut: "Cmd+N",
+        icon: <Plus />,
+        shortcut: formatCombo("Cmd+N"),
         run: startNewConversation,
       },
       {
         id: "search",
         label: "Search Conversations",
-        shortcut: "Cmd+F",
+        icon: <Search />,
+        shortcut: formatCombo("Cmd+F"),
         run: openSearch,
       },
-      { id: "settings", label: "Open Settings", run: openSettings },
+      { id: "settings", label: "Open Settings", icon: <Cog />, run: openSettings },
       {
         id: "shortcuts",
         label: "Open Shortcuts",
+        icon: <KeyboardIcon />,
         run: () => setShowShortcutsDialog(true),
       },
-      {
-        id: "widget-gallery",
-        label: "Open Widget Gallery",
-        shortcut: "Cmd+D",
-        run: openWidgetGallery,
-      },
+      // Cmd+D (widget gallery) stays bound but is deliberately NOT listed
+      // here — it's a hidden dev feature, not a user-facing command.
       {
         id: "focus-composer",
         label: "Focus Composer",
-        shortcut: "Cmd+L",
+        shortcut: formatCombo("Cmd+L"),
         disabled: ready !== true || showSettings || showWidgetGallery,
         run: () => {
           const selector = activeConversation
@@ -244,6 +248,8 @@ export default function App() {
       {
         id: "archive-current",
         label: "Archive Current Conversation",
+        icon: <Archive />,
+        shortcut: formatCombo("Cmd+E"),
         disabled: !activeConversation,
         run: () => {
           if (activeConversation) {
@@ -281,7 +287,11 @@ export default function App() {
         setShowCommandCenter(false);
         return;
       }
-      const match = shortcuts.find((s) => s.metaKey === e.metaKey && e.key.toLowerCase() === s.key);
+      // ⌘ on macOS, Ctrl elsewhere — matches what the labels advertise.
+      const modifierPressed = isMacPlatform() ? e.metaKey : e.ctrlKey;
+      const match = shortcuts.find(
+        (s) => s.metaKey === modifierPressed && e.key.toLowerCase() === s.key,
+      );
       if (!match) return;
       // FR-009 / Task 2: once an app-owned surface is open, only Cmd+K may
       // continue through the global handler until that surface yields.

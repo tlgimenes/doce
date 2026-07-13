@@ -655,7 +655,7 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     expect(screen.queryByTestId("widget-gallery")).not.toBeInTheDocument();
   });
 
-  it("switches from Settings to Widget Gallery when the command center opens Widget Gallery", async () => {
+  it("hides Widget Gallery from the command center (hidden dev feature) but keeps Cmd+D bound", async () => {
     render(<App />);
     await waitForReady();
 
@@ -663,8 +663,10 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     expect(await screen.findByTestId("settings-view")).toBeInTheDocument();
 
     pressCmd("k");
-    await userEvent.click(screen.getByRole("option", { name: /Open Widget Gallery/i }));
+    expect(screen.queryByRole("option", { name: /Widget Gallery/i })).not.toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "Escape" });
 
+    pressCmd("d");
     expect(await screen.findByTestId("widget-gallery")).toBeInTheDocument();
     expect(screen.queryByTestId("settings-view")).not.toBeInTheDocument();
   });

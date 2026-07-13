@@ -118,6 +118,14 @@ if (!Element.prototype.scrollIntoView) {
   Element.prototype.scrollIntoView = function () {};
 }
 
+// jsdom reports an empty navigator.platform, which would make the
+// platform-aware shortcut formatting (isMacPlatform) take the non-mac
+// branch even though macOS is the app's actual target — pin it so tests
+// exercise what ships.
+if (!navigator.platform) {
+  Object.defineProperty(navigator, "platform", { value: "MacIntel", configurable: true });
+}
+
 // jsdom has no matchMedia implementation. next-themes' ThemeProvider calls
 // window.matchMedia("(prefers-color-scheme: dark)") on mount (to resolve
 // "system" theme) regardless of whether a test cares about theming, so

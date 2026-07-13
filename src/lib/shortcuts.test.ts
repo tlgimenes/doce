@@ -8,6 +8,7 @@ function handlers() {
     openSearch: vi.fn(),
     openCommandCenter: vi.fn(),
     toggleWidgetGallery: vi.fn(),
+    archiveCurrent: vi.fn(),
   };
 }
 

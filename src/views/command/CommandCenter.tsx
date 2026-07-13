@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import Dialog from "@/components/Dialog";
 import {
   Command,
@@ -13,6 +13,9 @@ import {
 export interface CommandCenterAction {
   id: string;
   label: string;
+  /** The action's existing product icon (e.g. the sidebar's Plus for New
+   * Agent) — actions without one render label-only. */
+  icon?: ReactNode;
   shortcut?: string;
   disabled?: boolean;
   run: () => void;
@@ -68,6 +71,9 @@ export default function CommandCenter({ open, onOpenChange, actions }: CommandCe
                   disabled={action.disabled}
                   onSelect={() => runAction(action)}
                 >
+                  {/* Iconless actions get an icon-sized spacer so every
+                      label starts at the same x. */}
+                  {action.icon ?? <span aria-hidden="true" className="size-4 shrink-0" />}
                   <span>{action.label}</span>
                   {action.shortcut ? <CommandShortcut>{action.shortcut}</CommandShortcut> : null}
                 </CommandItem>
