@@ -70,7 +70,7 @@ describe("TranscriptRow (004-tool-call-widgets, Foundational)", () => {
       />,
     );
 
-    expect(screen.getByTestId("token-meter")).toHaveTextContent("0.5s · ↓ 15.6k tokens");
+    expect(screen.getByTestId("token-meter")).toHaveTextContent("0.5s↓ 15.6k tokens");
   });
 
   it("shows only assistant duration when tokens are unavailable for a completed text reply", () => {

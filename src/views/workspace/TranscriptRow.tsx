@@ -165,14 +165,13 @@ export default function TranscriptRow({ message: m, showTimer = false }: Transcr
           </BubbleContent>
         </Bubble>
         {showAssistantMetadata && (
-          <MessageFooter data-testid="token-meter">
+          <MessageFooter data-testid="token-meter" className="gap-3">
             {showAssistantDuration && <Timer createdAt={m.createdAt} durationMs={m.durationMs} />}
             {/* 010-context-window-management (UI refactor): output tokens
                 for this reply, combined with the elapsed-time chron on the
-                same line — mirrors Claude Code's own status line ("3m 51s ·
-                ↓ 15.6k tokens"). */}
-            {showAssistantDuration && m.tokenCount != null && " · "}
-            {m.tokenCount != null && `↓ ${formatTokenCount(m.tokenCount)} tokens`}
+                same line — a wider gap separates the two segments instead
+                of a dot. */}
+            {m.tokenCount != null && <span>↓ {formatTokenCount(m.tokenCount)} tokens</span>}
           </MessageFooter>
         )}
       </ChatMessageContent>
