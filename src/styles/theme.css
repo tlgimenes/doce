@@ -129,11 +129,17 @@
   html {
     @apply font-sans;
   }
-}
 
-:focus-visible {
-  outline: 2px solid var(--color-ring);
-  outline-offset: 2px;
+  /* Keyboard-a11y default for elements that style nothing themselves. It
+     must live in @layer base: unlayered rules outrank every Tailwind
+     utility, so outside the layer this painted a second focus ring on top
+     of the design-system components' own `focus-visible:ring` /
+     `outline-hidden` styling (seen on the Cmd+K command input and the
+     folder picker). In the base layer, any outline/ring utility wins. */
+  :focus-visible {
+    outline: 2px solid var(--color-ring);
+    outline-offset: 2px;
+  }
 }
 
 button:not(:disabled, [aria-disabled="true"]),
