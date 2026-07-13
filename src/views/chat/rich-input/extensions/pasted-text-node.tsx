@@ -69,6 +69,12 @@ function PastedTextChip({ node, editor, getPos }: ReactNodeViewProps) {
 
   return (
     <NodeViewWrapper as="span" contentEditable={false} data-testid="pasted-text-chip">
+      {/* 008-shared-design-system exemption: this chip lives inside a Tiptap
+          NodeView — an inline editor node whose click dispatches an editor
+          command, not a standalone control — and must render as baseline-
+          aligned inline content inside contenteditable text; the shared
+          Button/Badge components' shapes don't fit that context. Kept
+          hand-rolled rather than migrated (FR-008 exemption, per T018). */}
       <button
         type="button"
         onClick={handleClick}

@@ -67,8 +67,14 @@ describe("FolderPicker (006-chat-empty-state, US2/US3)", () => {
     expect(screen.getByText("doce")).toBeInTheDocument();
     expect(screen.getByText("other")).toBeInTheDocument();
 
-    expect(screen.getByText("doce").closest("button")).toHaveAttribute("aria-current", "true");
-    expect(screen.getByText("other").closest("button")).toHaveAttribute("aria-current", "false");
+    expect(screen.getByText("doce").closest('[data-slot="command-item"]')).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+    expect(screen.getByText("other").closest('[data-slot="command-item"]')).toHaveAttribute(
+      "aria-current",
+      "false",
+    );
   });
 
   it("does not render a Home entry and only shows recents when there are no previously used folders", async () => {
@@ -144,7 +150,7 @@ describe("FolderPicker (006-chat-empty-state, US2/US3)", () => {
     await userEvent.type(screen.getByTestId("folder-picker-filter"), "~/code/");
 
     await waitFor(() => expect(screen.getByText("folder 1")).toBeInTheDocument());
-    const item = screen.getByRole("button", { name: /folder 1/i });
+    const item = screen.getByRole("option", { name: /folder 1/i });
     expect(within(item).getByText("~/code/")).toHaveClass("font-semibold");
     expect(item).toHaveTextContent("~/code/folder 1");
   });
@@ -206,7 +212,10 @@ describe("FolderPicker (006-chat-empty-state, US2/US3)", () => {
     await userEvent.type(screen.getByTestId("folder-picker-filter"), "d");
 
     await waitFor(() =>
-      expect(screen.getByText("doce").closest("button")).toHaveAttribute("aria-selected", "true"),
+      expect(screen.getByText("doce").closest('[data-slot="command-item"]')).toHaveAttribute(
+        "aria-selected",
+        "true",
+      ),
     );
     await userEvent.keyboard("{Enter}");
 
@@ -231,10 +240,16 @@ describe("FolderPicker (006-chat-empty-state, US2/US3)", () => {
     await waitFor(() => expect(screen.getAllByTestId("folder-picker-item")).toHaveLength(2));
 
     await userEvent.click(screen.getByTestId("folder-picker-filter"));
-    expect(screen.getByText("doce").closest("button")).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText("doce").closest('[data-slot="command-item"]')).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
 
     await userEvent.keyboard("{ArrowDown}");
-    expect(screen.getByText("other").closest("button")).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText("other").closest('[data-slot="command-item"]')).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
 
     await userEvent.keyboard("{Enter}");
     expect(onSelect).toHaveBeenCalledWith({

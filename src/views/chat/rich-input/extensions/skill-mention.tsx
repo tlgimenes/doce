@@ -230,6 +230,14 @@ const SkillMentionPopup = forwardRef<SkillMentionPopupHandle, SkillMentionPopupP
 
     return (
       <FloatingPortal>
+        {/* 008-shared-design-system exemption (applies to this popup and the
+            option buttons inside it): this is a Tiptap suggestion-plugin
+            popup — positioning is anchored to the caret via floating-ui and
+            the open/active state is driven imperatively by the suggestion
+            lifecycle, so shadcn's Popover/Command (which own their own
+            open/selection state) don't fit. The hand-rolled listbox is
+            intentionally kept rather than migrated (FR-008 exemption, per
+            T018). */}
         <div
           ref={refs.setFloating}
           style={floatingStyles}

@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { homeDir } from "@tauri-apps/api/path";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Folder } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Command, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { commands, type FolderSearchResult, type Workspace } from "@/lib/ipc";
 import type { FolderTarget } from "@/views/chat/EmptyState";
 
@@ -31,24 +33,23 @@ const formatDisplayLabel = (path: string, homePath: string | null) => {
  * client-side (data-model.md's Recent Folders List) rather than being a
  * `Workspace` row, and is represented through the user's own folder path
  * (which is intentionally removed from results so Home is never duplicated).
+ *
+ * Built on the shared cmdk-based Command primitives: cmdk owns row
+ * highlighting and Arrow/Enter keyboard navigation; `shouldFilter` is off
+ * because rows come pre-filtered from the backend (`searchFolders`) rather
+ * than from client-side matching.
  */
 export default function FolderPicker({ currentPath, onSelect, onDismiss }: FolderPickerProps) {
   const [homePath, setHomePath] = useState<string | null>(null);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [searchResults, setSearchResults] = useState<FolderSearchResult[]>([]);
   const [filter, setFilter] = useState("");
-  const [selectedIndex, setSelectedIndex] = useState(-1);
   const containerRef = useRef<HTMLDivElement>(null);
-  const filterInputRef = useRef<HTMLInputElement>(null);
   const searchSeq = useRef(0);
 
   useEffect(() => {
     homeDir().then(setHomePath);
     commands.listWorkspaces().then(setWorkspaces);
-  }, []);
-
-  useEffect(() => {
-    filterInputRef.current?.focus();
   }, []);
 
   useEffect(() => {
@@ -101,40 +102,6 @@ export default function FolderPicker({ currentPath, onSelect, onDismiss }: Folde
     (candidate) => !homePath || candidate.path !== homePath,
   );
 
-  useEffect(() => {
-    if (rows.length === 0) {
-      setSelectedIndex(-1);
-      return;
-    }
-    setSelectedIndex((current) => {
-      if (current < 0 || current >= rows.length) return 0;
-      return current;
-    });
-  }, [rows]);
-
-  const getSelected = () => {
-    if (selectedIndex < 0 || selectedIndex >= rows.length) return undefined;
-    return rows[selectedIndex];
-  };
-
-  const selectCurrent = () => {
-    const selected = getSelected();
-    if (!selected) return;
-    onSelect({
-      kind: "recent",
-      path: selected.path,
-      displayLabel: formatDisplayLabel(selected.path, homePath),
-    });
-  };
-
-  const moveSelection = (delta: number) => {
-    if (rows.length === 0) return;
-    setSelectedIndex((current) => {
-      const base = current < 0 ? 0 : current;
-      return (base + delta + rows.length) % rows.length;
-    });
-  };
-
   const getSearchResultLabel = (row: Workspace | FolderSearchResult) => {
     if (!isPathMode) return { prefix: "", suffix: row.displayName };
 
@@ -175,87 +142,66 @@ export default function FolderPicker({ currentPath, onSelect, onDismiss }: Folde
     <div
       ref={containerRef}
       data-testid="folder-picker"
-      className="absolute -mt-1 z-10 w-72 rounded-md border border-border bg-popover p-2 text-popover-foreground shadow-md"
+      className="absolute -mt-1 z-10 w-72 rounded-md border border-border shadow-md"
     >
-      <input
-        ref={filterInputRef}
-        className="mb-2 w-full rounded-md bg-transparent px-2 py-1 text-sm outline-none focus-visible:outline-none"
-        value={filter}
-        onChange={(e) => setFilter(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "ArrowDown") {
-            e.preventDefault();
-            moveSelection(1);
-            return;
-          }
-          if (e.key === "ArrowUp") {
-            e.preventDefault();
-            moveSelection(-1);
-            return;
-          }
-          if (e.key !== "Enter") return;
-          if (selectedIndex < 0 || rows.length === 0) return;
-          e.preventDefault();
-          selectCurrent();
-        }}
-        placeholder="Filter folders…"
-        data-testid="folder-picker-filter"
-      />
-      <ul className="max-h-64 space-y-0.5 overflow-y-auto">
-        {/* 008-shared-design-system exemption (applies to all three buttons
-            in this popover): compact icon+label list rows and a full-width
-            list-item-styled action, not standard button shapes — the
-            shared Button component's variants don't have a natural fit for
-            a dense picker list; the hand-tuned look here is intentionally
-            kept rather than migrated (FR-008 exemption, per T018). */}
-        {rows.map((w, index) => {
-          const path = w.path;
-          const displayName = w.displayName;
-          const displayLabel = getSearchResultLabel(w);
-          const isSelected = selectedIndex === index;
+      <Command shouldFilter={false} loop label="Folder picker" className="rounded-md">
+        <CommandInput
+          autoFocus
+          value={filter}
+          onValueChange={setFilter}
+          placeholder="Filter folders…"
+          data-testid="folder-picker-filter"
+        />
+        <CommandList className="max-h-64 p-1">
+          {rows.map((w) => {
+            const path = w.path;
+            const displayName = w.displayName;
+            const displayLabel = getSearchResultLabel(w);
+            const isCurrent = currentPath === path;
 
-          return (
-            <li key={path}>
-              <button
-                type="button"
-                className={`flex w-full items-center gap-0 truncate rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent hover:text-accent-foreground ${
-                  isSelected ? "bg-accent font-medium text-accent-foreground" : ""
-                }`}
-                aria-current={currentPath === path}
-                aria-selected={isSelected}
-                onClick={() => {
-                  setSelectedIndex(index);
+            return (
+              <CommandItem
+                key={path}
+                value={path}
+                aria-current={isCurrent}
+                data-checked={isCurrent}
+                onSelect={() =>
                   onSelect({
                     kind: "recent",
                     path,
                     displayLabel: formatDisplayLabel(path, homePath),
-                  });
-                }}
+                  })
+                }
                 data-testid="folder-picker-item"
                 title={path}
               >
-                <Folder className="mr-1.5 shrink-0 text-muted-foreground" size={15} />
-                {displayLabel.prefix ? (
-                  <>
-                    <span className="font-semibold">{displayLabel.prefix}</span>
-                    {displayLabel.suffix ? <span>{displayLabel.suffix}</span> : null}
-                  </>
-                ) : (
-                  displayName
-                )}
-              </button>
-            </li>
-          );
-        })}
-      </ul>
-      <button
-        type="button"
-        className="mt-1 w-full rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-        onClick={browse}
-        data-testid="folder-picker-browse"
-      >
-        Browse…
-      </button>
+                <Folder className="text-muted-foreground" />
+                <span className="min-w-0 truncate">
+                  {displayLabel.prefix ? (
+                    <>
+                      <span className="font-semibold">{displayLabel.prefix}</span>
+                      {displayLabel.suffix ? <span>{displayLabel.suffix}</span> : null}
+                    </>
+                  ) : (
+                    displayName
+                  )}
+                </span>
+              </CommandItem>
+            );
+          })}
+        </CommandList>
+        <div className="p-1 pt-0">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="w-full justify-start px-2 font-normal text-muted-foreground"
+            onClick={browse}
+            data-testid="folder-picker-browse"
+          >
+            Browse…
+          </Button>
+        </div>
+      </Command>
     </div>
   );
 }
