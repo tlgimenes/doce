@@ -59,7 +59,7 @@ fn count_tokens_and_context_window_report_sane_values_against_the_real_model() {
 
     // Pure tokenizer/context-window introspection — no generation, so this
     // stays on the in-process engine (Task 5.1 keeps exactly this much of it).
-    let engine = InferenceEngine::load(&path, 4).expect("model should load");
+    let engine = InferenceEngine::load(&path).expect("model should load");
     assert_eq!(
         engine.context_window(),
         doce_lib::inference::CONTEXT_WINDOW_TOKENS
@@ -134,7 +134,7 @@ async fn grammar_constrained_tool_call_produces_a_well_formed_tool_call_against_
     };
     // Loaded only to seed the EXACT production system prompt for this model
     // (its dialect comes from the loaded GGUF, same as the app).
-    let engine = InferenceEngine::load(&model, 4).expect("model should load");
+    let engine = InferenceEngine::load(&model).expect("model should load");
 
     let messages = vec![
         ChatMessage::system(system_prompt(&engine)),
@@ -179,7 +179,7 @@ fn tool_result_renders_wrapped_in_qwens_own_tool_response_tags() {
     // extra "Tool result for X:" framing. This exercises the in-process
     // `render_chat_prompt` (which stays until Task 5.1), NOT generation.
     let path = installed_model_path();
-    let engine = InferenceEngine::load(&path, 4).expect("model should load");
+    let engine = InferenceEngine::load(&path).expect("model should load");
 
     let messages = vec![
         ChatMessage::system(system_prompt(&engine)),

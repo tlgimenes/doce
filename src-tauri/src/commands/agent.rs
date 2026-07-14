@@ -1799,7 +1799,7 @@ pub async fn send_agent_message(
         let mut guard = inference.0.lock().await;
         if guard.is_none() {
             let path = std::path::PathBuf::from(&model_path);
-            let engine = tokio::task::spawn_blocking(move || InferenceEngine::load(&path, 4))
+            let engine = tokio::task::spawn_blocking(move || InferenceEngine::load(&path))
                 .await
                 .map_err(|e| e.to_string())?
                 .map_err(|e| e.to_string())?;
@@ -2834,8 +2834,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("notes.txt"), "hello world").unwrap();
 
-        let engine = crate::inference::InferenceEngine::load(&test_model_path(), 4)
-            .expect("model should load");
+        let engine =
+            crate::inference::InferenceEngine::load(&test_model_path()).expect("model should load");
         let mut backend = SubagentBackend {
             engine: &engine,
             conn: &conn,
@@ -2871,8 +2871,8 @@ mod tests {
         seed_conversation(&conn, "sub").await;
         let app_data_dir = tempfile::tempdir().unwrap();
 
-        let engine = crate::inference::InferenceEngine::load(&test_model_path(), 4)
-            .expect("model should load");
+        let engine =
+            crate::inference::InferenceEngine::load(&test_model_path()).expect("model should load");
         let mut backend = SubagentBackend {
             engine: &engine,
             conn: &conn,
@@ -2946,8 +2946,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("notes.txt"), "hello world").unwrap();
 
-        let engine = crate::inference::InferenceEngine::load(&test_model_path(), 4)
-            .expect("model should load");
+        let engine =
+            crate::inference::InferenceEngine::load(&test_model_path()).expect("model should load");
         let call = ToolCall {
             name: "Read".to_string(),
             arguments: serde_json::json!({"file_path": "notes.txt"}),
@@ -3001,8 +3001,8 @@ mod tests {
         seed_conversation(&conn, "c1").await;
         let app_data_dir = tempfile::tempdir().unwrap();
 
-        let engine = crate::inference::InferenceEngine::load(&test_model_path(), 4)
-            .expect("model should load");
+        let engine =
+            crate::inference::InferenceEngine::load(&test_model_path()).expect("model should load");
         let call = ToolCall {
             name: "Bash".to_string(),
             arguments: serde_json::json!({"command": "yes x | head -5000"}),
@@ -3074,8 +3074,8 @@ mod tests {
         std::fs::write(&file_path, "hello world").unwrap();
         let app_data_dir = tempfile::tempdir().unwrap();
 
-        let engine = crate::inference::InferenceEngine::load(&test_model_path(), 4)
-            .expect("model should load");
+        let engine =
+            crate::inference::InferenceEngine::load(&test_model_path()).expect("model should load");
         // A RELATIVE file_path, resolved against a known cwd -- reproduces
         // the bug this test now guards against: the carve-out used to
         // stamp the raw, possibly-relative `filePath` straight into

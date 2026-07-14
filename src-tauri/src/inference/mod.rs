@@ -24,11 +24,14 @@ pub enum InferenceError {
     Cancelled,
 }
 
-/// The model's total context window, in tokens (010-context-window-management).
-/// Named and public rather than a bare literal inside `generate()` so both
-/// the budget/compaction calculations in `crate::context` and any future
-/// IPC surface can read the same value `generate()` actually decodes
-/// against, instead of each guessing at (or duplicating) the number.
+/// The in-process INPUT budget, in tokens (010-context-window-management).
+/// Named and public rather than a bare literal so both the budget/compaction
+/// calculations in `crate::context` and any future IPC surface can read the
+/// same value, instead of each guessing at (or duplicating) the number.
+/// Generation itself runs in the llama-server sidecar (launched with
+/// `--ctx-size 20480`, see `inference::server::launch_args`); this budget is
+/// kept below that server context on purpose, leaving headroom for the
+/// output tokens the server still has to decode on top of the prompt.
 ///
 /// This is the one anchor every constant in `context::limits` is sized
 /// relative to -- see that module for the rest of the context-budget
@@ -220,11 +223,6 @@ pub struct InferenceEngine {
     #[allow(dead_code)]
     backend: LlamaBackend,
     model: LlamaModel,
-    /// Retained alongside `load`'s signature pending Task 5.1's engine →
-    /// vocab-only-tokenizer rework; nothing reads it now that the in-process
-    /// decode contexts it sized (thread counts) were deleted in the cutover.
-    #[allow(dead_code)]
-    n_threads: i32,
     /// Detected once at load from the GGUF's embedded chat template —
     /// which output convention this model was trained on (tool-dialects
     /// design). Missing/unreadable template keeps the historical Hermes
@@ -233,9 +231,17 @@ pub struct InferenceEngine {
 }
 
 impl InferenceEngine {
-    pub fn load(model_path: &Path, n_threads: i32) -> Result<Self, InferenceError> {
+    pub fn load(model_path: &Path) -> Result<Self, InferenceError> {
         let backend = LlamaBackend::init().map_err(|e| InferenceError::Backend(e.to_string()))?;
-        let model_params = LlamaModelParams::default();
+        // Vocab-only load (llama-server cutover): the in-process engine now
+        // only tokenizes + renders the chat template for context MEASUREMENT
+        // — all generation lives in the llama-server sidecar. So load just
+        // the vocabulary + metadata (which includes the
+        // `tokenizer.chat_template` string that drives `render_chat_prompt`
+        // and `dialect` detection), NOT the ~2.7 GB of weights, and skip the
+        // GPU entirely. The sidecar (built with Metal by
+        // scripts/build-llama-server.sh) owns all GPU inference.
+        let model_params = LlamaModelParams::default().with_vocab_only(true);
         let model = LlamaModel::load_from_file(&backend, model_path, &model_params)
             .map_err(|e| InferenceError::ModelLoad(e.to_string()))?;
         let dialect = model
@@ -245,7 +251,6 @@ impl InferenceEngine {
         Ok(Self {
             backend,
             model,
-            n_threads,
             dialect,
         })
     }
@@ -294,20 +299,24 @@ impl InferenceEngine {
 
     /// The model's configured context window, in tokens
     /// (010-context-window-management) — currently always
-    /// `CONTEXT_WINDOW_TOKENS`, since `generate()` builds every context with
-    /// that same fixed `n_ctx`. Exposed as a method (rather than callers
-    /// reading the constant directly) so a future per-model context size
-    /// would only need to change here.
+    /// `CONTEXT_WINDOW_TOKENS`. Generation now lives in the llama-server
+    /// sidecar (launched with `--ctx-size 20480`, see
+    /// `inference::server::launch_args`); this constant is the in-process
+    /// INPUT budget, deliberately kept below the server's context so there's
+    /// output headroom, and it's what `crate::context`'s compaction sizes
+    /// against. Exposed as a method (rather than callers reading the constant
+    /// directly) so a future per-model context size would only need to change
+    /// here.
     pub fn context_window(&self) -> u32 {
         CONTEXT_WINDOW_TOKENS
     }
 
     /// Tokenizes `text` and returns its token count, without decoding —
-    /// cheap enough to call before every generation to check the prompt
-    /// against the context budget (010-context-window-management). Shares
-    /// the exact tokenization `generate()` itself uses, so a count from
-    /// this function always matches what `generate()` would actually
-    /// decode for the same string.
+    /// cheap enough to call before every turn to check the prompt against
+    /// the context budget (010-context-window-management). Uses the same
+    /// vocabulary the llama-server sidecar loads from the same GGUF, so a
+    /// count from this function matches what the server will actually decode
+    /// for the same string.
     pub fn count_tokens(&self, text: &str) -> Result<usize, InferenceError> {
         let tokens = self
             .model

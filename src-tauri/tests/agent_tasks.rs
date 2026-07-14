@@ -761,7 +761,7 @@ async fn tier0_multi_turn_recalls_user_name() {
     let Some(server) = common::TestServer::spawn(&model).await else {
         return;
     };
-    let engine = InferenceEngine::load(&model, 4).expect("model should load");
+    let engine = InferenceEngine::load(&model).expect("model should load");
     let dir = tempdir().unwrap();
 
     let runs = run_planned_conversation(
@@ -815,7 +815,7 @@ async fn tier0_plan_greeting_answers_directly_without_planning() {
     let Some(server) = common::TestServer::spawn(&model).await else {
         return;
     };
-    let engine = InferenceEngine::load(&model, 4).expect("model should load");
+    let engine = InferenceEngine::load(&model).expect("model should load");
     let dir = tempdir().unwrap();
 
     for greeting in ["ola", "Hello!"] {
@@ -848,7 +848,7 @@ async fn tier0_plan_vague_request_asks_before_planning() {
     let Some(server) = common::TestServer::spawn(&model).await else {
         return;
     };
-    let engine = InferenceEngine::load(&model, 4).expect("model should load");
+    let engine = InferenceEngine::load(&model).expect("model should load");
     let dir = tempdir().unwrap();
 
     let run = run_planned_task(
@@ -897,7 +897,7 @@ async fn tier1_single_tool_call_reads_a_known_file() {
     let Some(server) = common::TestServer::spawn(&model).await else {
         return;
     };
-    let engine = InferenceEngine::load(&model, 4).expect("model should load");
+    let engine = InferenceEngine::load(&model).expect("model should load");
     let dir = tempdir().unwrap();
     std::fs::write(dir.path().join("config.txt"), "hello=world\nsecond=line\n").unwrap();
 
@@ -936,7 +936,7 @@ async fn tier1_planned_single_tool_call_reads_a_known_file() {
     let Some(server) = common::TestServer::spawn(&model).await else {
         return;
     };
-    let engine = InferenceEngine::load(&model, 4).expect("model should load");
+    let engine = InferenceEngine::load(&model).expect("model should load");
     let dir = tempdir().unwrap();
     std::fs::write(dir.path().join("config.txt"), "hello=world\nsecond=line\n").unwrap();
 
@@ -973,7 +973,7 @@ async fn tier2_few_tool_calls_finds_todo_files() {
     let Some(server) = common::TestServer::spawn(&model).await else {
         return;
     };
-    let engine = InferenceEngine::load(&model, 4).expect("model should load");
+    let engine = InferenceEngine::load(&model).expect("model should load");
     let dir = tempdir().unwrap();
     std::fs::write(dir.path().join("a.rs"), "// TODO: fix this\nfn a() {}\n").unwrap();
     std::fs::write(dir.path().join("b.rs"), "fn b() {}\n").unwrap();
@@ -1057,7 +1057,7 @@ async fn tier3_multi_step_refactor_adds_a_field_and_updates_call_sites() {
     let Some(server) = common::TestServer::spawn(&model).await else {
         return;
     };
-    let engine = InferenceEngine::load(&model, 4).expect("model should load");
+    let engine = InferenceEngine::load(&model).expect("model should load");
     let dir = tempdir().unwrap();
     tier3_fixture(dir.path());
 
@@ -1163,7 +1163,7 @@ async fn tier4_long_running_fixes_many_scattered_bugs() {
     let Some(server) = common::TestServer::spawn(&model).await else {
         return;
     };
-    let engine = InferenceEngine::load(&model, 4).expect("model should load");
+    let engine = InferenceEngine::load(&model).expect("model should load");
     let dir = tempdir().unwrap();
     tier4_fixture(dir.path());
 
@@ -1223,7 +1223,7 @@ async fn tier4_planned_long_running_fixes_many_scattered_bugs() {
     let Some(server) = common::TestServer::spawn(&model).await else {
         return;
     };
-    let engine = InferenceEngine::load(&model, 4).expect("model should load");
+    let engine = InferenceEngine::load(&model).expect("model should load");
     let dir = tempdir().unwrap();
     tier4_fixture(dir.path());
 
@@ -1335,7 +1335,7 @@ async fn tier5_surgical_edit_in_one_huge_file() {
     let Some(server) = common::TestServer::spawn(&model).await else {
         return;
     };
-    let engine = InferenceEngine::load(&model, 4).expect("model should load");
+    let engine = InferenceEngine::load(&model).expect("model should load");
     let dir = tempdir().unwrap();
     let original = tier5_fixture(dir.path());
 
