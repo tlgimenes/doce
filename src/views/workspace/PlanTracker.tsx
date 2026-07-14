@@ -138,7 +138,7 @@ export function PlanTrackerCard({ plan }: { plan: PlanSnapshot }) {
               <ItemMedia variant="icon">{step.done ? <Check /> : <Circle />}</ItemMedia>
               <ItemContent>
                 <ItemTitle title={step.description}>
-                  <span className="truncate">{step.description}</span>
+                  <span className="min-w-0 truncate">{step.description}</span>
                 </ItemTitle>
               </ItemContent>
             </Item>
@@ -164,7 +164,7 @@ export function PlanTrackerCard({ plan }: { plan: PlanSnapshot }) {
         <ItemMedia variant="icon">{allDone ? <Check /> : <Circle />}</ItemMedia>
         <ItemContent>
           <ItemTitle title={currentStep?.description ?? plan.goal}>
-            <span className="truncate">{currentStep?.description ?? plan.goal}</span>
+            <span className="min-w-0 truncate">{currentStep?.description ?? plan.goal}</span>
           </ItemTitle>
         </ItemContent>
         <ItemActions>
