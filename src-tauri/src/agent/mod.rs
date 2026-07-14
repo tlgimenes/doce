@@ -24,7 +24,7 @@ pub mod tools;
 // `SYSTEM_PROMPT` was moved to tests/agent_tasks.rs
 // (`FLAT_BASELINE_SYSTEM_PROMPT`) on 2026-07-12: no production code
 // referenced it -- every shipped conversation runs the plan machine
-// (`plan::plan_system_prompt` via `commands::agent::plan_system_message`)
+// (`plan::single_mode_system_prompt` via `commands::agent::plan_system_message`)
 // -- yet its presence in src let the tier-0 tests read as covering the
 // app while actually exercising a dead path (how the "ola" doom loop
 // shipped green).
@@ -146,18 +146,6 @@ impl AgentContext {
     }
 }
 
-/// Runs the tool-use loop to completion: repeatedly generates a response,
-/// executes any tool call it contains, and feeds the result back in, until
-/// the model produces a plain-text final answer or the turn cap is hit.
-///
-/// `initial_messages` is a real role-tagged conversation (typically a
-/// `system` message from `SYSTEM_PROMPT` plus a `user` message with the
-/// task) rather than one flat string — `generate` is expected to render
-/// this through the model's own chat template (see
-/// `inference::InferenceEngine::render_chat_prompt`) before tokenizing,
-/// since chat-tuned models are trained on role-tagged turns, not raw
-/// concatenated text.
-///
 /// The caller-specific behavior `run_loop`'s control flow depends on,
 /// bundled into one trait rather than four separate closure parameters —
 /// production implements this once per call site (a `RealBackend` for the
@@ -191,16 +179,12 @@ impl AgentContext {
 /// crosses a `tokio::spawn` boundary, so the `Send`-bound limitation this
 /// lint warns about (relevant for trait objects / spawned futures) doesn't
 /// apply.
-/// What executing one tool call did to the loop. `Result` feeds the text
-/// back as an ordinary tool result and the loop continues; `Finish` ends
-/// the whole `run_loop` call with the given final answer. `Finish` exists
-/// so a state-driven backend can put "the task is done" behind an
-/// ordinary grammar-constrained tool call (the plan engine's `FinishTask`)
-/// instead of relying on a free-text reply — free text is exactly what a
-/// small model degrades into emitting for tool NAMES after long
-/// repetitive stretches (observed for real: after twenty AddStep calls in
-/// a row, the model answered the bare text "ResumeExecution", which ended
-/// the task as a garbage final answer).
+/// What executing one tool call produced — `run_loop`'s per-turn
+/// tool-dispatch result. `Result` feeds the text back as an ordinary tool
+/// result and the loop continues; `Finish` ends the whole `run_loop` call
+/// with the given final answer, reached via an ordinary structured tool
+/// call (the plan engine's `FinishTask`) rather than a free-text reply —
+/// the server enforces exactly one tool call per turn via `tool_choice`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ToolExecution {
     Result(String),
@@ -216,18 +200,19 @@ pub trait AgentBackend {
     async fn execute_tool(&mut self, tool_call_id: String, call: ToolCall) -> ToolExecution;
 
     /// Whether this backend generates with tool calls REQUIRED at the
-    /// sampler (`ToolCallMode::Require`). The production plan loop — top-level
+    /// sampler (`ToolCallMode::Require`, mapped to the server's
+    /// `tool_choice:"required"`). The production plan loop — top-level
     /// (`RealBackend`) and subagent (`SubagentBackend`) — does, so a turn
-    /// that returned NO tool call is an INVARIANT VIOLATION: run_loop feeds a
-    /// correction and retries rather than ending the task, because under
-    /// Require the only legitimate finish is a `FinishTask` tool call
-    /// (dispatched to `ToolExecution::Finish`). When `false` (Allow/Forbid —
-    /// the flat benchmark harness, and the scripted unit-test backends whose
-    /// tests end on a plain-text final answer), a no-tool-call turn is an
-    /// ordinary `LoopStep::Done`. Defaults to `true`: the production path is
-    /// Require, and defaulting a new backend to "correct-and-retry, don't end
-    /// the task as garbage" is the safe failure mode (the exact regression
-    /// the old grammar prevented).
+    /// that returned NO tool call is a retriable correction, never a
+    /// finished task: run_loop feeds a correction message and retries
+    /// rather than ending the task, because under Require the only
+    /// legitimate finish is a `FinishTask` tool call (dispatched to
+    /// `ToolExecution::Finish`). When `false` (Allow/Forbid — the scripted
+    /// unit-test backends whose tests end on a plain-text final answer), a
+    /// no-tool-call turn is an ordinary final answer. Defaults to `true`:
+    /// the production path is Require, and defaulting a new backend to
+    /// "correct-and-retry, don't end the task as garbage" is the safe
+    /// failure mode.
     fn requires_tool_call(&self) -> bool {
         true
     }
@@ -309,7 +294,7 @@ pub async fn run_loop<B: AgentBackend>(
                 //   - otherwise (e.g. "stop" but no call): require exactly one
                 //     tool call. Letting an empty/among-text required turn
                 //     masquerade as Done is the exact "ended the task as
-                //     garbage" failure the old grammar prevented.
+                //     garbage" failure this invariant prevents.
                 if backend.requires_tool_call() {
                     let correction = if outcome.finish_reason == "length" {
                         "Your response was cut off inside your reasoning, before any tool call was produced. Keep your thinking brief this time and end with exactly one tool call."
@@ -597,7 +582,7 @@ mod tests {
         // plan loop), a successful generate that produced NO tool call is an
         // invariant violation -- the model was required to call a tool and
         // didn't. It must NEVER masquerade as a finished task (the exact
-        // "ended the task as garbage" failure the old grammar prevented).
+        // "ended the task as garbage" failure this invariant prevents).
         // The loop feeds a correction and RETRIES; the only legitimate finish
         // is a later FinishTask tool call.
         let context = AgentContext::top_level();

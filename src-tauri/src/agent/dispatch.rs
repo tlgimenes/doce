@@ -1360,7 +1360,6 @@ mod tests {
 
     #[test]
     // --- Update (single-mode harness): shape-delegating merge of Write/Edit ---
-    #[test]
     fn update_with_content_creates_the_file_like_write() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("new.txt");
