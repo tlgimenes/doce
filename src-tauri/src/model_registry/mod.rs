@@ -53,3 +53,28 @@ pub fn best_candidate_for_tier<'a>(
         .find(|t| t.tier_id == tier_id)
         .and_then(|t| t.models.iter().min_by_key(|m| m.priority))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_tier_resolves_to_the_single_qwen35_model() {
+        let registry = bundled();
+        let tiers = [
+            "apple-silicon-8gb",
+            "apple-silicon-16gb",
+            "apple-silicon-32gb",
+            "apple-silicon-64gb-plus",
+        ];
+        for tier_id in tiers {
+            let m = best_candidate_for_tier(&registry, tier_id)
+                .unwrap_or_else(|| panic!("tier {tier_id} must resolve a candidate"));
+            assert_eq!(m.model_id, "qwen3.5-4b-q4_k_m", "tier {tier_id}");
+            assert_eq!(
+                m.sha256, "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4",
+                "tier {tier_id}"
+            );
+        }
+    }
+}
