@@ -12,6 +12,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod dialect;
+pub mod http;
 pub use dialect::ToolDialect;
 
 #[derive(Debug, thiserror::Error)]
