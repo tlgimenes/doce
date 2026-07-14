@@ -85,3 +85,47 @@ Commit: c679fed
 Message: fix(chat): min-w-0 on truncating spans per review
 Files: 1 changed, 2 insertions(+), 2 deletions(-)
 ```
+
+## Layout Fix: Gallery Example Grid Items
+
+### Changes Made
+
+**File: `src/views/design-system/WidgetGallery.tsx`**
+- Line 22: Changed `<div className="flex flex-col gap-1.5">` to `<div className="min-w-0 flex flex-col gap-1.5">`
+
+Rationale: Example divs are grid items in `Section` (grid `grid-cols-1 gap-4 lg:grid-cols-2`). Grid items default to `min-width: auto`, causing wide mocks (e.g., plan-tracker truncation example) to expand the column beyond the gallery pane, creating horizontal overflow on narrow windows. `min-w-0` allows the grid item to shrink with its container.
+
+### Testing Results
+
+- **Unit tests:** `npx vitest run src/App.test.tsx` — 40/40 passed ✓
+- **Linting:** `npm run lint` (oxlint) — exit 0 ✓
+
+### Commit
+
+```
+Commit: 381bd4e
+Message: fix(gallery): min-w-0 on example grid items so wide mocks shrink
+Files: 1 changed, 1 insertion(+), 1 deletion(-)
+```
+
+## Collapsible Width Fix: PlanTracker Card Flex Parent
+
+### Changes Made
+
+**File: `src/views/workspace/PlanTracker.tsx`**
+- Line 115: Changed `className="mx-auto max-w-xl"` to `className="mx-auto w-full max-w-xl"`
+
+Rationale: With only `mx-auto max-w-xl`, the card sizes to fit-content when its parent is a flex column (auto horizontal margins disable flex-item stretch), overflowing narrow containers like WidgetGallery example grid. `w-full` gives it an explicit width so it fills the parent and caps at max-w-xl — identical behavior in the live app's block-flow container.
+
+### Testing Results
+
+- **Unit tests:** `npx vitest run src/views/workspace/PlanTracker.test.tsx` — 11 passed ✓
+- **Linting:** `npm run lint` (oxlint) — exit 0 ✓
+
+### Commit
+
+```
+Commit: d7da43e
+Message: fix(chat): w-full on plan card so it shrinks in flex parents
+Files: 1 changed, 1 insertion(+), 1 deletion(-)
+```

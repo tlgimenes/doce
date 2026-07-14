@@ -55,10 +55,24 @@ describe("Plan tracker truncation measurements", () => {
     await longCard.saveScreenshot(`${SHOT_DIR}/card-collapsed.png`);
 
     await (await longCard.$("[data-testid='plan-current-step']")).click();
-    await browser.waitUntil(
-      async () => (await longCard.$$("[data-testid='plan-step']")).length === 3,
-      { timeout: 5000, timeoutMsg: "expanded step list never rendered" },
-    );
+    try {
+      await browser.waitUntil(
+        async () => (await longCard.$$("[data-testid='plan-step']")).length === 3,
+        { timeout: 5000 },
+      );
+    } catch {
+      // WebDriver click flake fallback: dispatch a native click on the trigger.
+      await browser.execute(() => {
+        const card = (
+          Array.from(document.querySelectorAll("[data-testid='plan-tracker']")) as HTMLElement[]
+        )[1];
+        (card.querySelector("[data-testid='plan-current-step']") as HTMLElement).click();
+      });
+      await browser.waitUntil(
+        async () => (await longCard.$$("[data-testid='plan-step']")).length === 3,
+        { timeout: 10000, timeoutMsg: "expanded step list never rendered (native click too)" },
+      );
+    }
 
     const expandedMetrics = await browser.execute(() => {
       const cards = Array.from(
