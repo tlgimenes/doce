@@ -664,6 +664,12 @@ struct RealBackend<'a> {
     /// every persist call this backend makes, rather than re-resolving it
     /// from `app` on every single tool call.
     transcript_dir: Option<std::path::PathBuf>,
+    /// FR-2: the server's last authoritative `prompt_tokens` observation for
+    /// this (and every other in-flight) conversation — borrowed from managed
+    /// `State` the same way `active_plans` is. RECORDED at the end of
+    /// `generate` (from the SSE trailer's `usage`), CONSULTED at the start of
+    /// `measure` — never touched by `run_loop` itself.
+    observed_usage: &'a crate::context::LastObservedUsage,
 }
 
 impl crate::agent::AgentBackend for RealBackend<'_> {
@@ -673,10 +679,21 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
         // still emits `context-usage-update` on every turn (not just when
         // `compact` actually runs) to keep the UI's live indicator
         // responsive, not just notified of compaction events.
+        // `.cloned()` to drop the lock before `usage_from_fitted_messages`
+        // runs (FR-2: prefer the server's last authoritative `prompt_tokens`
+        // as the base -- see `context::authoritative_prompt_tokens`).
+        let observed = self
+            .observed_usage
+            .0
+            .lock()
+            .unwrap()
+            .get(self.conversation_id)
+            .cloned();
         match crate::context::usage_from_fitted_messages(
             self.conversation_id,
             messages,
             self.settings,
+            observed.as_ref(),
         ) {
             Ok(usage) => {
                 let tokens_used = usage.tokens_used;
@@ -745,6 +762,12 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
             crate::inference::CONTEXT_WINDOW_TOKENS,
             prompt_est,
         ));
+        // FR-2: the exact OpenAI-shaped message count this turn is about to
+        // SEND to the server (`req.messages`, built above from this same
+        // `messages` -- tail included) -- what a future `authoritative_prompt_tokens`
+        // delta gets measured from, so it must be captured before `req` is
+        // consumed by `.chat` below.
+        let sent_at_len = req.messages.len();
 
         // Live generation ticker: every content/reasoning piece streams to
         // the UI as it arrives (the working shimmer). `agent-generation-piece`
@@ -774,7 +797,22 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
                 &self.cancel,
             )
             .await;
-        chat_result_to_turn_outcome(result)
+        let outcome = chat_result_to_turn_outcome(result);
+        // FR-2: record the server's authoritative `prompt_tokens` for the
+        // NEXT `measure` call to prefer over a full chars/4 re-estimate.
+        // `usage` is `None` on a cancelled/errored turn (no trailer arrived),
+        // which correctly leaves any prior observation untouched rather than
+        // overwriting it with nothing.
+        if let Some((prompt_tokens, _completion_tokens)) = outcome.usage {
+            self.observed_usage.0.lock().unwrap().insert(
+                self.conversation_id.to_string(),
+                crate::context::ObservedUsage {
+                    prompt_tokens,
+                    at_len: sent_at_len,
+                },
+            );
+        }
+        outcome
     }
 
     async fn execute_tool(&mut self, tool_call_id: String, call: ToolCall) -> ToolExecution {
@@ -823,6 +861,7 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
                 self.pending,
                 &self.base_url,
                 &self.cancel,
+                self.observed_usage,
             )
             .await,
         )
@@ -855,17 +894,32 @@ struct SubagentBackend<'a> {
     /// fired, the subagent's loop halts with `AgentError::Cancelled`, which
     /// `execute_top_level_tool` folds into a benign stopped tool result.
     cancel: tokio_util::sync::CancellationToken,
+    /// FR-2: same authoritative-usage handle as `RealBackend`'s, shared
+    /// across every conversation (top-level and subagent alike) -- keyed
+    /// here by `subagent_id` rather than a parent `conversation_id`.
+    observed_usage: &'a crate::context::LastObservedUsage,
 }
 
 impl crate::agent::AgentBackend for SubagentBackend<'_> {
     fn measure(&mut self, messages: &[ChatMessage]) -> u32 {
         // Right-shape estimate (`to_openai_messages` is what the server
-        // decodes), same chars/4 heuristic as `usage_from_fitted_messages`
-        // -- this backend has no `ContextSettings` to route through that
-        // helper, so it estimates directly.
-        crate::inference::token_estimate(
-            &serde_json::to_string(&crate::inference::http::to_openai_messages(messages))
-                .unwrap_or_default(),
+        // decodes) -- this backend has no `ContextSettings` to route through
+        // `usage_from_fitted_messages`, so it calls the shared pure fn
+        // directly. FR-2: prefers the server's last authoritative
+        // `prompt_tokens` for this subagent as the base, chars/4 only for the
+        // delta since (`.cloned()` to drop the lock before the call).
+        let observed = self
+            .observed_usage
+            .0
+            .lock()
+            .unwrap()
+            .get(self.subagent_id)
+            .cloned();
+        let openai_messages = crate::inference::http::to_openai_messages(messages);
+        crate::context::authoritative_prompt_tokens(
+            observed.as_ref(),
+            &openai_messages,
+            crate::inference::token_estimate,
         )
     }
 
@@ -912,6 +966,10 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
             crate::inference::CONTEXT_WINDOW_TOKENS,
             prompt_est,
         ));
+        // FR-2: captured before `req` is consumed by `.chat` below -- see
+        // `RealBackend::generate`'s identical `sent_at_len` for the full
+        // rationale.
+        let sent_at_len = req.messages.len();
         // FR-015 isolation: the subagent's own transcript isn't rendered by
         // any current view, so there's no live ticker to feed -- `on_piece`
         // is a no-op, same as the pre-cutover `|_piece| {}`. Cancellation
@@ -920,7 +978,19 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
         let result = crate::inference::http::LlamaServerClient::new(self.base_url.clone())
             .chat(req, |_piece| {}, &self.cancel)
             .await;
-        chat_result_to_turn_outcome(result)
+        let outcome = chat_result_to_turn_outcome(result);
+        // FR-2: record this subagent's authoritative `prompt_tokens` for the
+        // next `measure` call, same as `RealBackend::generate`.
+        if let Some((prompt_tokens, _completion_tokens)) = outcome.usage {
+            self.observed_usage.0.lock().unwrap().insert(
+                self.subagent_id.to_string(),
+                crate::context::ObservedUsage {
+                    prompt_tokens,
+                    at_len: sent_at_len,
+                },
+            );
+        }
+        outcome
     }
 
     async fn execute_tool(&mut self, tool_call_id: String, call: ToolCall) -> ToolExecution {
@@ -1023,6 +1093,7 @@ async fn execute_top_level_tool(
     pending: &PendingQuestions,
     base_url: &str,
     cancel: &tokio_util::sync::CancellationToken,
+    observed_usage: &crate::context::LastObservedUsage,
 ) -> String {
     // Resolved once, reused for every persist call this function makes
     // (including the subagent's own final-answer row below, which lives
@@ -1061,7 +1132,7 @@ async fn execute_top_level_tool(
             &call,
         )
         .await;
-        emit_context_usage_update(app, conn, parent_conversation_id, cwd).await;
+        emit_context_usage_update(app, conn, parent_conversation_id, cwd, observed_usage).await;
         return model_text;
     }
 
@@ -1199,6 +1270,9 @@ async fn execute_top_level_tool(
         // Share the parent turn's cancellation token so stopping the parent
         // stops this subagent's in-flight generation too (Task 4.2a).
         cancel: cancel.clone(),
+        // FR-2: same handle threaded through from `execute_top_level_tool`'s
+        // own new parameter (ultimately `RealBackend::observed_usage`).
+        observed_usage,
     };
     let sub_started_at = now_ms();
     let sub_result = run_loop(&sub_context, sub_messages, &mut sub_backend).await;
@@ -1428,6 +1502,7 @@ async fn emit_context_usage_update(
     conn: &tokio_rusqlite::Connection,
     conversation_id: &str,
     cwd: Option<&std::path::Path>,
+    observed_usage: &crate::context::LastObservedUsage,
 ) {
     let Ok(app_data_dir) = app.path().app_data_dir() else {
         return;
@@ -1444,8 +1519,21 @@ async fn emit_context_usage_update(
     .to_string();
     let system_prompt =
         plan_system_message(cwd, true, Some(&transcript_path), ToolDialect::HermesJson);
-    if let Ok(usage) =
-        crate::context::compute_usage(conn, conversation_id, &skills_dir, &system_prompt).await
+    // FR-2: `.cloned()` to drop the lock before `compute_usage` runs.
+    let observed = observed_usage
+        .0
+        .lock()
+        .unwrap()
+        .get(conversation_id)
+        .cloned();
+    if let Ok(usage) = crate::context::compute_usage(
+        conn,
+        conversation_id,
+        &skills_dir,
+        &system_prompt,
+        observed.as_ref(),
+    )
+    .await
     {
         let _ = app.emit("context-usage-update", usage);
     }
@@ -1720,7 +1808,11 @@ pub async fn send_agent_message(
     active_generations: State<'_, ActiveGenerations>,
     active_plans: State<'_, ActivePlans>,
     pending_questions: State<'_, PendingQuestions>,
-    compaction_failures: State<'_, crate::context::CompactionFailures>,
+    // FR-2: bundled with `LastObservedUsage` (`context::CompactionState`'s own
+    // doc comment) purely to keep this command's total arg count at specta's
+    // `SpectaFn` ceiling -- everywhere else still spells these two out as
+    // separate `&CompactionFailures`/`&LastObservedUsage` borrows.
+    compaction_state: State<'_, crate::context::CompactionState>,
     conversation_id: String,
     content: String,
     rich_content: Option<String>,
@@ -1901,7 +1993,8 @@ pub async fn send_agent_message(
         &skills_dir,
         &system_prompt,
         false,
-        &compaction_failures,
+        &compaction_state.failures,
+        &compaction_state.observed_usage,
     )
     .await?;
     let settings = crate::context::ContextSettings::load(&conn).await?;
@@ -1973,6 +2066,7 @@ pub async fn send_agent_message(
         plan_state,
         active_plans: &active_plans,
         transcript_dir: transcript_dir.clone(),
+        observed_usage: &compaction_state.observed_usage,
     };
     let result = run_loop(&context, initial_messages, &mut backend).await;
     // Generation runs against the server now, so there is no per-turn
@@ -2045,7 +2139,14 @@ pub async fn send_agent_message(
                 Ok(())
             })
             .await;
-        emit_context_usage_update(&app, &conn, &conversation_id, cwd.as_deref()).await;
+        emit_context_usage_update(
+            &app,
+            &conn,
+            &conversation_id,
+            cwd.as_deref(),
+            &compaction_state.observed_usage,
+        )
+        .await;
     }
 
     Ok(final_text)
@@ -2853,6 +2954,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("notes.txt"), "hello world").unwrap();
 
+        let observed_usage = crate::context::LastObservedUsage::default();
         let mut backend = SubagentBackend {
             conn: &conn,
             subagent_id: "sub",
@@ -2865,6 +2967,8 @@ mod tests {
             base_url: String::new(),
             // Likewise never fired: `execute_tool` doesn't touch `cancel`.
             cancel: tokio_util::sync::CancellationToken::new(),
+            // Not touched either -- `execute_tool` never consults it.
+            observed_usage: &observed_usage,
         };
         use crate::agent::AgentBackend;
         let call = crate::agent::ToolCall {
@@ -2887,6 +2991,7 @@ mod tests {
         seed_conversation(&conn, "sub").await;
         let app_data_dir = tempfile::tempdir().unwrap();
 
+        let observed_usage = crate::context::LastObservedUsage::default();
         let mut backend = SubagentBackend {
             conn: &conn,
             subagent_id: "sub",
@@ -2899,6 +3004,8 @@ mod tests {
             base_url: String::new(),
             // Never fired: `execute_tool` doesn't touch `cancel`.
             cancel: tokio_util::sync::CancellationToken::new(),
+            // Not touched either -- `execute_tool` never consults it.
+            observed_usage: &observed_usage,
         };
         use crate::agent::AgentBackend;
 

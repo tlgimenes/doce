@@ -14,6 +14,12 @@ use tauri::{AppHandle, Manager, State};
 pub async fn get_context_usage(
     app: AppHandle,
     db_cell: State<'_, DbCell>,
+    // FR-2: the SAME bundled `State` `send_agent_message`/`compact_conversation`
+    // read/write (`context::CompactionState`'s own doc comment) -- a
+    // conversation's last observed `prompt_tokens` must be the one instance
+    // every entry point shares, or this reopen snapshot could disagree with
+    // the live indicator.
+    compaction_state: State<'_, context::CompactionState>,
     conversation_id: String,
 ) -> Result<ContextUsage, String> {
     let conn = db_cell.get(&app).await?.clone();
@@ -40,7 +46,22 @@ pub async fn get_context_usage(
         ToolDialect::HermesJson,
     );
 
-    context::compute_usage(&conn, &conversation_id, &skills_dir, &system_prompt).await
+    // FR-2: `.cloned()` to drop the lock before `compute_usage` runs.
+    let observed = compaction_state
+        .observed_usage
+        .0
+        .lock()
+        .unwrap()
+        .get(&conversation_id)
+        .cloned();
+    context::compute_usage(
+        &conn,
+        &conversation_id,
+        &skills_dir,
+        &system_prompt,
+        observed.as_ref(),
+    )
+    .await
 }
 
 /// 010-context-window-management/US2 (FR-009): forces the same tiered
@@ -54,7 +75,9 @@ pub async fn compact_conversation(
     app: AppHandle,
     db_cell: State<'_, DbCell>,
     server_state: State<'_, crate::inference::server::ServerState>,
-    compaction_failures: State<'_, context::CompactionFailures>,
+    // FR-2: same shared bundle as `get_context_usage`/`send_agent_message` --
+    // see `context::CompactionState`'s own doc comment.
+    compaction_state: State<'_, context::CompactionState>,
     conversation_id: String,
 ) -> Result<ContextUsage, String> {
     let conn = db_cell.get(&app).await?.clone();
@@ -93,7 +116,8 @@ pub async fn compact_conversation(
         &skills_dir,
         &system_prompt,
         true,
-        &compaction_failures,
+        &compaction_state.failures,
+        &compaction_state.observed_usage,
     )
     .await
 }

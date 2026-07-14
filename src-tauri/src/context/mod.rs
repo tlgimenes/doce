@@ -198,25 +198,77 @@ async fn persist_notice(
     .map_err(|e| e.to_string())
 }
 
+/// The server's last authoritative prompt-token count for a conversation and
+/// the history length (count of OpenAI-shaped messages) it corresponded to.
+/// Recorded by the live backends' `generate` (post `chat_result_to_turn_outcome`,
+/// from the SSE trailer's `usage.prompt_tokens`) and consulted by their
+/// `measure` and by the reopen/UI `usage_from_history`/`usage_from_fitted_messages`
+/// paths (`authoritative_prompt_tokens` below) -- FR-2's "prefer the server's
+/// truth as the base, chars/4 only for the delta since" policy. In-memory
+/// (session-scoped): a restart resets to pure `chars/4` estimation, which is
+/// safe (identical to today's behavior).
+#[derive(Debug, Clone)]
+pub struct ObservedUsage {
+    pub prompt_tokens: u32,
+    pub at_len: usize,
+}
+
+/// Per-conversation last observed usage. Mirrors `CompactionFailures`'s exact
+/// shape: a bare `Mutex<HashMap<..>>` newtype, `.manage()`d in `lib.rs`, read
+/// from Tauri commands via `State<'_, LastObservedUsage>` and from the live
+/// backends via a plain borrow.
+pub struct LastObservedUsage(
+    pub std::sync::Mutex<std::collections::HashMap<String, ObservedUsage>>,
+);
+
+impl Default for LastObservedUsage {
+    fn default() -> Self {
+        Self(std::sync::Mutex::new(std::collections::HashMap::new()))
+    }
+}
+
+/// FR-2: prefers the server's authoritative `prompt_tokens` (`observed`) as
+/// the base and adds only the estimated `chars/4` delta of messages appended
+/// since that observation, rather than re-estimating the whole prompt from
+/// scratch every time. Falls back to a full estimate when unobserved, OR when
+/// the history has shrunk to at-or-below the observed length (a compaction/
+/// reload invalidated the base -- `at_len > all_openai_msgs.len()`) -- never
+/// underflows/panics on that slice.
+pub fn authoritative_prompt_tokens(
+    observed: Option<&ObservedUsage>,
+    all_openai_msgs: &[serde_json::Value],
+    estimate: impl Fn(&str) -> u32,
+) -> u32 {
+    let full =
+        |slice: &[serde_json::Value]| estimate(&serde_json::to_string(slice).unwrap_or_default());
+    match observed {
+        Some(o) if o.at_len <= all_openai_msgs.len() => {
+            o.prompt_tokens + full(&all_openai_msgs[o.at_len..])
+        }
+        _ => full(all_openai_msgs),
+    }
+}
+
 /// Estimates the token usage of `history` (prefixed with `system_prompt`) —
-/// a chars/4 heuristic (`inference::token_estimate`) over the OpenAI
-/// `messages` shape the llama-server sidecar actually decodes
-/// (`to_openai_messages`), NOT the old in-process dialect render. The server
-/// reports authoritative usage, so this local number only has to be close
-/// enough to drive the compaction TRIGGER (safe if it fires a bit early).
+/// prefers the server's last authoritative `prompt_tokens` (`observed`) as
+/// the base (`authoritative_prompt_tokens`), falling back to a chars/4
+/// heuristic (`inference::token_estimate`) over the OpenAI `messages` shape
+/// the llama-server sidecar actually decodes (`to_openai_messages`), NOT the
+/// old in-process dialect render. The server reports authoritative usage, so
+/// this local number only has to be close enough to drive the compaction
+/// TRIGGER (safe if it fires a bit early).
 async fn usage_from_history(
     conversation_id: &str,
     history: &[HistoryMessage],
     system_prompt: &str,
     settings: &ContextSettings,
+    observed: Option<&ObservedUsage>,
 ) -> Result<ContextUsage, String> {
     let mut messages = vec![ChatMessage::system(system_prompt)];
     messages.extend(history.iter().map(|m| m.chat.clone()));
 
-    let tokens_used = token_estimate(
-        &serde_json::to_string(&crate::inference::http::to_openai_messages(&messages))
-            .unwrap_or_default(),
-    );
+    let openai_messages = crate::inference::http::to_openai_messages(&messages);
+    let tokens_used = authoritative_prompt_tokens(observed, &openai_messages, token_estimate);
     let token_budget = crate::inference::CONTEXT_WINDOW_TOKENS;
     let state = classify_state(tokens_used, token_budget, settings);
 
@@ -237,6 +289,7 @@ pub async fn compute_usage(
     conversation_id: &str,
     skills_dir: &Path,
     system_prompt: &str,
+    observed: Option<&ObservedUsage>,
 ) -> Result<ContextUsage, String> {
     let settings = ContextSettings::load(conn).await?;
     let mut history = load_history_via_conn(conn, conversation_id, skills_dir).await?;
@@ -256,7 +309,14 @@ pub async fn compute_usage(
     // (this function already documents itself as "a close, honest
     // estimate" at its callers, not a byte-exact mirror of the real seed).
     apply_lightweight_clearing(&mut history, TOOL_KEEP_N, None);
-    usage_from_history(conversation_id, &history, system_prompt, &settings).await
+    usage_from_history(
+        conversation_id,
+        &history,
+        system_prompt,
+        &settings,
+        observed,
+    )
+    .await
 }
 
 /// Tier 1: a pure, idempotent, load-time transform. Walking oldest-to-newest,
@@ -432,6 +492,32 @@ pub enum SummaryResult {
 /// `lib.rs`, read from Tauri commands via `State<'_, CompactionFailures>`.
 pub struct CompactionFailures(pub std::sync::Mutex<std::collections::HashMap<String, u32>>);
 
+impl Default for CompactionFailures {
+    fn default() -> Self {
+        Self(std::sync::Mutex::new(std::collections::HashMap::new()))
+    }
+}
+
+/// Bundles `CompactionFailures` and `LastObservedUsage` into a single
+/// `.manage()`d value. `send_agent_message` was already at ten total params
+/// (State included) -- specta's `SpectaFn` arity ceiling -- before FR-2;
+/// adding `LastObservedUsage` as its own eleventh param blew past it
+/// (`cargo build` fails: "the trait bound ... SpectaFn<_> is not
+/// satisfied"). Bundling these two small, closely-related, session-scoped
+/// in-memory maps behind one `State` buys back a slot. `compact_conversation`/
+/// `get_context_usage` (comfortably under the ceiling either way) take the
+/// SAME bundle -- not separate `CompactionFailures`/`LastObservedUsage`
+/// states of their own -- so every reader/writer across the app shares the
+/// exact same underlying `Mutex`es; two independently-managed instances of
+/// either map would silently drift out of sync (e.g. a turn's observed
+/// `prompt_tokens` recorded by `send_agent_message`'s `RealBackend` would
+/// never be visible to `get_context_usage`'s reopen snapshot).
+#[derive(Default)]
+pub struct CompactionState {
+    pub failures: CompactionFailures,
+    pub observed_usage: LastObservedUsage,
+}
+
 /// Pure breaker decision (unit-tested): true when auto-compaction
 /// (`force == false`) should skip the summarize call entirely because this
 /// conversation has already hit `limits::MAX_CONSECUTIVE_COMPACTION_FAILURES`
@@ -570,10 +656,24 @@ pub async fn maybe_compact(
     system_prompt: &str,
     force: bool,
     failures: &CompactionFailures,
+    observed_usage: &LastObservedUsage,
 ) -> Result<ContextUsage, String> {
     let settings = ContextSettings::load(conn).await?;
     let mut history = load_history_via_conn(conn, conversation_id, skills_dir).await?;
-    let mut usage = usage_from_history(conversation_id, &history, system_prompt, &settings).await?;
+    let observed = observed_usage
+        .0
+        .lock()
+        .unwrap()
+        .get(conversation_id)
+        .cloned();
+    let mut usage = usage_from_history(
+        conversation_id,
+        &history,
+        system_prompt,
+        &settings,
+        observed.as_ref(),
+    )
+    .await?;
 
     let over_compact_threshold = |u: &ContextUsage| {
         exceeds(
@@ -610,7 +710,14 @@ pub async fn maybe_compact(
         })
         .to_string();
         persist_notice(conn, transcript_dir.clone(), conversation_id, notice_json).await?;
-        usage = usage_from_history(conversation_id, &history, system_prompt, &settings).await?;
+        usage = usage_from_history(
+            conversation_id,
+            &history,
+            system_prompt,
+            &settings,
+            observed.as_ref(),
+        )
+        .await?;
     }
 
     if over_compact_threshold(&usage) {
@@ -643,12 +750,21 @@ pub async fn maybe_compact(
             SummaryResult::Persisted(_) => {
                 changed = true;
                 failures.0.lock().unwrap().remove(conversation_id);
+                // A summary replaces history wholesale, so any prior
+                // authoritative-usage observation for this conversation is
+                // stale -- force a fresh full estimate until the next
+                // `generate` re-observes (FR-2). `usage_from_history` below
+                // would already fall back safely (`authoritative_prompt_tokens`'s
+                // stale/shrunk guard), but this makes the invalidation
+                // explicit and covers callers after this function returns too.
+                observed_usage.0.lock().unwrap().remove(conversation_id);
                 // summarize_and_persist just persisted a new context_notice row
                 // that changes load_history_annotated's splice point -- reload
                 // rather than trying to reconstruct the spliced view in memory.
                 history = load_history_via_conn(conn, conversation_id, skills_dir).await?;
                 usage =
-                    usage_from_history(conversation_id, &history, system_prompt, &settings).await?;
+                    usage_from_history(conversation_id, &history, system_prompt, &settings, None)
+                        .await?;
             }
             SummaryResult::NothingToSummarize => {}
             SummaryResult::Rejected(_) => {
@@ -715,14 +831,16 @@ pub fn usage_from_fitted_messages(
     conversation_id: &str,
     messages: &[ChatMessage],
     settings: &ContextSettings,
+    observed: Option<&ObservedUsage>,
 ) -> Result<ContextUsage, String> {
-    // Same chars/4-over-the-request-shape estimate as `usage_from_history`
-    // (`to_openai_messages` is what the server decodes), just over an
-    // already-assembled message list rather than a persisted history.
-    let tokens_used = token_estimate(
-        &serde_json::to_string(&crate::inference::http::to_openai_messages(messages))
-            .unwrap_or_default(),
-    );
+    // Same right-shape estimate as `usage_from_history` (`to_openai_messages`
+    // is what the server decodes), just over an already-assembled message
+    // list rather than a persisted history -- prefers the server's last
+    // authoritative `prompt_tokens` (`observed`) as the base (FR-2), falling
+    // back to the full chars/4 estimate when unobserved/stale
+    // (`authoritative_prompt_tokens`).
+    let openai_messages = crate::inference::http::to_openai_messages(messages);
+    let tokens_used = authoritative_prompt_tokens(observed, &openai_messages, token_estimate);
     let token_budget = crate::inference::CONTEXT_WINDOW_TOKENS;
     let state = classify_state(tokens_used, token_budget, settings);
     Ok(ContextUsage {
@@ -1563,6 +1681,75 @@ mod tests {
         assert_eq!(
             evaluate_summary("not empty", Some("length"), 10, 20),
             SummaryDecision::RejectTruncated
+        );
+    }
+
+    // --- authoritative_prompt_tokens (FR-2: server-truth base + chars/4 delta) ---
+
+    fn est(s: &str) -> u32 {
+        (s.chars().count() / 4) as u32
+    }
+
+    fn msgs(n: usize) -> Vec<serde_json::Value> {
+        (0..n)
+            .map(|i| serde_json::json!({"role": "user", "content": format!("message {i}")}))
+            .collect()
+    }
+
+    #[test]
+    fn authoritative_prompt_tokens_falls_back_to_a_full_estimate_when_unobserved() {
+        let messages = msgs(3);
+        let expected = est(&serde_json::to_string(&messages).unwrap());
+        assert_eq!(authoritative_prompt_tokens(None, &messages, est), expected);
+    }
+
+    #[test]
+    fn authoritative_prompt_tokens_is_the_base_alone_when_nothing_was_appended_since() {
+        let messages = msgs(3);
+        let observed = ObservedUsage {
+            prompt_tokens: 999,
+            at_len: messages.len(),
+        };
+        assert_eq!(
+            authoritative_prompt_tokens(Some(&observed), &messages, est),
+            999,
+            "at_len == len must add zero delta -- the base is the whole answer"
+        );
+    }
+
+    #[test]
+    fn authoritative_prompt_tokens_adds_the_estimated_delta_of_messages_appended_since() {
+        let messages = msgs(5);
+        let observed = ObservedUsage {
+            prompt_tokens: 999,
+            at_len: 3,
+        };
+        let expected_delta = est(&serde_json::to_string(&messages[3..]).unwrap());
+        assert_eq!(
+            authoritative_prompt_tokens(Some(&observed), &messages, est),
+            999 + expected_delta
+        );
+        assert!(
+            expected_delta > 0,
+            "the delta must be nonzero, or this test proves nothing"
+        );
+    }
+
+    #[test]
+    fn authoritative_prompt_tokens_falls_back_to_a_full_estimate_when_the_base_is_stale_or_shrunk()
+    {
+        // `at_len` (5) exceeds the current message count (3) -- a
+        // compaction/reload invalidated the base. Must fall back to a full
+        // estimate, never underflow/panic on `all_openai_msgs[o.at_len..]`.
+        let messages = msgs(3);
+        let observed = ObservedUsage {
+            prompt_tokens: 999,
+            at_len: 5,
+        };
+        let expected = est(&serde_json::to_string(&messages).unwrap());
+        assert_eq!(
+            authoritative_prompt_tokens(Some(&observed), &messages, est),
+            expected
         );
     }
 

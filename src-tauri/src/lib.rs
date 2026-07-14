@@ -13,7 +13,7 @@ use agent::tools::ask_user::PendingQuestions;
 use commands::agent::ActivePlans;
 use commands::conversations::ActiveGenerations;
 use commands::models::InFlightDownloads;
-use context::CompactionFailures;
+use context::CompactionState;
 use inference::server::ServerState;
 use storage::DbCell;
 
@@ -67,7 +67,7 @@ pub fn run() {
         .manage(ActiveGenerations::default())
         .manage(ActivePlans::default())
         .manage(PendingQuestions::default())
-        .manage(CompactionFailures(Default::default()))
+        .manage(CompactionState::default())
         .manage(DbCell::new())
         .setup(move |app| {
             builder.mount_events(app);
