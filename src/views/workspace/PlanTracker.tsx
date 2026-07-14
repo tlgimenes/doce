@@ -92,10 +92,24 @@ export default function PlanTracker({ conversationId }: PlanTrackerProps) {
  * iterate on its look without driving a real agent turn.
  */
 export function PlanTrackerCard({ plan }: { plan: PlanSnapshot }) {
+  const doneCount = plan.steps.filter((step) => step.done).length;
+  const inProgressCount = plan.steps.length - doneCount;
   const maxListHeight = `${PLAN_VISIBLE_ROWS * PLAN_ROW_HEIGHT_REM}rem`;
 
   return (
     <div className="mx-auto w-full max-w-xl" data-testid="plan-tracker">
+      <div
+        className="flex items-center gap-2 px-2.5 py-0 text-sm"
+        data-testid="plan-status"
+      >
+        <span className="text-foreground">
+          {inProgressCount > 0 ? "In progress" : "Complete"}
+        </span>
+        <span className="ml-auto text-xs tabular-nums text-muted-foreground">
+          {doneCount} done
+          {inProgressCount > 0 && <> · {inProgressCount} in progress</>}
+        </span>
+      </div>
       <MessageScrollerProvider>
         <MessageScroller
           className="w-full"

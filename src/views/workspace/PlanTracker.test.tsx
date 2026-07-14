@@ -174,6 +174,39 @@ describe("PlanTracker", () => {
     expect(rows[0]).not.toHaveAttribute("data-current");
   });
 
+  it("renders plan status and done versus in-progress counts above the task list", async () => {
+    vi.mocked(commands.getActivePlan).mockResolvedValue(snapshot());
+    render(<PlanTracker conversationId="c1" />);
+
+    const status = await screen.findByTestId("plan-status");
+    expect(status).toHaveTextContent("In progress");
+    expect(status).toHaveTextContent("1 done");
+    expect(status).toHaveTextContent("2 in progress");
+
+    const scroller = screen.getByTestId("plan-task-scroller");
+    expect(
+      status.compareDocumentPosition(scroller) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("omits the in-progress count when every task is done", async () => {
+    vi.mocked(commands.getActivePlan).mockResolvedValue(
+      snapshot({
+        steps: [
+          { description: "s0", done: true },
+          { description: "s1", done: true },
+        ],
+        currentStepIndex: null,
+      }),
+    );
+    render(<PlanTracker conversationId="c1" />);
+
+    const status = await screen.findByTestId("plan-status");
+    expect(status).toHaveTextContent("Complete");
+    expect(status).toHaveTextContent("2 done");
+    expect(status).not.toHaveTextContent("in progress");
+  });
+
   it("uses a three-row scroll viewport with Shadcn's bottom fade", async () => {
     vi.mocked(commands.getActivePlan).mockResolvedValue(
       snapshot({

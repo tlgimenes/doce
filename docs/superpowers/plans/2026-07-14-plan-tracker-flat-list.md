@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the collapsible plan tracker with an ordered Marker-based task list that scrolls after three rows.
+**Goal:** Replace the collapsible plan tracker with an ordered Marker-based task list that scrolls after three rows and reports completion status above the list.
 
-**Architecture:** Keep `PlanTracker`'s recovery and event lifecycle unchanged. Refactor only `PlanTrackerCard` to map `plan.steps` directly into Marker rows inside Shadcn's `MessageScroller`, deriving emphasis from `currentStepIndex` and completion styling from `step.done`.
+**Architecture:** Keep `PlanTracker`'s recovery and event lifecycle unchanged. Refactor only `PlanTrackerCard` to map `plan.steps` directly into Marker rows inside Shadcn's `MessageScroller`, deriving emphasis from `currentStepIndex`, completion styling from `step.done`, and status counts from completed versus unfinished steps.
 
 **Tech Stack:** React 19, TypeScript, Tailwind CSS, Base UI Checkbox, Shadcn MessageScroller, Vitest, Testing Library
 
@@ -18,6 +18,7 @@
 - Preserve Shadcn's standard bottom scroll fade and keep all rows mounted.
 - Remove all accordion, progress, count, collapsed-completion, and hidden-task summary UI.
 - Preserve plan recovery, event subscription, conversation filtering, and turn-end unmount behavior.
+- Render a static status header above the scroller with `{doneCount} done` and the unfinished count as `in progress`; omit the in-progress segment when it is zero.
 
 ---
 
@@ -225,4 +226,121 @@ Expected: TypeScript and Vite build complete successfully with no errors.
 ```bash
 git add src/views/workspace/PlanTracker.tsx src/views/workspace/PlanTracker.test.tsx docs/superpowers/specs/2026-07-14-plan-tracker-flat-list-design.md docs/superpowers/plans/2026-07-14-plan-tracker-flat-list.md
 git commit -m "refactor(chat): flatten plan tracker task list"
+```
+
+### Task 2: Add the plan status header
+
+**Files:**
+- Modify: `src/views/workspace/PlanTracker.test.tsx`
+- Modify: `src/views/workspace/PlanTracker.tsx`
+- Modify: `docs/superpowers/specs/2026-07-14-plan-tracker-flat-list-design.md`
+- Modify: `docs/superpowers/plans/2026-07-14-plan-tracker-flat-list.md`
+
+**Interfaces:**
+- Consumes: `plan.steps`, where each step has a `done: boolean` field.
+- Produces: a `data-testid="plan-status"` header before `data-testid="plan-task-scroller"`.
+- Produces: `In progress` with `{doneCount} done · {inProgressCount} in progress` while unfinished tasks remain, or `Complete` with `{doneCount} done` when none remain.
+
+- [ ] **Step 1: Write failing status-header tests**
+
+Add these presentation tests to `PlanTracker.test.tsx`:
+
+```tsx
+it("renders plan status and done versus in-progress counts above the task list", async () => {
+  vi.mocked(commands.getActivePlan).mockResolvedValue(snapshot());
+  render(<PlanTracker conversationId="c1" />);
+
+  const status = await screen.findByTestId("plan-status");
+  expect(status).toHaveTextContent("In progress");
+  expect(status).toHaveTextContent("1 done");
+  expect(status).toHaveTextContent("2 in progress");
+
+  const scroller = screen.getByTestId("plan-task-scroller");
+  expect(
+    status.compareDocumentPosition(scroller) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+});
+
+it("omits the in-progress count when every task is done", async () => {
+  vi.mocked(commands.getActivePlan).mockResolvedValue(
+    snapshot({
+      steps: [
+        { description: "s0", done: true },
+        { description: "s1", done: true },
+      ],
+      currentStepIndex: null,
+    }),
+  );
+  render(<PlanTracker conversationId="c1" />);
+
+  const status = await screen.findByTestId("plan-status");
+  expect(status).toHaveTextContent("Complete");
+  expect(status).toHaveTextContent("2 done");
+  expect(status).not.toHaveTextContent("in progress");
+});
+```
+
+- [ ] **Step 2: Run the focused test and verify the new assertions fail**
+
+Run:
+
+```bash
+npm test -- src/views/workspace/PlanTracker.test.tsx --reporter=verbose
+```
+
+Expected: the two new tests FAIL because `plan-status` does not exist.
+
+- [ ] **Step 3: Implement the status header above the scroller**
+
+At the start of `PlanTrackerCard`, derive the counts:
+
+```tsx
+const doneCount = plan.steps.filter((step) => step.done).length;
+const inProgressCount = plan.steps.length - doneCount;
+```
+
+Inside the existing `data-testid="plan-tracker"` container, immediately before `MessageScrollerProvider`, add:
+
+```tsx
+<div
+  className="flex items-center gap-2 px-2.5 py-0 text-sm"
+  data-testid="plan-status"
+>
+  <span className="text-foreground">
+    {inProgressCount > 0 ? "In progress" : "Complete"}
+  </span>
+  <span className="ml-auto text-xs tabular-nums text-muted-foreground">
+    {doneCount} done
+    {inProgressCount > 0 && <> · {inProgressCount} in progress</>}
+  </span>
+</div>
+```
+
+The header remains outside `MessageScrollerProvider`, uses the same `px-2.5` as task rows, and adds no margin or parent gap.
+
+- [ ] **Step 4: Run the focused test and verify it passes**
+
+Run:
+
+```bash
+npm test -- src/views/workspace/PlanTracker.test.tsx --reporter=verbose
+```
+
+Expected: all `PlanTracker.test.tsx` tests PASS.
+
+- [ ] **Step 5: Run production validation**
+
+Run:
+
+```bash
+npm run build
+```
+
+Expected: TypeScript and Vite build complete successfully with no errors.
+
+- [ ] **Step 6: Commit the status header**
+
+```bash
+git add src/views/workspace/PlanTracker.tsx src/views/workspace/PlanTracker.test.tsx docs/superpowers/specs/2026-07-14-plan-tracker-flat-list-design.md docs/superpowers/plans/2026-07-14-plan-tracker-flat-list.md
+git commit -m "feat(chat): add plan tracker status summary"
 ```
