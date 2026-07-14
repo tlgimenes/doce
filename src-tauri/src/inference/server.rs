@@ -68,13 +68,25 @@ pub fn launch_args(port: u16, model_path: &Path) -> Vec<String> {
         "-np".to_string(),
         "1".to_string(),
         "--ctx-size".to_string(),
-        "20480".to_string(),
+        SERVER_CTX_SIZE.to_string(),
         "-ngl".to_string(),
         "999".to_string(),
         "-m".to_string(),
         model_path.to_string_lossy().into_owned(),
     ]
 }
+
+/// The llama-server context size (`--ctx-size`) every spawn requests — the
+/// single source of truth for the model's total token window. The app's
+/// in-process INPUT budget (`inference::CONTEXT_WINDOW_TOKENS`) is derived
+/// from this minus `OUTPUT_RESERVE_TOKENS`, so the two can never drift.
+pub const SERVER_CTX_SIZE: u32 = 20480;
+
+/// Headroom carved off `SERVER_CTX_SIZE` for the output tokens the server
+/// decodes on top of the prompt, so the in-process input budget leaves the
+/// server room. Sized so `SERVER_CTX_SIZE - OUTPUT_RESERVE_TOKENS == 16384`
+/// (the historical input budget), keeping compaction thresholds unchanged.
+pub const OUTPUT_RESERVE_TOKENS: u32 = 4096;
 
 /// Picks an ephemeral, currently-free TCP port by asking the OS for one:
 /// bind a listener to `127.0.0.1:0` (port `0` is the standard "assign me
@@ -540,7 +552,21 @@ mod tests {
         assert!(args.iter().any(|a| a == "-np"));
         let ctx_i = args.iter().position(|a| a == "--ctx-size").unwrap();
         assert_ne!(args[ctx_i + 1], "0");
+        assert_eq!(args[ctx_i + 1], SERVER_CTX_SIZE.to_string());
         assert!(!args.iter().any(|a| a == "0.0.0.0"));
+    }
+
+    #[test]
+    fn context_window_tokens_is_derived_from_server_ctx_size() {
+        // The in-process INPUT budget must stay coupled to (and derived
+        // from) the sidecar's --ctx-size, and the derived value must be
+        // unchanged from the historical 16384 so no compaction threshold
+        // shifts (20480 - 4096 == 16384).
+        assert_eq!(
+            SERVER_CTX_SIZE - OUTPUT_RESERVE_TOKENS,
+            crate::inference::CONTEXT_WINDOW_TOKENS
+        );
+        assert_eq!(crate::inference::CONTEXT_WINDOW_TOKENS, 16384);
     }
 
     #[test]

@@ -25,13 +25,16 @@ pub enum InferenceError {
 }
 
 /// The in-process INPUT budget, in tokens (010-context-window-management).
+/// DERIVED from `server::SERVER_CTX_SIZE` (the sidecar's `--ctx-size`, the
+/// single source of truth for the model's total token window) minus
+/// `server::OUTPUT_RESERVE_TOKENS`, so the two can never drift apart —
+/// changing the sidecar's context size automatically re-sizes this budget.
 /// Named and public rather than a bare literal so both the budget/compaction
 /// calculations in `crate::context` and any future IPC surface can read the
 /// same value, instead of each guessing at (or duplicating) the number.
-/// Generation itself runs in the llama-server sidecar (launched with
-/// `--ctx-size 20480`, see `inference::server::launch_args`); this budget is
-/// kept below that server context on purpose, leaving headroom for the
-/// output tokens the server still has to decode on top of the prompt.
+/// This budget is kept below the server's context on purpose, leaving
+/// headroom for the output tokens the server still has to decode on top of
+/// the prompt.
 ///
 /// This is the one anchor every constant in `context::limits` is sized
 /// relative to -- see that module for the rest of the context-budget
@@ -42,7 +45,7 @@ pub enum InferenceError {
 /// llama.cpp startup log) -- this is a deliberately chosen budget, raised
 /// from the original 2048 once real use showed the tiered-compaction
 /// pipeline had too little headroom to work with at that size.
-pub const CONTEXT_WINDOW_TOKENS: u32 = 16384;
+pub const CONTEXT_WINDOW_TOKENS: u32 = server::SERVER_CTX_SIZE - server::OUTPUT_RESERVE_TOKENS;
 
 /// The single seam every NEW prompt-token estimate (restore-output-cap
 /// task's `clamp_output_tokens` call sites) routes through, rather than
@@ -313,15 +316,14 @@ impl InferenceEngine {
     }
 
     /// The model's configured context window, in tokens
-    /// (010-context-window-management) — currently always
-    /// `CONTEXT_WINDOW_TOKENS`. Generation now lives in the llama-server
-    /// sidecar (launched with `--ctx-size 20480`, see
-    /// `inference::server::launch_args`); this constant is the in-process
-    /// INPUT budget, deliberately kept below the server's context so there's
-    /// output headroom, and it's what `crate::context`'s compaction sizes
-    /// against. Exposed as a method (rather than callers reading the constant
-    /// directly) so a future per-model context size would only need to change
-    /// here.
+    /// (010-context-window-management) — `CONTEXT_WINDOW_TOKENS`, the
+    /// in-process INPUT budget derived from the llama-server sidecar's
+    /// `--ctx-size` (see `inference::server::SERVER_CTX_SIZE` and
+    /// `inference::server::launch_args`), deliberately kept below the
+    /// server's context so there's output headroom, and it's what
+    /// `crate::context`'s compaction sizes against. Exposed as a method
+    /// (rather than callers reading the constant directly) so a future
+    /// per-model context size would only need to change here.
     pub fn context_window(&self) -> u32 {
         CONTEXT_WINDOW_TOKENS
     }
