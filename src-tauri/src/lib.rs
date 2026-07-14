@@ -13,6 +13,7 @@ use agent::tools::ask_user::PendingQuestions;
 use commands::agent::ActivePlans;
 use commands::conversations::{ActiveGenerations, InferenceState};
 use commands::models::InFlightDownloads;
+use inference::server::ServerState;
 use storage::DbCell;
 
 pub fn run() {
@@ -61,6 +62,7 @@ pub fn run() {
     app_builder
         .invoke_handler(builder.invoke_handler())
         .manage(InferenceState::default())
+        .manage(ServerState::default())
         .manage(InFlightDownloads::default())
         .manage(ActiveGenerations::default())
         .manage(ActivePlans::default())
@@ -79,6 +81,26 @@ pub fn run() {
             inference::server::reap_orphan(app.handle());
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running doce");
+        // Built (not `.run(generate_context!())`) so the run loop's event
+        // callback can observe `ExitRequested` — Task 3.3's graceful-exit
+        // kill. On a clean quit, tear down the supervised `llama-server`
+        // (Task 3.1/3.2 otherwise leaves it holding the model's GPU memory
+        // until the next startup's `reap_orphan` finds its pidfile).
+        .build(tauri::generate_context!())
+        .expect("error while building doce")
+        .run(|app_handle, event| {
+            use tauri::Manager;
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                // `try_state` (not `state`) — if the ServerState was never
+                // managed for some reason, a graceful exit must still not
+                // panic on the way out.
+                if let Some(state) = app_handle.try_state::<ServerState>() {
+                    // Sync RunEvent callback: bridge to the async `shutdown`
+                    // (locks the state mutex, kills the child) by blocking
+                    // this thread until it completes, so the kill actually
+                    // lands before the process exits.
+                    tauri::async_runtime::block_on(state.shutdown(app_handle));
+                }
+            }
+        });
 }

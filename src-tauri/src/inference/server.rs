@@ -9,11 +9,13 @@
 //! switch — is later tasks (3.2, 3.3). This module only owns the primitive:
 //! given a model path, produce a running, healthy server or a clear error.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
+use tokio::sync::Mutex;
 
 /// Filename of the crash-safety pidfile written under `app_data_dir` (Task
 /// 3.2). `panic = "abort"` is set for release builds (`Cargo.toml`), which
@@ -115,10 +117,10 @@ pub struct ServerStatus {
 /// `CommandChild` themselves.
 pub struct ServerHandle {
     pub base_url: String,
-    #[allow(
-        dead_code,
-        reason = "held for the supervisor's own lifecycle management (graceful shutdown, orphan reaping) — wired up in Task 3.2/3.3, not read within this task's scope"
-    )]
+    /// The live sidecar process. Private — only this module spawns it, kills
+    /// it on a failed health gate (`spawn`), and tears it down on model
+    /// switch / graceful exit (`ServerState::shutdown` via
+    /// `kill_and_cleanup`). Callers never reach into the raw `CommandChild`.
     child: CommandChild,
     pub port: u16,
     pub pid: u32,
@@ -373,6 +375,141 @@ pub fn reap_orphan(app: &AppHandle) {
     reap_orphan_at(&dir.join(PIDFILE_NAME));
 }
 
+/// The one supervised `llama-server` and the model GGUF it was spawned for.
+/// `model_path` is what [`plan_action`] compares against a newly-requested
+/// model to decide Reuse vs. Restart; the `handle` owns the live child (its
+/// private `CommandChild`) so [`ServerState::shutdown`] can kill it.
+pub struct RunningServer {
+    handle: ServerHandle,
+    model_path: PathBuf,
+}
+
+/// App-managed (`tauri::manage`) holder for the at-most-one supervised
+/// `llama-server` (Task 3.3). Separate from `InferenceState` on purpose: the
+/// existing `InferenceEngine` still owns `count_tokens` and today's
+/// generation, while this owns *only* the process lifecycle — one server runs
+/// whenever a model is active, restarts on a model switch, and is killed on
+/// graceful exit. A later task flips generation onto the server and shrinks
+/// the engine to vocab-only; until then an idle server may coexist with the
+/// engine, which is expected.
+#[derive(Default)]
+pub struct ServerState(pub Arc<Mutex<Option<RunningServer>>>);
+
+/// What [`ServerState::ensure_running`] should do given the model the
+/// supervised server (if any) is currently serving vs. the one just
+/// requested. Pure and process-free so the decision is unit-testable without
+/// spawning a real server (that's Task 8.1's integration test).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerAction {
+    /// A server is already up for exactly this model — keep it (no kill,
+    /// no respawn: preserves the warm KV cache / loaded weights).
+    Reuse,
+    /// Nothing is running — launch a server for the requested model.
+    Spawn,
+    /// A server is up but for a *different* model — tear it down and respawn
+    /// on the requested GGUF.
+    Restart,
+}
+
+/// Decide Reuse/Spawn/Restart from the currently-served model path (if any)
+/// and the requested one. `None` → nothing running → [`Spawn`]; same path →
+/// [`Reuse`]; different path → [`Restart`]. See the enum variants for why.
+///
+/// [`Spawn`]: ServerAction::Spawn
+/// [`Reuse`]: ServerAction::Reuse
+/// [`Restart`]: ServerAction::Restart
+pub fn plan_action(current_model: Option<&Path>, requested: &Path) -> ServerAction {
+    match current_model {
+        None => ServerAction::Spawn,
+        Some(m) if m == requested => ServerAction::Reuse,
+        Some(_) => ServerAction::Restart,
+    }
+}
+
+/// Kills the child of a server we're done with and clears its crash-safety
+/// pidfile, so the next startup's [`reap_orphan`] doesn't chase a pid we
+/// already reaped. Best-effort throughout (`CommandChild::kill` consumes the
+/// child; a lost kill or a missing pidfile is not worth failing a
+/// switch/shutdown over).
+fn kill_and_cleanup(running: RunningServer, app: &AppHandle) {
+    let _ = running.handle.child.kill();
+    if let Ok(dir) = app.path().app_data_dir() {
+        remove_pidfile(&dir);
+    }
+}
+
+/// Spawn a fresh server for `model_path`, store it in `guard`, and return its
+/// base_url. Assumes any previous server has already been taken out of
+/// `guard` (Restart) or that there was none (Spawn) — it overwrites whatever
+/// is there.
+async fn spawn_and_store(
+    guard: &mut Option<RunningServer>,
+    app: &AppHandle,
+    model_path: &Path,
+) -> Result<String, String> {
+    let handle = spawn(app, model_path).await?;
+    let base_url = handle.base_url.clone();
+    *guard = Some(RunningServer {
+        handle,
+        model_path: model_path.to_path_buf(),
+    });
+    Ok(base_url)
+}
+
+impl ServerState {
+    /// Ensures a healthy `llama-server` is running for `model_path` and
+    /// returns its base_url. Reuses an existing server already serving this
+    /// model, spawns one if none is running, or restarts (kill + respawn) if
+    /// the running server is on a different model. Holds the state lock across
+    /// the (health-gated) spawn so two concurrent callers can't race two
+    /// servers into existence for the same model.
+    pub async fn ensure_running(
+        &self,
+        app: &AppHandle,
+        model_path: &Path,
+    ) -> Result<String, String> {
+        let mut guard = self.0.lock().await;
+        match plan_action(guard.as_ref().map(|r| r.model_path.as_path()), model_path) {
+            ServerAction::Reuse => Ok(guard
+                .as_ref()
+                .expect("Reuse is only returned when a server is running")
+                .handle
+                .base_url
+                .clone()),
+            ServerAction::Restart => {
+                if let Some(running) = guard.take() {
+                    kill_and_cleanup(running, app);
+                }
+                spawn_and_store(&mut guard, app, model_path).await
+            }
+            ServerAction::Spawn => spawn_and_store(&mut guard, app, model_path).await,
+        }
+    }
+
+    /// Unconditionally tears down the current server (if any) and spawns a
+    /// fresh one for `model_path`, returning its base_url. The model-switch
+    /// entry point (`set_active_model`): the caller already knows the active
+    /// model changed, so there's no Reuse case to consider here.
+    pub async fn restart(&self, app: &AppHandle, model_path: &Path) -> Result<String, String> {
+        let mut guard = self.0.lock().await;
+        if let Some(running) = guard.take() {
+            kill_and_cleanup(running, app);
+        }
+        spawn_and_store(&mut guard, app, model_path).await
+    }
+
+    /// Kills the supervised server, if one is running, and clears its
+    /// pidfile. Called on graceful exit (`RunEvent::ExitRequested`) so a clean
+    /// shutdown doesn't leave an orphaned `llama-server` holding the model's
+    /// GPU memory. Idempotent and best-effort.
+    pub async fn shutdown(&self, app: &AppHandle) {
+        let mut guard = self.0.lock().await;
+        if let Some(running) = guard.take() {
+            kill_and_cleanup(running, app);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -440,5 +577,40 @@ mod tests {
 
         remove_pidfile(dir.path());
         assert!(!pidfile.exists());
+    }
+
+    #[test]
+    fn plan_action_none_spawns() {
+        // No server running yet → the first active model must launch one.
+        assert_eq!(
+            plan_action(None, Path::new("/models/a.gguf")),
+            ServerAction::Spawn
+        );
+    }
+
+    #[test]
+    fn plan_action_same_model_reuses() {
+        // The already-running server is serving exactly this model → keep it;
+        // a needless kill+respawn would drop the warmed KV cache for nothing.
+        assert_eq!(
+            plan_action(
+                Some(Path::new("/models/a.gguf")),
+                Path::new("/models/a.gguf")
+            ),
+            ServerAction::Reuse
+        );
+    }
+
+    #[test]
+    fn plan_action_different_model_restarts() {
+        // A different active model → the running server is pointed at stale
+        // weights and must be torn down and respawned on the new GGUF.
+        assert_eq!(
+            plan_action(
+                Some(Path::new("/models/a.gguf")),
+                Path::new("/models/b.gguf")
+            ),
+            ServerAction::Restart
+        );
     }
 }

@@ -130,6 +130,19 @@ pub async fn start_model_install(
                         Ok(())
                     })
                     .await;
+
+                // Task 3.3: the just-installed model was auto-activated
+                // above, so bring its supervised `llama-server` up now rather
+                // than making the first turn eat a cold spawn. Best-effort:
+                // the model is on disk and active regardless — a failed spawn
+                // is logged, and the next `send_agent_message` will retry via
+                // `ensure_running`.
+                if let Some(server_state) = app.try_state::<crate::inference::server::ServerState>()
+                {
+                    if let Err(e) = server_state.ensure_running(&app, path).await {
+                        eprintln!("[llama-server] failed to start after install: {e}");
+                    }
+                }
             }
             Err(e) => {
                 // Without this, a failed download/verification left the UI
@@ -238,9 +251,11 @@ pub async fn set_active_model(
     app: AppHandle,
     db_cell: State<'_, DbCell>,
     inference: State<'_, crate::commands::conversations::InferenceState>,
+    server_state: State<'_, crate::inference::server::ServerState>,
     model_id: String,
 ) -> Result<(), String> {
     let conn = db_cell.get(&app).await?;
+    let model_id_for_lookup = model_id.clone();
     conn.call(move |conn: &mut Connection| -> rusqlite::Result<()> {
         let tx = conn.transaction()?;
         tx.execute("UPDATE models SET is_active = 0 WHERE is_active = 1", [])?;
@@ -256,6 +271,33 @@ pub async fn set_active_model(
     // restart. Awaiting the lock also serializes behind any in-flight
     // turn, so a running generation finishes on the model it started with.
     *inference.0.lock().await = None;
+
+    // Task 3.3: the supervised `llama-server` is still pointed at the OLD
+    // model's GGUF, so restart it on the newly-activated model's weights.
+    // Best-effort: the DB switch already committed; a failed respawn is
+    // logged, and the next turn's `ensure_running` retries. Skipped when the
+    // new model has no `local_path` yet (activated but not downloaded).
+    let local_path: Option<String> = conn
+        .call(
+            move |conn: &mut Connection| -> rusqlite::Result<Option<String>> {
+                conn.query_row(
+                    "SELECT local_path FROM models WHERE id = ?1",
+                    [&model_id_for_lookup],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+            },
+        )
+        .await
+        .ok()
+        .flatten();
+    if let Some(path) = local_path {
+        if let Err(e) = server_state
+            .restart(&app, std::path::Path::new(&path))
+            .await
+        {
+            eprintln!("[llama-server] failed to restart after model switch: {e}");
+        }
+    }
     Ok(())
 }
 

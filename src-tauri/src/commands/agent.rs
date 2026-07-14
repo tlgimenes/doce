@@ -1558,6 +1558,7 @@ pub async fn send_agent_message(
     app: AppHandle,
     db_cell: State<'_, DbCell>,
     inference: State<'_, InferenceState>,
+    server_state: State<'_, crate::inference::server::ServerState>,
     active_generations: State<'_, ActiveGenerations>,
     active_plans: State<'_, ActivePlans>,
     pending_questions: State<'_, PendingQuestions>,
@@ -1662,6 +1663,23 @@ pub async fn send_agent_message(
         .await
         .ok();
     let model_path = model_path.ok_or_else(|| "no active model installed".to_string())?;
+
+    // Task 3.3: make sure the supervised `llama-server` is up for the active
+    // model before the turn runs — spawns it if this is the first turn after
+    // a launch/switch, reuses the running one otherwise. Task 4 will generate
+    // through the returned base_url; for now generation still goes through the
+    // in-process `InferenceEngine` below, so the base_url is intentionally
+    // ignored (an idle server may briefly coexist with the engine — expected).
+    // Best-effort *this task only*: generation doesn't depend on the server
+    // yet, so a spawn failure is logged rather than failing an otherwise-fine
+    // engine-served turn. Task 4 (generation through the server) makes this a
+    // hard prerequisite.
+    if let Err(e) = server_state
+        .ensure_running(&app, std::path::Path::new(&model_path))
+        .await
+    {
+        eprintln!("[llama-server] failed to ensure running for turn: {e}");
+    }
 
     {
         let mut guard = inference.0.lock().await;
