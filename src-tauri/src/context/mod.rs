@@ -7,11 +7,11 @@
 //! way).
 //!
 //! Note on testability: unlike `apply_lightweight_clearing`/`ContextSettings`/
-//! `exceeds` below (pure, unit-tested), `compute_usage`/`maybe_compact`/
-//! `summarize_and_persist` all take a real `&InferenceEngine`, which (like
-//! every other real-inference code path in this codebase — see
-//! `inference::InferenceEngine::generate`'s own lack of a unit test) needs an
-//! actually-loaded GGUF model to construct, unavailable in `cargo test`.
+//! `exceeds` below (pure, unit-tested), `compute_usage`/`maybe_compact` take a
+//! real `&InferenceEngine` (needs an actually-loaded GGUF model to construct,
+//! unavailable in `cargo test`), and `summarize_and_persist` now generates
+//! through a running `llama-server` over the HTTP client (a `base_url`,
+//! equally unavailable in `cargo test`).
 //! Their correctness is exercised by `quickstart.md`'s manual validation
 //! pass against the real app instead. Where a real function needs a pure
 //! core unit-tested on its own, that core is split out (`fit_turn_to_budget`
@@ -28,8 +28,7 @@ use crate::storage::conversations::{
     load_history_annotated, persist_context_notice, HistoryMessage,
 };
 use limits::{
-    PROTECTED_RECENT_MESSAGES, SUMMARIZATION_PROMPT, SUMMARY_MAX_TOKENS, TOOL_CLEARED_PLACEHOLDER,
-    TOOL_KEEP_N,
+    PROTECTED_RECENT_MESSAGES, SUMMARIZATION_PROMPT, TOOL_CLEARED_PLACEHOLDER, TOOL_KEEP_N,
 };
 use rusqlite::Connection;
 use serde::Serialize;
@@ -374,15 +373,17 @@ fn messages_to_summarize(
 }
 
 /// Tier 2: summarizes everything except the most recent `protected_recent`
-/// messages and the first user message (`messages_to_summarize`) via a real
-/// `generate()` call against the same loaded model, and persists the result
+/// messages and the first user message (`messages_to_summarize`) by
+/// generating through the supervised `llama-server` (the HTTP client at
+/// `base_url`, in `Forbid` mode — no tools, no `tool_choice` — exactly how
+/// production's `RealBackend` calls it, minus tools), and persists the result
 /// as a `context_notice` row (`kind:"summarized"`) that
 /// `load_history_annotated` will splice in on every subsequent load.
 /// Returns `Ok(None)` (no-op) when there's nothing eligible to summarize.
 pub async fn summarize_and_persist(
     conn: &tokio_rusqlite::Connection,
     transcript_dir: Option<std::path::PathBuf>,
-    engine: &InferenceEngine,
+    base_url: &str,
     conversation_id: &str,
     history: &[HistoryMessage],
     protected_recent: usize,
@@ -395,19 +396,22 @@ pub async fn summarize_and_persist(
     let mut messages = vec![ChatMessage::system(SUMMARIZATION_PROMPT)];
     messages.extend(to_summarize.iter().map(|m| m.chat.clone()));
 
-    let rendered = engine
-        .render_chat_prompt(&messages)
+    // `Forbid`: tools and tool_choice both `None` (a summary must never be
+    // able to emit a tool call). Compaction is best-effort, so a fresh,
+    // never-cancelled token — there is no per-turn cancel handle to thread
+    // here the way a live agent turn has.
+    let req = crate::inference::http::ChatRequest::build(
+        "doce",
+        crate::inference::http::to_openai_messages(&messages),
+        None,
+        None,
+    );
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let outcome = crate::inference::http::LlamaServerClient::new(base_url)
+        .chat(req, |_piece| {}, &cancel)
+        .await
         .map_err(|e| e.to_string())?;
-    let summary = engine
-        .generate(
-            &rendered,
-            SUMMARY_MAX_TOKENS,
-            crate::inference::ToolCallMode::Forbid,
-            None,
-            |_| {},
-            || false,
-        )
-        .map_err(|e| e.to_string())?;
+    let summary = outcome.text;
 
     let notice_json = serde_json::json!({
         "kind": "summarized",
@@ -434,10 +438,12 @@ pub async fn summarize_and_persist(
 /// it; the manual `compact_conversation` command does not, since a user
 /// explicitly asking to compact should see the resulting usage, not an
 /// error, even if it's still high afterward).
+#[allow(clippy::too_many_arguments)]
 pub async fn maybe_compact(
     conn: &tokio_rusqlite::Connection,
     transcript_dir: Option<std::path::PathBuf>,
     engine: &InferenceEngine,
+    base_url: &str,
     conversation_id: &str,
     skills_dir: &Path,
     system_prompt: &str,
@@ -491,7 +497,7 @@ pub async fn maybe_compact(
         let summarized = summarize_and_persist(
             conn,
             transcript_dir.clone(),
-            engine,
+            base_url,
             conversation_id,
             &history,
             PROTECTED_RECENT_MESSAGES,

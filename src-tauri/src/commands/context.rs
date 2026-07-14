@@ -58,6 +58,7 @@ pub async fn compact_conversation(
     app: AppHandle,
     db_cell: State<'_, DbCell>,
     inference_state: State<'_, InferenceState>,
+    server_state: State<'_, crate::inference::server::ServerState>,
     conversation_id: String,
 ) -> Result<ContextUsage, String> {
     let conn = db_cell.get(&app).await?.clone();
@@ -66,6 +67,15 @@ pub async fn compact_conversation(
         .app_data_dir()
         .map_err(|e| e.to_string())?
         .join("skills");
+
+    // A manual "Compact now" summarizes through the supervised server, so it
+    // requires one to already be running (a turn spawns it; there's no model
+    // path in hand here to launch one on demand). Erroring if none is up is
+    // honest -- there's nothing to generate the summary against otherwise.
+    let base_url = server_state
+        .current_base_url()
+        .await
+        .ok_or("model server not running")?;
 
     let guard = inference_state.0.lock().await;
     let engine = guard.as_ref().ok_or("No model loaded")?;
@@ -86,6 +96,7 @@ pub async fn compact_conversation(
         &conn,
         transcript_dir,
         engine,
+        &base_url,
         &conversation_id,
         &skills_dir,
         &system_prompt,

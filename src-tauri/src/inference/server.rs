@@ -501,6 +501,18 @@ impl ServerState {
         spawn_and_store(&mut guard, app, model_path).await
     }
 
+    /// The base_url of the currently-supervised server, or `None` if none is
+    /// running. Unlike `ensure_running`, this never spawns — it only reports
+    /// whatever is already up, for callers (the manual `compact_conversation`
+    /// command) that need a live server to generate against but have no model
+    /// path in hand to launch one.
+    pub async fn current_base_url(&self) -> Option<String> {
+        let guard = self.0.lock().await;
+        guard
+            .as_ref()
+            .map(|running| running.handle.base_url.clone())
+    }
+
     /// Kills the supervised server, if one is running, and clears its
     /// pidfile. Called on graceful exit (`RunEvent::ExitRequested`) so a clean
     /// shutdown doesn't leave an orphaned `llama-server` holding the model's

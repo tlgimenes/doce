@@ -1871,6 +1871,7 @@ pub async fn send_agent_message(
         &conn,
         transcript_dir.clone(),
         engine,
+        &base_url,
         &conversation_id,
         &skills_dir,
         &system_prompt,
