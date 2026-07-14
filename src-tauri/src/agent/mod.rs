@@ -98,16 +98,6 @@ pub fn parse_response(text: &str, dialect: crate::inference::ToolDialect) -> Loo
     LoopStep::Done(text.to_string())
 }
 
-/// The content of the first complete `<tool_call>...</tool_call>` pair,
-/// if any. An unclosed opening tag (e.g. generation cut off by the
-/// max-token cap) yields `None` — the caller's fallback/final-answer
-/// handling deals with it.
-fn first_tool_call_tag(text: &str) -> Option<&str> {
-    let start = text.find("<tool_call>")? + "<tool_call>".len();
-    let end = text[start..].find("</tool_call>")? + start;
-    Some(&text[start..end])
-}
-
 /// Finds the first `{...}` substring with balanced braces (respecting
 /// quoted strings, so a `}` inside a string argument doesn't end the
 /// object early), starting from the first `{` in the text.
