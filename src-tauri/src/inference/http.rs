@@ -493,6 +493,20 @@ impl ToolCallAccum {
         entry.2.push_str(&args);
     }
 
+    /// Names of the tool calls `finish` will DROP — every accumulated
+    /// bucket past the first (lowest index; the one `finish` keeps). Empty
+    /// in the normal single-call case. The server is asked with
+    /// `parallel_tool_calls: false`, so more than one bucket is a protocol
+    /// surprise worth surfacing rather than silently discarding. An
+    /// index whose `name` never arrived is reported as `"<unnamed>"`.
+    pub fn surplus_tool_call_names(&self) -> Vec<String> {
+        self.calls
+            .values()
+            .skip(1)
+            .map(|(_, name, _)| name.clone().unwrap_or_else(|| "<unnamed>".to_string()))
+            .collect()
+    }
+
     /// Resolves the first/primary tool call (the lowest accumulated index —
     /// always `0` in practice, see the struct doc comment) into its final
     /// `(name, arguments)` shape. The accumulated `args` string is parsed
@@ -504,8 +518,19 @@ impl ToolCallAccum {
     /// returned, so the caller treats it as a malformed tool call needing a
     /// correction turn rather than a half-formed value. `None` also covers
     /// the "nothing was ever accumulated" and "a name never arrived" cases
-    /// — both leave no usable tool call to return.
+    /// — both leave no usable tool call to return. Surplus higher-index
+    /// calls (a server that ignored `parallel_tool_calls: false`) are
+    /// logged to stderr before being dropped.
     pub fn finish(self) -> Option<(String, Value)> {
+        let surplus = self.surplus_tool_call_names();
+        if !surplus.is_empty() {
+            eprintln!(
+                "[llama-server] model returned {} extra tool call(s) despite parallel_tool_calls=false; \
+                 keeping the first, dropping: {}",
+                surplus.len(),
+                surplus.join(", "),
+            );
+        }
         let (_, name, args) = self.calls.into_iter().next()?.1;
         let name = name?;
         let value = serde_json::from_str::<serde_json::Map<String, Value>>(&args)
@@ -878,6 +903,40 @@ mod tests {
         let (name, args) = acc.finish().unwrap();
         assert_eq!(name, "Read");
         assert_eq!(args["file_path"], "/x");
+    }
+
+    #[test]
+    fn surplus_tool_call_names_lists_every_bucket_past_the_first() {
+        let mut acc = ToolCallAccum::default();
+        for (i, (id, name)) in [("c1", "Read"), ("c2", "Bash"), ("c3", "Grep")]
+            .iter()
+            .enumerate()
+        {
+            acc.push_fragment(ChatChunk::ToolCallFragment {
+                index: i as u32,
+                id: Some((*id).into()),
+                name: Some((*name).into()),
+                args: "{}".into(),
+            });
+        }
+        assert_eq!(
+            acc.surplus_tool_call_names(),
+            vec!["Bash".to_string(), "Grep".to_string()]
+        );
+        // first-wins behavior is unchanged: finish still returns index 0.
+        assert_eq!(acc.finish().unwrap().0, "Read");
+    }
+
+    #[test]
+    fn surplus_tool_call_names_is_empty_for_a_single_call() {
+        let mut acc = ToolCallAccum::default();
+        acc.push_fragment(ChatChunk::ToolCallFragment {
+            index: 0,
+            id: Some("c1".into()),
+            name: Some("Read".into()),
+            args: "{}".into(),
+        });
+        assert!(acc.surplus_tool_call_names().is_empty());
     }
 
     #[test]
