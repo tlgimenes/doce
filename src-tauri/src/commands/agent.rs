@@ -1238,6 +1238,34 @@ async fn execute_top_level_tool(
     // Always "complete" here since this function only returns once the
     // whole nested loop has finished (research.md § 2 — no live
     // mid-delegation status this pass).
+    //
+    // 010-context-window-management/US3: the subagent's own transcript row
+    // (above) stays full — this is a separate, private conversation never
+    // loaded into the parent's context. But the PARENT-facing `tool_result`
+    // (persisted here, and returned into the parent's message history below)
+    // must honor the same offload discipline as every other tool result, or
+    // a large subagent answer defeats the context-window budget.
+    let task_outcome = crate::agent::dispatch::ToolOutcome {
+        model_text: sub_final.clone(),
+        detail: serde_json::json!({
+            "toolName": "Task",
+            "prompt": prompt,
+            "subagentConversationId": subagent_id,
+            "state": "complete",
+        }),
+    };
+    let settings = crate::context::ContextSettings::load(conn)
+        .await
+        .unwrap_or_else(|_| crate::context::ContextSettings::from_raw(&Default::default()));
+    let (task_model_text, task_detail) = stage_tool_result_for_persist(
+        app.path().app_data_dir().ok().as_deref(),
+        parent_conversation_id,
+        &tool_call_id,
+        "Task",
+        &task_outcome,
+        settings.tool_output_offload_tokens,
+        |text| crate::inference::token_estimate(text) as usize,
+    );
     persist_tool_result(
         Some(app),
         conn,
@@ -1245,17 +1273,12 @@ async fn execute_top_level_tool(
         parent_conversation_id,
         &tool_call_id,
         "Task",
-        &sub_final,
-        serde_json::json!({
-            "toolName": "Task",
-            "prompt": prompt,
-            "subagentConversationId": subagent_id,
-            "state": "complete",
-        }),
+        &task_model_text,
+        task_detail,
     )
     .await;
 
-    sub_final
+    task_model_text
 }
 
 /// Stages a tool result for persistence: offloads a large result to a
@@ -3384,6 +3407,40 @@ mod tests {
             std::path::Path::new(payload_ref).exists(),
             "the payload file must actually exist on disk"
         );
+    }
+
+    #[test]
+    fn stage_tool_result_for_persist_offloads_an_over_threshold_task_result() {
+        // Locks the contract the `Task` branch of `execute_top_level_tool`
+        // now depends on: a `Task`-`toolName` `ToolOutcome` offloads through
+        // the same helper every other tool result honors, rather than
+        // entering the parent's context unbounded. 010-context-window-
+        // management/US3.
+        let dir = tempfile::tempdir().unwrap();
+        let big = "x".repeat(10_000);
+        let outcome = crate::agent::dispatch::ToolOutcome {
+            model_text: big.clone(),
+            detail: serde_json::json!({
+                "toolName": "Task", "prompt": "do it",
+                "subagentConversationId": "sub1", "state": "complete",
+            }),
+        };
+        let (model_text, detail) = stage_tool_result_for_persist(
+            Some(dir.path()),
+            "conv1",
+            "call1",
+            "Task",
+            &outcome,
+            10,
+            |t| t.chars().count().div_ceil(4),
+        );
+        // over threshold => a reference line, NOT the full 10k text, enters context
+        assert!(model_text.len() < big.len());
+        assert!(model_text.contains("Read"));
+        assert!(detail["payloadRef"].is_string());
+        // the full answer is recoverable from the payload file
+        let payload = std::fs::read_to_string(detail["payloadRef"].as_str().unwrap()).unwrap();
+        assert_eq!(payload, big);
     }
 
     #[test]
