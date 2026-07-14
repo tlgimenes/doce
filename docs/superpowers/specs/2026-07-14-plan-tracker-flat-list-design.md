@@ -7,9 +7,9 @@ Replace the collapsible plan tracker with a compact, scrollable task list that k
 ## Presentation
 
 - Render a compact status header above and outside the task scroller so it does not consume one of the three visible task rows.
-- Derive `doneCount` from completed steps and `inProgressCount` as `plan.steps.length - doneCount`.
-- Render `In progress` while `inProgressCount` is greater than zero; otherwise render `Complete`.
-- Render `{doneCount} done` in the header metrics. Append ` · {inProgressCount} in progress` only when `inProgressCount` is greater than zero.
+- Derive `doneCount` from completed steps and `queuedCount` as `plan.steps.length - doneCount`.
+- Render a single left-aligned summary with no separate overall-status label.
+- While `queuedCount` is greater than zero, render `{doneCount} done · {queuedCount} queued`; otherwise render `{doneCount} completed`.
 - Match the task rows' horizontal padding and add no vertical gap between the header and scroller.
 - Render `plan.steps` directly without sorting, filtering, grouping, or truncating the data set.
 - Render each step with the existing `Marker`, `MarkerIcon`, and `MarkerContent` primitives.
@@ -43,4 +43,4 @@ No new error path is introduced. Existing recovery failures remain ignored, and 
 
 ## Tests
 
-Update presentation tests to assert status and count derivation, omission of the zero in-progress metric, original DOM order, one checkbox per step, checked and line-through completed rows, normal current-row color, muted non-current rows, absence of collapsible/progress UI, and a three-row scroll viewport. Preserve the existing lifecycle and stale-recovery race tests.
+Update presentation tests to assert done and queued count derivation, omission of the zero queued metric, left alignment, original DOM order, one checkbox per step, checked and line-through completed rows, normal current-row color, muted non-current rows, absence of collapsible/progress UI, and a three-row scroll viewport. Preserve the existing lifecycle and stale-recovery race tests.

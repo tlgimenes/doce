@@ -18,7 +18,7 @@
 - Preserve Shadcn's standard bottom scroll fade and keep all rows mounted.
 - Remove all accordion, progress, count, collapsed-completion, and hidden-task summary UI.
 - Preserve plan recovery, event subscription, conversation filtering, and turn-end unmount behavior.
-- Render a static status header above the scroller with `{doneCount} done` and the unfinished count as `in progress`; omit the in-progress segment when it is zero.
+- Render a static, left-aligned status header above the scroller as `{doneCount} done · {queuedCount} queued` while unfinished tasks remain, or `{doneCount} completed` when all tasks are done.
 
 ---
 
@@ -239,21 +239,23 @@ git commit -m "refactor(chat): flatten plan tracker task list"
 **Interfaces:**
 - Consumes: `plan.steps`, where each step has a `done: boolean` field.
 - Produces: a `data-testid="plan-status"` header before `data-testid="plan-task-scroller"`.
-- Produces: `In progress` with `{doneCount} done · {inProgressCount} in progress` while unfinished tasks remain, or `Complete` with `{doneCount} done` when none remain.
+- Produces: `{doneCount} done · {queuedCount} queued` while unfinished tasks remain, or `{doneCount} completed` when none remain; no separate overall-status label is rendered.
 
 - [ ] **Step 1: Write failing status-header tests**
 
 Add these presentation tests to `PlanTracker.test.tsx`:
 
 ```tsx
-it("renders plan status and done versus in-progress counts above the task list", async () => {
+it("renders done and queued counts on the left above the task list", async () => {
   vi.mocked(commands.getActivePlan).mockResolvedValue(snapshot());
   render(<PlanTracker conversationId="c1" />);
 
   const status = await screen.findByTestId("plan-status");
-  expect(status).toHaveTextContent("In progress");
   expect(status).toHaveTextContent("1 done");
-  expect(status).toHaveTextContent("2 in progress");
+  expect(status).toHaveTextContent("2 queued");
+  expect(status).not.toHaveTextContent("In progress");
+  expect(status.children).toHaveLength(1);
+  expect(status.firstElementChild).not.toHaveClass("ml-auto");
 
   const scroller = screen.getByTestId("plan-task-scroller");
   expect(
@@ -261,7 +263,7 @@ it("renders plan status and done versus in-progress counts above the task list",
   ).toBeTruthy();
 });
 
-it("omits the in-progress count when every task is done", async () => {
+it("omits the queued count when every task is done", async () => {
   vi.mocked(commands.getActivePlan).mockResolvedValue(
     snapshot({
       steps: [
@@ -274,9 +276,10 @@ it("omits the in-progress count when every task is done", async () => {
   render(<PlanTracker conversationId="c1" />);
 
   const status = await screen.findByTestId("plan-status");
-  expect(status).toHaveTextContent("Complete");
-  expect(status).toHaveTextContent("2 done");
-  expect(status).not.toHaveTextContent("in progress");
+  expect(status).toHaveTextContent("2 completed");
+  expect(status).not.toHaveTextContent("2 done");
+  expect(status).not.toHaveTextContent("queued");
+  expect(status).not.toHaveTextContent("Complete");
 });
 ```
 
@@ -296,22 +299,22 @@ At the start of `PlanTrackerCard`, derive the counts:
 
 ```tsx
 const doneCount = plan.steps.filter((step) => step.done).length;
-const inProgressCount = plan.steps.length - doneCount;
+const queuedCount = plan.steps.length - doneCount;
 ```
 
 Inside the existing `data-testid="plan-tracker"` container, immediately before `MessageScrollerProvider`, add:
 
 ```tsx
 <div
-  className="flex items-center gap-2 px-2.5 py-0 text-sm"
+  className="px-2.5 py-0 text-xs tabular-nums text-muted-foreground"
   data-testid="plan-status"
 >
-  <span className="text-foreground">
-    {inProgressCount > 0 ? "In progress" : "Complete"}
-  </span>
-  <span className="ml-auto text-xs tabular-nums text-muted-foreground">
-    {doneCount} done
-    {inProgressCount > 0 && <> · {inProgressCount} in progress</>}
+  <span>
+    {queuedCount > 0 ? (
+      <>{doneCount} done · {queuedCount} queued</>
+    ) : (
+      <>{doneCount} completed</>
+    )}
   </span>
 </div>
 ```
