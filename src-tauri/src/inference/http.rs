@@ -625,6 +625,38 @@ mod tests {
     }
 
     #[test]
+    fn finish_falls_back_to_any_json_value_for_a_non_object() {
+        let mut acc = ToolCallAccum::default();
+        acc.push_fragment(ChatChunk::ToolCallFragment {
+            index: 0,
+            id: Some("c1".into()),
+            name: Some("Read".into()),
+            args: "[\"a\",".into(),
+        });
+        acc.push_fragment(ChatChunk::ToolCallFragment {
+            index: 0,
+            id: None,
+            name: None,
+            args: "\"b\"]".into(),
+        });
+        let (name, value) = acc.finish().unwrap();
+        assert_eq!(name, "Read");
+        assert_eq!(value, serde_json::json!(["a", "b"]));
+    }
+
+    #[test]
+    fn finish_returns_none_for_syntactically_invalid_json() {
+        let mut acc = ToolCallAccum::default();
+        acc.push_fragment(ChatChunk::ToolCallFragment {
+            index: 0,
+            id: Some("c1".into()),
+            name: Some("Read".into()),
+            args: "{\"file_path\":".into(),
+        });
+        assert!(acc.finish().is_none());
+    }
+
+    #[test]
     fn parses_usage_tail_and_done() {
         let u = r#"data: {"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":5}}"#;
         assert!(matches!(
