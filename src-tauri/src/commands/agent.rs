@@ -103,10 +103,9 @@ fn plan_snapshot(state: &crate::agent::plan::PlanState) -> PlanSnapshot {
                 done: s.done,
             })
             .collect(),
-        current_step_index: match state.state {
-            crate::agent::plan::LoopState::Executing { step_index } => Some(step_index as u32),
-            crate::agent::plan::LoopState::Planning => None,
-        },
+        // Single-mode harness: the current item is INFERRED — the first
+        // undone todo (there is no Executing state anymore).
+        current_step_index: state.next_undone_step().map(|i| i as u32),
     }
 }
 
@@ -638,7 +637,12 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
         // tail message, appended to this call's own clone of `messages`
         // (run_loop clones before every `generate`), never written back to
         // run_loop's canonical list.
-        messages.push(ChatMessage::user(self.plan_state.state_tail()));
+        // Single-mode harness: the tail is the todo recitation, and only
+        // exists once todos do.
+        let tail = self.plan_state.todo_tail();
+        if !tail.is_empty() {
+            messages.push(ChatMessage::user(tail));
+        }
         // The plan loop REQUIRES a tool call at the sampler level in BOTH
         // states: a plain-text reply anywhere would end the entire task,
         // and the model was observed degrading into exactly that
@@ -662,7 +666,7 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
                         &rendered,
                         crate::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS as i32,
                         crate::inference::ToolCallMode::Require,
-                        Some(self.plan_state.allowed_tool_names(true)),
+                        Some(self.plan_state.single_mode_tool_names(true)),
                         |piece| {
                             let _ = app.emit(
                                 "agent-generation-piece",
@@ -686,7 +690,7 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
         // marked "plan": true so the transcript skips them — and every
         // handled call refreshes the live tracker surface. FinishTask ends
         // the whole loop with the model's verified final answer.
-        if let Some(outcome) = self.plan_state.handle_plan_tool(&call) {
+        if let Some(outcome) = self.plan_state.handle_todo_tool(&call) {
             let (result_text, execution) = match outcome {
                 crate::agent::plan::PlanToolReply::Reply(text) => {
                     let execution = ToolExecution::Result(text.clone());
@@ -777,7 +781,12 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
         // `Task` tool, FR-016) seeded by `execute_top_level_tool`, never
         // touched here; all volatile state rides the single tail message,
         // and the current state's tool set is enforced at the sampler.
-        messages.push(ChatMessage::user(self.plan_state.state_tail()));
+        // Single-mode harness: the tail is the todo recitation, and only
+        // exists once todos do.
+        let tail = self.plan_state.todo_tail();
+        if !tail.is_empty() {
+            messages.push(ChatMessage::user(tail));
+        }
         match self.engine.render_chat_prompt(&messages) {
             Ok(rendered) => self
                 .engine
@@ -785,7 +794,7 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
                     &rendered,
                     crate::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS as i32,
                     crate::inference::ToolCallMode::Require,
-                    Some(self.plan_state.allowed_tool_names(false)),
+                    Some(self.plan_state.single_mode_tool_names(false)),
                     |_piece| {},
                     || false,
                 )
@@ -800,7 +809,7 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
         // Persisted under the subagent's own conversation with the
         // `"plan": true` marker; no ActivePlans/events -- subagents have no
         // tracker.
-        if let Some(outcome) = self.plan_state.handle_plan_tool(&call) {
+        if let Some(outcome) = self.plan_state.handle_todo_tool(&call) {
             let (result_text, execution) = match outcome {
                 crate::agent::plan::PlanToolReply::Reply(text) => {
                     let execution = ToolExecution::Result(text.clone());
@@ -1352,7 +1361,7 @@ pub fn plan_system_message(
     transcript_path: Option<&str>,
     dialect: crate::inference::ToolDialect,
 ) -> String {
-    let base = crate::agent::plan::plan_system_prompt(allow_task, dialect);
+    let base = crate::agent::plan::single_mode_system_prompt(allow_task, dialect);
     let mut message = match cwd {
         Some(path) => format!(
             "{base}\n\nYou are currently working in the directory: {}",
@@ -1901,8 +1910,10 @@ mod tests {
         );
         assert!(msg.contains("You are currently working in the directory: /Users/tester/code/doce"));
         // Verify the prompt body is the immutable union prompt.
-        let base =
-            crate::agent::plan::plan_system_prompt(true, crate::inference::ToolDialect::HermesJson);
+        let base = crate::agent::plan::single_mode_system_prompt(
+            true,
+            crate::inference::ToolDialect::HermesJson,
+        );
         assert!(msg.starts_with(base));
     }
 
@@ -1911,7 +1922,10 @@ mod tests {
         let msg = plan_system_message(None, true, None, crate::inference::ToolDialect::HermesJson);
         assert_eq!(
             msg,
-            crate::agent::plan::plan_system_prompt(true, crate::inference::ToolDialect::HermesJson)
+            crate::agent::plan::single_mode_system_prompt(
+                true,
+                crate::inference::ToolDialect::HermesJson
+            )
         );
     }
 
@@ -2919,7 +2933,7 @@ mod tests {
 
     #[test]
     fn plan_snapshot_reflects_state_and_current_step() {
-        use crate::agent::plan::{LoopState, Plan, PlanState, PlanStep};
+        use crate::agent::plan::{Plan, PlanState, PlanStep};
         let mut state = PlanState::default();
         state.plan = Plan {
             goal: "g".to_string(),
@@ -2936,15 +2950,15 @@ mod tests {
                 },
             ],
         };
-        state.state = LoopState::Executing { step_index: 1 };
-
+        // Single-mode harness: the current item is INFERRED — the first
+        // undone todo, no Executing state involved.
         let snapshot = plan_snapshot(&state);
         assert_eq!(snapshot.goal, "g");
         assert_eq!(snapshot.steps.len(), 2);
         assert!(snapshot.steps[0].done);
         assert_eq!(snapshot.current_step_index, Some(1));
 
-        state.state = LoopState::Planning;
+        state.plan.steps[1].done = true;
         assert_eq!(plan_snapshot(&state).current_step_index, None);
     }
 

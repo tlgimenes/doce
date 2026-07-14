@@ -399,9 +399,23 @@ impl InferenceEngine {
             .collect::<Result<_, _>>()
             .map_err(|e| InferenceError::Backend(e.to_string()))?;
 
-        self.model
+        let mut rendered = self
+            .model
             .apply_chat_template(&tmpl, &llama_messages, true)
-            .map_err(|e| InferenceError::Backend(e.to_string()))
+            .map_err(|e| InferenceError::Backend(e.to_string()))?;
+        // Thinking-models design: thinking templates open the reasoning
+        // block IN the generation prompt (MiniCPM5's enable_thinking=true
+        // renders "<think>\n" after the assistant header; Qwen3-Thinking's
+        // template does the same unconditionally). llama.cpp's template
+        // pattern-matcher can't render that branch, so this is the ONE
+        // template feature hand-rendered here — without it the model
+        // starts cold in a state it was never trained for (observed
+        // 2026-07-14: degenerate asterisk-run "reasoning" from MiniCPM5).
+        // The Require grammar's think-prefix keeps its opening tag
+        // OPTIONAL for exactly this, and strip_think_blocks handles the
+        // resulting orphan close.
+        rendered.push_str("<think>\n");
+        Ok(rendered)
     }
 
     /// The model's configured context window, in tokens
@@ -747,18 +761,24 @@ impl PromptSession<'_> {
                 chain.push(engine.tool_call_grammar_sampler(true, allowed_tools)?)
             }
         }
-        // Qwen3-*-2507's own recommended sampling (model card): temp 0.7,
-        // top-p 0.8, top-k 20, min-p 0 — with presence-penalty for
-        // repetition control instead of repeat-penalty (repeat-penalty
-        // taxes the tokens JSON repeats BY DESIGN — braces, quotes, key
-        // names — and inside an active grammar it can only distort
-        // argument content).
+        // Each model card's own recommended sampling, selected by dialect
+        // (the dialect is a per-model-family fingerprint): Qwen3-*-2507
+        // wants temp 0.7 / top-p 0.8 / top-k 20; MiniCPM5's think mode
+        // wants temp 0.9 / top-p 0.95 (top-k unspecified — disabled).
+        // Both keep presence-penalty for repetition control instead of
+        // repeat-penalty (repeat-penalty taxes the tokens JSON/XML repeats
+        // BY DESIGN — braces, quotes, tag names — and inside an active
+        // grammar it can only distort argument content).
+        let (temp, top_p, top_k) = match engine.dialect() {
+            crate::inference::ToolDialect::HermesJson => (0.7, 0.8, 20),
+            crate::inference::ToolDialect::MiniCpmXml => (0.9, 0.95, 0),
+        };
         chain.extend([
             LlamaSampler::penalties(64, 1.0, 0.0, 1.0),
-            LlamaSampler::top_k(20),
-            LlamaSampler::top_p(0.8, 1),
+            LlamaSampler::top_k(top_k),
+            LlamaSampler::top_p(top_p, 1),
             LlamaSampler::min_p(0.0, 1),
-            LlamaSampler::temp(0.7),
+            LlamaSampler::temp(temp),
             LlamaSampler::dist(seed),
         ]);
         let mut sampler = LlamaSampler::chain_simple(chain);

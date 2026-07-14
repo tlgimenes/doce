@@ -458,7 +458,12 @@ impl AgentBackend for PlanExecBackend<'_> {
         // recitation checklist) rides in ONE tail message; the current
         // state's tool set is enforced at the sampler (grammar name-enum),
         // not by prompt swaps.
-        messages.push(ChatMessage::user(self.plan_state.state_tail()));
+        // Single-mode harness: the tail is the todo recitation, and only
+        // exists once todos do — mirroring RealBackend exactly.
+        let tail = self.plan_state.todo_tail();
+        if !tail.is_empty() {
+            messages.push(ChatMessage::user(tail));
+        }
 
         let rendered = self
             .engine
@@ -470,7 +475,7 @@ impl AgentBackend for PlanExecBackend<'_> {
                 &rendered,
                 doce_lib::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS as i32,
                 doce_lib::inference::ToolCallMode::Require,
-                Some(self.plan_state.allowed_tool_names(true)),
+                Some(self.plan_state.single_mode_tool_names(true)),
                 |_| {},
                 || false,
             )
@@ -483,7 +488,7 @@ impl AgentBackend for PlanExecBackend<'_> {
         call: doce_lib::agent::ToolCall,
     ) -> doce_lib::agent::ToolExecution {
         let plan_finish: Option<String>;
-        let result = if let Some(outcome) = self.plan_state.handle_plan_tool(&call) {
+        let result = if let Some(outcome) = self.plan_state.handle_todo_tool(&call) {
             match outcome {
                 doce_lib::agent::plan::PlanToolReply::Reply(text) => {
                     plan_finish = None;

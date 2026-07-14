@@ -526,9 +526,11 @@ export interface PlanUpdatePayload {
   plan: PlanSnapshot | null;
 }
 
-/** Mirror of agent::plan::PLAN_TOOL_NAMES — the five plan-machine tools
- * whose rows are tracker-only, never transcript content. */
+/** Harness tools whose rows are tracker-only, never transcript content:
+ * the single-mode harness's Todo (2026-07-13 design) plus the retired
+ * plan-machine tools, kept so historical transcripts still hide them. */
 export const PLAN_TOOL_NAMES = new Set([
+  "Todo",
   "CreatePlan",
   "AddStep",
   "ResumeExecution",

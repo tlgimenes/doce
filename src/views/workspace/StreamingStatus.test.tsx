@@ -125,3 +125,28 @@ describe("StreamingStatus live reasoning line", () => {
     expect(screen.queryByTestId("agent-thinking-stream")).not.toBeInTheDocument();
   });
 });
+
+describe("StreamingStatus reasoning filter vs tool-call syntax", () => {
+  it("never renders grammar-forced call syntax as thinking", () => {
+    // A no-think generation goes straight into the call.
+    render(
+      <StreamingStatus
+        startedAt={Date.now()}
+        stream={'<function name="FinishTask"><param name="answer">Meu nome'}
+      />,
+    );
+    expect(screen.queryByTestId("agent-thinking-stream")).not.toBeInTheDocument();
+  });
+
+  it("suppresses a partially-sampled marker instead of flickering it", () => {
+    render(<StreamingStatus startedAt={Date.now()} stream={"<fun"} />);
+    expect(screen.queryByTestId("agent-thinking-stream")).not.toBeInTheDocument();
+  });
+});
+
+describe("StreamingStatus shows the model verbatim", () => {
+  it("renders even degenerate reasoning lines — the ticker is a window, not a censor", () => {
+    render(<StreamingStatus startedAt={Date.now()} stream={"******"} />);
+    expect(screen.getByTestId("agent-thinking-stream")).toHaveTextContent("******");
+  });
+});

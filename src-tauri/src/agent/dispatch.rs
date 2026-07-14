@@ -158,6 +158,7 @@ fn escape_regex_literal(pattern: &str) -> String {
 /// six times without self-correcting when the error didn't name it).
 const REQUIRED_STRING_ARGS: &[(&str, &[&str])] = &[
     ("Read", &["file_path"]),
+    ("Update", &["file_path"]),
     ("Write", &["file_path", "content"]),
     ("Edit", &["file_path", "old_string", "new_string"]),
     ("Bash", &["command"]),
@@ -171,6 +172,16 @@ const REQUIRED_STRING_ARGS: &[(&str, &[&str])] = &[
 /// near-miss for a missing required one. Kept next to
 /// `REQUIRED_STRING_ARGS` so a schema change updates both together.
 const LEGAL_TOOL_ARGS: &[(&str, &[&str])] = &[
+    (
+        "Update",
+        &[
+            "file_path",
+            "content",
+            "old_string",
+            "new_string",
+            "replace_all",
+        ],
+    ),
     ("Read", &["file_path", "offset", "limit"]),
     ("Write", &["file_path", "content"]),
     (
@@ -273,6 +284,38 @@ pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
         };
     }
     match call.name.as_str() {
+        // Single-mode harness (2026-07-13): Update absorbs Write and Edit;
+        // the ARGUMENT SHAPE selects the behavior, then the call delegates
+        // to the proven arm (keeping every Write/Edit guardrail — gutter
+        // detection, no-match hints — and their widget-compatible detail
+        // shapes). An ambiguous or empty shape is named precisely, the
+        // same philosophy as wrong_key_hint.
+        "Update" => {
+            let has_content = call.arguments.get("content").is_some();
+            let has_edit = call.arguments.get("old_string").is_some()
+                || call.arguments.get("new_string").is_some();
+            let delegate_name = match (has_content, has_edit) {
+                (true, false) => "Write",
+                (false, true) => "Edit",
+                (true, true) => {
+                    return ToolOutcome {
+                        detail: json!({"toolName": "Write", "filePath": call.arguments.get("file_path"), "outcome": {"ok": false, "error": "Update: pass EITHER content (create/overwrite) OR old_string+new_string (in-place replace), never both."}}),
+                        model_text: "Error: Update takes EITHER content (create/overwrite the whole file) OR old_string+new_string (replace one exact occurrence) -- you passed both.".to_string(),
+                    };
+                }
+                (false, false) => {
+                    return ToolOutcome {
+                        detail: json!({"toolName": "Write", "filePath": call.arguments.get("file_path"), "outcome": {"ok": false, "error": "Update: missing content or old_string+new_string."}}),
+                        model_text: "Error: Update needs content (to create/overwrite the whole file) or old_string+new_string (to replace one exact occurrence) -- you passed neither.".to_string(),
+                    };
+                }
+            };
+            let delegated = ToolCall {
+                name: delegate_name.to_string(),
+                arguments: call.arguments.clone(),
+            };
+            return execute(&delegated, cwd);
+        }
         "Read" => {
             // validate_required_args already guaranteed file_path is present
             // and a string. `detail.resolvedPath` (below) carries the
@@ -1313,6 +1356,53 @@ mod tests {
         );
         assert_eq!(no_matches.detail["matches"].as_array().unwrap().len(), 0);
         assert!(no_matches.model_text.contains("No matches found"));
+    }
+
+    #[test]
+    // --- Update (single-mode harness): shape-delegating merge of Write/Edit ---
+    #[test]
+    fn update_with_content_creates_the_file_like_write() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("new.txt");
+        let outcome = execute(
+            &call(
+                "Update",
+                serde_json::json!({"file_path": path.to_str().unwrap(), "content": "hello"}),
+            ),
+            None,
+        );
+        assert_eq!(outcome.detail["toolName"], "Write");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello");
+    }
+
+    #[test]
+    fn update_with_old_and_new_string_edits_in_place_like_edit() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("f.txt");
+        stdfs::write(&path, "alpha beta").unwrap();
+        let outcome = execute(
+            &call(
+                "Update",
+                serde_json::json!({"file_path": path.to_str().unwrap(), "old_string": "beta", "new_string": "gamma"}),
+            ),
+            None,
+        );
+        assert_eq!(outcome.detail["toolName"], "Edit");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "alpha gamma");
+    }
+
+    #[test]
+    fn update_names_an_ambiguous_or_empty_shape_precisely() {
+        let both = execute(
+            &call(
+                "Update",
+                serde_json::json!({"file_path": "x", "content": "c", "old_string": "o", "new_string": "n"}),
+            ),
+            None,
+        );
+        assert!(both.model_text.contains("you passed both"));
+        let neither = execute(&call("Update", serde_json::json!({"file_path": "x"})), None);
+        assert!(neither.model_text.contains("you passed neither"));
     }
 
     #[test]

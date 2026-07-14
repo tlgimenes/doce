@@ -23,12 +23,23 @@ interface StreamingStatusProps {
  * yet".
  */
 function currentThinkingLine(stream: string): string | null {
-  const think = stream.split("</think>")[0].replace("<think>", "");
-  if (stream.includes("</think>")) return null;
-  const lines = think
+  // Reasoning ends at whichever comes first: the think close OR a tool
+  // call opening — a generation that skips thinking goes straight into
+  // grammar-forced call syntax (`<function name=…` / `<tool_call>`),
+  // which must never render as "thinking".
+  for (const marker of ["</think>", "<tool_call>", "<function"]) {
+    if (stream.includes(marker)) return null;
+  }
+  const lines = stream
+    .replace("<think>", "")
     .split("\n")
     .map((line) => line.trim())
-    .filter((line) => line !== "");
+    // A line still starting with "<" is a partially-sampled marker (the
+    // model emits tags token by token) — suppress rather than flicker
+    // "<fun" for a frame. Everything else shows verbatim: the ticker is a
+    // window into the model, not a censor (degenerate output is a signal
+    // the user should see).
+    .filter((line) => line !== "" && !line.startsWith("<"));
   return lines.length > 0 ? lines[lines.length - 1] : null;
 }
 
