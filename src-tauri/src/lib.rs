@@ -68,6 +68,15 @@ pub fn run() {
         .manage(DbCell::new())
         .setup(move |app| {
             builder.mount_events(app);
+            // Crash-safety backstop (Task 3.2): reap any `llama-server`
+            // orphaned by a previous run before this run ever spawns its
+            // own. `panic = "abort"` (Cargo.toml) skips `Drop` on a panic,
+            // and llama-server doesn't exit on its own when doce's end of
+            // the pipe disappears, so without this a crash can leave a
+            // second full model resident once we spawn again — fatal on
+            // memory-constrained hardware. Must run before any code path
+            // that could call `inference::server::spawn`.
+            inference::server::reap_orphan(app.handle());
             Ok(())
         })
         .run(tauri::generate_context!())

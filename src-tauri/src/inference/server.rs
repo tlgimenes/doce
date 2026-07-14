@@ -11,9 +11,18 @@
 
 use std::path::Path;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
+
+/// Filename of the crash-safety pidfile written under `app_data_dir` (Task
+/// 3.2). `panic = "abort"` is set for release builds (`Cargo.toml`), which
+/// means `Drop` does **not** run on a panic — and `llama-server` does not
+/// exit on its own when doce's end of a pipe/stdin disappears — so a doce
+/// crash can otherwise leave an orphaned `llama-server` holding the model's
+/// GGUF mmap and KV cache resident. This file is the backstop: written once
+/// a spawn is health-checked, read and reaped on the *next* startup.
+const PIDFILE_NAME: &str = "llama-server.pid";
 
 /// How long [`spawn`] will wait for `/health` to answer 200 before giving up
 /// and treating the launch as failed (Task 3.1's health gate). llama-server
@@ -228,12 +237,140 @@ pub async fn spawn(app: &AppHandle, model_path: &Path) -> Result<ServerHandle, S
 
     emit_status("ready");
 
+    // Crash-safety backstop (Task 3.2): now that the server is spawned and
+    // health-checked, persist its pid+port so a *future* doce startup can
+    // find and reap it if this process dies before a graceful shutdown
+    // (panic="abort" skips Drop; llama-server itself doesn't exit on a
+    // closed stdin). Best-effort — a write failure here shouldn't fail an
+    // otherwise-healthy spawn.
+    if let Ok(dir) = app.path().app_data_dir() {
+        persist_pidfile(&dir, pid, port);
+    }
+
     Ok(ServerHandle {
         base_url,
         child,
         port,
         pid,
     })
+}
+
+/// Writes `"<pid>:<port>"` to `<dir>/llama-server.pid`, creating `dir` if it
+/// doesn't exist yet. Best-effort: a stale/orphaned sidecar is a much worse
+/// outcome than a missing pidfile, but a spawn that already succeeded and
+/// passed its health check must not be turned into a failure just because
+/// this bookkeeping write hiccuped, so errors are logged and swallowed
+/// rather than propagated.
+pub fn persist_pidfile(dir: &Path, pid: u32, port: u16) {
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        eprintln!(
+            "[llama-server] failed to create {} for pidfile: {e}",
+            dir.display()
+        );
+        return;
+    }
+    let pidfile = dir.join(PIDFILE_NAME);
+    if let Err(e) = std::fs::write(&pidfile, format!("{pid}:{port}")) {
+        eprintln!(
+            "[llama-server] failed to write pidfile {}: {e}",
+            pidfile.display()
+        );
+    }
+}
+
+/// Deletes `<dir>/llama-server.pid` if present. Best-effort, same rationale
+/// as [`persist_pidfile`] — called on graceful shutdown paths (a later
+/// task) so a clean exit doesn't leave a pidfile for the next startup's
+/// [`reap_orphan`] to needlessly chase.
+pub fn remove_pidfile(dir: &Path) {
+    let _ = std::fs::remove_file(dir.join(PIDFILE_NAME));
+}
+
+/// The testable core of orphan reaping: given a pidfile path (not
+/// necessarily under a real `app_data_dir` — tests point this at a
+/// `tempfile::tempdir()`), reap whatever `llama-server` it describes.
+///
+/// 1. Missing file → nothing to do.
+/// 2. Unparseable contents (not `"<pid>:<port>"`) → remove it and stop; a
+///    pidfile doce itself can't read back is as good as absent.
+/// 3. Liveness probe via `kill(pid, 0)` (sends no signal, just checks the
+///    pid exists and is reachable): `ESRCH` means the pid is dead — likely
+///    a clean exit that, for whatever reason, didn't reach the
+///    [`remove_pidfile`] call — so just remove the file.
+/// 4. If alive, guard against **pid reuse**: the OS is free to recycle a
+///    dead process's pid for something entirely unrelated by the time doce
+///    restarts, so before sending SIGKILL, confirm via `ps -p <pid> -o
+///    comm=` that the live process is actually `llama-server` and not some
+///    other program that happens to have inherited the number.
+/// 5. If it passes that check, `kill(pid, SIGKILL)` — llama-server has no
+///    graceful-shutdown handshake worth waiting on here; this only runs at
+///    startup, before doce's own server is spawned, so there's nothing this
+///    orphan could still be legitimately serving.
+/// 6. The pidfile is removed unconditionally at the end (dead pid, reused
+///    pid we declined to kill, or one we just killed — in every case the
+///    file no longer describes a process this startup should touch again).
+pub fn reap_orphan_at(pidfile: &Path) {
+    let Ok(contents) = std::fs::read_to_string(pidfile) else {
+        return;
+    };
+
+    let pid: Option<i32> = contents.trim().split_once(':').and_then(|(pid_s, port_s)| {
+        let pid = pid_s.parse::<i32>().ok()?;
+        // Parsed only to validate the "pid:port" shape — reap_orphan_at
+        // doesn't need the port itself (the ps-based comm= check below
+        // is the pid-reuse guard, not a port re-bind check).
+        let _port = port_s.parse::<u16>().ok()?;
+        Some(pid)
+    });
+
+    let Some(pid) = pid else {
+        let _ = std::fs::remove_file(pidfile);
+        return;
+    };
+
+    // SAFETY: `libc::kill` is a plain syscall wrapper. `pid` was parsed from
+    // a local file this process wrote in a previous run (or, in the
+    // malformed/adversarial case, is still just an integer) — passing
+    // signal `0` sends nothing and only probes whether the pid exists and
+    // is reachable, per kill(2).
+    let probe = unsafe { libc::kill(pid, 0) };
+    let dead = probe == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+
+    if !dead {
+        // Alive (or we lack permission to signal it, which still means it
+        // exists) — before touching it, make sure the OS didn't recycle
+        // this pid for an unrelated process between the crash and this
+        // startup.
+        let is_llama_server = std::process::Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "comm="])
+            .output()
+            .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).contains("llama-server"));
+
+        if is_llama_server {
+            // SAFETY: same syscall-wrapper rationale as the liveness probe
+            // above; this pid has just been confirmed (via `ps`) to be a
+            // live `llama-server` process, not one recycled for something
+            // else, so SIGKILL only ever targets our own orphan.
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+            }
+        }
+    }
+
+    let _ = std::fs::remove_file(pidfile);
+}
+
+/// Startup entry point (Task 3.2): resolves `<app_data_dir>/llama-server.pid`
+/// and reaps whatever it describes via [`reap_orphan_at`]. Wired in
+/// `lib.rs`'s `setup`, before any server is spawned for this run, so a
+/// leftover orphan from a previous crash is killed before a fresh one could
+/// end up sharing the machine with it (and, on memory-constrained hardware,
+/// fatally competing for the same GPU memory).
+pub fn reap_orphan(app: &AppHandle) {
+    let Ok(dir) = app.path().app_data_dir() else {
+        return;
+    };
+    reap_orphan_at(&dir.join(PIDFILE_NAME));
 }
 
 #[cfg(test)]
@@ -265,5 +402,43 @@ mod tests {
             rebound.is_ok(),
             "free_port returned port {port}, which isn't bindable immediately after"
         );
+    }
+
+    #[test]
+    fn reap_removes_stale_pidfile_and_ignores_dead_pid() {
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("llama-server.pid");
+        std::fs::write(&pidfile, "999999:18080").unwrap(); // pid unlikely to exist
+        reap_orphan_at(&pidfile); // no panic; file removed
+        assert!(!pidfile.exists());
+    }
+
+    #[test]
+    fn reap_removes_malformed_pidfile_without_panicking() {
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("llama-server.pid");
+        std::fs::write(&pidfile, "garbage").unwrap();
+        reap_orphan_at(&pidfile); // no panic; unparseable contents removed
+        assert!(!pidfile.exists());
+    }
+
+    #[test]
+    fn reap_orphan_at_on_missing_file_is_a_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("does-not-exist.pid");
+        reap_orphan_at(&pidfile); // no panic, nothing to remove
+        assert!(!pidfile.exists());
+    }
+
+    #[test]
+    fn persist_pidfile_writes_pid_colon_port_and_remove_pidfile_deletes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        persist_pidfile(dir.path(), 4242, 18080);
+        let pidfile = dir.path().join("llama-server.pid");
+        let contents = std::fs::read_to_string(&pidfile).unwrap();
+        assert_eq!(contents, "4242:18080");
+
+        remove_pidfile(dir.path());
+        assert!(!pidfile.exists());
     }
 }
