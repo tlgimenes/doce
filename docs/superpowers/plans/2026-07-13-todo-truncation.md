@@ -24,10 +24,12 @@
 ### Task 1: Fix the `Item` primitives (`min-w-0` / drop `w-fit`)
 
 **Files:**
+
 - Modify: `src/components/ui/item.tsx:120` (ItemContent base classes)
 - Modify: `src/components/ui/item.tsx:133` (ItemTitle base classes)
 
 **Interfaces:**
+
 - Consumes: nothing from other tasks.
 - Produces: `ItemContent` renders with `min-w-0` (flex children can shrink); `ItemTitle` renders with `min-w-0 max-w-full` instead of `w-fit`, still `display: flex`. Task 2's call-site truncation depends on both.
 
@@ -83,12 +85,14 @@ git commit -m "fix(ui): let Item content/title shrink so truncation can work"
 ### Task 2: Truncate step text in PlanTracker + long-text gallery mock
 
 **Files:**
+
 - Modify: `src/views/workspace/PlanTracker.tsx:140-142` (expanded step rows)
 - Modify: `src/views/workspace/PlanTracker.tsx:166-168` (collapsed trigger)
 - Modify: `src/views/design-system/WidgetGallery.tsx:500` (insert a new Example after "Mid-execution")
 - Test: `src/views/workspace/PlanTracker.test.tsx` (existing — must stay green)
 
 **Interfaces:**
+
 - Consumes: Task 1's primitives — `ItemContent` with `min-w-0`, `ItemTitle` with `min-w-0 max-w-full` (both from `@/components/ui/item`).
 - Produces: rendered step rows where the step description is wrapped in `<span className="truncate">` inside `ItemTitle`; a `PlanTrackerCard` gallery example labeled "Long step text (truncated with ellipsis)". Task 3 verifies these visually.
 
@@ -174,9 +178,11 @@ git commit -m "fix(chat): truncate long todo step text with ellipsis"
 ### Task 3: Visual verification in the real app
 
 **Files:**
+
 - None modified — verification only.
 
 **Interfaces:**
+
 - Consumes: the "Long step text (truncated with ellipsis)" gallery example from Task 2.
 - Produces: screenshots confirming the fix; go/no-go on the primitive change's blast radius.
 
