@@ -728,6 +728,17 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
         // back to run_loop's canonical list.
         // Single-mode harness: the tail is the todo recitation, and only
         // exists once todos do.
+        //
+        // FR-2: the OpenAI-shaped count of the CANONICAL messages (before the
+        // ephemeral todo-tail push below, which never reaches run_loop's list nor
+        // `measure`). A later `authoritative_prompt_tokens` measures its delta as
+        // `all_openai_msgs[at_len..]` over the canonical list, so `at_len` must be
+        // the pre-tail canonical count. `to_openai_messages` maps each message
+        // independently, so its prefix is stable: the first `at_len` OpenAI messages
+        // of any grown canonical list are exactly these. The base `prompt_tokens`
+        // slightly over-covers (it includes the old tail's tokens) — a bounded,
+        // safe-direction overcount, never an undercount.
+        let at_len = crate::inference::http::to_openai_messages(&messages).len();
         let tail = self.plan_state.todo_tail();
         if !tail.is_empty() {
             messages.push(ChatMessage::user(tail));
@@ -762,13 +773,6 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
             crate::inference::CONTEXT_WINDOW_TOKENS,
             prompt_est,
         ));
-        // FR-2: the exact OpenAI-shaped message count this turn is about to
-        // SEND to the server (`req.messages`, built above from this same
-        // `messages` -- tail included) -- what a future `authoritative_prompt_tokens`
-        // delta gets measured from, so it must be captured before `req` is
-        // consumed by `.chat` below.
-        let sent_at_len = req.messages.len();
-
         // Live generation ticker: every content/reasoning piece streams to
         // the UI as it arrives (the working shimmer). `agent-generation-piece`
         // is documented ephemeral, raw, unstripped ticker text -- the
@@ -808,7 +812,7 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
                 self.conversation_id.to_string(),
                 crate::context::ObservedUsage {
                     prompt_tokens,
-                    at_len: sent_at_len,
+                    at_len,
                 },
             );
         }
@@ -941,6 +945,17 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
         // `tool_choice:required` over the subagent's own 7-tool set.
         // Single-mode harness: the tail is the todo recitation, and only
         // exists once todos do.
+        //
+        // FR-2: the OpenAI-shaped count of the CANONICAL messages (before the
+        // ephemeral todo-tail push below, which never reaches run_loop's list nor
+        // `measure`). A later `authoritative_prompt_tokens` measures its delta as
+        // `all_openai_msgs[at_len..]` over the canonical list, so `at_len` must be
+        // the pre-tail canonical count. `to_openai_messages` maps each message
+        // independently, so its prefix is stable: the first `at_len` OpenAI messages
+        // of any grown canonical list are exactly these. The base `prompt_tokens`
+        // slightly over-covers (it includes the old tail's tokens) — a bounded,
+        // safe-direction overcount, never an undercount.
+        let at_len = crate::inference::http::to_openai_messages(&messages).len();
         let tail = self.plan_state.todo_tail();
         if !tail.is_empty() {
             messages.push(ChatMessage::user(tail));
@@ -966,10 +981,6 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
             crate::inference::CONTEXT_WINDOW_TOKENS,
             prompt_est,
         ));
-        // FR-2: captured before `req` is consumed by `.chat` below -- see
-        // `RealBackend::generate`'s identical `sent_at_len` for the full
-        // rationale.
-        let sent_at_len = req.messages.len();
         // FR-015 isolation: the subagent's own transcript isn't rendered by
         // any current view, so there's no live ticker to feed -- `on_piece`
         // is a no-op, same as the pre-cutover `|_piece| {}`. Cancellation
@@ -986,7 +997,7 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
                 self.subagent_id.to_string(),
                 crate::context::ObservedUsage {
                     prompt_tokens,
-                    at_len: sent_at_len,
+                    at_len,
                 },
             );
         }

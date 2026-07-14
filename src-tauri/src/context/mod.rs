@@ -215,8 +215,8 @@ pub struct ObservedUsage {
 
 /// Per-conversation last observed usage. Mirrors `CompactionFailures`'s exact
 /// shape: a bare `Mutex<HashMap<..>>` newtype, `.manage()`d in `lib.rs`, read
-/// from Tauri commands via `State<'_, LastObservedUsage>` and from the live
-/// backends via a plain borrow.
+/// from Tauri commands via `State<'_, CompactionState>`'s `observed_usage`
+/// field and from the live backends via a plain borrow.
 pub struct LastObservedUsage(
     pub std::sync::Mutex<std::collections::HashMap<String, ObservedUsage>>,
 );
@@ -489,7 +489,8 @@ pub enum SummaryResult {
 /// succeeds and resets the count. In-memory (session-scoped) -- a restart
 /// resets it, which is fine. Mirrors `commands::conversations::ActiveGenerations`'s
 /// shape exactly: a bare `Mutex<HashMap<..>>` newtype, `.manage()`d in
-/// `lib.rs`, read from Tauri commands via `State<'_, CompactionFailures>`.
+/// `lib.rs`, read from Tauri commands via `State<'_, CompactionState>`'s
+/// `failures` field.
 pub struct CompactionFailures(pub std::sync::Mutex<std::collections::HashMap<String, u32>>);
 
 impl Default for CompactionFailures {
