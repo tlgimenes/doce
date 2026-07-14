@@ -2889,11 +2889,10 @@ mod tests {
         };
         use crate::agent::AgentBackend;
 
-        // Bash is only reachable past the plan machine in the Executing
-        // state (`PlanState::handle_plan_tool`'s Planning-state arm rejects
-        // it) -- drive the machine there the same way a real turn would,
-        // through `execute_tool` itself, rather than reaching into
-        // `plan_state`'s private fields.
+        // NOTE: predates the single-mode cutover (`PlanState::handle_plan_tool`
+        // and the two-state gating this comment described are gone) --
+        // `#[ignore]`d and needs a real model regardless, left as a stale
+        // pre-cutover fixture rather than rewritten in this cleanup.
         backend
             .execute_tool(
                 "plan1".to_string(),
@@ -3153,7 +3152,7 @@ mod tests {
 
     #[test]
     fn publish_plan_update_only_registers_a_plan_that_exists_and_guard_drop_clears_it() {
-        use crate::agent::plan::PlanState;
+        use crate::agent::plan::{Plan, PlanState, PlanStep};
         let active_plans = ActivePlans::default();
         let mut state = PlanState::default();
 
@@ -3161,10 +3160,14 @@ mod tests {
         publish_plan_update(None, &active_plans, "c1", &state);
         assert!(active_plans.0.lock().unwrap().get("c1").is_none());
 
-        state.handle_plan_tool(&crate::agent::ToolCall {
-            name: "CreatePlan".to_string(),
-            arguments: serde_json::json!({"goal": "g", "steps": ["a"]}),
-        });
+        state.plan = Plan {
+            goal: "g".to_string(),
+            steps: vec![PlanStep {
+                description: "a".to_string(),
+                done: false,
+                refused: false,
+            }],
+        };
         publish_plan_update(None, &active_plans, "c1", &state);
         assert_eq!(active_plans.0.lock().unwrap().get("c1").unwrap().goal, "g");
 
@@ -3177,13 +3180,17 @@ mod tests {
 
     #[test]
     fn active_plan_guard_drop_clears_a_registered_plan_without_an_app_handle() {
-        use crate::agent::plan::PlanState;
+        use crate::agent::plan::{Plan, PlanState, PlanStep};
         let active_plans = ActivePlans::default();
         let mut state = PlanState::default();
-        state.handle_plan_tool(&crate::agent::ToolCall {
-            name: "CreatePlan".to_string(),
-            arguments: serde_json::json!({"goal": "g", "steps": ["a"]}),
-        });
+        state.plan = Plan {
+            goal: "g".to_string(),
+            steps: vec![PlanStep {
+                description: "a".to_string(),
+                done: false,
+                refused: false,
+            }],
+        };
         publish_plan_update(None, &active_plans, "c1", &state);
         assert!(
             active_plans.0.lock().unwrap().get("c1").is_some(),

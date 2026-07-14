@@ -434,16 +434,14 @@ async fn run_flat_task(
         .expect("one run per user turn")
 }
 
-/// `AgentBackend` for the single two-state loop (`agent::plan::LoopState`):
-/// one `run_loop` call, one continuous `messages` history. The state
-/// machine and prompt-swap themselves live in `agent::plan::PlanState`
-/// (embedded below as `plan_state`), shared with production
-/// (`commands::agent::RealBackend`) -- this struct keeps only host
-/// concerns: dispatching regular tool calls that pass through the plan
-/// machine, the canned `AskUserQuestion` answer, the `Task` subagent, and
-/// per-turn trace printing. See `agent::plan`'s own doc comment for why the
-/// two-state design replaced an earlier two-backend/recursive-`run_loop`
-/// design.
+/// `AgentBackend` for the single-mode harness: one `run_loop` call, one
+/// continuous `messages` history. The todo-list state lives in
+/// `agent::plan::PlanState` (embedded below as `plan_state`), shared with
+/// production (`commands::agent::RealBackend`) -- this struct keeps only
+/// host concerns: dispatching regular tool calls that pass through the
+/// todo machine, the canned `AskUserQuestion` answer, the `Task` subagent,
+/// and per-turn trace printing. See `agent::plan`'s own doc comment for the
+/// history of what this replaced.
 struct PlanExecBackend<'a> {
     engine: &'a InferenceEngine,
     /// The supervised `llama-server`'s base URL -- generation goes through
@@ -612,8 +610,8 @@ impl AgentBackend for PlanExecBackend<'_> {
         let args_preview: String = call.arguments.to_string().chars().take(200).collect();
         let result_preview: String = result.chars().take(300).collect();
         println!(
-            "  [{:?}] turn {} tool={} args={args_preview} -> {result_preview:?}",
-            self.plan_state.state, self.turns, call.name
+            "  turn {} tool={} args={args_preview} -> {result_preview:?}",
+            self.turns, call.name
         );
         self.trace.push(format!(
             "tool={} args={args_preview} -> {result_preview}",
