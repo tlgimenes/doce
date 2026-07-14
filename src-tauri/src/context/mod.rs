@@ -529,6 +529,72 @@ pub fn breaker_open(failures: u32, force: bool) -> bool {
     !force && failures >= limits::MAX_CONSECUTIVE_COMPACTION_FAILURES
 }
 
+/// The source path of the most-recently-`Read` file in a summarized span —
+/// the last `tool_result` row whose `tool_name == "Read"`, returning its
+/// `payload_ref` (which, for a `Read` row, IS the source file path the SP1
+/// carve-out stored — see `HistoryMessage::payload_ref`'s own doc comment).
+/// `None` when the span contains no `Read`. Used by `summarize_and_persist`
+/// to restore that file's CURRENT contents right after a compaction (FR-3),
+/// so the agent doesn't lose the file it was working on to a lossy summary.
+///
+/// Takes `&[&HistoryMessage]` rather than `&[HistoryMessage]`: its one real
+/// caller already holds `messages_to_summarize`'s `Vec<&HistoryMessage>`
+/// (the summarized span, borrowed out of the full history) -- this avoids
+/// cloning that span just to call in.
+pub fn most_recent_read_path(summarized: &[&HistoryMessage]) -> Option<String> {
+    summarized
+        .iter()
+        .rev()
+        .find(|m| m.content_type == "tool_result" && m.tool_name.as_deref() == Some("Read"))
+        .and_then(|m| m.payload_ref.clone())
+}
+
+/// Builds the post-summary restored-file note body: the file's CURRENT
+/// content (re-read fresh from disk by the caller), inlined whole when it
+/// fits `cap_tokens`, else a head+tail window plus a truncation note.
+/// NEVER a "Read ... to view" reference line -- the whole point of FR-3 is
+/// to carry the file's REAL content across the compaction ("not reference
+/// files" -- user directive), the same way an ordinary inlined tool result
+/// already does for a fresh `Read`.
+///
+/// `estimate` is the same `chars/4` heuristic (`inference::token_estimate`)
+/// used everywhere else in this module, so `cap_tokens` (typically
+/// `DEFAULT_TOOL_OUTPUT_OFFLOAD_TOKENS`) means the same thing here it does
+/// for an ordinary tool result. Char-boundary-safe: only ever indexes via
+/// `.chars()`, never a byte slice, so this never panics on a multi-byte
+/// UTF-8 file regardless of where the cap falls.
+pub fn bounded_restore_body(
+    path: &str,
+    content: &str,
+    cap_tokens: usize,
+    estimate: impl Fn(&str) -> u32,
+) -> String {
+    let header = format!("Current contents of `{path}`:\n");
+    if (estimate(content) as usize) <= cap_tokens {
+        return format!("{header}{content}");
+    }
+    // Head+tail window: split the cap between the start and end of the file
+    // so both the imports/signature region and the end are preserved. Size
+    // each half by chars against a chars/4-consistent budget; join with a
+    // note naming how much was dropped.
+    let budget_chars = cap_tokens.saturating_mul(4);
+    let half = budget_chars / 2;
+    let head: String = content.chars().take(half).collect();
+    let tail: String = content
+        .chars()
+        .rev()
+        .take(half)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    let dropped = content
+        .chars()
+        .count()
+        .saturating_sub(head.chars().count() + tail.chars().count());
+    format!("{header}{head}\n… [{dropped} chars truncated] …\n{tail}")
+}
+
 /// Tier 2: summarizes everything except the most recent `protected_recent`
 /// messages and the first user message (`messages_to_summarize`) by
 /// generating through the supervised `llama-server` (the HTTP client at
@@ -616,7 +682,41 @@ pub async fn summarize_and_persist(
                 "notice": "Conversation condensed to save space",
             })
             .to_string();
-            persist_notice(conn, transcript_dir, conversation_id, notice_json).await?;
+            // Cloned (not moved) -- the restored-file notice below still
+            // needs `transcript_dir` for its own `persist_notice` call.
+            persist_notice(conn, transcript_dir.clone(), conversation_id, notice_json).await?;
+
+            // FR-3 (restore-recent-file): a summary names files but drops
+            // their contents, so the agent often loses the file it was
+            // working on. Re-read the single most-recently-`Read` file in
+            // the summarized span FRESH from disk (current contents, not
+            // the stale pre-summary snapshot) and persist its ACTUAL
+            // content -- never a path/reference line, "not reference
+            // files" -- as a second notice right after the summary.
+            // Missing/unreadable file (deleted, renamed, permission error
+            // since the Read happened) is a silent no-op: the summary
+            // still names it, and there is nothing else useful to
+            // restore. Exactly one restored-file note per compaction.
+            if let Some(path) = most_recent_read_path(&to_summarize) {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    let restored = bounded_restore_body(
+                        &path,
+                        &content,
+                        limits::DEFAULT_TOOL_OUTPUT_OFFLOAD_TOKENS,
+                        token_estimate,
+                    );
+                    let restore_notice_json = serde_json::json!({
+                        "kind": "restoredFile",
+                        "path": path,
+                        "restored": restored,
+                        "notice": "Restored the most-recent file after condensing",
+                    })
+                    .to_string();
+                    persist_notice(conn, transcript_dir, conversation_id, restore_notice_json)
+                        .await?;
+                }
+            }
+
             Ok(SummaryResult::Persisted(summary))
         }
         rejected => Ok(SummaryResult::Rejected(rejected)),
@@ -951,6 +1051,7 @@ mod tests {
             sequence,
             plan: false,
             payload_ref: None,
+            tool_name: None,
         }
     }
 
@@ -972,6 +1073,29 @@ mod tests {
             sequence,
             plan,
             payload_ref: payload_ref.map(|s| s.to_string()),
+            tool_name: None,
+        }
+    }
+
+    /// A `tool_result` row carrying `tool_name`/`payload_ref` — the two
+    /// fields `context::most_recent_read_path` reads to find the
+    /// most-recently-`Read` file's source path in a summarized span
+    /// (FR-3). Distinct from `history_message_with_flags` above (which
+    /// always defaults `tool_name` to `None`) because that helper predates
+    /// this field and every other existing test relies on it staying
+    /// `None`.
+    fn tool_result_message(
+        sequence: i64,
+        tool_name: &str,
+        payload_ref: Option<&str>,
+    ) -> HistoryMessage {
+        HistoryMessage {
+            chat: ChatMessage::tool_result("id", tool_name, "result"),
+            content_type: "tool_result".to_string(),
+            sequence,
+            plan: false,
+            payload_ref: payload_ref.map(|s| s.to_string()),
+            tool_name: Some(tool_name.to_string()),
         }
     }
 
@@ -1506,6 +1630,7 @@ mod tests {
                 sequence: i,
                 plan: false,
                 payload_ref: None,
+                tool_name: None,
             })
             .collect();
         let selected = messages_to_summarize(&history, 2);
@@ -1791,5 +1916,72 @@ mod tests {
             limits::MAX_CONSECUTIVE_COMPACTION_FAILURES + 100,
             true
         ));
+    }
+
+    // --- most_recent_read_path / bounded_restore_body (FR-3: restore the
+    // most-recent Read'd file's contents after a compaction) ---
+
+    #[test]
+    fn most_recent_read_path_returns_the_last_reads_source_path() {
+        let read_a = tool_result_message(0, "Read", Some("/a.rs"));
+        let bash = tool_result_message(1, "Bash", Some("/tmp/out.txt"));
+        let read_b = tool_result_message(2, "Read", Some("/b.rs"));
+        let span: Vec<&HistoryMessage> = vec![&read_a, &bash, &read_b];
+
+        assert_eq!(
+            most_recent_read_path(&span),
+            Some("/b.rs".to_string()),
+            "must return the LAST Read's path, not the first"
+        );
+    }
+
+    #[test]
+    fn most_recent_read_path_is_none_without_a_read() {
+        let bash = tool_result_message(0, "Bash", Some("/tmp/out.txt"));
+        let span: Vec<&HistoryMessage> = vec![&bash];
+
+        assert_eq!(most_recent_read_path(&span), None);
+    }
+
+    #[test]
+    fn bounded_restore_body_inlines_full_content_under_cap() {
+        let est = |s: &str| (s.chars().count() / 4) as u32;
+        let content = "fn main() {\n    println!(\"hi\");\n}\n";
+
+        let body = bounded_restore_body("/a.rs", content, 1000, est);
+
+        assert!(body.contains("/a.rs"), "must name the restored path");
+        assert!(
+            body.contains(content),
+            "must inline the FULL content, not a reference"
+        );
+        assert!(
+            !body.contains("Read \""),
+            "must never be a \"Read ... to view\" reference line"
+        );
+        assert!(!body.contains("to view"));
+    }
+
+    #[test]
+    fn bounded_restore_body_head_tail_windows_over_cap() {
+        let est = |s: &str| (s.chars().count() / 4) as u32;
+        let content = "x".repeat(10_000);
+        let cap_tokens = 100;
+
+        let body = bounded_restore_body("/big.rs", &content, cap_tokens, est);
+
+        assert!(body.contains("/big.rs"), "must still name the path");
+        assert!(
+            body.contains("truncated"),
+            "must note that content was truncated"
+        );
+        assert!(!body.contains("Read \""), "never a reference line");
+        assert!(!body.contains("to view"));
+        let body_tokens = est(&body);
+        assert!(
+            body_tokens <= cap_tokens as u32 + 50,
+            "expected the windowed body to stay roughly within cap ({cap_tokens}) plus small \
+             header/note slack, got {body_tokens} estimated tokens"
+        );
     }
 }

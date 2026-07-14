@@ -177,6 +177,7 @@ async fn apply_lightweight_clearing_then_summarize_against_the_server() {
             sequence: i,
             plan: false,
             payload_ref: None,
+            tool_name: Some("Bash".to_string()),
         });
     }
     for i in 12..20 {
@@ -190,6 +191,7 @@ async fn apply_lightweight_clearing_then_summarize_against_the_server() {
             sequence: i,
             plan: false,
             payload_ref: None,
+            tool_name: None,
         });
     }
 

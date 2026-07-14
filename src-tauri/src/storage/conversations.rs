@@ -43,6 +43,11 @@ pub struct HistoryMessage {
     /// needs out of that JSON, so they're computed once here and the
     /// string itself is dropped.
     pub payload_ref: Option<String>,
+    /// The `messages.tool_name` column for a `tool_call`/`tool_result` row;
+    /// `None` for other content types. Used by
+    /// `context::most_recent_read_path` to find the most-recent `Read`
+    /// result after a compaction.
+    pub tool_name: Option<String>,
 }
 
 /// Parses a tool row's persisted `detail` JSON (data-model.md) for the two
@@ -146,6 +151,33 @@ pub fn load_history_annotated(
         })
         .max_by_key(|(sequence, _)| *sequence);
 
+    // FR-3 (restore-recent-file): the restored-file notice `context::
+    // summarize_and_persist` persists right after a `summarized` notice, if
+    // any -- its `restored` field is the most-recently-`Read` file's
+    // ACTUAL content, re-read fresh at compaction time. Only one is ever
+    // relevant: the one persisted for THIS splice's own compaction pass
+    // (`sequence > splice_sequence` -- a restored-file row left over from
+    // an earlier, now-superseded `summarized` notice has a sequence at or
+    // before the new splice point, same as the stale summary it belongs
+    // to, so it's excluded the same way).
+    let restored_file: Option<(i64, String)> = splice.as_ref().and_then(|(splice_sequence, _)| {
+        rows.iter()
+            .filter(|(_, content_type, ..)| content_type == "context_notice")
+            .filter_map(|(_, _, content, sequence, ..)| {
+                if *sequence <= *splice_sequence {
+                    return None;
+                }
+                let parsed: serde_json::Value = serde_json::from_str(content).ok()?;
+                if parsed.get("kind")?.as_str()? == "restoredFile" {
+                    let restored = parsed.get("restored")?.as_str()?.to_string();
+                    Some((*sequence, restored))
+                } else {
+                    None
+                }
+            })
+            .max_by_key(|(sequence, _)| *sequence)
+    });
+
     let mut result = Vec::new();
     if let Some((splice_sequence, summary)) = &splice {
         result.push(HistoryMessage {
@@ -154,6 +186,21 @@ pub fn load_history_annotated(
             sequence: *splice_sequence,
             plan: false,
             payload_ref: None,
+            tool_name: None,
+        });
+    }
+    // Spliced right after the summary, so the model (and the transcript)
+    // sees the restored file's real content immediately following the
+    // condensed summary that dropped it -- not buried among the ordinary
+    // turns that follow.
+    if let Some((restored_sequence, restored)) = &restored_file {
+        result.push(HistoryMessage {
+            chat: ChatMessage::system(restored.clone()),
+            content_type: "context_notice".to_string(),
+            sequence: *restored_sequence,
+            plan: false,
+            payload_ref: None,
+            tool_name: None,
         });
     }
 
@@ -178,6 +225,11 @@ pub fn load_history_annotated(
         } else {
             (false, None)
         };
+        // `tool_name` is moved into `name` below inside the tool_call/
+        // tool_result arms -- cloned here first so the resulting
+        // `HistoryMessage` still carries it (`context::most_recent_read_path`
+        // needs it after a compaction, FR-3).
+        let tool_name_for_history = tool_name.clone();
 
         // 010-context-window-management (structured tool calls): a
         // `tool_call`/`tool_result` row reconstructs into the same
@@ -225,6 +277,7 @@ pub fn load_history_annotated(
             sequence,
             plan,
             payload_ref,
+            tool_name: tool_name_for_history,
         });
     }
 
@@ -1112,6 +1165,130 @@ mod tests {
         assert_eq!(history[0].sequence, 2);
         assert_eq!(history[1].chat.text(), "new message");
         assert_eq!(history[1].sequence, 3);
+    }
+
+    // --- FR-3 (restore-recent-file): a `restoredFile` notice, persisted by
+    // `context::summarize_and_persist` right after a `summarized` notice,
+    // renders as a second synthesized system message spliced in right after
+    // the summary. ---
+
+    #[test]
+    fn a_restored_file_notice_renders_right_after_the_summary() {
+        let conn = setup_conn();
+        insert_message(&conn, "c1", "user", "text", "old message 1", 0);
+        insert_message(
+            &conn,
+            "c1",
+            "assistant",
+            "context_notice",
+            r#"{"kind":"summarized","summary":"the gist of it","notice":"Conversation condensed to save space"}"#,
+            1,
+        );
+        insert_message(
+            &conn,
+            "c1",
+            "assistant",
+            "context_notice",
+            r#"{"kind":"restoredFile","path":"/tmp/a.rs","restored":"Current contents of `/tmp/a.rs`:\nfn main() {}","notice":"Restored the most-recent file after condensing"}"#,
+            2,
+        );
+        insert_message(&conn, "c1", "user", "text", "new message", 3);
+
+        let skills_dir = empty_skills_dir();
+        let history = load_history_annotated(&conn, "c1", skills_dir.path()).unwrap();
+
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[0].chat.text(), "the gist of it");
+        assert_eq!(history[0].sequence, 1);
+        assert_eq!(history[1].chat.role, "system");
+        assert_eq!(
+            history[1].chat.text(),
+            "Current contents of `/tmp/a.rs`:\nfn main() {}"
+        );
+        assert_eq!(
+            history[1].sequence, 2,
+            "the restored-file notice must be spliced right after the summary"
+        );
+        assert_eq!(history[2].chat.text(), "new message");
+        assert_eq!(history[2].sequence, 3);
+    }
+
+    #[test]
+    fn a_restored_file_notice_from_a_superseded_summary_is_dropped() {
+        // The restored-file notice paired with the FIRST (now-superseded)
+        // summary must not leak into a load spliced against the SECOND,
+        // later summary -- same "only the most recent one" rule the
+        // `summarized` notice itself already follows.
+        let conn = setup_conn();
+        insert_message(&conn, "c1", "user", "text", "ancient message", 0);
+        insert_message(
+            &conn,
+            "c1",
+            "assistant",
+            "context_notice",
+            r#"{"kind":"summarized","summary":"first summary","notice":"n"}"#,
+            1,
+        );
+        insert_message(
+            &conn,
+            "c1",
+            "assistant",
+            "context_notice",
+            r#"{"kind":"restoredFile","path":"/tmp/old.rs","restored":"stale restored content","notice":"n"}"#,
+            2,
+        );
+        insert_message(&conn, "c1", "user", "text", "middle message", 3);
+        insert_message(
+            &conn,
+            "c1",
+            "assistant",
+            "context_notice",
+            r#"{"kind":"summarized","summary":"second summary covers the first too","notice":"n"}"#,
+            4,
+        );
+        insert_message(&conn, "c1", "user", "text", "recent message", 5);
+
+        let skills_dir = empty_skills_dir();
+        let history = load_history_annotated(&conn, "c1", skills_dir.path()).unwrap();
+
+        assert_eq!(history.len(), 2);
+        assert_eq!(
+            history[0].chat.text(),
+            "second summary covers the first too"
+        );
+        assert!(
+            !history
+                .iter()
+                .any(|m| m.chat.text() == "stale restored content"),
+            "a restored-file notice tied to a superseded summary must not render"
+        );
+        assert_eq!(history[1].chat.text(), "recent message");
+    }
+
+    #[test]
+    fn no_restored_file_notice_means_the_summary_renders_alone() {
+        let conn = setup_conn();
+        insert_message(&conn, "c1", "user", "text", "old message", 0);
+        insert_message(
+            &conn,
+            "c1",
+            "assistant",
+            "context_notice",
+            r#"{"kind":"summarized","summary":"the gist of it","notice":"n"}"#,
+            1,
+        );
+        insert_message(&conn, "c1", "user", "text", "new message", 2);
+
+        let skills_dir = empty_skills_dir();
+        let history = load_history_annotated(&conn, "c1", skills_dir.path()).unwrap();
+
+        assert_eq!(
+            history.len(),
+            2,
+            "no restored-file notice was persisted -- only the summary and the new message"
+        );
+        assert_eq!(history[0].chat.text(), "the gist of it");
+        assert_eq!(history[1].chat.text(), "new message");
     }
 
     #[test]
