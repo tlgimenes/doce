@@ -66,7 +66,12 @@ pub fn tool_cleared_placeholder_transcript(transcript_path: &str, seq: i64) -> S
 pub const PROTECTED_RECENT_MESSAGES: usize = 10;
 
 /// Max output tokens for the tier-2 summarization completion itself --
-/// 1/16 of `CONTEXT_WINDOW_TOKENS`.
+/// 1/16 of `CONTEXT_WINDOW_TOKENS`. Live again (restore-output-cap task):
+/// `context::summarize_and_persist` sets this as the summarization request's
+/// literal `max_tokens` -- a flat cap, not `clamp_output_tokens`, since the
+/// summarization prompt is a `Forbid`-mode call sized well under the window
+/// on its own (a future truncation-rejection task, not this one, is what
+/// would police that prompt-side).
 pub const SUMMARY_MAX_TOKENS: i32 = (CONTEXT_WINDOW_TOKENS / 16) as i32;
 
 pub const SUMMARIZATION_PROMPT: &str =
@@ -83,9 +88,14 @@ pub const DEFAULT_HARD_LIMIT_PCT: f64 = 0.9;
 pub const DEFAULT_TOOL_OUTPUT_OFFLOAD_TOKENS: usize = (CONTEXT_WINDOW_TOKENS / 16) as usize;
 
 /// `reserve` for `InferenceEngine::fit_to_context`'s per-turn call inside
-/// `agent::run_loop` (`context::fit_turn_to_budget`) -- and now also the
-/// literal `max_tokens` the agent `generate()` call sites pass (they
-/// reference this constant rather than duplicating the number).
+/// `agent::run_loop` (`context::fit_turn_to_budget`) -- and, since the
+/// restore-output-cap task, the output-token CEILING `clamp_output_tokens`
+/// uses for agent turns. It is no longer the literal `max_tokens` sent on
+/// the wire: the request's actual `max_tokens` is
+/// `clamp_output_tokens(AGENT_TURN_MAX_OUTPUT_TOKENS, window, prompt_est)`,
+/// which never exceeds this ceiling and shrinks below it once
+/// `prompt_est + margin` eats into the window, so `prompt + max_tokens <=
+/// window` holds structurally rather than by convention.
 ///
 /// Raised from 256 (~3.1% of the 8192 window) to 1024 (~6.2% of
 /// `CONTEXT_WINDOW_TOKENS`) after a real benchmark failure: a well-granulated
@@ -101,6 +111,32 @@ pub const DEFAULT_TOOL_OUTPUT_OFFLOAD_TOKENS: usize = (CONTEXT_WINDOW_TOKENS / 1
 /// still ends short turns early, so the extra headroom costs nothing on
 /// turns that don't think long.
 pub const AGENT_TURN_MAX_OUTPUT_TOKENS: u32 = 2048;
+
+/// The floor `clamp_output_tokens` never sizes a request's `max_tokens`
+/// below, even once headroom (`window - prompt_estimate - margin`) is fully
+/// exhausted -- a request with less than this is more likely to fail the
+/// turn outright (cut off before a tool call's closing tag, or before any
+/// usable text at all) than to succeed short, so 512 is the practical
+/// minimum a generation needs to have a chance at finishing something
+/// coherent.
+pub const MIN_OUTPUT_TOKENS: u32 = 512;
+
+/// Sizes a request's `max_tokens` so `prompt + max_tokens <= window` is
+/// structurally guaranteed rather than merely conventional (qwen-code's
+/// `clampOutputTokensToWindow`). `ceiling` is the caller's preferred cap
+/// (e.g. `AGENT_TURN_MAX_OUTPUT_TOKENS`); `window` is the model's context
+/// window; `prompt_estimate` is this turn's estimated prompt token count
+/// (`inference::token_estimate`). `margin` reserves headroom beyond the
+/// prompt itself -- the larger of a flat 1024 tokens or 1/20th of the
+/// window -- for the chat-template overhead `prompt_estimate` doesn't
+/// account for (role tags, etc.) plus a little slack, the same kind of
+/// reserve `STATE_TAIL_RESERVE_TOKENS` covers for the per-turn state tail.
+/// Never returns less than `MIN_OUTPUT_TOKENS`, even once headroom is fully
+/// exhausted -- a starved request is better than un-generatable one.
+pub fn clamp_output_tokens(ceiling: u32, window: u32, prompt_estimate: u32) -> u32 {
+    let margin = 1024.max(window / 20);
+    ceiling.min(MIN_OUTPUT_TOKENS.max(window.saturating_sub(prompt_estimate + margin)))
+}
 
 /// Headroom for the per-turn state tail (`agent::plan::PlanState::state_tail`)
 /// -- ~4.7% (3/64) of `CONTEXT_WINDOW_TOKENS`. Every plan host pushes the
@@ -144,5 +180,26 @@ mod tests {
         assert!(
             STATE_TAIL_RESERVE_TOKENS + AGENT_TURN_MAX_OUTPUT_TOKENS <= CONTEXT_WINDOW_TOKENS / 4
         );
+        assert!(MIN_OUTPUT_TOKENS < AGENT_TURN_MAX_OUTPUT_TOKENS);
+    }
+
+    // --- clamp_output_tokens (restore-output-cap task) ---
+
+    #[test]
+    fn clamp_output_tokens_ceiling_wins_with_ample_headroom() {
+        assert_eq!(clamp_output_tokens(2048, 16384, 4000), 2048);
+    }
+
+    #[test]
+    fn clamp_output_tokens_floor_wins_when_headroom_is_exhausted() {
+        assert_eq!(clamp_output_tokens(2048, 16384, 15000), MIN_OUTPUT_TOKENS);
+        assert_eq!(clamp_output_tokens(2048, 16384, 15000), 512);
+    }
+
+    #[test]
+    fn clamp_output_tokens_headroom_binds_below_the_ceiling() {
+        // margin = max(1024, 16384/20=819) = 1024;
+        // window - prompt_estimate - margin = 16384 - 13500 - 1024 = 1860.
+        assert_eq!(clamp_output_tokens(2048, 16384, 13500), 1860);
     }
 }

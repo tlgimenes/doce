@@ -726,7 +726,7 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
         // requiring tool calls never traps the loop -- `tool_choice:required`
         // enforces it server-side, and run_loop corrects+retries a turn that
         // slips through with no call rather than ending the task.
-        let req = crate::inference::http::ChatRequest::build(
+        let mut req = crate::inference::http::ChatRequest::build(
             LLAMA_SERVER_MODEL_ID,
             crate::inference::http::to_openai_messages(&messages),
             Some(crate::inference::http::tools_array(
@@ -735,6 +735,19 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
             crate::inference::http::tool_choice_for(crate::inference::ToolCallMode::Require)
                 .map(|s| s.to_string()),
         );
+        // Structural `prompt + max_tokens <= window` guarantee
+        // (restore-output-cap task): estimate this turn's prompt size
+        // through the single `token_estimate` seam, then clamp
+        // `AGENT_TURN_MAX_OUTPUT_TOKENS` down to whatever headroom is left.
+        let prompt_est: u32 = messages
+            .iter()
+            .map(|m| crate::inference::token_estimate(self.engine, &m.text()))
+            .sum();
+        req.max_tokens = Some(crate::context::limits::clamp_output_tokens(
+            crate::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS,
+            self.engine.context_window(),
+            prompt_est,
+        ));
 
         // Live generation ticker: every content/reasoning piece streams to
         // the UI as it arrives (the working shimmer). `agent-generation-piece`
@@ -880,7 +893,7 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
         if !tail.is_empty() {
             messages.push(ChatMessage::user(tail));
         }
-        let req = crate::inference::http::ChatRequest::build(
+        let mut req = crate::inference::http::ChatRequest::build(
             LLAMA_SERVER_MODEL_ID,
             crate::inference::http::to_openai_messages(&messages),
             Some(crate::inference::http::tools_array(
@@ -889,6 +902,18 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
             crate::inference::http::tool_choice_for(crate::inference::ToolCallMode::Require)
                 .map(|s| s.to_string()),
         );
+        // Same structural `prompt + max_tokens <= window` guarantee as
+        // `RealBackend::generate` (restore-output-cap task), sized against
+        // this subagent's own `messages`/`engine`.
+        let prompt_est: u32 = messages
+            .iter()
+            .map(|m| crate::inference::token_estimate(self.engine, &m.text()))
+            .sum();
+        req.max_tokens = Some(crate::context::limits::clamp_output_tokens(
+            crate::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS,
+            self.engine.context_window(),
+            prompt_est,
+        ));
         // FR-015 isolation: the subagent's own transcript isn't rendered by
         // any current view, so there's no live ticker to feed -- `on_piece`
         // is a no-op, same as the pre-cutover `|_piece| {}`. Cancellation

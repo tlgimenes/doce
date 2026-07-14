@@ -248,6 +248,16 @@ pub struct ChatRequest {
     /// echoes token-usage in the final SSE event when this is set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_options: Option<Value>,
+    /// The request-level output-token cap. `None` (the default `build`
+    /// leaves it at) omits the field entirely, matching how a bare request
+    /// serialized pre-cutover with no cap sent at all. Callers set this
+    /// after `build` returns — an agent turn via
+    /// `context::limits::clamp_output_tokens` (so `prompt + max_tokens <=
+    /// window` is structurally guaranteed), the summarization call via the
+    /// flat `context::limits::SUMMARY_MAX_TOKENS` — the same
+    /// build-then-assign pattern `seed` already uses.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
 }
 
 impl ChatRequest {
@@ -283,6 +293,7 @@ impl ChatRequest {
             presence_penalty: 0.0,
             seed: seed_from_env(),
             stream_options: stream.then(|| serde_json::json!({"include_usage": true})),
+            max_tokens: None,
         }
     }
 }
@@ -789,6 +800,9 @@ mod tests {
         if std::env::var("DOCE_GEN_SEED").is_err() {
             assert!(v.get("seed").is_none());
         }
+        // max_tokens is omitted by `build` itself -- callers opt in per
+        // request via `clamp_output_tokens`/`SUMMARY_MAX_TOKENS`.
+        assert!(v.get("max_tokens").is_none());
     }
 
     #[test]
@@ -799,6 +813,16 @@ mod tests {
         req.seed = Some(11);
         let v = serde_json::to_value(&req).unwrap();
         assert_eq!(v["seed"], 11);
+    }
+
+    #[test]
+    fn chat_request_serializes_max_tokens_when_set() {
+        // Mirrors `chat_request_serializes_seed_when_set` exactly: the field
+        // is public and defaults to `None` in `build`, set directly here.
+        let mut req = ChatRequest::build("qwen", vec![], None, None);
+        req.max_tokens = Some(2048);
+        let v = serde_json::to_value(&req).unwrap();
+        assert_eq!(v["max_tokens"], 2048);
     }
 
     #[test]

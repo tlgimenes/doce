@@ -28,7 +28,8 @@ use crate::storage::conversations::{
     load_history_annotated, persist_context_notice, HistoryMessage,
 };
 use limits::{
-    PROTECTED_RECENT_MESSAGES, SUMMARIZATION_PROMPT, TOOL_CLEARED_PLACEHOLDER, TOOL_KEEP_N,
+    PROTECTED_RECENT_MESSAGES, SUMMARIZATION_PROMPT, SUMMARY_MAX_TOKENS, TOOL_CLEARED_PLACEHOLDER,
+    TOOL_KEEP_N,
 };
 use rusqlite::Connection;
 use serde::Serialize;
@@ -400,12 +401,17 @@ pub async fn summarize_and_persist(
     // able to emit a tool call). Compaction is best-effort, so a fresh,
     // never-cancelled token — there is no per-turn cancel handle to thread
     // here the way a live agent turn has.
-    let req = crate::inference::http::ChatRequest::build(
+    let mut req = crate::inference::http::ChatRequest::build(
         "doce",
         crate::inference::http::to_openai_messages(&messages),
         None,
         None,
     );
+    // Flat cap, NOT `clamp_output_tokens` -- this is a `Forbid`-mode call
+    // over an already-bounded prompt, not an agent turn sized against the
+    // live window (restore-output-cap task; see `SUMMARY_MAX_TOKENS`'s doc
+    // comment).
+    req.max_tokens = Some(SUMMARY_MAX_TOKENS as u32);
     let cancel = tokio_util::sync::CancellationToken::new();
     let outcome = crate::inference::http::LlamaServerClient::new(base_url)
         .chat(req, |_piece| {}, &cancel)

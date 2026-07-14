@@ -44,6 +44,21 @@ pub enum InferenceError {
 /// pipeline had too little headroom to work with at that size.
 pub const CONTEXT_WINDOW_TOKENS: u32 = 16384;
 
+/// The single seam every NEW prompt-token estimate (restore-output-cap
+/// task's `clamp_output_tokens` call sites) routes through, rather than
+/// calling `InferenceEngine::count_tokens` directly. Today it's just that:
+/// a real tokenizer count, falling back to a `len/4` chars heuristic only if
+/// tokenization itself errors. A later task (B4) re-points the body to a
+/// pure chars/4 heuristic and drops the `engine` parameter entirely -- kept
+/// as one function now specifically so that swap touches one place instead
+/// of every call site that estimates a prompt's size.
+pub fn token_estimate(engine: &InferenceEngine, text: &str) -> u32 {
+    engine
+        .count_tokens(text)
+        .map(|n| n as u32)
+        .unwrap_or_else(|_| (text.len() / 4) as u32)
+}
+
 /// A tool call's or tool result's structured payload — the content-block
 /// shape frontier-lab APIs use (Anthropic's `tool_use`/`tool_result`
 /// blocks, OpenAI's `tool_calls` + `tool_call_id`), adopted here now that
