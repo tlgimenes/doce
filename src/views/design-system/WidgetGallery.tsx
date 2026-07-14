@@ -19,7 +19,7 @@ interface WidgetGalleryProps {
 
 function Example({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="min-w-0 flex flex-col gap-1.5">
       <p className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">{label}</p>
       {children}
     </div>
