@@ -126,21 +126,44 @@ pub struct ServerHandle {
 pub async fn spawn(app: &AppHandle, model_path: &Path) -> Result<ServerHandle, String> {
     let port = free_port();
     let base_url = format!("http://127.0.0.1:{port}");
-    let _ = app.emit(
-        "server-status",
-        ServerStatus {
-            state: "starting".to_string(),
-            port: Some(port),
-        },
-    );
 
-    let (mut rx, child) = app
-        .shell()
-        .sidecar("llama-server")
-        .map_err(|e| e.to_string())?
-        .args(launch_args(port, model_path))
-        .spawn()
-        .map_err(|e| e.to_string())?;
+    // Shared across every `server-status` emit below (`starting`, `ready`,
+    // and both `error` paths — the spawn-failure arms just below and the
+    // health-timeout branch further down) so the event shape can't drift
+    // between call sites and a new failure path can't forget to emit.
+    let emit_status = |state: &str| {
+        let _ = app.emit(
+            "server-status",
+            ServerStatus {
+                state: state.to_string(),
+                port: Some(port),
+            },
+        );
+    };
+
+    emit_status("starting");
+
+    let sidecar_cmd = match app.shell().sidecar("llama-server") {
+        Ok(cmd) => cmd,
+        Err(e) => {
+            // Sidecar binary missing/misregistered — nothing was spawned,
+            // but a frontend listener that's been told "starting" needs to
+            // hear "error" or it's stuck forever.
+            emit_status("error");
+            return Err(e.to_string());
+        }
+    };
+
+    let (mut rx, child) = match sidecar_cmd.args(launch_args(port, model_path)).spawn() {
+        Ok(pair) => pair,
+        Err(e) => {
+            // Same as above: the OS refused to spawn the process at all, so
+            // there's no child to kill, but the "starting" state still
+            // needs to resolve to "error" for anything listening.
+            emit_status("error");
+            return Err(e.to_string());
+        }
+    };
     let pid = child.pid();
 
     // Drain stdout/stderr on a background task: the sidecar's pipes are
@@ -177,6 +200,12 @@ pub async fn spawn(app: &AppHandle, model_path: &Path) -> Result<ServerHandle, S
     loop {
         let healthy = http
             .get(&health_url)
+            // Per-request timeout: a hung TCP handshake or stalled response
+            // must not itself eat the ~60s health deadline in one bad poll
+            // iteration. Well under HEALTH_POLL_INTERVAL's cadence budget
+            // and generous for a loopback request to a process on the same
+            // machine.
+            .timeout(Duration::from_secs(2))
             .send()
             .await
             .is_ok_and(|resp| resp.status().is_success());
@@ -184,13 +213,7 @@ pub async fn spawn(app: &AppHandle, model_path: &Path) -> Result<ServerHandle, S
             break;
         }
         if tokio::time::Instant::now() >= deadline {
-            let _ = app.emit(
-                "server-status",
-                ServerStatus {
-                    state: "error".to_string(),
-                    port: Some(port),
-                },
-            );
+            emit_status("error");
             // Half-started and never going to answer — kill it now rather
             // than leaving an orphaned llama-server holding the port (and
             // GPU memory) with nothing supervising it.
@@ -203,13 +226,7 @@ pub async fn spawn(app: &AppHandle, model_path: &Path) -> Result<ServerHandle, S
         tokio::time::sleep(HEALTH_POLL_INTERVAL).await;
     }
 
-    let _ = app.emit(
-        "server-status",
-        ServerStatus {
-            state: "ready".to_string(),
-            port: Some(port),
-        },
-    );
+    emit_status("ready");
 
     Ok(ServerHandle {
         base_url,
