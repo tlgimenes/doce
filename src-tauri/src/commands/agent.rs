@@ -675,7 +675,6 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
         // `compact` actually runs) to keep the UI's live indicator
         // responsive, not just notified of compaction events.
         match crate::context::usage_from_fitted_messages(
-            self.engine,
             self.conversation_id,
             messages,
             self.settings,
@@ -697,8 +696,7 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
     }
 
     fn compact(&mut self, messages: &[ChatMessage]) -> Vec<ChatMessage> {
-        crate::context::fit_turn_to_budget(self.engine, messages)
-            .unwrap_or_else(|_| messages.to_vec())
+        crate::context::fit_turn_to_budget(messages).unwrap_or_else(|_| messages.to_vec())
     }
 
     async fn generate(&mut self, mut messages: Vec<ChatMessage>) -> crate::agent::TurnOutcome {
@@ -741,11 +739,11 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
         // `AGENT_TURN_MAX_OUTPUT_TOKENS` down to whatever headroom is left.
         let prompt_est: u32 = messages
             .iter()
-            .map(|m| crate::inference::token_estimate(self.engine, &m.text()))
+            .map(|m| crate::inference::token_estimate(&m.text()))
             .sum();
         req.max_tokens = Some(crate::context::limits::clamp_output_tokens(
             crate::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS,
-            self.engine.context_window(),
+            crate::inference::CONTEXT_WINDOW_TOKENS,
             prompt_est,
         ));
 
@@ -839,7 +837,6 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
 /// subagent's own transcript isn't rendered by any current view, so
 /// there's no live indicator to notify.
 struct SubagentBackend<'a> {
-    engine: &'a InferenceEngine,
     conn: &'a tokio_rusqlite::Connection,
     subagent_id: &'a str,
     cwd: Option<&'a Path>,
@@ -864,10 +861,14 @@ struct SubagentBackend<'a> {
 
 impl crate::agent::AgentBackend for SubagentBackend<'_> {
     fn measure(&mut self, messages: &[ChatMessage]) -> u32 {
-        self.engine
-            .render_chat_prompt(messages)
-            .and_then(|r| self.engine.count_tokens(&r).map(|n| n as u32))
-            .unwrap_or(u32::MAX)
+        // Right-shape estimate (`to_openai_messages` is what the server
+        // decodes), same chars/4 heuristic as `usage_from_fitted_messages`
+        // -- this backend has no `ContextSettings` to route through that
+        // helper, so it estimates directly.
+        crate::inference::token_estimate(
+            &serde_json::to_string(&crate::inference::http::to_openai_messages(messages))
+                .unwrap_or_default(),
+        )
     }
 
     fn threshold(&self) -> u32 {
@@ -875,8 +876,7 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
     }
 
     fn compact(&mut self, messages: &[ChatMessage]) -> Vec<ChatMessage> {
-        crate::context::fit_turn_to_budget(self.engine, messages)
-            .unwrap_or_else(|_| messages.to_vec())
+        crate::context::fit_turn_to_budget(messages).unwrap_or_else(|_| messages.to_vec())
     }
 
     async fn generate(&mut self, mut messages: Vec<ChatMessage>) -> crate::agent::TurnOutcome {
@@ -907,11 +907,11 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
         // this subagent's own `messages`/`engine`.
         let prompt_est: u32 = messages
             .iter()
-            .map(|m| crate::inference::token_estimate(self.engine, &m.text()))
+            .map(|m| crate::inference::token_estimate(&m.text()))
             .sum();
         req.max_tokens = Some(crate::context::limits::clamp_output_tokens(
             crate::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS,
-            self.engine.context_window(),
+            crate::inference::CONTEXT_WINDOW_TOKENS,
             prompt_est,
         ));
         // FR-015 isolation: the subagent's own transcript isn't rendered by
@@ -964,7 +964,7 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
         // notify.
         let outcome =
             dispatch::execute_async(call.clone(), self.cwd.map(|p| p.to_path_buf())).await;
-        let outcome = crate::context::annotate_with_token_count(self.engine, outcome);
+        let outcome = crate::context::annotate_with_token_count(outcome);
 
         // 010-context-window-management/US3 (FR-011/FR-012), 2026-07-09
         // payload-files design: `stage_tool_result_for_persist` (shared with
@@ -982,7 +982,7 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
             &call.name,
             &outcome,
             settings.tool_output_offload_tokens,
-            |text| self.engine.count_tokens(text).unwrap_or(usize::MAX),
+            |text| crate::inference::token_estimate(text) as usize,
         );
 
         persist_tool_call_and_result(
@@ -1058,7 +1058,6 @@ async fn execute_top_level_tool(
             Some(app),
             app.path().app_data_dir().ok(),
             conn,
-            engine,
             parent_conversation_id,
             cwd,
             &tool_call_id,
@@ -1185,12 +1184,11 @@ async fn execute_top_level_tool(
     // The threshold reserves room for the output tokens AND the per-turn
     // state tail `SubagentBackend::generate` pushes after this check has
     // already passed (see `limits::STATE_TAIL_RESERVE_TOKENS`).
-    let sub_threshold = engine.context_window().saturating_sub(
+    let sub_threshold = crate::inference::CONTEXT_WINDOW_TOKENS.saturating_sub(
         crate::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS
             + crate::context::limits::STATE_TAIL_RESERVE_TOKENS,
     );
     let mut sub_backend = SubagentBackend {
-        engine,
         conn,
         subagent_id: &subagent_id,
         cwd: sub_context.cwd.as_deref(),
@@ -1225,10 +1223,7 @@ async fn execute_top_level_tool(
     // 010-context-window-management (UI refactor): output tokens for the
     // subagent's own final answer -- `engine` is already in scope here
     // (this function's own parameter), so no follow-up-update dance needed.
-    let sub_token_count = engine
-        .count_tokens(&sub_final_for_db)
-        .ok()
-        .map(|n| n as i64);
+    let sub_token_count = Some(crate::inference::token_estimate(&sub_final_for_db) as i64);
     let _ = persist_assistant_text_reply(
         conn,
         transcript_dir.clone(),
@@ -1341,7 +1336,6 @@ async fn handle_general_tool_call(
     app: Option<&AppHandle>,
     app_data_dir: Option<std::path::PathBuf>,
     conn: &tokio_rusqlite::Connection,
-    engine: &InferenceEngine,
     parent_conversation_id: &str,
     cwd: Option<&std::path::Path>,
     tool_call_id: &str,
@@ -1365,7 +1359,7 @@ async fn handle_general_tool_call(
     .await;
 
     let outcome = dispatch::execute_async(call.clone(), cwd.map(|p| p.to_path_buf())).await;
-    let outcome = crate::context::annotate_with_token_count(engine, outcome);
+    let outcome = crate::context::annotate_with_token_count(outcome);
 
     // 010-context-window-management/US3 (FR-011/FR-012), 2026-07-09
     // payload-files design: every non-`Read` result is staged to a payload
@@ -1384,7 +1378,7 @@ async fn handle_general_tool_call(
         &call.name,
         &outcome,
         settings.tool_output_offload_tokens,
-        |text| engine.count_tokens(text).unwrap_or(usize::MAX),
+        |text| crate::inference::token_estimate(text) as usize,
     );
 
     persist_tool_result(
@@ -1431,8 +1425,7 @@ async fn emit_context_usage_update(
     .to_string();
     let system_prompt = plan_system_message(cwd, true, Some(&transcript_path), engine.dialect());
     if let Ok(usage) =
-        crate::context::compute_usage(conn, engine, conversation_id, &skills_dir, &system_prompt)
-            .await
+        crate::context::compute_usage(conn, conversation_id, &skills_dir, &system_prompt).await
     {
         let _ = app.emit("context-usage-update", usage);
     }
@@ -1855,7 +1848,8 @@ pub async fn send_agent_message(
     // already persisted above (by `persist_user_turn`, before the engine
     // was necessarily loaded), keyed back here by conversation_id+sequence
     // since `persist_user_turn` never returns its generated row id.
-    if let Ok(token_count) = engine.count_tokens(&model_text_for_turn) {
+    {
+        let token_count = crate::inference::token_estimate(&model_text_for_turn);
         let conversation_id_for_update = conversation_id.clone();
         let _ = conn
             .call(move |conn: &mut Connection| -> rusqlite::Result<()> {
@@ -1896,7 +1890,6 @@ pub async fn send_agent_message(
     let usage = crate::context::maybe_compact(
         &conn,
         transcript_dir.clone(),
-        engine,
         &base_url,
         &conversation_id,
         &skills_dir,
@@ -1955,7 +1948,7 @@ pub async fn send_agent_message(
     // (see `limits::STATE_TAIL_RESERVE_TOKENS`): `measure` renders the
     // canonical messages only, so without the tail reserve a history
     // parked just under the threshold plus a big tail overflowed `n_ctx`.
-    let threshold = engine.context_window().saturating_sub(
+    let threshold = crate::inference::CONTEXT_WINDOW_TOKENS.saturating_sub(
         crate::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS
             + crate::context::limits::STATE_TAIL_RESERVE_TOKENS,
     );
@@ -2041,18 +2034,17 @@ pub async fn send_agent_message(
     {
         let guard = inference.0.lock().await;
         if let Some(engine) = guard.as_ref() {
-            if let Ok(token_count) = engine.count_tokens(&final_text) {
-                let conversation_id_for_update = conversation_id.clone();
-                let _ = conn
-                    .call(move |conn: &mut Connection| -> rusqlite::Result<()> {
-                        conn.execute(
-                            "UPDATE messages SET token_count = ?1 WHERE conversation_id = ?2 AND sequence = ?3",
-                            rusqlite::params![token_count as i64, conversation_id_for_update, final_seq],
-                        )?;
-                        Ok(())
-                    })
-                    .await;
-            }
+            let token_count = crate::inference::token_estimate(&final_text);
+            let conversation_id_for_update = conversation_id.clone();
+            let _ = conn
+                .call(move |conn: &mut Connection| -> rusqlite::Result<()> {
+                    conn.execute(
+                        "UPDATE messages SET token_count = ?1 WHERE conversation_id = ?2 AND sequence = ?3",
+                        rusqlite::params![token_count as i64, conversation_id_for_update, final_seq],
+                    )?;
+                    Ok(())
+                })
+                .await;
             emit_context_usage_update(&app, &conn, engine, &conversation_id, cwd.as_deref()).await;
         }
     }
@@ -2854,12 +2846,6 @@ mod tests {
 
     // --- Task 2: token-count annotation ---
 
-    fn test_model_path() -> std::path::PathBuf {
-        let home = std::env::var("HOME").expect("HOME must be set");
-        std::path::PathBuf::from(home)
-            .join("Library/Application Support/app.doce.desktop/models/qwen3.5-4b-q4_k_m.gguf")
-    }
-
     #[tokio::test]
     #[ignore]
     async fn subagent_backend_tool_result_carries_a_real_token_count_for_read() {
@@ -2868,10 +2854,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("notes.txt"), "hello world").unwrap();
 
-        let engine =
-            crate::inference::InferenceEngine::load(&test_model_path()).expect("model should load");
         let mut backend = SubagentBackend {
-            engine: &engine,
             conn: &conn,
             subagent_id: "sub",
             cwd: Some(dir.path()),
@@ -2905,10 +2888,7 @@ mod tests {
         seed_conversation(&conn, "sub").await;
         let app_data_dir = tempfile::tempdir().unwrap();
 
-        let engine =
-            crate::inference::InferenceEngine::load(&test_model_path()).expect("model should load");
         let mut backend = SubagentBackend {
-            engine: &engine,
             conn: &conn,
             subagent_id: "sub",
             cwd: None,
@@ -2979,24 +2959,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("notes.txt"), "hello world").unwrap();
 
-        let engine =
-            crate::inference::InferenceEngine::load(&test_model_path()).expect("model should load");
         let call = ToolCall {
             name: "Read".to_string(),
             arguments: serde_json::json!({"file_path": "notes.txt"}),
         };
 
-        let model_text = handle_general_tool_call(
-            None,
-            None,
-            &conn,
-            &engine,
-            "c1",
-            Some(dir.path()),
-            "call1",
-            &call,
-        )
-        .await;
+        let model_text =
+            handle_general_tool_call(None, None, &conn, "c1", Some(dir.path()), "call1", &call)
+                .await;
 
         assert!(model_text.contains("hello world"));
 
@@ -3034,8 +3004,6 @@ mod tests {
         seed_conversation(&conn, "c1").await;
         let app_data_dir = tempfile::tempdir().unwrap();
 
-        let engine =
-            crate::inference::InferenceEngine::load(&test_model_path()).expect("model should load");
         let call = ToolCall {
             name: "Bash".to_string(),
             arguments: serde_json::json!({"command": "yes x | head -5000"}),
@@ -3045,7 +3013,6 @@ mod tests {
             None,
             Some(app_data_dir.path().to_path_buf()),
             &conn,
-            &engine,
             "c1",
             None,
             "call1",
@@ -3107,8 +3074,6 @@ mod tests {
         std::fs::write(&file_path, "hello world").unwrap();
         let app_data_dir = tempfile::tempdir().unwrap();
 
-        let engine =
-            crate::inference::InferenceEngine::load(&test_model_path()).expect("model should load");
         // A RELATIVE file_path, resolved against a known cwd -- reproduces
         // the bug this test now guards against: the carve-out used to
         // stamp the raw, possibly-relative `filePath` straight into
@@ -3124,7 +3089,6 @@ mod tests {
             None,
             Some(app_data_dir.path().to_path_buf()),
             &conn,
-            &engine,
             "c1",
             Some(dir.path()),
             "call1",

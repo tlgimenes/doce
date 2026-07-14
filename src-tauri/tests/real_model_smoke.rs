@@ -10,10 +10,10 @@
 //! generation smokes here now spawn a REAL `llama-server` (via
 //! `common::TestServer`) and POST at it through `LlamaServerClient::chat` --
 //! the exact path production's `RealBackend`/`SubagentBackend` use --
-//! rather than driving the in-process engine. The pure-tokenizer /
-//! chat-template smokes still exercise the engine directly (token counting
-//! and `render_chat_prompt` stay in-process until Task 5.1 strips the engine
-//! to a vocab-only tokenizer).
+//! rather than driving the in-process engine. Token counting is now a pure
+//! chars/4 estimate (`inference::token_estimate`, no model needed); the only
+//! thing the in-process engine still does is detect the chat dialect at load,
+//! which the vocab-load smoke below still exercises.
 //!
 //! This is the closest thing to a live manual QA pass this environment can
 //! do without a way to drive/inspect the native Tauri window directly.
@@ -50,28 +50,29 @@ fn installed_model_path() -> PathBuf {
 
 #[test]
 #[ignore]
-fn count_tokens_and_context_window_report_sane_values_against_the_real_model() {
+fn vocab_load_detects_a_dialect_and_the_token_estimate_is_sane() {
     let path = installed_model_path();
     assert!(
         path.exists(),
         "expected the real installed model at {path:?}"
     );
 
-    // Pure tokenizer/context-window introspection — no generation, so this
-    // stays on the in-process engine (Task 5.1 keeps exactly this much of it).
+    // Vocab-only load still succeeds and detects a chat dialect -- the one
+    // thing the in-process engine exists for now (token counting moved to the
+    // pure `token_estimate` heuristic, generation to the sidecar). `dialect()`
+    // always returns some `ToolDialect` (defaulting to Hermes), so this just
+    // proves the load + detection path runs against the real GGUF.
     let engine = InferenceEngine::load(&path).expect("model should load");
-    assert_eq!(
-        engine.context_window(),
-        doce_lib::inference::CONTEXT_WINDOW_TOKENS
-    );
+    let _dialect = engine.dialect();
 
-    let count = engine
-        .count_tokens("Hello, how are you today?")
-        .expect("tokenization should succeed");
-    // A short English sentence should tokenize to a small handful of
-    // tokens, nowhere near the budget -- a loose sanity bound, not an
-    // exact-match assertion (exact counts are tokenizer-version-dependent).
-    assert!(count > 0 && count < 30, "unexpected token count: {count}");
+    // The chars/4 estimate for a short English sentence is a small handful of
+    // tokens, nowhere near the budget -- a loose sanity bound (no model
+    // needed for the estimate itself).
+    let count = doce_lib::inference::token_estimate("Hello, how are you today?");
+    assert!(
+        count > 0 && count < 30,
+        "unexpected token estimate: {count}"
+    );
 }
 
 #[tokio::test]
@@ -165,42 +166,11 @@ async fn grammar_constrained_tool_call_produces_a_well_formed_tool_call_against_
     );
 }
 
-#[test]
-#[ignore]
-fn tool_result_renders_wrapped_in_qwens_own_tool_response_tags() {
-    // Verifies ChatMessage::tool_result's actual rendering against the
-    // real model's chat template. First tried making the role itself "tool"
-    // (on the theory that Qwen's chat template would apply its own
-    // role=="tool" -> <tool_response> branch), but that didn't fire in
-    // practice -- llama.cpp's template engine rendered an unrecognized
-    // role as a bare, never-trained-on `<|im_start|>tool` block instead.
-    // So the role stays "user" (reliably handled) and the *text* is
-    // wrapped in the literal <tool_response> tags Qwen expects, with no
-    // extra "Tool result for X:" framing. This exercises the in-process
-    // `render_chat_prompt` (which stays until Task 5.1), NOT generation.
-    let path = installed_model_path();
-    let engine = InferenceEngine::load(&path).expect("model should load");
-
-    let messages = vec![
-        ChatMessage::system(system_prompt(&engine)),
-        ChatMessage::user("Run `pwd` using the Bash tool."),
-        ChatMessage::tool_use("call-1", "Bash", serde_json::json!({"command": "pwd"})),
-        ChatMessage::tool_result("call-1", "Bash", "/tmp/example"),
-    ];
-    let rendered = engine
-        .render_chat_prompt(&messages)
-        .expect("render should succeed");
-    println!(
-        "rendered prompt tail: {:?}",
-        &rendered[rendered.len().saturating_sub(300)..]
-    );
-
-    assert!(
-        rendered.contains("<|im_start|>user\n<tool_response>/tmp/example</tool_response>"),
-        "expected the tool result wrapped in <tool_response> tags inside a `user` turn, \
-         with no extra framing text, got: {rendered:?}"
-    );
-}
+// (Removed `tool_result_renders_wrapped_in_qwens_own_tool_response_tags`:
+// it exercised `InferenceEngine::render_chat_prompt`, which is deleted now
+// that the server renders the chat template from OpenAI `messages`. The
+// equivalent rendering is covered by `inference::http::to_openai_messages`'s
+// own unit tests plus the real-server smokes below.)
 
 #[tokio::test]
 #[ignore]

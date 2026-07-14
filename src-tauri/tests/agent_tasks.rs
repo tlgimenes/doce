@@ -241,6 +241,11 @@ fn staging_wiring_replaces_oversized_result_with_reference_line() {
 /// `run_loop` itself has no reason to expose (it only reports turn count
 /// on the `TurnCapExceeded` error path, not on success).
 struct FlatBackend<'a> {
+    /// Retained only so `PlanExecBackend` can hand its own loaded engine down
+    /// to a `Task`-spawned subagent (constructor symmetry with production's
+    /// `RealBackend`/`SubagentBackend`); token counting no longer reads it now
+    /// that it's a pure chars/4 estimate (B4b removes the engine entirely).
+    #[allow(dead_code)]
     engine: &'a InferenceEngine,
     /// The supervised `llama-server`'s base URL (`http://127.0.0.1:PORT`) --
     /// generation goes through `inference::http::LlamaServerClient::chat`
@@ -270,10 +275,10 @@ struct FlatBackend<'a> {
 
 impl AgentBackend for FlatBackend<'_> {
     fn measure(&mut self, messages: &[ChatMessage]) -> u32 {
-        self.engine
-            .render_chat_prompt(messages)
-            .and_then(|r| self.engine.count_tokens(&r).map(|n| n as u32))
-            .unwrap_or(u32::MAX)
+        doce_lib::inference::token_estimate(
+            &serde_json::to_string(&doce_lib::inference::http::to_openai_messages(messages))
+                .unwrap_or_default(),
+        )
     }
 
     fn threshold(&self) -> u32 {
@@ -281,7 +286,7 @@ impl AgentBackend for FlatBackend<'_> {
     }
 
     fn compact(&mut self, messages: &[ChatMessage]) -> Vec<ChatMessage> {
-        context::fit_turn_to_budget(self.engine, messages).unwrap_or_else(|_| messages.to_vec())
+        context::fit_turn_to_budget(messages).unwrap_or_else(|_| messages.to_vec())
     }
 
     // Flat baseline runs under `ToolCallMode::Allow`, so a no-tool-call turn
@@ -323,14 +328,14 @@ impl AgentBackend for FlatBackend<'_> {
         call: doce_lib::agent::ToolCall,
     ) -> doce_lib::agent::ToolExecution {
         let outcome = dispatch::execute(&call, Some(self.cwd));
-        let outcome = context::annotate_with_token_count(self.engine, outcome);
+        let outcome = context::annotate_with_token_count(outcome);
         let result = stage_general_tool_result(
             &self.payload_dir,
             &self.conversation_id,
             &tool_call_id,
             &call.name,
             outcome,
-            |text| self.engine.count_tokens(text).unwrap_or(usize::MAX),
+            |text| doce_lib::inference::token_estimate(text) as usize,
         );
         // Printed for interactive runs, and recorded in `self.trace` as
         // the evidence a plan check-in judges completion against -- the
@@ -376,8 +381,7 @@ async fn run_flat_conversation(
     // closure uses -- run_loop itself now makes the fit-to-budget decision
     // on every turn, so this suite calls exactly what ships rather than
     // reimplementing its own version of the pre-generate step.
-    let threshold = engine
-        .context_window()
+    let threshold = doce_lib::inference::CONTEXT_WINDOW_TOKENS
         .saturating_sub(doce_lib::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS);
     // 2026-07-09 payload-files design: a fresh tempdir SIBLING to `cwd`
     // (never nested inside it -- see `FlatBackend::payload_dir`'s doc
@@ -466,10 +470,10 @@ struct PlanExecBackend<'a> {
 
 impl AgentBackend for PlanExecBackend<'_> {
     fn measure(&mut self, messages: &[ChatMessage]) -> u32 {
-        self.engine
-            .render_chat_prompt(messages)
-            .and_then(|r| self.engine.count_tokens(&r).map(|n| n as u32))
-            .unwrap_or(u32::MAX)
+        doce_lib::inference::token_estimate(
+            &serde_json::to_string(&doce_lib::inference::http::to_openai_messages(messages))
+                .unwrap_or_default(),
+        )
     }
 
     fn threshold(&self) -> u32 {
@@ -477,7 +481,7 @@ impl AgentBackend for PlanExecBackend<'_> {
     }
 
     fn compact(&mut self, messages: &[ChatMessage]) -> Vec<ChatMessage> {
-        context::fit_turn_to_budget(self.engine, messages).unwrap_or_else(|_| messages.to_vec())
+        context::fit_turn_to_budget(messages).unwrap_or_else(|_| messages.to_vec())
     }
 
     async fn generate(&mut self, mut messages: Vec<ChatMessage>) -> doce_lib::agent::TurnOutcome {
@@ -596,14 +600,14 @@ impl AgentBackend for PlanExecBackend<'_> {
         } else {
             plan_finish = None;
             let outcome = dispatch::execute(&call, Some(self.cwd));
-            let outcome = context::annotate_with_token_count(self.engine, outcome);
+            let outcome = context::annotate_with_token_count(outcome);
             stage_general_tool_result(
                 &self.payload_dir,
                 &self.conversation_id,
                 &tool_call_id,
                 &call.name,
                 outcome,
-                |text| self.engine.count_tokens(text).unwrap_or(usize::MAX),
+                |text| doce_lib::inference::token_estimate(text) as usize,
             )
         };
 
@@ -662,7 +666,7 @@ async fn run_planned_conversation(
     // `PlanExecBackend::generate` pushes after run_loop's threshold check
     // has already passed (see `limits::STATE_TAIL_RESERVE_TOKENS`),
     // matching production's `RealBackend` threshold exactly.
-    let threshold = engine.context_window().saturating_sub(
+    let threshold = doce_lib::inference::CONTEXT_WINDOW_TOKENS.saturating_sub(
         doce_lib::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS
             + doce_lib::context::limits::STATE_TAIL_RESERVE_TOKENS,
     );

@@ -44,7 +44,7 @@ pub async fn get_context_usage(
         engine.dialect(),
     );
 
-    context::compute_usage(&conn, engine, &conversation_id, &skills_dir, &system_prompt).await
+    context::compute_usage(&conn, &conversation_id, &skills_dir, &system_prompt).await
 }
 
 /// 010-context-window-management/US2 (FR-009): forces the same tiered
@@ -95,7 +95,6 @@ pub async fn compact_conversation(
     context::maybe_compact(
         &conn,
         transcript_dir,
-        engine,
         &base_url,
         &conversation_id,
         &skills_dir,

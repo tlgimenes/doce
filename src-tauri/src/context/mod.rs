@@ -7,11 +7,10 @@
 //! way).
 //!
 //! Note on testability: unlike `apply_lightweight_clearing`/`ContextSettings`/
-//! `exceeds` below (pure, unit-tested), `compute_usage`/`maybe_compact` take a
-//! real `&InferenceEngine` (needs an actually-loaded GGUF model to construct,
-//! unavailable in `cargo test`), and `summarize_and_persist` now generates
-//! through a running `llama-server` over the HTTP client (a `base_url`,
-//! equally unavailable in `cargo test`).
+//! `exceeds` below (pure, unit-tested), `compute_usage`/`maybe_compact` need a
+//! live DB connection (and, for `maybe_compact`, a running `llama-server` — its
+//! `summarize_and_persist` generates through the HTTP client at a `base_url`),
+//! neither of which is available in `cargo test`.
 //! Their correctness is exercised by `quickstart.md`'s manual validation
 //! pass against the real app instead. Where a real function needs a pure
 //! core unit-tested on its own, that core is split out (`fit_turn_to_budget`
@@ -23,7 +22,7 @@ pub mod payload;
 pub mod transcript;
 
 use crate::agent::dispatch::ToolOutcome;
-use crate::inference::{ChatMessage, InferenceEngine, MessageContent};
+use crate::inference::{token_estimate, ChatMessage, MessageContent};
 use crate::storage::conversations::{
     load_history_annotated, persist_context_notice, HistoryMessage,
 };
@@ -199,11 +198,13 @@ async fn persist_notice(
     .map_err(|e| e.to_string())
 }
 
-/// Renders `history` (prefixed with `system_prompt`) through the model's own
-/// chat template and counts tokens — the exact prompt shape `generate()`
-/// would actually decode for this conversation right now.
+/// Estimates the token usage of `history` (prefixed with `system_prompt`) —
+/// a chars/4 heuristic (`inference::token_estimate`) over the OpenAI
+/// `messages` shape the llama-server sidecar actually decodes
+/// (`to_openai_messages`), NOT the old in-process dialect render. The server
+/// reports authoritative usage, so this local number only has to be close
+/// enough to drive the compaction TRIGGER (safe if it fires a bit early).
 async fn usage_from_history(
-    engine: &InferenceEngine,
     conversation_id: &str,
     history: &[HistoryMessage],
     system_prompt: &str,
@@ -212,11 +213,11 @@ async fn usage_from_history(
     let mut messages = vec![ChatMessage::system(system_prompt)];
     messages.extend(history.iter().map(|m| m.chat.clone()));
 
-    let rendered = engine
-        .render_chat_prompt(&messages)
-        .map_err(|e| e.to_string())?;
-    let tokens_used = engine.count_tokens(&rendered).map_err(|e| e.to_string())? as u32;
-    let token_budget = engine.context_window();
+    let tokens_used = token_estimate(
+        &serde_json::to_string(&crate::inference::http::to_openai_messages(&messages))
+            .unwrap_or_default(),
+    );
+    let token_budget = crate::inference::CONTEXT_WINDOW_TOKENS;
     let state = classify_state(tokens_used, token_budget, settings);
 
     Ok(ContextUsage {
@@ -233,7 +234,6 @@ async fn usage_from_history(
 /// after a reopen (FR-014).
 pub async fn compute_usage(
     conn: &tokio_rusqlite::Connection,
-    engine: &InferenceEngine,
     conversation_id: &str,
     skills_dir: &Path,
     system_prompt: &str,
@@ -256,7 +256,7 @@ pub async fn compute_usage(
     // (this function already documents itself as "a close, honest
     // estimate" at its callers, not a byte-exact mirror of the real seed).
     apply_lightweight_clearing(&mut history, TOOL_KEEP_N, None);
-    usage_from_history(engine, conversation_id, &history, system_prompt, &settings).await
+    usage_from_history(conversation_id, &history, system_prompt, &settings).await
 }
 
 /// Tier 1: a pure, idempotent, load-time transform. Walking oldest-to-newest,
@@ -448,7 +448,6 @@ pub async fn summarize_and_persist(
 pub async fn maybe_compact(
     conn: &tokio_rusqlite::Connection,
     transcript_dir: Option<std::path::PathBuf>,
-    engine: &InferenceEngine,
     base_url: &str,
     conversation_id: &str,
     skills_dir: &Path,
@@ -457,8 +456,7 @@ pub async fn maybe_compact(
 ) -> Result<ContextUsage, String> {
     let settings = ContextSettings::load(conn).await?;
     let mut history = load_history_via_conn(conn, conversation_id, skills_dir).await?;
-    let mut usage =
-        usage_from_history(engine, conversation_id, &history, system_prompt, &settings).await?;
+    let mut usage = usage_from_history(conversation_id, &history, system_prompt, &settings).await?;
 
     let over_compact_threshold = |u: &ContextUsage| {
         exceeds(
@@ -495,8 +493,7 @@ pub async fn maybe_compact(
         })
         .to_string();
         persist_notice(conn, transcript_dir.clone(), conversation_id, notice_json).await?;
-        usage =
-            usage_from_history(engine, conversation_id, &history, system_prompt, &settings).await?;
+        usage = usage_from_history(conversation_id, &history, system_prompt, &settings).await?;
     }
 
     if over_compact_threshold(&usage) {
@@ -515,8 +512,7 @@ pub async fn maybe_compact(
             // that changes load_history_annotated's splice point -- reload
             // rather than trying to reconstruct the spliced view in memory.
             history = load_history_via_conn(conn, conversation_id, skills_dir).await?;
-            usage = usage_from_history(engine, conversation_id, &history, system_prompt, &settings)
-                .await?;
+            usage = usage_from_history(conversation_id, &history, system_prompt, &settings).await?;
         }
     }
 
@@ -544,22 +540,21 @@ pub async fn maybe_compact(
 /// fitted messages out — which is also what makes this callable directly
 /// from the real-model agent task tests (`tests/agent_tasks.rs`)
 /// instead of that suite reimplementing its own version of this step.
-pub fn fit_turn_to_budget(
-    engine: &InferenceEngine,
-    messages: &[ChatMessage],
-) -> Result<Vec<ChatMessage>, String> {
+pub fn fit_turn_to_budget(messages: &[ChatMessage]) -> Result<Vec<ChatMessage>, String> {
     // The reserve covers BOTH per-turn costs `messages` doesn't contain
     // yet: the output tokens generation may still produce, and the plan
     // hosts' state-tail message (`PlanState::state_tail`), which every
     // plan backend pushes AFTER this fit has already run -- see
     // `limits::STATE_TAIL_RESERVE_TOKENS` for the overflow this closes.
-    engine
-        .fit_to_context(
-            messages,
-            1,
-            limits::AGENT_TURN_MAX_OUTPUT_TOKENS + limits::STATE_TAIL_RESERVE_TOKENS,
-        )
-        .map_err(|e| e.to_string())
+    // Pure, estimate-only (`token_estimate` per message, no render, no
+    // recount loop): the llama-server owns the exact count now, and the B1a
+    // output clamp guarantees request validity regardless of this estimate's
+    // error, so `fit_to_budget`'s single greedy pass replaces the old
+    // render-then-recount trim.
+    let budget = crate::inference::CONTEXT_WINDOW_TOKENS
+        .saturating_sub(limits::AGENT_TURN_MAX_OUTPUT_TOKENS + limits::STATE_TAIL_RESERVE_TOKENS);
+    let costs: Vec<u32> = messages.iter().map(|m| token_estimate(&m.text())).collect();
+    Ok(fit_to_budget(messages, &costs, budget, 1))
 }
 
 /// `ContextUsage` for an already-fully-assembled message list (system
@@ -567,16 +562,18 @@ pub fn fit_turn_to_budget(
 /// output) — unlike `usage_from_chat_messages`/`usage_from_history`, does
 /// not prepend a second system message, since this one's already there.
 pub fn usage_from_fitted_messages(
-    engine: &InferenceEngine,
     conversation_id: &str,
     messages: &[ChatMessage],
     settings: &ContextSettings,
 ) -> Result<ContextUsage, String> {
-    let rendered = engine
-        .render_chat_prompt(messages)
-        .map_err(|e| e.to_string())?;
-    let tokens_used = engine.count_tokens(&rendered).map_err(|e| e.to_string())? as u32;
-    let token_budget = engine.context_window();
+    // Same chars/4-over-the-request-shape estimate as `usage_from_history`
+    // (`to_openai_messages` is what the server decodes), just over an
+    // already-assembled message list rather than a persisted history.
+    let tokens_used = token_estimate(
+        &serde_json::to_string(&crate::inference::http::to_openai_messages(messages))
+            .unwrap_or_default(),
+    );
+    let token_budget = crate::inference::CONTEXT_WINDOW_TOKENS;
     let state = classify_state(tokens_used, token_budget, settings);
     Ok(ContextUsage {
         conversation_id: conversation_id.to_string(),
@@ -651,18 +648,14 @@ fn merge_token_count(mut detail: serde_json::Value, token_count: usize) -> serde
     detail
 }
 
-/// Annotates a tool result with its real token cost — the same tokenizer
-/// `fit_to_budget`/the context usage gauge already use, not a client-side
-/// estimate, since the whole point is that this number has to match the
-/// real budget math. Applied only to the four tool results whose size
-/// varies enough to matter (`wants_token_count`); every other tool's
-/// `detail` passes through unchanged. Called right after
-/// `dispatch::execute()` returns, before persistence, from every call site
-/// that already holds an `&InferenceEngine` for this exact reason
-/// (`context::fit_turn_to_budget`). A tokenization failure leaves `detail`
-/// unannotated rather than failing the whole tool result over a
-/// UI-only concern.
-pub fn annotate_with_token_count(engine: &InferenceEngine, outcome: ToolOutcome) -> ToolOutcome {
+/// Annotates a tool result with its estimated token cost — the same chars/4
+/// heuristic (`inference::token_estimate`) `fit_to_budget`/the context usage
+/// gauge now use, so this badge and the budget math agree. Applied only to
+/// the four tool results whose size varies enough to matter
+/// (`wants_token_count`); every other tool's `detail` passes through
+/// unchanged. Called right after `dispatch::execute()` returns, before
+/// persistence.
+pub fn annotate_with_token_count(outcome: ToolOutcome) -> ToolOutcome {
     let tool_name = outcome
         .detail
         .get("toolName")
@@ -671,9 +664,7 @@ pub fn annotate_with_token_count(engine: &InferenceEngine, outcome: ToolOutcome)
     if !wants_token_count(tool_name) {
         return outcome;
     }
-    let Ok(token_count) = engine.count_tokens(&outcome.model_text) else {
-        return outcome;
-    };
+    let token_count = token_estimate(&outcome.model_text) as usize;
     ToolOutcome {
         model_text: outcome.model_text,
         detail: merge_token_count(outcome.detail, token_count),

@@ -1,6 +1,6 @@
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::model::params::LlamaModelParams;
-use llama_cpp_2::model::{AddBos, LlamaChatMessage, LlamaChatTemplate, LlamaModel};
+use llama_cpp_2::model::LlamaModel;
 use std::path::Path;
 
 pub mod dialect;
@@ -47,19 +47,29 @@ pub enum InferenceError {
 /// pipeline had too little headroom to work with at that size.
 pub const CONTEXT_WINDOW_TOKENS: u32 = server::SERVER_CTX_SIZE - server::OUTPUT_RESERVE_TOKENS;
 
-/// The single seam every NEW prompt-token estimate (restore-output-cap
-/// task's `clamp_output_tokens` call sites) routes through, rather than
-/// calling `InferenceEngine::count_tokens` directly. Today it's just that:
-/// a real tokenizer count, falling back to a `len/4` chars heuristic only if
-/// tokenization itself errors. A later task (B4) re-points the body to a
-/// pure chars/4 heuristic and drops the `engine` parameter entirely -- kept
-/// as one function now specifically so that swap touches one place instead
-/// of every call site that estimates a prompt's size.
-pub fn token_estimate(engine: &InferenceEngine, text: &str) -> u32 {
-    engine
-        .count_tokens(text)
-        .map(|n| n as u32)
-        .unwrap_or_else(|_| (text.len() / 4) as u32)
+/// Estimates the token count of `text` with a char-based heuristic (qwen-code's
+/// approach) — no tokenizer. ASCII text is ~4 chars/token; non-ASCII (CJK,
+/// emoji) tokenizes far less efficiently, so it's weighted ~1.1 tokens/char.
+/// A deliberate, conservative estimate: the compaction TRIGGER can fire a bit
+/// early (safe); request validity is guaranteed structurally by the B1a output
+/// clamp, not by this number's exactness.
+///
+/// The single seam every prompt-token estimate routes through (the
+/// `clamp_output_tokens` call sites, the context-usage accounting, the
+/// per-turn fit): the in-process llama tokenizer this used to wrap is gone —
+/// the llama-server sidecar reports authoritative usage, so an exact local
+/// count isn't needed for TRIGGER decisions.
+pub fn token_estimate(text: &str) -> u32 {
+    let mut ascii = 0usize;
+    let mut non_ascii = 0usize;
+    for c in text.chars() {
+        if c.is_ascii() {
+            ascii += 1
+        } else {
+            non_ascii += 1
+        }
+    }
+    (ascii.div_ceil(4) + (non_ascii * 11).div_ceil(10)) as u32
 }
 
 /// A tool call's or tool result's structured payload — the content-block
@@ -229,18 +239,19 @@ impl ChatMessage {
     }
 }
 
-/// Owns the single loaded model + backend for the whole app (research.md
-/// §24 — exactly one inference worker, one context, at any moment).
+/// Owns the loaded backend guard + detected chat dialect for the whole app
+/// (research.md §24). Now that token counting is a pure chars/4 estimate
+/// (`token_estimate`) and generation lives in the llama-server sidecar, the
+/// only thing the in-process engine still exists for is dialect detection at
+/// load — a later task (B4b) removes the struct and the `llama-cpp-2`
+/// dependency entirely.
 pub struct InferenceEngine {
     /// The llama.cpp backend init guard, kept alive for the engine's whole
-    /// lifetime: dropping it deinitializes the global backend and would
-    /// invalidate `model`. No longer read directly now that the in-process
-    /// generation path (which built decode contexts from it) was removed in
-    /// the llama-server cutover — `render_chat_prompt`/`count_tokens` touch
-    /// only `model` — but it must still be held.
+    /// lifetime: dropping it deinitializes the global backend. Held (never
+    /// read) purely so the global backend stays initialized while the app
+    /// runs, matching the single-worker invariant.
     #[allow(dead_code)]
     backend: LlamaBackend,
-    model: LlamaModel,
     /// Detected once at load from the GGUF's embedded chat template —
     /// which output convention this model was trained on (tool-dialects
     /// design). Missing/unreadable template keeps the historical Hermes
@@ -252,13 +263,13 @@ impl InferenceEngine {
     pub fn load(model_path: &Path) -> Result<Self, InferenceError> {
         let backend = LlamaBackend::init().map_err(|e| InferenceError::Backend(e.to_string()))?;
         // Vocab-only load (llama-server cutover): the in-process engine now
-        // only tokenizes + renders the chat template for context MEASUREMENT
-        // — all generation lives in the llama-server sidecar. So load just
-        // the vocabulary + metadata (which includes the
-        // `tokenizer.chat_template` string that drives `render_chat_prompt`
-        // and `dialect` detection), NOT the ~2.7 GB of weights, and skip the
-        // GPU entirely. The sidecar (built with Metal by
-        // scripts/build-llama-server.sh) owns all GPU inference.
+        // only reads the GGUF's metadata (specifically the
+        // `tokenizer.chat_template` string that drives `dialect` detection),
+        // NOT the ~2.7 GB of weights, and skips the GPU entirely. The sidecar
+        // (built with Metal by scripts/build-llama-server.sh) owns all GPU
+        // inference. The loaded `model` is consumed here just to read that one
+        // metadata string and then dropped — nothing downstream needs it now
+        // that token counting is a pure chars/4 estimate.
         let model_params = LlamaModelParams::default().with_vocab_only(true);
         let model = LlamaModel::load_from_file(&backend, model_path, &model_params)
             .map_err(|e| InferenceError::ModelLoad(e.to_string()))?;
@@ -266,117 +277,7 @@ impl InferenceEngine {
             .meta_val_str("tokenizer.chat_template")
             .map(|t| ToolDialect::detect(&t))
             .unwrap_or_default();
-        Ok(Self {
-            backend,
-            model,
-            dialect,
-        })
-    }
-
-    /// Renders role-tagged `messages` through the model's own chat template
-    /// — baked into the GGUF's metadata by whoever converted it — into the
-    /// exact prompt string the model was instruction-tuned on (special
-    /// tokens included, e.g. ChatML's `<|im_start|>`/`<|im_end|>`). Without
-    /// this, a chat-tuned model like Qwen only ever sees raw concatenated
-    /// text it was never trained to continue as a conversation, which is
-    /// what produces the "ignores the question" / "rambles" / "answers as
-    /// if completing a document" behavior — not necessarily the model being
-    /// too small. Falls back to the generic "chatml" template name (the
-    /// most common convention) if the model has no template of its own.
-    pub fn render_chat_prompt(&self, messages: &[ChatMessage]) -> Result<String, InferenceError> {
-        let tmpl = match self.model.chat_template(None) {
-            Ok(t) => t,
-            Err(_) => LlamaChatTemplate::new("chatml")
-                .map_err(|e| InferenceError::Backend(format!("no usable chat template: {e}")))?,
-        };
-
-        let llama_messages: Vec<LlamaChatMessage> = messages
-            .iter()
-            .map(|m| LlamaChatMessage::new(m.role.clone(), m.text_for(self.dialect)))
-            .collect::<Result<_, _>>()
-            .map_err(|e| InferenceError::Backend(e.to_string()))?;
-
-        let mut rendered = self
-            .model
-            .apply_chat_template(&tmpl, &llama_messages, true)
-            .map_err(|e| InferenceError::Backend(e.to_string()))?;
-        // Thinking-models design: thinking templates open the reasoning
-        // block IN the generation prompt (MiniCPM5's enable_thinking=true
-        // renders "<think>\n" after the assistant header; Qwen3-Thinking's
-        // template does the same unconditionally). llama.cpp's template
-        // pattern-matcher can't render that branch, so this is the ONE
-        // template feature hand-rendered here — without it the model
-        // starts cold in a state it was never trained for (observed
-        // 2026-07-14: degenerate asterisk-run "reasoning" from MiniCPM5).
-        // The Require grammar's think-prefix keeps its opening tag
-        // OPTIONAL for exactly this, and strip_think_blocks handles the
-        // resulting orphan close.
-        rendered.push_str("<think>\n");
-        Ok(rendered)
-    }
-
-    /// The model's configured context window, in tokens
-    /// (010-context-window-management) — `CONTEXT_WINDOW_TOKENS`, the
-    /// in-process INPUT budget derived from the llama-server sidecar's
-    /// `--ctx-size` (see `inference::server::SERVER_CTX_SIZE` and
-    /// `inference::server::launch_args`), deliberately kept below the
-    /// server's context so there's output headroom, and it's what
-    /// `crate::context`'s compaction sizes against. Exposed as a method
-    /// (rather than callers reading the constant directly) so a future
-    /// per-model context size would only need to change here.
-    pub fn context_window(&self) -> u32 {
-        CONTEXT_WINDOW_TOKENS
-    }
-
-    /// Tokenizes `text` and returns its token count, without decoding —
-    /// cheap enough to call before every turn to check the prompt against
-    /// the context budget (010-context-window-management). Uses the same
-    /// vocabulary the llama-server sidecar loads from the same GGUF, so a
-    /// count from this function matches what the server will actually decode
-    /// for the same string.
-    pub fn count_tokens(&self, text: &str) -> Result<usize, InferenceError> {
-        let tokens = self
-            .model
-            .str_to_token(text, AddBos::Always)
-            .map_err(|e| InferenceError::Backend(e.to_string()))?;
-        Ok(tokens.len())
-    }
-
-    /// Trims `messages` down to what actually fits this model's context
-    /// window, verified against the real chat template + tokenizer rather
-    /// than trusted as an estimate. `context::fit_to_budget`'s per-message
-    /// sums (counted on each message's own text, not its rendered form) are
-    /// a fast first pass that doesn't account for the chat template's
-    /// per-turn overhead (role tags, etc.), so this renders the candidate
-    /// and re-checks, dropping one more message from the oldest end of the
-    /// kept (non-pinned) suffix and retrying if it's still over — the same
-    /// "render then count, trust the real number" discipline
-    /// `context::usage_from_history` already uses elsewhere, rather than
-    /// trusting the estimate to be exact. `reserve` is subtracted from the
-    /// window up front to leave room for output tokens that don't exist yet
-    /// to count.
-    pub fn fit_to_context(
-        &self,
-        messages: &[ChatMessage],
-        pinned_prefix: usize,
-        reserve: u32,
-    ) -> Result<Vec<ChatMessage>, InferenceError> {
-        let budget = self.context_window().saturating_sub(reserve);
-        let costs: Vec<u32> = messages
-            .iter()
-            .map(|m| self.count_tokens(&m.text()).map(|n| n as u32))
-            .collect::<Result<_, _>>()?;
-
-        let mut candidate = crate::context::fit_to_budget(messages, &costs, budget, pinned_prefix);
-        loop {
-            let rendered = self.render_chat_prompt(&candidate)?;
-            let actual = self.count_tokens(&rendered)? as u32;
-            let pinned = pinned_prefix.min(candidate.len());
-            if actual <= budget || candidate.len() <= pinned {
-                return Ok(candidate);
-            }
-            candidate.remove(pinned);
-        }
+        Ok(Self { backend, dialect })
     }
 
     /// The tool-call dialect this model was trained on (detected from its
@@ -384,5 +285,42 @@ impl InferenceEngine {
     /// through it.
     pub fn dialect(&self) -> ToolDialect {
         self.dialect
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::token_estimate;
+
+    #[test]
+    fn empty_text_estimates_zero_tokens() {
+        assert_eq!(token_estimate(""), 0);
+    }
+
+    #[test]
+    fn four_ascii_chars_estimate_one_token() {
+        assert_eq!(token_estimate("abcd"), 1);
+    }
+
+    #[test]
+    fn ascii_divides_by_four_rounding_up() {
+        assert_eq!(token_estimate(&"a".repeat(400)), 100);
+        // 401 ASCII chars -> ceil(401/4) = 101 (the div_ceil, not a floor).
+        assert_eq!(token_estimate(&"a".repeat(401)), 101);
+    }
+
+    #[test]
+    fn multibyte_text_weighs_above_a_plain_char_count_over_four() {
+        // Non-ASCII is weighted ~1.1 tokens/char, so a multibyte string
+        // estimates AT LEAST its char count (far above len/4) -- the
+        // deliberately conservative side of the heuristic.
+        let s = "世界";
+        assert!(
+            token_estimate(s) >= s.chars().count() as u32,
+            "multibyte estimate must be >= its char count, got {}",
+            token_estimate(s)
+        );
+        // Concretely: 2 non-ASCII chars -> ceil(2*11/10) = ceil(22/10) = 3.
+        assert_eq!(token_estimate(s), 3);
     }
 }
