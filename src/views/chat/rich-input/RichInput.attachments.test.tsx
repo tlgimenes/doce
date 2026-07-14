@@ -257,6 +257,35 @@ describe("RichInput (009-rich-chat-input, US4 — native drag-and-drop)", () => 
   });
 });
 
+describe("RichInput (generation-cancellation, Task 4.2b — attach button inert, not :disabled, while generating)", () => {
+  it("clicking the attach button while generating is a guarded no-op — the file picker never opens, even though the button is not natively :disabled", async () => {
+    render(
+      <RichInput
+        onSubmit={vi.fn()}
+        skillsEnabled={false}
+        disabled={true}
+        isGenerating={true}
+        onStop={vi.fn()}
+        placeholder="p"
+        inputTestId="test-input"
+        submitTestId="test-submit"
+      />,
+    );
+
+    const attach = screen.getByTestId("rich-input-attach");
+    // Not natively disabled (so the InputGroup doesn't match `:has(:disabled)`
+    // and dim the stop button), but marked inert.
+    expect(attach).not.toBeDisabled();
+    expect(attach).toHaveAttribute("aria-disabled", "true");
+
+    await userEvent.click(attach);
+
+    // The onClick guard early-returns while generating: the native file
+    // dialog must not open mid-turn.
+    expect(open).not.toHaveBeenCalled();
+  });
+});
+
 describe("RichInput (009-rich-chat-input, US4 — submit wiring)", () => {
   it("submitting a message with an attachment chip produces a richContent containing an 'attachment' segment", async () => {
     vi.mocked(open).mockResolvedValue("/Users/tester/photo.png");

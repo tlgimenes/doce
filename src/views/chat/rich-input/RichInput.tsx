@@ -535,8 +535,29 @@ export default function RichInput({
               secondary action). */}
           <InputGroupButton
             size="icon-xs"
-            onClick={() => void pickAttachment()}
-            disabled={disabled}
+            className="aria-disabled:opacity-50"
+            onClick={() => {
+              // While generating, this button is intentionally NOT natively
+              // `disabled` (see the `disabled` prop below), so a mid-turn
+              // click would otherwise reach here — guard it so the file
+              // picker never opens while a turn is in flight.
+              if (disabled) return;
+              void pickAttachment();
+            }}
+            // During a turn (`isGenerating`) the composer is `disabled`, but
+            // the stop button beside this one must render at FULL opacity. A
+            // real `<button disabled>` here makes the whole InputGroup match
+            // `:has(:disabled)` (stock `has-disabled:opacity-50`) and
+            // composite at 50% — which the stop button, a child, cannot
+            // override. So while generating, keep this button OUT of
+            // `:disabled` and mark it inert via `aria-disabled` + the onClick
+            // guard above, dimming only itself (`aria-disabled:opacity-50`).
+            // Every other disabled state (e.g. a pending tool call, not
+            // generating) keeps the real `disabled` attribute — no stop
+            // button is shown there and the whole composer SHOULD read as
+            // disabled.
+            disabled={disabled && !isGenerating}
+            aria-disabled={disabled}
             aria-label="Attach a file"
             data-testid="rich-input-attach"
           >

@@ -427,6 +427,55 @@ describe("RichInput (generation-cancellation, Task 4.2b — stop button)", () =>
     expect(onStop).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps the attach button out of :disabled while generating, so the group (and the stop button) stays full-opacity", () => {
+    const { container } = render(
+      <RichInput
+        onSubmit={vi.fn()}
+        skillsEnabled={false}
+        // The real production shape during a turn: disabled + generating.
+        disabled={true}
+        isGenerating={true}
+        onStop={vi.fn()}
+        placeholder="p"
+        inputTestId="test-input"
+        submitTestId="test-submit"
+      />,
+    );
+
+    // Root cause of the 50%-opacity bug: the always-rendered attach button
+    // carried a real HTML `disabled` during a turn, so the InputGroup matched
+    // `:has(:disabled)` and composited the WHOLE group — including the stop
+    // button — at 50% (`has-disabled:opacity-50`), which a child can't
+    // override. jsdom has no layout/CSS engine, so we can't read opacity
+    // directly; instead assert the root cause is gone: NO `:disabled`
+    // descendant anywhere in the group, so `has-disabled:` can never match.
+    const group = container.querySelector('[data-slot="input-group"]');
+    expect(group?.querySelector(":disabled")).toBeNull();
+
+    // The attach button is inert but not natively disabled: visible, marked
+    // `aria-disabled`, dimming only itself (`aria-disabled:opacity-50`).
+    const attach = screen.getByTestId("rich-input-attach");
+    expect(attach).not.toBeDisabled();
+    expect(attach).toHaveAttribute("aria-disabled", "true");
+  });
+
+  it("keeps the attach button natively disabled when disabled but NOT generating (no stop button — the composer should read disabled)", () => {
+    render(
+      <RichInput
+        onSubmit={vi.fn()}
+        skillsEnabled={false}
+        disabled={true}
+        placeholder="p"
+        inputTestId="test-input"
+        submitTestId="test-submit"
+      />,
+    );
+
+    // Unchanged behavior for the non-generating disabled state: a pending
+    // tool call shows no stop button, so the whole composer SHOULD dim.
+    expect(screen.getByTestId("rich-input-attach")).toBeDisabled();
+  });
+
   it("returns to the send button once generation ends", () => {
     const { rerender } = render(
       <RichInput
