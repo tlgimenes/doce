@@ -13,6 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod dialect;
 pub mod http;
+pub mod server;
 pub use dialect::ToolDialect;
 
 #[derive(Debug, thiserror::Error)]
