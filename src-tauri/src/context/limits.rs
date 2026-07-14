@@ -87,7 +87,7 @@ pub const DEFAULT_HARD_LIMIT_PCT: f64 = 0.9;
 /// file (2026-07-09 payload-files design, `context::payload::stage_tool_result`).
 pub const DEFAULT_TOOL_OUTPUT_OFFLOAD_TOKENS: usize = (CONTEXT_WINDOW_TOKENS / 16) as usize;
 
-/// `reserve` for `InferenceEngine::fit_to_context`'s per-turn call inside
+/// `reserve` for the per-turn fit inside
 /// `agent::run_loop` (`context::fit_turn_to_budget`) -- and, since the
 /// restore-output-cap task, the output-token CEILING `clamp_output_tokens`
 /// uses for agent turns. It is no longer the literal `max_tokens` sent on

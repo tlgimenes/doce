@@ -152,7 +152,7 @@ impl AgentContext {
 /// top-level loop, a `SubagentBackend` for the `Task`-tool's delegated
 /// loop, both in `commands::agent`), tests implement one small
 /// `FakeBackend`. Kept as a trait (not hardcoded against the real
-/// `InferenceEngine`/tool dispatch) specifically so `run_loop`'s own
+/// server/tool dispatch) specifically so `run_loop`'s own
 /// control flow — the part with real correctness requirements (turn
 /// counting, nesting rejection, now the compact-threshold check) — stays
 /// unit-testable in milliseconds, without a loaded model or a filesystem.
@@ -225,8 +225,8 @@ pub trait AgentBackend {
 /// `initial_messages` is a real role-tagged conversation (typically a
 /// `system` message from `commands::agent::plan_system_message` plus a
 /// `user` message with the task) rather than one flat string — `backend.generate` is expected to
-/// render this through the model's own chat template (see
-/// `inference::InferenceEngine::render_chat_prompt`) before tokenizing,
+/// render this through the model's own chat template (the llama-server
+/// sidecar applies it to the OpenAI `messages`) before tokenizing,
 /// since chat-tuned models are trained on role-tagged turns, not raw
 /// concatenated text.
 pub async fn run_loop<B: AgentBackend>(

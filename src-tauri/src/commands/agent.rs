@@ -3,9 +3,9 @@ use crate::agent::tools::ask_user::{PendingQuestions, QuestionOption};
 use crate::agent::{
     dispatch, run_loop, subagent, AgentContext, AgentError, ToolCall, ToolExecution,
 };
-use crate::commands::conversations::{ActiveGenerations, InferenceState};
+use crate::commands::conversations::ActiveGenerations;
 use crate::commands::models::now_ms;
-use crate::inference::{ChatMessage, InferenceEngine};
+use crate::inference::{ChatMessage, ToolDialect};
 use crate::storage::conversations::load_history;
 use crate::storage::DbCell;
 use rusqlite::Connection;
@@ -66,8 +66,8 @@ fn chat_result_to_turn_outcome(
             error: None,
             cancelled: true,
         },
-        // A REAL transport/server fault (`Backend`, `ModelLoad`) still
-        // terminates the turn surfacing its text as the final answer.
+        // A REAL transport/server fault (`Backend`) still terminates the
+        // turn surfacing its text as the final answer.
         Err(e) => {
             let msg = format!("Error: inference failed: {e}");
             crate::agent::TurnOutcome {
@@ -631,10 +631,9 @@ async fn handle_ask_user_question(
 
 /// `AgentBackend` (see that trait's own doc comment for why this is a
 /// struct+impl rather than four closures) for the top-level agent loop
-/// (`send_agent_message`): wraps the real `InferenceEngine`, DB connection,
-/// and event emission that loop actually runs against.
+/// (`send_agent_message`): wraps the DB connection, the supervised
+/// server's base URL, and event emission that loop actually runs against.
 struct RealBackend<'a> {
-    engine: &'a InferenceEngine,
     /// The supervised `llama-server`'s base URL (`http://127.0.0.1:PORT`),
     /// resolved by `send_agent_message`'s `ServerState::ensure_running` call
     /// before the loop starts. Generation goes through
@@ -818,7 +817,6 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
                 tool_call_id,
                 call,
                 self.conn,
-                self.engine,
                 self.conversation_id,
                 self.cwd,
                 self.app,
@@ -1019,7 +1017,6 @@ async fn execute_top_level_tool(
     tool_call_id: String,
     call: ToolCall,
     conn: &tokio_rusqlite::Connection,
-    engine: &InferenceEngine,
     parent_conversation_id: &str,
     cwd: Option<&std::path::Path>,
     app: &AppHandle,
@@ -1064,7 +1061,7 @@ async fn execute_top_level_tool(
             &call,
         )
         .await;
-        emit_context_usage_update(app, conn, engine, parent_conversation_id, cwd).await;
+        emit_context_usage_update(app, conn, parent_conversation_id, cwd).await;
         return model_text;
     }
 
@@ -1169,7 +1166,7 @@ async fn execute_top_level_tool(
         sub_context.cwd.as_deref(),
         false,
         sub_transcript_path.as_deref(),
-        engine.dialect(),
+        ToolDialect::HermesJson,
     );
     // FR-015: a fresh, isolated context — just the system prompt plus the
     // delegated task, no parent conversation history.
@@ -1221,8 +1218,8 @@ async fn execute_top_level_tool(
     let sub_final_for_db = sub_final.clone();
     let subagent_id_for_db = subagent_id.clone();
     // 010-context-window-management (UI refactor): output tokens for the
-    // subagent's own final answer -- `engine` is already in scope here
-    // (this function's own parameter), so no follow-up-update dance needed.
+    // subagent's own final answer -- a pure chars/4 estimate, computed
+    // inline, so no follow-up-update dance needed.
     let sub_token_count = Some(crate::inference::token_estimate(&sub_final_for_db) as i64);
     let _ = persist_assistant_text_reply(
         conn,
@@ -1406,7 +1403,6 @@ async fn handle_general_tool_call(
 async fn emit_context_usage_update(
     app: &AppHandle,
     conn: &tokio_rusqlite::Connection,
-    engine: &InferenceEngine,
     conversation_id: &str,
     cwd: Option<&std::path::Path>,
 ) {
@@ -1423,7 +1419,8 @@ async fn emit_context_usage_update(
     )
     .display()
     .to_string();
-    let system_prompt = plan_system_message(cwd, true, Some(&transcript_path), engine.dialect());
+    let system_prompt =
+        plan_system_message(cwd, true, Some(&transcript_path), ToolDialect::HermesJson);
     if let Ok(usage) =
         crate::context::compute_usage(conn, conversation_id, &skills_dir, &system_prompt).await
     {
@@ -1696,7 +1693,6 @@ async fn persist_user_turn(
 pub async fn send_agent_message(
     app: AppHandle,
     db_cell: State<'_, DbCell>,
-    inference: State<'_, InferenceState>,
     server_state: State<'_, crate::inference::server::ServerState>,
     active_generations: State<'_, ActiveGenerations>,
     active_plans: State<'_, ActivePlans>,
@@ -1822,18 +1818,6 @@ pub async fn send_agent_message(
         .await
         .map_err(|e| format!("llama-server failed to start for this turn: {e}"))?;
 
-    {
-        let mut guard = inference.0.lock().await;
-        if guard.is_none() {
-            let path = std::path::PathBuf::from(&model_path);
-            let engine = tokio::task::spawn_blocking(move || InferenceEngine::load(&path))
-                .await
-                .map_err(|e| e.to_string())?
-                .map_err(|e| e.to_string())?;
-            *guard = Some(engine);
-        }
-    }
-
     // 007-workspace-cwd-resolution: resolved once per turn, not per tool
     // call — a conversation's workspace can't change mid-turn. `None` for
     // a conversation with no workspace_id, which every downstream cwd-aware
@@ -1841,13 +1825,11 @@ pub async fn send_agent_message(
     let cwd = conversation_cwd(&conn, &conversation_id).await?;
 
     let context = AgentContext::top_level().with_cwd(cwd.clone());
-    let guard = inference.0.lock().await;
-    let engine = guard.as_ref().expect("engine loaded above");
 
     // 010-context-window-management (UI refactor): the user turn was
-    // already persisted above (by `persist_user_turn`, before the engine
-    // was necessarily loaded), keyed back here by conversation_id+sequence
-    // since `persist_user_turn` never returns its generated row id.
+    // already persisted above (by `persist_user_turn`), keyed back here by
+    // conversation_id+sequence since `persist_user_turn` never returns its
+    // generated row id.
     {
         let token_count = crate::inference::token_estimate(&model_text_for_turn);
         let conversation_id_for_update = conversation_id.clone();
@@ -1885,7 +1867,7 @@ pub async fn send_agent_message(
         cwd.as_deref(),
         transcript_dir.as_deref(),
         &conversation_id,
-        engine.dialect(),
+        ToolDialect::HermesJson,
     );
     let usage = crate::context::maybe_compact(
         &conn,
@@ -1954,7 +1936,6 @@ pub async fn send_agent_message(
     );
 
     let mut backend = RealBackend {
-        engine,
         base_url,
         cancel: cancel.clone(),
         conn: &conn,
@@ -1969,13 +1950,10 @@ pub async fn send_agent_message(
         transcript_dir: transcript_dir.clone(),
     };
     let result = run_loop(&context, initial_messages, &mut backend).await;
-    // Drop the backend (which borrows `engine` from the guard) BEFORE
-    // releasing the engine guard — the borrow must end while the guard is
-    // still in scope. (Generation runs against the server now, so there is no
-    // per-turn `LlamaContext` to tear down here; the backend still uses the
-    // in-process engine for measure/compact token counting.)
+    // Generation runs against the server now, so there is no per-turn
+    // `LlamaContext` to tear down here; the backend holds only borrows of
+    // this function's own locals.
     drop(backend);
-    drop(guard);
 
     let final_text = match result {
         Ok(text) => text,
@@ -2025,28 +2003,24 @@ pub async fn send_agent_message(
         },
     );
 
-    // 010-context-window-management/US1: re-acquires the engine (the
-    // earlier `guard` was dropped before this final persistence) so the
+    // 010-context-window-management/US1: emit a fresh usage snapshot so the
     // indicator reflects usage including the assistant's own final answer,
     // not just the state as of the last tool call. Also fills in this final
     // answer's own output token_count (UI refactor), same follow-up-update
     // pattern used elsewhere in this file.
     {
-        let guard = inference.0.lock().await;
-        if let Some(engine) = guard.as_ref() {
-            let token_count = crate::inference::token_estimate(&final_text);
-            let conversation_id_for_update = conversation_id.clone();
-            let _ = conn
-                .call(move |conn: &mut Connection| -> rusqlite::Result<()> {
-                    conn.execute(
-                        "UPDATE messages SET token_count = ?1 WHERE conversation_id = ?2 AND sequence = ?3",
-                        rusqlite::params![token_count as i64, conversation_id_for_update, final_seq],
-                    )?;
-                    Ok(())
-                })
-                .await;
-            emit_context_usage_update(&app, &conn, engine, &conversation_id, cwd.as_deref()).await;
-        }
+        let token_count = crate::inference::token_estimate(&final_text);
+        let conversation_id_for_update = conversation_id.clone();
+        let _ = conn
+            .call(move |conn: &mut Connection| -> rusqlite::Result<()> {
+                conn.execute(
+                    "UPDATE messages SET token_count = ?1 WHERE conversation_id = ?2 AND sequence = ?3",
+                    rusqlite::params![token_count as i64, conversation_id_for_update, final_seq],
+                )?;
+                Ok(())
+            })
+            .await;
+        emit_context_usage_update(&app, &conn, &conversation_id, cwd.as_deref()).await;
     }
 
     Ok(final_text)

@@ -1,8 +1,3 @@
-use llama_cpp_2::llama_backend::LlamaBackend;
-use llama_cpp_2::model::params::LlamaModelParams;
-use llama_cpp_2::model::LlamaModel;
-use std::path::Path;
-
 pub mod dialect;
 pub mod http;
 pub mod server;
@@ -12,8 +7,6 @@ pub use dialect::ToolDialect;
 pub enum InferenceError {
     #[error("llama.cpp backend error: {0}")]
     Backend(String),
-    #[error("model load failed: {0}")]
-    ModelLoad(String),
     /// A `http::LlamaServerClient::chat` call was cut short by its
     /// `CancellationToken` — either already cancelled before the request
     /// started, or cancelled mid-stream. Distinct from `Backend` (a real
@@ -122,8 +115,8 @@ pub enum ToolCallMode {
 /// A single role-tagged conversation turn. Chat-tuned models like Qwen are
 /// trained on turns wrapped in special tokens (e.g. ChatML's
 /// `<|im_start|>role\n...<|im_end|>`), not on raw concatenated text — see
-/// `ChatMessage::text`/`InferenceEngine::render_chat_prompt`, which is what
-/// actually turns these into that flat per-turn string.
+/// `ChatMessage::text`, which is what actually turns these into that flat
+/// per-turn string.
 #[derive(Debug, Clone)]
 pub struct ChatMessage {
     pub role: String,
@@ -202,7 +195,7 @@ impl ChatMessage {
 
     /// The plain string this message renders to for the model's own
     /// prompt — the one pure transform between the structured shape above
-    /// and what `render_chat_prompt`/llama.cpp's chat template needs (a
+    /// and what the llama-server sidecar's chat template needs (a
     /// flat string per turn). A `ToolUse` renders in Qwen's own trained
     /// (Hermes-style) format — `{"name": ..., "arguments": ...}` JSON
     /// inside `<tool_call></tool_call>` tags with the same newline
@@ -236,55 +229,6 @@ impl ChatMessage {
             // but that's not preserved here -- a single-line wrap instead.
             MessageContent::ToolResult { content, .. } => dialect.render_tool_result(content),
         }
-    }
-}
-
-/// Owns the loaded backend guard + detected chat dialect for the whole app
-/// (research.md §24). Now that token counting is a pure chars/4 estimate
-/// (`token_estimate`) and generation lives in the llama-server sidecar, the
-/// only thing the in-process engine still exists for is dialect detection at
-/// load — a later task (B4b) removes the struct and the `llama-cpp-2`
-/// dependency entirely.
-pub struct InferenceEngine {
-    /// The llama.cpp backend init guard, kept alive for the engine's whole
-    /// lifetime: dropping it deinitializes the global backend. Held (never
-    /// read) purely so the global backend stays initialized while the app
-    /// runs, matching the single-worker invariant.
-    #[allow(dead_code)]
-    backend: LlamaBackend,
-    /// Detected once at load from the GGUF's embedded chat template —
-    /// which output convention this model was trained on (tool-dialects
-    /// design). Missing/unreadable template keeps the historical Hermes
-    /// assumption.
-    dialect: ToolDialect,
-}
-
-impl InferenceEngine {
-    pub fn load(model_path: &Path) -> Result<Self, InferenceError> {
-        let backend = LlamaBackend::init().map_err(|e| InferenceError::Backend(e.to_string()))?;
-        // Vocab-only load (llama-server cutover): the in-process engine now
-        // only reads the GGUF's metadata (specifically the
-        // `tokenizer.chat_template` string that drives `dialect` detection),
-        // NOT the ~2.7 GB of weights, and skips the GPU entirely. The sidecar
-        // (built with Metal by scripts/build-llama-server.sh) owns all GPU
-        // inference. The loaded `model` is consumed here just to read that one
-        // metadata string and then dropped — nothing downstream needs it now
-        // that token counting is a pure chars/4 estimate.
-        let model_params = LlamaModelParams::default().with_vocab_only(true);
-        let model = LlamaModel::load_from_file(&backend, model_path, &model_params)
-            .map_err(|e| InferenceError::ModelLoad(e.to_string()))?;
-        let dialect = model
-            .meta_val_str("tokenizer.chat_template")
-            .map(|t| ToolDialect::detect(&t))
-            .unwrap_or_default();
-        Ok(Self { backend, dialect })
-    }
-
-    /// The tool-call dialect this model was trained on (detected from its
-    /// chat template at load) — the agent loop routes output parsing
-    /// through it.
-    pub fn dialect(&self) -> ToolDialect {
-        self.dialect
     }
 }
 

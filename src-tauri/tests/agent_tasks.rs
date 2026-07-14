@@ -11,7 +11,7 @@
 //!   cargo test --test agent_tasks -- --ignored --nocapture --test-threads=1
 //!
 //! Calls `doce_lib::agent::run_loop` + `dispatch::execute` directly against
-//! the real `InferenceEngine` -- the harness itself, no Tauri/UI involved,
+//! a real `llama-server` -- the harness itself, no Tauri/UI involved,
 //! matching how these tasks would actually run through `send_agent_message`.
 //! Deliberately calls `context::fit_turn_to_budget` (the exact function
 //! `commands::agent`'s real generate closure calls) rather than
@@ -46,7 +46,7 @@ mod common;
 
 use doce_lib::agent::{dispatch, run_loop, AgentBackend, AgentContext, AgentError};
 use doce_lib::context;
-use doce_lib::inference::{ChatMessage, InferenceEngine};
+use doce_lib::inference::{ChatMessage, ToolDialect};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
@@ -152,14 +152,13 @@ fn report(name: &str, run: &TaskRun) {
 /// suite has no DB/settings store to load one from, and that constant is
 /// exactly what an unconfigured install defaults to.
 ///
-/// Deliberately takes a `count_tokens` closure rather than an
-/// `&InferenceEngine` like production's call sites do: production also
-/// calls `context::annotate_with_token_count(engine, outcome)` right before
-/// this block (detail-only, `model_text`-irrelevant token-count metadata),
-/// which the real call sites below apply themselves before calling in here
-/// -- but keeping that engine dependency out of this function itself is
-/// what lets `staging_wiring_replaces_oversized_result_with_reference_line`
-/// exercise this exact wiring without a loaded model.
+/// Takes a `count_tokens` closure, matching production's own token-estimate
+/// call sites: production also calls `context::annotate_with_token_count(outcome)`
+/// right before this block (detail-only, `model_text`-irrelevant token-count
+/// metadata), which the real call sites below apply themselves before calling
+/// in here -- keeping the estimate a plain closure is what lets
+/// `staging_wiring_replaces_oversized_result_with_reference_line` exercise
+/// this exact wiring without a loaded model.
 fn stage_general_tool_result(
     payload_dir: &Path,
     conversation_id: &str,
@@ -236,17 +235,11 @@ fn staging_wiring_replaces_oversized_result_with_reference_line() {
 
 /// `AgentBackend` for the flat (plan-less) `run_loop` path -- the exact
 /// same shape `commands::agent`'s `SubagentBackend` uses (measure/compact
-/// call `context::fit_turn_to_budget`/its `InferenceEngine` counterparts
-/// directly, not a test-only reimplementation), plus a turn counter
+/// call `context::fit_turn_to_budget` directly, not a test-only
+/// reimplementation), plus a turn counter
 /// `run_loop` itself has no reason to expose (it only reports turn count
 /// on the `TurnCapExceeded` error path, not on success).
 struct FlatBackend<'a> {
-    /// Retained only so `PlanExecBackend` can hand its own loaded engine down
-    /// to a `Task`-spawned subagent (constructor symmetry with production's
-    /// `RealBackend`/`SubagentBackend`); token counting no longer reads it now
-    /// that it's a pure chars/4 estimate (B4b removes the engine entirely).
-    #[allow(dead_code)]
-    engine: &'a InferenceEngine,
     /// The supervised `llama-server`'s base URL (`http://127.0.0.1:PORT`) --
     /// generation goes through `inference::http::LlamaServerClient::chat`
     /// against this, the same cutover production's `RealBackend` made. The
@@ -365,7 +358,6 @@ impl AgentBackend for FlatBackend<'_> {
 /// Returns one `TaskRun` per user turn; its turns/elapsed/trace are
 /// per-turn, not cumulative.
 async fn run_flat_conversation(
-    engine: &InferenceEngine,
     base_url: &str,
     user_turns: &[&str],
     cwd: &Path,
@@ -389,7 +381,6 @@ async fn run_flat_conversation(
     // here.
     let payload_root = tempdir().expect("payload tempdir should create");
     let mut backend = FlatBackend {
-        engine,
         base_url: base_url.to_string(),
         cwd,
         threshold,
@@ -425,14 +416,8 @@ async fn run_flat_conversation(
 /// Runs a single `task` through the real agent harness rooted at `cwd`,
 /// capturing turns taken and wall-clock time alongside the loop's own
 /// `Result` -- the one-user-turn case of `run_flat_conversation`.
-async fn run_flat_task(
-    engine: &InferenceEngine,
-    base_url: &str,
-    task: &str,
-    cwd: &Path,
-    max_turns: u32,
-) -> TaskRun {
-    run_flat_conversation(engine, base_url, &[task], cwd, max_turns)
+async fn run_flat_task(base_url: &str, task: &str, cwd: &Path, max_turns: u32) -> TaskRun {
+    run_flat_conversation(base_url, &[task], cwd, max_turns)
         .await
         .pop()
         .expect("one run per user turn")
@@ -447,7 +432,6 @@ async fn run_flat_task(
 /// and per-turn trace printing. See `agent::plan`'s own doc comment for the
 /// history of what this replaced.
 struct PlanExecBackend<'a> {
-    engine: &'a InferenceEngine,
     /// The supervised `llama-server`'s base URL -- generation goes through
     /// `LlamaServerClient::chat` against this, identical to production's
     /// `RealBackend`. The server owns cross-turn KV-prefix reuse now
@@ -575,7 +559,6 @@ impl AgentBackend for PlanExecBackend<'_> {
                     ChatMessage::user(prompt),
                 ];
             let mut sub_backend = FlatBackend {
-                engine: self.engine,
                 // Same server as the parent -- production's `SubagentBackend`
                 // likewise inherits its `RealBackend`'s `base_url`.
                 base_url: self.base_url.clone(),
@@ -651,7 +634,6 @@ fn report_plan(name: &str, plan: &doce_lib::agent::plan::Plan) {
 /// finished turns replay as history). One llama-server for the whole
 /// conversation, whose `cache_prompt` KV reuse matches production's.
 async fn run_planned_conversation(
-    engine: &InferenceEngine,
     base_url: &str,
     user_turns: &[&str],
     cwd: &Path,
@@ -679,7 +661,6 @@ async fn run_planned_conversation(
     let transcript_path = payload_root.path().join("transcript.txt");
     std::fs::write(&transcript_path, "").expect("transcript file should create");
     let mut backend = PlanExecBackend {
-        engine,
         base_url: base_url.to_string(),
         cwd,
         threshold,
@@ -695,9 +676,10 @@ async fn run_planned_conversation(
             Some(cwd),
             true,
             Some(&transcript_path.display().to_string()),
-            // The EXACT production prompt for the model under test: its
-            // dialect comes from the loaded GGUF, same as the app.
-            engine.dialect(),
+            // The EXACT production prompt for the model under test: doce
+            // ships one Hermes model, so the dialect is pinned, same as the
+            // app.
+            ToolDialect::HermesJson,
         ),
     )];
     let mut runs = Vec::new();
@@ -726,14 +708,8 @@ async fn run_planned_conversation(
 
 /// Runs a single `task` through the two-state loop -- the one-user-turn
 /// case of `run_planned_conversation`.
-async fn run_planned_task(
-    engine: &InferenceEngine,
-    base_url: &str,
-    task: &str,
-    cwd: &Path,
-    max_plan_turns: u32,
-) -> TaskRun {
-    run_planned_conversation(engine, base_url, &[task], cwd, max_plan_turns)
+async fn run_planned_task(base_url: &str, task: &str, cwd: &Path, max_plan_turns: u32) -> TaskRun {
+    run_planned_conversation(base_url, &[task], cwd, max_plan_turns)
         .await
         .pop()
         .expect("one run per user turn")
@@ -757,17 +733,15 @@ async fn tier0_multi_turn_recalls_user_name() {
     // Spawn the real server FIRST -- it gates on the sidecar binary + model
     // GGUF being present and SKIPS (returns None) with a printed reason when
     // either is absent, so a bare `--ignored` run without the onboarding
-    // model no-ops instead of panicking. The in-process `engine` is still
-    // loaded below for measure/threshold/compact token counting (Task 5.1
-    // strips it to vocab-only); generation now goes to `server.base_url`.
+    // model no-ops instead of panicking. Generation goes to
+    // `server.base_url`; token counting is a pure chars/4 estimate, no
+    // in-process model load.
     let Some(server) = common::TestServer::spawn(&model).await else {
         return;
     };
-    let engine = InferenceEngine::load(&model).expect("model should load");
     let dir = tempdir().unwrap();
 
     let runs = run_planned_conversation(
-        &engine,
         &server.base_url,
         &["Hi! My name is Heitor.", "What is my name?"],
         dir.path(),
@@ -811,17 +785,16 @@ async fn tier0_plan_greeting_answers_directly_without_planning() {
     // Spawn the real server FIRST -- it gates on the sidecar binary + model
     // GGUF being present and SKIPS (returns None) with a printed reason when
     // either is absent, so a bare `--ignored` run without the onboarding
-    // model no-ops instead of panicking. The in-process `engine` is still
-    // loaded below for measure/threshold/compact token counting (Task 5.1
-    // strips it to vocab-only); generation now goes to `server.base_url`.
+    // model no-ops instead of panicking. Generation goes to
+    // `server.base_url`; token counting is a pure chars/4 estimate, no
+    // in-process model load.
     let Some(server) = common::TestServer::spawn(&model).await else {
         return;
     };
-    let engine = InferenceEngine::load(&model).expect("model should load");
     let dir = tempdir().unwrap();
 
     for greeting in ["ola", "Hello!"] {
-        let run = run_planned_task(&engine, &server.base_url, greeting, dir.path(), 8).await;
+        let run = run_planned_task(&server.base_url, greeting, dir.path(), 8).await;
         report(&format!("tier0_plan_greeting({greeting})"), &run);
 
         assert!(
@@ -844,17 +817,15 @@ async fn tier0_plan_vague_request_asks_before_planning() {
     // Spawn the real server FIRST -- it gates on the sidecar binary + model
     // GGUF being present and SKIPS (returns None) with a printed reason when
     // either is absent, so a bare `--ignored` run without the onboarding
-    // model no-ops instead of panicking. The in-process `engine` is still
-    // loaded below for measure/threshold/compact token counting (Task 5.1
-    // strips it to vocab-only); generation now goes to `server.base_url`.
+    // model no-ops instead of panicking. Generation goes to
+    // `server.base_url`; token counting is a pure chars/4 estimate, no
+    // in-process model load.
     let Some(server) = common::TestServer::spawn(&model).await else {
         return;
     };
-    let engine = InferenceEngine::load(&model).expect("model should load");
     let dir = tempdir().unwrap();
 
     let run = run_planned_task(
-        &engine,
         &server.base_url,
         "something is broken, please fix it",
         dir.path(),
@@ -893,18 +864,16 @@ async fn tier1_single_tool_call_reads_a_known_file() {
     // Spawn the real server FIRST -- it gates on the sidecar binary + model
     // GGUF being present and SKIPS (returns None) with a printed reason when
     // either is absent, so a bare `--ignored` run without the onboarding
-    // model no-ops instead of panicking. The in-process `engine` is still
-    // loaded below for measure/threshold/compact token counting (Task 5.1
-    // strips it to vocab-only); generation now goes to `server.base_url`.
+    // model no-ops instead of panicking. Generation goes to
+    // `server.base_url`; token counting is a pure chars/4 estimate, no
+    // in-process model load.
     let Some(server) = common::TestServer::spawn(&model).await else {
         return;
     };
-    let engine = InferenceEngine::load(&model).expect("model should load");
     let dir = tempdir().unwrap();
     std::fs::write(dir.path().join("config.txt"), "hello=world\nsecond=line\n").unwrap();
 
     let run = run_flat_task(
-        &engine,
         &server.base_url,
         "This directory has a file named config.txt. What's on its first line? \
          Answer with just the line's content, nothing else.",
@@ -932,18 +901,16 @@ async fn tier1_planned_single_tool_call_reads_a_known_file() {
     // Spawn the real server FIRST -- it gates on the sidecar binary + model
     // GGUF being present and SKIPS (returns None) with a printed reason when
     // either is absent, so a bare `--ignored` run without the onboarding
-    // model no-ops instead of panicking. The in-process `engine` is still
-    // loaded below for measure/threshold/compact token counting (Task 5.1
-    // strips it to vocab-only); generation now goes to `server.base_url`.
+    // model no-ops instead of panicking. Generation goes to
+    // `server.base_url`; token counting is a pure chars/4 estimate, no
+    // in-process model load.
     let Some(server) = common::TestServer::spawn(&model).await else {
         return;
     };
-    let engine = InferenceEngine::load(&model).expect("model should load");
     let dir = tempdir().unwrap();
     std::fs::write(dir.path().join("config.txt"), "hello=world\nsecond=line\n").unwrap();
 
     let run = run_planned_task(
-        &engine,
         &server.base_url,
         "This directory has a file named config.txt. What's on its first line? \
          Answer with just the line's content, nothing else.",
@@ -969,13 +936,12 @@ async fn tier2_few_tool_calls_finds_todo_files() {
     // Spawn the real server FIRST -- it gates on the sidecar binary + model
     // GGUF being present and SKIPS (returns None) with a printed reason when
     // either is absent, so a bare `--ignored` run without the onboarding
-    // model no-ops instead of panicking. The in-process `engine` is still
-    // loaded below for measure/threshold/compact token counting (Task 5.1
-    // strips it to vocab-only); generation now goes to `server.base_url`.
+    // model no-ops instead of panicking. Generation goes to
+    // `server.base_url`; token counting is a pure chars/4 estimate, no
+    // in-process model load.
     let Some(server) = common::TestServer::spawn(&model).await else {
         return;
     };
-    let engine = InferenceEngine::load(&model).expect("model should load");
     let dir = tempdir().unwrap();
     std::fs::write(dir.path().join("a.rs"), "// TODO: fix this\nfn a() {}\n").unwrap();
     std::fs::write(dir.path().join("b.rs"), "fn b() {}\n").unwrap();
@@ -985,7 +951,6 @@ async fn tier2_few_tool_calls_finds_todo_files() {
     std::fs::write(dir.path().join("f.rs"), "fn f() {}\n").unwrap();
 
     let run = run_flat_task(
-        &engine,
         &server.base_url,
         "List every .rs file in this directory that contains the string TODO, \
          and tell me how many there are.",
@@ -1053,18 +1018,16 @@ async fn tier3_multi_step_refactor_adds_a_field_and_updates_call_sites() {
     // Spawn the real server FIRST -- it gates on the sidecar binary + model
     // GGUF being present and SKIPS (returns None) with a printed reason when
     // either is absent, so a bare `--ignored` run without the onboarding
-    // model no-ops instead of panicking. The in-process `engine` is still
-    // loaded below for measure/threshold/compact token counting (Task 5.1
-    // strips it to vocab-only); generation now goes to `server.base_url`.
+    // model no-ops instead of panicking. Generation goes to
+    // `server.base_url`; token counting is a pure chars/4 estimate, no
+    // in-process model load.
     let Some(server) = common::TestServer::spawn(&model).await else {
         return;
     };
-    let engine = InferenceEngine::load(&model).expect("model should load");
     let dir = tempdir().unwrap();
     tier3_fixture(dir.path());
 
     let run = run_flat_task(
-        &engine,
         &server.base_url,
         "Add a `created_at: String` field to the `Widget` struct defined in \
          src/widget.rs. Then update every place in this crate (the files under \
@@ -1159,13 +1122,12 @@ async fn tier4_long_running_fixes_many_scattered_bugs() {
     // Spawn the real server FIRST -- it gates on the sidecar binary + model
     // GGUF being present and SKIPS (returns None) with a printed reason when
     // either is absent, so a bare `--ignored` run without the onboarding
-    // model no-ops instead of panicking. The in-process `engine` is still
-    // loaded below for measure/threshold/compact token counting (Task 5.1
-    // strips it to vocab-only); generation now goes to `server.base_url`.
+    // model no-ops instead of panicking. Generation goes to
+    // `server.base_url`; token counting is a pure chars/4 estimate, no
+    // in-process model load.
     let Some(server) = common::TestServer::spawn(&model).await else {
         return;
     };
-    let engine = InferenceEngine::load(&model).expect("model should load");
     let dir = tempdir().unwrap();
     tier4_fixture(dir.path());
 
@@ -1180,7 +1142,6 @@ async fn tier4_long_running_fixes_many_scattered_bugs() {
     );
 
     let run = run_flat_task(
-        &engine,
         &server.base_url,
         &task,
         dir.path(),
@@ -1219,13 +1180,12 @@ async fn tier4_planned_long_running_fixes_many_scattered_bugs() {
     // Spawn the real server FIRST -- it gates on the sidecar binary + model
     // GGUF being present and SKIPS (returns None) with a printed reason when
     // either is absent, so a bare `--ignored` run without the onboarding
-    // model no-ops instead of panicking. The in-process `engine` is still
-    // loaded below for measure/threshold/compact token counting (Task 5.1
-    // strips it to vocab-only); generation now goes to `server.base_url`.
+    // model no-ops instead of panicking. Generation goes to
+    // `server.base_url`; token counting is a pure chars/4 estimate, no
+    // in-process model load.
     let Some(server) = common::TestServer::spawn(&model).await else {
         return;
     };
-    let engine = InferenceEngine::load(&model).expect("model should load");
     let dir = tempdir().unwrap();
     tier4_fixture(dir.path());
 
@@ -1243,7 +1203,7 @@ async fn tier4_planned_long_running_fixes_many_scattered_bugs() {
     // separate one per step): CreatePlan + 20 x (a few tool calls per
     // file + StepDone) + occasional independent verification + final
     // review, matching production's own top-level cap (200).
-    let run = run_planned_task(&engine, &server.base_url, &task, dir.path(), 150).await;
+    let run = run_planned_task(&server.base_url, &task, dir.path(), 150).await;
     report("tier4_planned", &run);
 
     let (fixed, total, failures) = tier4_score(dir.path());
@@ -1331,18 +1291,16 @@ async fn tier5_surgical_edit_in_one_huge_file() {
     // Spawn the real server FIRST -- it gates on the sidecar binary + model
     // GGUF being present and SKIPS (returns None) with a printed reason when
     // either is absent, so a bare `--ignored` run without the onboarding
-    // model no-ops instead of panicking. The in-process `engine` is still
-    // loaded below for measure/threshold/compact token counting (Task 5.1
-    // strips it to vocab-only); generation now goes to `server.base_url`.
+    // model no-ops instead of panicking. Generation goes to
+    // `server.base_url`; token counting is a pure chars/4 estimate, no
+    // in-process model load.
     let Some(server) = common::TestServer::spawn(&model).await else {
         return;
     };
-    let engine = InferenceEngine::load(&model).expect("model should load");
     let dir = tempdir().unwrap();
     let original = tier5_fixture(dir.path());
 
     let run = run_flat_task(
-        &engine,
         &server.base_url,
         "The file big.txt in this directory has exactly one line containing the \
          word TARGET, somewhere among 3000 lines. Find that line and change it so \

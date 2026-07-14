@@ -5,15 +5,14 @@
 //! `compute_usage`/`maybe_compact` aren't unit-tested). Run explicitly via:
 //!   cargo test --test real_model_smoke -- --ignored --nocapture
 //!
-//! The llama-server cutover moved generation off the in-process
-//! `InferenceEngine` onto the HTTP client (`inference::http`), so the
-//! generation smokes here now spawn a REAL `llama-server` (via
-//! `common::TestServer`) and POST at it through `LlamaServerClient::chat` --
-//! the exact path production's `RealBackend`/`SubagentBackend` use --
-//! rather than driving the in-process engine. Token counting is now a pure
-//! chars/4 estimate (`inference::token_estimate`, no model needed); the only
-//! thing the in-process engine still does is detect the chat dialect at load,
-//! which the vocab-load smoke below still exercises.
+//! The llama-server cutover moved generation onto the HTTP client
+//! (`inference::http`), so the generation smokes here spawn a REAL
+//! `llama-server` (via `common::TestServer`) and POST at it through
+//! `LlamaServerClient::chat` -- the exact path production's
+//! `RealBackend`/`SubagentBackend` use. The in-process engine is gone
+//! entirely: token counting is a pure chars/4 estimate
+//! (`inference::token_estimate`, no model needed), and the tool dialect is
+//! pinned to `HermesJson` (doce ships one Hermes model).
 //!
 //! This is the closest thing to a live manual QA pass this environment can
 //! do without a way to drive/inspect the native Tauri window directly.
@@ -25,15 +24,16 @@ use doce_lib::context::{self, ContextSettings};
 use doce_lib::inference::http::{
     to_openai_messages, tool_choice_for, tools_array, ChatRequest, LlamaServerClient,
 };
-use doce_lib::inference::{ChatMessage, InferenceEngine, ToolCallMode};
+use doce_lib::inference::{ChatMessage, ToolCallMode, ToolDialect};
 use doce_lib::storage::conversations::HistoryMessage;
 use std::path::PathBuf;
 
 /// The exact production prompt for the model under test — the same helper
 /// the app itself seeds turns with (prompt drift between app and smoke test
-/// is how the 2026-07-12 doom loop shipped green).
-fn system_prompt(engine: &InferenceEngine) -> String {
-    doce_lib::commands::agent::plan_system_message(None, true, None, engine.dialect())
+/// is how the 2026-07-12 doom loop shipped green). doce ships one Hermes
+/// model, so the dialect is pinned to `HermesJson`, same as production.
+fn system_prompt() -> String {
+    doce_lib::commands::agent::plan_system_message(None, true, None, ToolDialect::HermesJson)
 }
 
 fn installed_model_path() -> PathBuf {
@@ -49,25 +49,10 @@ fn installed_model_path() -> PathBuf {
 }
 
 #[test]
-#[ignore]
-fn vocab_load_detects_a_dialect_and_the_token_estimate_is_sane() {
-    let path = installed_model_path();
-    assert!(
-        path.exists(),
-        "expected the real installed model at {path:?}"
-    );
-
-    // Vocab-only load still succeeds and detects a chat dialect -- the one
-    // thing the in-process engine exists for now (token counting moved to the
-    // pure `token_estimate` heuristic, generation to the sidecar). `dialect()`
-    // always returns some `ToolDialect` (defaulting to Hermes), so this just
-    // proves the load + detection path runs against the real GGUF.
-    let engine = InferenceEngine::load(&path).expect("model should load");
-    let _dialect = engine.dialect();
-
+fn the_token_estimate_is_sane() {
     // The chars/4 estimate for a short English sentence is a small handful of
     // tokens, nowhere near the budget -- a loose sanity bound (no model
-    // needed for the estimate itself).
+    // needed for the estimate itself; the in-process engine is gone).
     let count = doce_lib::inference::token_estimate("Hello, how are you today?");
     assert!(
         count > 0 && count < 30,
@@ -133,12 +118,9 @@ async fn grammar_constrained_tool_call_produces_a_well_formed_tool_call_against_
     let Some(server) = common::TestServer::spawn(&model).await else {
         return;
     };
-    // Loaded only to seed the EXACT production system prompt for this model
-    // (its dialect comes from the loaded GGUF, same as the app).
-    let engine = InferenceEngine::load(&model).expect("model should load");
 
     let messages = vec![
-        ChatMessage::system(system_prompt(&engine)),
+        ChatMessage::system(system_prompt()),
         ChatMessage::user(
             "Use the Bash tool right now to run the command `pwd`. Call the tool, don't just describe it.",
         ),
@@ -167,7 +149,7 @@ async fn grammar_constrained_tool_call_produces_a_well_formed_tool_call_against_
 }
 
 // (Removed `tool_result_renders_wrapped_in_qwens_own_tool_response_tags`:
-// it exercised `InferenceEngine::render_chat_prompt`, which is deleted now
+// it exercised the in-process chat-prompt rendering, which is deleted now
 // that the server renders the chat template from OpenAI `messages`. The
 // equivalent rendering is covered by `inference::http::to_openai_messages`'s
 // own unit tests plus the real-server smokes below.)

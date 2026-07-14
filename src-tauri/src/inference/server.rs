@@ -397,13 +397,11 @@ pub struct RunningServer {
 }
 
 /// App-managed (`tauri::manage`) holder for the at-most-one supervised
-/// `llama-server` (Task 3.3). Separate from `InferenceState` on purpose: the
-/// existing `InferenceEngine` still owns `count_tokens` and today's
-/// generation, while this owns *only* the process lifecycle — one server runs
-/// whenever a model is active, restarts on a model switch, and is killed on
-/// graceful exit. A later task flips generation onto the server and shrinks
-/// the engine to vocab-only; until then an idle server may coexist with the
-/// engine, which is expected.
+/// `llama-server` (Task 3.3). This owns *only* the process lifecycle — one
+/// server runs whenever a model is active, restarts on a model switch, and is
+/// killed on graceful exit. The server is now the sole owner of generation;
+/// there is no in-process engine (token counting is a pure chars/4 estimate,
+/// `inference::token_estimate`).
 #[derive(Default)]
 pub struct ServerState(pub Arc<Mutex<Option<RunningServer>>>);
 

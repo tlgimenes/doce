@@ -1,21 +1,11 @@
 use crate::commands::models::now_ms;
-use crate::inference::InferenceEngine;
 use crate::storage::DbCell;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use tauri::{AppHandle, State};
-use tokio::sync::Mutex as AsyncMutex;
 use uuid::Uuid;
-
-pub struct InferenceState(pub Arc<AsyncMutex<Option<InferenceEngine>>>);
-
-impl Default for InferenceState {
-    fn default() -> Self {
-        Self(Arc::new(AsyncMutex::new(None)))
-    }
-}
 
 /// Conversation ids with a turn currently running, each mapped to that
 /// turn's `CancellationToken` — the live signal `compute_status` uses for

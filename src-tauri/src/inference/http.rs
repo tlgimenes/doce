@@ -581,8 +581,7 @@ impl SseLineBuffer {
 /// Talks to one llama-server instance's OpenAI-compatible
 /// `/v1/chat/completions` endpoint over HTTP + SSE. Holds a `reqwest::Client`
 /// (not recreated per call) so connection pooling/keep-alive work across
-/// turns, matching the one-worker-per-app model `InferenceEngine` already
-/// uses for the in-process llama.cpp path — this is the equivalent front
+/// turns, matching the one-worker-per-app model — this is the front
 /// door for the llama-server cutover, deliberately just data-in/data-out
 /// with no state of its own beyond the base URL and HTTP client.
 pub struct LlamaServerClient {
@@ -604,8 +603,7 @@ impl LlamaServerClient {
     /// POSTs `req` to `{base_url}/v1/chat/completions` and drives the SSE
     /// response to a `ChatOutcome`, calling `on_piece` with each
     /// content/reasoning fragment as it arrives so a caller can stream
-    /// progress to the UI the same way `InferenceEngine::generate`'s
-    /// `on_token` already does for the in-process path.
+    /// progress to the UI.
     ///
     /// `cancel` is checked before the request is sent at all (an
     /// already-cancelled token never touches the network) and raced against

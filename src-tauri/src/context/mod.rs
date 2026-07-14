@@ -351,7 +351,7 @@ fn is_genuine_user_message(message: &HistoryMessage) -> bool {
 /// generative, lossy compression by a small model, the riskiest single
 /// step in the whole compaction pipeline; it must never be the thing that
 /// makes the model forget what it was asked to do. Split out from
-/// `summarize_and_persist` (which needs a real `InferenceEngine` — this
+/// `summarize_and_persist` (which needs a real model server — this
 /// file's own testability note at the top) purely so this part is
 /// unit-testable on its own, the same split `fit_turn_to_budget`/
 /// `fit_to_budget` already established.
@@ -959,9 +959,9 @@ mod tests {
     // apply_lightweight_clearing_in_memory/compact_in_memory's own former
     // unit tests lived here -- both were removed in favor of
     // fit_turn_to_budget/fit_to_budget (see fit_to_budget's own tests
-    // below; fit_turn_to_budget itself needs a real InferenceEngine, so
-    // per this file's own testability note at the top, it's exercised by
-    // the real-model agent task tests instead, not a unit test here).
+    // below; fit_turn_to_budget itself is exercised end-to-end by the
+    // real-model agent task tests instead of a unit test here, per this
+    // file's own testability note at the top).
 
     // --- ContextSettings::from_raw ---
 
@@ -1212,7 +1212,7 @@ mod tests {
 
     // --- messages_to_summarize (tier 2's summarization-input selection) ---
     //
-    // `summarize_and_persist` itself needs a real `InferenceEngine` (this
+    // `summarize_and_persist` itself needs a real model server (this
     // file's own testability note at the top), so per the
     // `fit_turn_to_budget`/`fit_to_budget` precedent, the pure
     // span-selection logic is pulled out into `messages_to_summarize` so

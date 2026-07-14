@@ -11,7 +11,7 @@ pub mod storage;
 
 use agent::tools::ask_user::PendingQuestions;
 use commands::agent::ActivePlans;
-use commands::conversations::{ActiveGenerations, InferenceState};
+use commands::conversations::ActiveGenerations;
 use commands::models::InFlightDownloads;
 use inference::server::ServerState;
 use storage::DbCell;
@@ -61,7 +61,6 @@ pub fn run() {
 
     app_builder
         .invoke_handler(builder.invoke_handler())
-        .manage(InferenceState::default())
         .manage(ServerState::default())
         .manage(InFlightDownloads::default())
         .manage(ActiveGenerations::default())

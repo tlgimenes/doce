@@ -3,7 +3,7 @@
 //! after the llama-server cutover: which model family this is (`detect`),
 //! how a past tool call/result replays into history in the model's own
 //! trained shape (`render_tool_use`/`render_tool_result`, used by
-//! `InferenceEngine::render_chat_prompt` for context measurement), and the
+//! `ChatMessage::text` for context measurement), and the
 //! system prompt's call-format teaching (`call_format_instructions`). The
 //! generation-side grammar and the text tool-call parser that once lived
 //! here were deleted with the rest of the in-process inference stack.
