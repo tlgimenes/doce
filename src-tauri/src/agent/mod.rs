@@ -1,28 +1,18 @@
 //! Agent tool-use loop orchestrator (User Story 3, FR-009/FR-013/FR-015/
 //! FR-016), wired to real inference + real tools via
 //! `commands::agent::send_agent_message`. The loop's control flow (turn
-//! counting, tool dispatch, subagent-nesting rejection, response parsing)
-//! is real and tested; a known simplification is called out where it
-//! lives (`commands/agent.rs`'s doc comment): turns run synchronously to
+//! counting, tool dispatch, subagent-nesting rejection) is real and
+//! tested; a known simplification is called out where it lives
+//! (`commands/agent.rs`'s doc comment): turns run synchronously to
 //! completion rather than streaming tokens live.
 //!
-//! Tool calls are prompted for (`SYSTEM_PROMPT` below) *and*
-//! grammar-constrained at generation time
-//! (`InferenceEngine::generate`'s `allow_tool_calls`, a lazy GBNF grammar
-//! that only activates once the model starts emitting `<tool_call>`) —
-//! the model's JSON is guaranteed syntactically valid once that happens,
-//! so `parse_response` below trusts it rather than defending against
-//! malformed output. A model that never starts down that path at all just
-//! answers in plain text, same as before.
-//!
-//! The calling convention is Qwen's own trained (Hermes-style) format —
-//! tool signatures declared inside `<tools></tools>` in the system
-//! message, calls emitted as JSON inside `<tool_call></tool_call>` tags —
-//! rather than a bespoke convention the model has to learn in-context.
-//! Small models converge dramatically better inside their training
-//! distribution than outside it; the previous bespoke
-//! `{"tool_call": ...}` JSON shape is still accepted by `parse_response`
-//! as a fallback.
+//! Since the llama-server cutover, generation goes through
+//! `inference::http::LlamaServerClient::chat`, which returns a STRUCTURED
+//! `TurnOutcome` (a resolved tool call, not text to parse), so the loop
+//! reads `outcome.tool_call` directly rather than scraping `<tool_call>`
+//! tags out of a generated string. Tools are advertised to the server
+//! structurally (`inference::http::tools_array`) and constrained via
+//! `tool_choice`, not by a hand-rolled grammar.
 
 pub mod dispatch;
 pub mod plan;
@@ -46,12 +36,6 @@ use serde::{Deserialize, Serialize};
 pub struct ToolCall {
     pub name: String,
     pub arguments: serde_json::Value,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum LoopStep {
-    ToolCall(ToolCall),
-    Done(String),
 }
 
 /// One turn's structured generation result — what `AgentBackend::generate`
@@ -110,80 +94,6 @@ pub enum AgentError {
     /// `Task`-tool subagent path folds it into a benign stopped tool result.
     #[error("agent loop cancelled")]
     Cancelled,
-}
-
-/// The convention the model is prompted to follow — Qwen's own trained
-/// format: `{"name": ..., "arguments": ...}` JSON inside
-/// `<tool_call></tool_call>` tags. Takes the *first* tag pair anywhere in
-/// the text rather than requiring the whole response to be exactly one
-/// call — found necessary against a real model in practice: it sometimes
-/// runs on past the first call and appends a second one, or wraps the
-/// call in a little prose, and a strict whole-string parse silently
-/// degraded those into "the raw text became the final answer" instead of
-/// actually calling the tool. The pre-native bespoke shape
-/// (`{"tool_call": {...}}` as a bare JSON object) is still accepted as a
-/// fallback. Anything matching neither is the final answer verbatim — a
-/// model that doesn't follow the convention degrades to "always answers
-/// directly", not a crash.
-pub fn parse_response(text: &str, dialect: crate::inference::ToolDialect) -> LoopStep {
-    // The dialect owns the primary extraction (tool-dialects design):
-    // Hermes keeps the historical first-tag-pair-anywhere behavior;
-    // MiniCPM parses its `<function>` XML.
-    if let Some((name, arguments)) = dialect.parse_first(text) {
-        return LoopStep::ToolCall(ToolCall { name, arguments });
-    }
-    if let Some(json_str) = first_balanced_json_object(text) {
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&json_str) {
-            if let Some(call) = value.get("tool_call") {
-                if let (Some(name), Some(arguments)) = (
-                    call.get("name").and_then(|n| n.as_str()),
-                    call.get("arguments"),
-                ) {
-                    return LoopStep::ToolCall(ToolCall {
-                        name: name.to_string(),
-                        arguments: arguments.clone(),
-                    });
-                }
-            }
-        }
-    }
-    LoopStep::Done(text.to_string())
-}
-
-/// Finds the first `{...}` substring with balanced braces (respecting
-/// quoted strings, so a `}` inside a string argument doesn't end the
-/// object early), starting from the first `{` in the text.
-fn first_balanced_json_object(text: &str) -> Option<String> {
-    let start = text.find('{')?;
-    let bytes = text.as_bytes();
-    let mut depth = 0i32;
-    let mut in_string = false;
-    let mut escaped = false;
-
-    for (i, &b) in bytes.iter().enumerate().skip(start) {
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if b == b'\\' {
-                escaped = true;
-            } else if b == b'"' {
-                in_string = false;
-            }
-            continue;
-        }
-        match b {
-            b'"' => in_string = true,
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(text[start..=i].to_string());
-                }
-            }
-            _ => {}
-        }
-    }
-    None
 }
 
 /// Context a single loop run is bounded by. `is_subagent` gates the
@@ -320,16 +230,6 @@ pub trait AgentBackend {
     /// the old grammar prevented).
     fn requires_tool_call(&self) -> bool {
         true
-    }
-
-    /// The active model's tool-call dialect — retained for the pre-cutover
-    /// benchmark backends that still adapt `engine.generate`'s String via
-    /// `parse_response` (flipped to the client in Task 8.1). run_loop no
-    /// longer reads it (generation is structured now), but leaving the
-    /// default here keeps those backends' overrides valid. Defaults to Hermes
-    /// (the historical assumption).
-    fn dialect(&self) -> crate::inference::ToolDialect {
-        crate::inference::ToolDialect::HermesJson
     }
 }
 
@@ -479,32 +379,32 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    /// Adapts a canned model STRING into the structured `TurnOutcome` the
-    /// backend contract now returns, by running the same `parse_response`
-    /// the pre-cutover loop used — so string-scripted test backends
-    /// (`FakeBackend`, `RepeatBackend`) keep expressing their intent as
-    /// Hermes `<tool_call>` text without a semantic rewrite. Mirrors the
-    /// benchmark backends' adaptation in `tests/agent_tasks.rs`.
-    fn outcome_from_string(s: &str) -> TurnOutcome {
-        match parse_response(s, crate::inference::ToolDialect::HermesJson) {
-            LoopStep::ToolCall(tc) => TurnOutcome {
-                tool_call: Some((tc.name, tc.arguments)),
-                text: String::new(),
-                reasoning: String::new(),
-                finish_reason: "tool_calls".to_string(),
-                usage: None,
-                error: None,
-                cancelled: false,
-            },
-            LoopStep::Done(text) => TurnOutcome {
-                tool_call: None,
-                text,
-                reasoning: String::new(),
-                finish_reason: "stop".to_string(),
-                usage: None,
-                error: None,
-                cancelled: false,
-            },
+    /// Builds a `TurnOutcome` for a single tool call - the structured
+    /// equivalent of the Hermes `<tool_call>` strings these run_loop tests
+    /// used to round-trip through the (now-deleted) `parse_response`; the
+    /// loop reads `outcome.tool_call` directly since the cutover.
+    fn tool_outcome(name: &str, arguments: serde_json::Value) -> TurnOutcome {
+        TurnOutcome {
+            tool_call: Some((name.to_string(), arguments)),
+            text: String::new(),
+            reasoning: String::new(),
+            finish_reason: "tool_calls".to_string(),
+            usage: None,
+            error: None,
+            cancelled: false,
+        }
+    }
+
+    /// Builds a `TurnOutcome` for a plain-text final answer (no tool call).
+    fn text_outcome(text: &str) -> TurnOutcome {
+        TurnOutcome {
+            tool_call: None,
+            text: text.to_string(),
+            reasoning: String::new(),
+            finish_reason: "stop".to_string(),
+            usage: None,
+            error: None,
+            cancelled: false,
         }
     }
 
@@ -517,14 +417,14 @@ mod tests {
     /// context-fitting — so `compact` panics if it's ever reached, proving
     /// that's true.
     struct FakeBackend {
-        responses: Vec<String>,
+        responses: Vec<TurnOutcome>,
         call_index: usize,
         on_execute: Box<dyn FnMut(String, ToolCall) -> ToolExecution>,
     }
 
     impl FakeBackend {
         fn new(
-            responses: Vec<String>,
+            responses: Vec<TurnOutcome>,
             on_execute: impl FnMut(String, ToolCall) -> ToolExecution + 'static,
         ) -> Self {
             Self {
@@ -559,7 +459,7 @@ mod tests {
         async fn generate(&mut self, _messages: Vec<ChatMessage>) -> TurnOutcome {
             let response = self.responses[self.call_index.min(self.responses.len() - 1)].clone();
             self.call_index += 1;
-            outcome_from_string(&response)
+            response
         }
 
         async fn execute_tool(&mut self, tool_call_id: String, call: ToolCall) -> ToolExecution {
@@ -639,9 +539,7 @@ mod tests {
                 }) {
                     self.last_result_seen = Some(content);
                 }
-                outcome_from_string(
-                    "<tool_call>\n{\"name\": \"Grep\", \"arguments\": {\"pattern\": \"x\"}}\n</tool_call>",
-                )
+                tool_outcome("Grep", serde_json::json!({"pattern": "x"}))
             }
             async fn execute_tool(
                 &mut self,
@@ -672,125 +570,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn parses_a_native_format_tool_call() {
-        // Qwen3's trained (Hermes-style) format: JSON inside
-        // <tool_call></tool_call> XML tags.
-        let text =
-            "<tool_call>\n{\"name\": \"Read\", \"arguments\": {\"file_path\": \"/tmp/f.txt\"}}\n</tool_call>";
-        let step = parse_response(text, crate::inference::ToolDialect::HermesJson);
-        assert_eq!(
-            step,
-            LoopStep::ToolCall(ToolCall {
-                name: "Read".to_string(),
-                arguments: serde_json::json!({"file_path": "/tmp/f.txt"}),
-            })
-        );
-    }
-
-    #[test]
-    fn parses_the_legacy_json_format_as_a_fallback() {
-        // The pre-native bespoke convention -- kept parseable so an
-        // off-distribution reply degrades into a working call instead of
-        // a garbage final answer.
-        let text = r#"{"tool_call": {"name": "Read", "arguments": {"file_path": "/tmp/f.txt"}}}"#;
-        assert_eq!(
-            parse_response(text, crate::inference::ToolDialect::HermesJson),
-            LoopStep::ToolCall(ToolCall {
-                name: "Read".to_string(),
-                arguments: serde_json::json!({"file_path": "/tmp/f.txt"}),
-            })
-        );
-    }
-
-    #[test]
-    fn an_unclosed_tool_call_tag_is_a_final_answer_not_a_crash() {
-        // e.g. generation cut off by the max-token cap mid-call.
-        let text = "<tool_call>\n{\"name\": \"Read\", \"arguments\": {\"file_p";
-        assert_eq!(
-            parse_response(text, crate::inference::ToolDialect::HermesJson),
-            LoopStep::Done(text.to_string())
-        );
-    }
-
-    #[test]
-    fn plain_text_is_a_final_answer() {
-        assert_eq!(
-            parse_response(
-                "The answer is 4.",
-                crate::inference::ToolDialect::HermesJson
-            ),
-            LoopStep::Done("The answer is 4.".to_string())
-        );
-    }
-
-    #[test]
-    fn malformed_json_falls_back_to_plain_text() {
-        let text = "<tool_call>\n{\"name\": \"Read\"}\n</tool_call>"; // missing "arguments"
-        assert_eq!(
-            parse_response(text, crate::inference::ToolDialect::HermesJson),
-            LoopStep::Done(text.to_string())
-        );
-    }
-
-    #[test]
-    fn extracts_the_first_tool_call_when_the_model_appends_a_second_one() {
-        // Real behavior observed against the actual installed model: it ran
-        // on past the first tool call and appended a second, unrelated one
-        // on the same line, which a strict whole-string JSON parse
-        // rejected entirely (falling back to "the raw JSON is the final
-        // answer" — the tool never actually got called).
-        let text = "<tool_call>\n{\"name\": \"Read\", \"arguments\": {\"file_path\": \"/a.txt\"}}\n</tool_call>\n<tool_call>\n{\"name\": \"Grep\", \"arguments\": {\"pattern\": \"x\"}}\n</tool_call>";
-        assert_eq!(
-            parse_response(text, crate::inference::ToolDialect::HermesJson),
-            LoopStep::ToolCall(ToolCall {
-                name: "Read".to_string(),
-                arguments: serde_json::json!({"file_path": "/a.txt"}),
-            })
-        );
-    }
-
-    #[test]
-    fn extracts_a_tool_call_wrapped_in_surrounding_prose() {
-        let text = "Sure, let me check that file.\n<tool_call>\n{\"name\": \"Read\", \"arguments\": {\"file_path\": \"/a.txt\"}}\n</tool_call>\nLet me know if that's not what you wanted.";
-        assert_eq!(
-            parse_response(text, crate::inference::ToolDialect::HermesJson),
-            LoopStep::ToolCall(ToolCall {
-                name: "Read".to_string(),
-                arguments: serde_json::json!({"file_path": "/a.txt"}),
-            })
-        );
-    }
-
-    #[test]
-    fn a_closing_brace_inside_a_string_argument_does_not_end_the_call_early() {
-        let text = "<tool_call>\n{\"name\": \"Write\", \"arguments\": {\"file_path\": \"/a.txt\", \"content\": \"func f() { return 1; }\"}}\n</tool_call>";
-        let step = parse_response(text, crate::inference::ToolDialect::HermesJson);
-        assert_eq!(
-            step,
-            LoopStep::ToolCall(ToolCall {
-                name: "Write".to_string(),
-                arguments: serde_json::json!({"file_path": "/a.txt", "content": "func f() { return 1; }"}),
-            })
-        );
-    }
-
-    #[test]
-    fn plain_prose_with_no_json_at_all_is_a_final_answer() {
-        let text = "The secret ingredient is pancakes.";
-        assert_eq!(
-            parse_response(text, crate::inference::ToolDialect::HermesJson),
-            LoopStep::Done(text.to_string())
-        );
-    }
-
     #[tokio::test]
     async fn loop_runs_tools_until_a_final_answer() {
         let context = AgentContext::top_level();
         let mut backend = FakeBackend::new(
             vec![
-                "<tool_call>\n{\"name\": \"Read\", \"arguments\": {\"file_path\": \"/f.txt\"}}\n</tool_call>".to_string(),
-                "The file says hello.".to_string(),
+                tool_outcome("Read", serde_json::json!({"file_path": "/f.txt"})),
+                text_outcome("The file says hello."),
             ],
             |_tool_call_id, call| {
                 assert_eq!(call.name, "Read");
@@ -1038,10 +824,10 @@ mod tests {
         // calls can still end the task without free-text replies.
         let context = AgentContext::top_level();
         let mut backend = FakeBackend::new(
-            vec![
-                "<tool_call>\n{\"name\": \"FinishTask\", \"arguments\": {\"answer\": \"all verified done\"}}\n</tool_call>"
-                    .to_string(),
-            ],
+            vec![tool_outcome(
+                "FinishTask",
+                serde_json::json!({"answer": "all verified done"}),
+            )],
             |_tool_call_id, call| {
                 assert_eq!(call.name, "FinishTask");
                 ToolExecution::Finish("all verified done".to_string())
@@ -1063,7 +849,7 @@ mod tests {
         };
 
         let mut backend = FakeBackend::new(
-            vec!["<tool_call>\n{\"name\": \"Read\", \"arguments\": {}}\n</tool_call>".to_string()],
+            vec![tool_outcome("Read", serde_json::json!({}))],
             |_tool_call_id, _call| ToolExecution::Result("ok".to_string()),
         );
 
@@ -1083,8 +869,8 @@ mod tests {
 
         let mut backend = FakeBackend::new(
             vec![
-                "<tool_call>\n{\"name\": \"Task\", \"arguments\": {\"prompt\": \"delegate further\"}}\n</tool_call>".to_string(),
-                "I'll handle it myself.".to_string(),
+                tool_outcome("Task", serde_json::json!({"prompt": "delegate further"})),
+                text_outcome("I'll handle it myself."),
             ],
             move |_tool_call_id, _call| {
                 // A real subagent-nesting rejection never reaches here —
@@ -1110,8 +896,8 @@ mod tests {
 
         let mut backend = FakeBackend::new(
             vec![
-                "<tool_call>\n{\"name\": \"Task\", \"arguments\": {\"prompt\": \"go do research\"}}\n</tool_call>".to_string(),
-                "Done, subagent found the answer.".to_string(),
+                tool_outcome("Task", serde_json::json!({"prompt": "go do research"})),
+                text_outcome("Done, subagent found the answer."),
             ],
             |_tool_call_id, call| {
                 assert_eq!(call.name, "Task");

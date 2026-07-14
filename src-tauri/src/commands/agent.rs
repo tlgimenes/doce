@@ -668,10 +668,6 @@ struct RealBackend<'a> {
 }
 
 impl crate::agent::AgentBackend for RealBackend<'_> {
-    fn dialect(&self) -> crate::inference::ToolDialect {
-        self.engine.dialect()
-    }
-
     fn measure(&mut self, messages: &[ChatMessage]) -> u32 {
         // Reuses `settings` (already loaded by the caller for the
         // hard-limit check) rather than a DB round-trip every turn --
@@ -854,10 +850,6 @@ struct SubagentBackend<'a> {
 }
 
 impl crate::agent::AgentBackend for SubagentBackend<'_> {
-    fn dialect(&self) -> crate::inference::ToolDialect {
-        self.engine.dialect()
-    }
-
     fn measure(&mut self, messages: &[ChatMessage]) -> u32 {
         self.engine
             .render_chat_prompt(messages)
