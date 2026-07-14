@@ -942,47 +942,23 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
         let outcome = crate::context::annotate_with_token_count(self.engine, outcome);
 
         // 010-context-window-management/US3 (FR-011/FR-012), 2026-07-09
-        // payload-files design: mirrors `handle_general_tool_call`'s staging
-        // block exactly (including the Read carve-out) — the subagent path
-        // gets the same payload-file treatment as the top-level one.
+        // payload-files design: `stage_tool_result_for_persist` (shared with
+        // `handle_general_tool_call`, including the Read carve-out) gives
+        // the subagent path the same payload-file treatment as the
+        // top-level one.
         let settings = crate::context::ContextSettings::load(self.conn)
             .await
             .unwrap_or_else(|_| crate::context::ContextSettings::from_raw(&Default::default()));
 
-        let (model_text, detail) = if call.name == "Read" {
-            // Carve-out: never write a copy of a file we just read — the
-            // payload reference IS the source. `fs::read`'s own caps
-            // (Task 5) bound the text. `payloadRef` is the RESOLVED
-            // absolute path (`detail.resolvedPath`, set by dispatch.rs's
-            // Read arm), not the raw `filePath` the model supplied — a
-            // relative `filePath` would otherwise reach the frontend's
-            // `read_attached_file`, which does no cwd resolution of its
-            // own. `filePath` is only a fallback for a detail shape that
-            // predates `resolvedPath`.
-            let mut detail = outcome.detail.clone();
-            detail["payloadRef"] = detail
-                .get("resolvedPath")
-                .cloned()
-                .unwrap_or_else(|| detail["filePath"].clone());
-            (outcome.model_text.clone(), detail)
-        } else {
-            match self.app_data_dir.as_deref() {
-                Some(app_data_dir) => {
-                    let staged = crate::context::payload::stage_tool_result(
-                        app_data_dir,
-                        self.subagent_id,
-                        &tool_call_id,
-                        &outcome,
-                        settings.tool_output_offload_tokens,
-                        |text| self.engine.count_tokens(text).unwrap_or(usize::MAX),
-                    );
-                    let mut detail = staged.detail;
-                    detail["payloadRef"] = serde_json::json!(staged.payload_ref);
-                    (staged.model_text, detail)
-                }
-                None => (outcome.model_text.clone(), outcome.detail.clone()),
-            }
-        };
+        let (model_text, detail) = stage_tool_result_for_persist(
+            self.app_data_dir.as_deref(),
+            self.subagent_id,
+            &tool_call_id,
+            &call.name,
+            &outcome,
+            settings.tool_output_offload_tokens,
+            |text| self.engine.count_tokens(text).unwrap_or(usize::MAX),
+        );
 
         persist_tool_call_and_result(
             None,
@@ -1265,6 +1241,63 @@ async fn execute_top_level_tool(
     sub_final
 }
 
+/// Stages a tool result for persistence: offloads a large result to a
+/// payload file and returns a reference line, or inlines a small one —
+/// returning the `(model_text, detail)` pair to persist (with `payloadRef`
+/// stamped into `detail`). 010-context-window-management/US3
+/// (FR-011/FR-012), 2026-07-09 payload-files design: every non-`Read`
+/// result is staged to a payload file
+/// (`context::payload::stage_tool_result`) -- the persisted `detail`
+/// carries the slimmed, previews-only outcome, and `model_text` is either
+/// the full result (inlined, under threshold) or a status reference line
+/// pointing at the payload file. `Read` is carved out: never write a copy
+/// of a file we just read — the payload reference IS the source.
+/// `fs::read`'s own caps (Task 5) bound the text. `payloadRef` is the
+/// RESOLVED absolute path (`detail.resolvedPath`, set by dispatch.rs's
+/// Read arm), not the raw `filePath` the model supplied — a relative
+/// `filePath` would otherwise reach the frontend's `read_attached_file`,
+/// which does no cwd resolution of its own. `filePath` is only a fallback
+/// for a detail shape that predates `resolvedPath`. `app_data_dir: None`
+/// passes the outcome through unstaged (used by tests/backends that don't
+/// have a resolved app data dir). Unifies the top-level
+/// (`handle_general_tool_call`) and subagent (`SubagentBackend`) staging
+/// paths, which were otherwise byte-identical.
+fn stage_tool_result_for_persist(
+    app_data_dir: Option<&std::path::Path>,
+    conversation_id: &str,
+    tool_call_id: &str,
+    tool_name: &str,
+    outcome: &crate::agent::dispatch::ToolOutcome,
+    offload_tokens: usize,
+    count_tokens: impl Fn(&str) -> usize,
+) -> (String, serde_json::Value) {
+    if tool_name == "Read" {
+        let mut detail = outcome.detail.clone();
+        detail["payloadRef"] = detail
+            .get("resolvedPath")
+            .cloned()
+            .unwrap_or_else(|| detail["filePath"].clone());
+        (outcome.model_text.clone(), detail)
+    } else {
+        match app_data_dir {
+            Some(app_data_dir) => {
+                let staged = crate::context::payload::stage_tool_result(
+                    app_data_dir,
+                    conversation_id,
+                    tool_call_id,
+                    outcome,
+                    offload_tokens,
+                    count_tokens,
+                );
+                let mut detail = staged.detail;
+                detail["payloadRef"] = serde_json::json!(staged.payload_ref);
+                (staged.model_text, detail)
+            }
+            None => (outcome.model_text.clone(), outcome.detail.clone()),
+        }
+    }
+}
+
 /// Handles a single non-`Task`, non-`AskUserQuestion` tool call for the
 /// top-level loop. Persists the `tool_call` row *before* executing —
 /// mirrors `handle_ask_user_question`'s existing early-persist pattern —
@@ -1319,39 +1352,15 @@ async fn handle_general_tool_call(
         .await
         .unwrap_or_else(|_| crate::context::ContextSettings::from_raw(&Default::default()));
 
-    let (model_text, detail) = if call.name == "Read" {
-        // Carve-out: never write a copy of a file we just read — the
-        // payload reference IS the source. `fs::read`'s own caps (Task 5)
-        // bound the text. `payloadRef` is the RESOLVED absolute path
-        // (`detail.resolvedPath`, set by dispatch.rs's Read arm), not the
-        // raw `filePath` the model supplied — a relative `filePath` would
-        // otherwise reach the frontend's `read_attached_file`, which does
-        // no cwd resolution of its own. `filePath` is only a fallback for a
-        // detail shape that predates `resolvedPath`.
-        let mut detail = outcome.detail.clone();
-        detail["payloadRef"] = detail
-            .get("resolvedPath")
-            .cloned()
-            .unwrap_or_else(|| detail["filePath"].clone());
-        (outcome.model_text.clone(), detail)
-    } else {
-        match &app_data_dir {
-            Some(app_data_dir) => {
-                let staged = crate::context::payload::stage_tool_result(
-                    app_data_dir,
-                    parent_conversation_id,
-                    tool_call_id,
-                    &outcome,
-                    settings.tool_output_offload_tokens,
-                    |text| engine.count_tokens(text).unwrap_or(usize::MAX),
-                );
-                let mut detail = staged.detail;
-                detail["payloadRef"] = serde_json::json!(staged.payload_ref);
-                (staged.model_text, detail)
-            }
-            None => (outcome.model_text.clone(), outcome.detail.clone()),
-        }
-    };
+    let (model_text, detail) = stage_tool_result_for_persist(
+        app_data_dir.as_deref(),
+        parent_conversation_id,
+        tool_call_id,
+        &call.name,
+        &outcome,
+        settings.tool_output_offload_tokens,
+        |text| engine.count_tokens(text).unwrap_or(usize::MAX),
+    );
 
     persist_tool_result(
         app,
@@ -3349,5 +3358,82 @@ mod tests {
         assert_eq!(content_type, "tool_result");
         let detail: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(detail["plan"], true);
+    }
+
+    // --- unify the top-level & subagent staging blocks ---
+
+    #[test]
+    fn stage_tool_result_for_persist_reads_carve_out_uses_the_resolved_source_path_and_ignores_app_data_dir(
+    ) {
+        // The Read carve-out never touches `app_data_dir` -- passing `None`
+        // here (as a real backend never would for a live Read) proves the
+        // carve-out branch returns before the staging match is even
+        // reached.
+        let outcome = crate::agent::dispatch::ToolOutcome {
+            model_text: "hello world".to_string(),
+            detail: serde_json::json!({
+                "toolName": "Read",
+                "filePath": "notes.txt",
+                "resolvedPath": "/abs/path/notes.txt",
+            }),
+        };
+
+        let (model_text, detail) =
+            stage_tool_result_for_persist(None, "conv1", "call1", "Read", &outcome, 10, |_| {
+                panic!("count_tokens must not be called on the Read carve-out")
+            });
+
+        assert_eq!(model_text, "hello world");
+        assert_eq!(detail["payloadRef"], "/abs/path/notes.txt");
+    }
+
+    #[test]
+    fn stage_tool_result_for_persist_offloads_an_over_threshold_result_to_a_payload_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let outcome = crate::agent::dispatch::ToolOutcome {
+            model_text: "a very long bash result".to_string(),
+            detail: serde_json::json!({"toolName": "Bash", "exitCode": 0}),
+        };
+
+        // An injected `count_tokens` that always reports a huge size --
+        // guaranteed over the threshold regardless of the actual text --
+        // drives the reference-line branch of `stage_tool_result`.
+        let (model_text, detail) = stage_tool_result_for_persist(
+            Some(dir.path()),
+            "conv1",
+            "call1",
+            "Bash",
+            &outcome,
+            10,
+            |_| usize::MAX,
+        );
+
+        assert_ne!(
+            model_text, outcome.model_text,
+            "an over-threshold result must be replaced with a reference line, not inlined"
+        );
+        let payload_ref = detail["payloadRef"]
+            .as_str()
+            .expect("payloadRef must be a path");
+        assert!(
+            std::path::Path::new(payload_ref).exists(),
+            "the payload file must actually exist on disk"
+        );
+    }
+
+    #[test]
+    fn stage_tool_result_for_persist_passes_through_unstaged_when_app_data_dir_is_none() {
+        let outcome = crate::agent::dispatch::ToolOutcome {
+            model_text: "raw result".to_string(),
+            detail: serde_json::json!({"toolName": "Bash", "exitCode": 0}),
+        };
+
+        let (model_text, detail) =
+            stage_tool_result_for_persist(None, "conv1", "call1", "Bash", &outcome, 10, |_| {
+                usize::MAX
+            });
+
+        assert_eq!(model_text, outcome.model_text);
+        assert_eq!(detail, outcome.detail);
     }
 }
