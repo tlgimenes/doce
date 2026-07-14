@@ -511,6 +511,41 @@ pub struct ChatOutcome {
     pub usage: Option<(u32, u32)>,
 }
 
+/// Buffers raw response bytes from a streamed HTTP body and splits them
+/// into complete lines on the `\n` BYTE (0x0A) — never part of a
+/// multi-byte UTF-8 sequence, so a line is only ever handed to the caller
+/// once it is whole. This is what makes `String::from_utf8_lossy` safe to
+/// call on each returned line: decoding happens only after a full line has
+/// been assembled from raw bytes, so a multi-byte character (an em dash,
+/// curly quotes, emoji, non-ASCII tool-call args) can never be torn in half
+/// across two `push` calls the way it would be if each raw network chunk
+/// were decoded independently before buffering — that used to silently
+/// replace each half with U+FFFD instead of erroring or reassembling
+/// correctly.
+#[derive(Default)]
+struct SseLineBuffer {
+    buf: Vec<u8>,
+}
+
+impl SseLineBuffer {
+    /// Appends raw bytes and returns every newly-completed line (trailing
+    /// `\r` trimmed, tolerating CRLF line endings same as before), leaving
+    /// any trailing partial line — the bytes after the last `\n`, if any —
+    /// buffered for the next call.
+    fn push(&mut self, bytes: &[u8]) -> Vec<String> {
+        self.buf.extend_from_slice(bytes);
+        let mut lines = Vec::new();
+        while let Some(pos) = self.buf.iter().position(|&b| b == b'\n') {
+            let line = String::from_utf8_lossy(&self.buf[..pos])
+                .trim_end_matches('\r')
+                .to_string();
+            self.buf.drain(..=pos);
+            lines.push(line);
+        }
+        lines
+    }
+}
+
 /// Talks to one llama-server instance's OpenAI-compatible
 /// `/v1/chat/completions` endpoint over HTTP + SSE. Holds a `reqwest::Client`
 /// (not recreated per call) so connection pooling/keep-alive work across
@@ -553,8 +588,11 @@ impl LlamaServerClient {
     /// `Bytes` frame at a time) rather than `bytes_stream()` — behaviorally
     /// identical, but avoids pulling in `futures_util::StreamExt` as a new
     /// direct dependency just to call `.next()` on the `Stream` `bytes_stream`
-    /// returns. Frames are appended to a line buffer and split on `\n`, since
-    /// SSE frames from the wire don't reliably land on line boundaries.
+    /// returns. Frames are appended RAW (as bytes, not decoded per-chunk) to
+    /// an `SseLineBuffer` and split on `\n`, since SSE frames from the wire
+    /// don't reliably land on line boundaries — decoding only complete lines
+    /// as UTF-8 is what keeps a multi-byte character from being torn in half
+    /// across two frames (see `SseLineBuffer`'s doc comment).
     pub async fn chat(
         &self,
         req: ChatRequest,
@@ -577,7 +615,7 @@ impl LlamaServerClient {
                 .send() => result.map_err(|e| InferenceError::Backend(e.to_string()))?,
         };
 
-        let mut buf = String::new();
+        let mut buf = SseLineBuffer::default();
         let mut accum = ToolCallAccum::default();
         let mut text = String::new();
         let mut reasoning = String::new();
@@ -597,11 +635,8 @@ impl LlamaServerClient {
                 // extends to individual malformed lines.
                 break;
             };
-            buf.push_str(&String::from_utf8_lossy(&bytes));
 
-            while let Some(pos) = buf.find('\n') {
-                let line = buf[..pos].trim_end_matches('\r').to_string();
-                buf.drain(..=pos);
+            for line in buf.push(&bytes) {
                 let Some(sse_chunks) = parse_sse_line(&line) else {
                     continue;
                 };
@@ -866,6 +901,48 @@ mod tests {
     }
 
     // --- streaming HTTP client (task 2.3) ---
+
+    #[test]
+    fn sse_line_buffer_reassembles_ascii_lines_split_across_pushes() {
+        let mut buf = SseLineBuffer::default();
+        // "hel" arrives in one network chunk, "lo\n" in the next — no
+        // complete line exists until the second push.
+        let first = buf.push(b"data: {\"choices\":[{\"delta\":{\"content\":\"hel");
+        assert!(first.is_empty());
+        let second = buf.push(b"lo\"}}]}\n");
+        assert_eq!(
+            second,
+            vec![r#"data: {"choices":[{"delta":{"content":"hello"}}]}"#.to_string()]
+        );
+    }
+
+    #[test]
+    fn sse_line_buffer_reassembles_multibyte_char_split_across_pushes() {
+        let mut buf = SseLineBuffer::default();
+        // The em dash (U+2014) encodes as UTF-8 bytes E2 80 94 — split
+        // after the first two bytes, straddling two `push` calls the same
+        // way two independent `response.chunk()` reads from the wire
+        // could split it. Naively decoding each chunk with
+        // `from_utf8_lossy` before buffering (the bug being fixed here)
+        // would turn each half into U+FFFD; buffering raw bytes and only
+        // decoding once the line is complete must not.
+        let first = buf.push(b"data: {\"choices\":[{\"delta\":{\"content\":\"\xe2\x80");
+        assert!(first.is_empty(), "no complete line yet: {first:?}");
+        let second = buf.push(b"\x94\"}}]}\n");
+        assert_eq!(second.len(), 1);
+        let line = &second[0];
+        assert!(
+            line.contains('\u{2014}'),
+            "expected a reassembled em dash, got: {line}"
+        );
+        assert!(
+            !line.contains('\u{FFFD}'),
+            "multi-byte char was corrupted into a replacement char: {line}"
+        );
+
+        let chunks = parse_sse_line(line).unwrap();
+        assert!(matches!(&chunks[0], ChatChunk::Content(s) if s == "\u{2014}"));
+    }
 
     fn sample_request() -> ChatRequest {
         ChatRequest::build(
