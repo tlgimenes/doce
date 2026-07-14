@@ -237,6 +237,7 @@ pub async fn list_models(
 pub async fn set_active_model(
     app: AppHandle,
     db_cell: State<'_, DbCell>,
+    inference: State<'_, crate::commands::conversations::InferenceState>,
     model_id: String,
 ) -> Result<(), String> {
     let conn = db_cell.get(&app).await?;
@@ -248,7 +249,82 @@ pub async fn set_active_model(
         Ok(())
     })
     .await
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+
+    // The engine is loaded lazily and cached for the app's lifetime —
+    // without this, a switch would keep serving the OLD weights until
+    // restart. Awaiting the lock also serializes behind any in-flight
+    // turn, so a running generation finishes on the model it started with.
+    *inference.0.lock().await = None;
+    Ok(())
+}
+
+/// One registry model as the Settings "Model" section presents it: the
+/// bundled registry entry (deduped across tiers) merged with this
+/// install's DB state. `recommended` marks the model
+/// `best_candidate_for_tier` would pick for this machine.
+#[derive(Debug, Clone, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AvailableModel {
+    pub model_id: String,
+    pub quantization: String,
+    pub capability_tags: Vec<String>,
+    pub recommended: bool,
+    pub installed: bool,
+    pub active: bool,
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn list_available_models(
+    app: AppHandle,
+    db_cell: State<'_, DbCell>,
+) -> Result<Vec<AvailableModel>, String> {
+    let registry = model_registry::bundled();
+    let profile = hardware::detect();
+    let recommended = model_registry::best_candidate_for_tier(&registry, &profile.tier)
+        .map(|m| m.model_id.clone());
+
+    let conn = db_cell.get(&app).await?;
+    let db_rows: Vec<(String, bool, bool)> = conn
+        .call(
+            |conn: &mut Connection| -> rusqlite::Result<Vec<(String, bool, bool)>> {
+                let mut stmt =
+                    conn.prepare("SELECT id, is_active, installed_at IS NOT NULL FROM models")?;
+                let rows = stmt
+                    .query_map([], |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get::<_, i64>(1)? == 1,
+                            row.get::<_, i64>(2)? == 1,
+                        ))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(rows)
+            },
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for tier in &registry.tiers {
+        for candidate in &tier.models {
+            if !seen.insert(candidate.model_id.clone()) {
+                continue;
+            }
+            let db = db_rows.iter().find(|(id, _, _)| id == &candidate.model_id);
+            out.push(AvailableModel {
+                model_id: candidate.model_id.clone(),
+                quantization: candidate.quantization.clone(),
+                capability_tags: candidate.capability_tags.clone(),
+                recommended: recommended.as_deref() == Some(candidate.model_id.as_str()),
+                installed: db.map(|(_, _, installed)| *installed).unwrap_or(false),
+                active: db.map(|(_, active, _)| *active).unwrap_or(false),
+            });
+        }
+    }
+    Ok(out)
 }
 
 pub fn now_ms() -> i64 {

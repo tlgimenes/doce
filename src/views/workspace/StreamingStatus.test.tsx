@@ -89,3 +89,39 @@ describe("StreamingStatus zero-value hiding", () => {
     expect(screen.queryByTestId("agent-thinking-tokens")).not.toBeInTheDocument();
   });
 });
+
+describe("StreamingStatus live reasoning line", () => {
+  it("shows the latest think line beside Working, advancing line by line", () => {
+    const { rerender } = render(
+      <StreamingStatus startedAt={Date.now()} stream={"<think>\nfirst I read the file"} />,
+    );
+    // Working keeps the shimmer; the reasoning rides the same row.
+    expect(screen.getByTestId("agent-thinking-status")).toHaveTextContent("Working");
+    expect(screen.getByTestId("agent-thinking-stream")).toHaveTextContent("first I read the file");
+
+    rerender(
+      <StreamingStatus
+        startedAt={Date.now()}
+        stream={"<think>\nfirst I read the file\nnow comparing the schemas"}
+      />,
+    );
+    expect(screen.getByTestId("agent-thinking-stream")).toHaveTextContent(
+      "now comparing the schemas",
+    );
+  });
+
+  it("shows no reasoning segment before thinking starts or after it closes", () => {
+    const { rerender } = render(<StreamingStatus startedAt={Date.now()} stream="" />);
+    expect(screen.queryByTestId("agent-thinking-stream")).not.toBeInTheDocument();
+
+    // After </think> the stream is the tool-call tail — grammar syntax,
+    // not reasoning — so the segment disappears.
+    rerender(
+      <StreamingStatus
+        startedAt={Date.now()}
+        stream={'<think>\ndone reasoning\n</think><tool_call>{"name"'}
+      />,
+    );
+    expect(screen.queryByTestId("agent-thinking-stream")).not.toBeInTheDocument();
+  });
+});

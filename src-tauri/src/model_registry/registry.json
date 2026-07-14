@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-07-03T00:00:00Z",
+  "updated_at": "2026-07-13T00:00:00Z",
   "tiers": [
     {
       "tier_id": "apple-silicon-8gb",
@@ -8,11 +8,11 @@
       "chip_families": ["M1", "M2", "M3", "M4"],
       "models": [
         {
-          "model_id": "smollm2-135m-instruct-q4_k_m",
-          "source_url": "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q4_K_M.gguf",
+          "model_id": "minicpm5-1b-q4_k_m",
+          "source_url": "https://huggingface.co/openbmb/MiniCPM5-1B-GGUF/resolve/main/MiniCPM5-1B-Q4_K_M.gguf",
           "quantization": "Q4_K_M",
-          "sha256": "2e8040ceae7815abe0dcb3540b9995eaa1fa0d2ca9e797d0a635ae4433c68c2d",
-          "capability_tags": ["fast", "tiny"],
+          "sha256": "81b64d05a23b17b34c475f42b3e72fbde62d4b92cc34541f7a8031d0752deafa",
+          "capability_tags": ["tool-calling", "thinking", "fast"],
           "priority": 1
         }
       ]
@@ -23,12 +23,20 @@
       "chip_families": ["M1", "M2", "M3", "M4"],
       "models": [
         {
-          "model_id": "qwen3-4b-instruct-2507-q4_k_m",
-          "source_url": "https://huggingface.co/bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+          "model_id": "minicpm5-1b-q4_k_m",
+          "source_url": "https://huggingface.co/openbmb/MiniCPM5-1B-GGUF/resolve/main/MiniCPM5-1B-Q4_K_M.gguf",
           "quantization": "Q4_K_M",
-          "sha256": "2fde00ce69dd4899c70d020845e2638353015bba0fdf161b3eb965f2bca4464e",
-          "capability_tags": ["tool-calling", "general"],
+          "sha256": "81b64d05a23b17b34c475f42b3e72fbde62d4b92cc34541f7a8031d0752deafa",
+          "capability_tags": ["tool-calling", "thinking", "fast"],
           "priority": 1
+        },
+        {
+          "model_id": "qwen3-4b-thinking-2507-q4_k_m",
+          "source_url": "https://huggingface.co/bartowski/Qwen_Qwen3-4B-Thinking-2507-GGUF/resolve/main/Qwen_Qwen3-4B-Thinking-2507-Q4_K_M.gguf",
+          "quantization": "Q4_K_M",
+          "sha256": "64ce5838a76b4d63071289c17ed04525265a47abf51546cd747a30e41b7687fa",
+          "capability_tags": ["tool-calling", "thinking", "general"],
+          "priority": 2
         }
       ]
     },
@@ -38,11 +46,11 @@
       "chip_families": ["M1", "M2", "M3", "M4"],
       "models": [
         {
-          "model_id": "smollm2-135m-instruct-q4_k_m",
-          "source_url": "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q4_K_M.gguf",
+          "model_id": "minicpm5-1b-q4_k_m",
+          "source_url": "https://huggingface.co/openbmb/MiniCPM5-1B-GGUF/resolve/main/MiniCPM5-1B-Q4_K_M.gguf",
           "quantization": "Q4_K_M",
-          "sha256": "2e8040ceae7815abe0dcb3540b9995eaa1fa0d2ca9e797d0a635ae4433c68c2d",
-          "capability_tags": ["fast", "tiny"],
+          "sha256": "81b64d05a23b17b34c475f42b3e72fbde62d4b92cc34541f7a8031d0752deafa",
+          "capability_tags": ["tool-calling", "thinking", "fast"],
           "priority": 1
         }
       ]
@@ -53,11 +61,11 @@
       "chip_families": ["M1", "M2", "M3", "M4"],
       "models": [
         {
-          "model_id": "smollm2-135m-instruct-q4_k_m",
-          "source_url": "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q4_K_M.gguf",
+          "model_id": "minicpm5-1b-q4_k_m",
+          "source_url": "https://huggingface.co/openbmb/MiniCPM5-1B-GGUF/resolve/main/MiniCPM5-1B-Q4_K_M.gguf",
           "quantization": "Q4_K_M",
-          "sha256": "2e8040ceae7815abe0dcb3540b9995eaa1fa0d2ca9e797d0a635ae4433c68c2d",
-          "capability_tags": ["fast", "tiny"],
+          "sha256": "81b64d05a23b17b34c475f42b3e72fbde62d4b92cc34541f7a8031d0752deafa",
+          "capability_tags": ["tool-calling", "thinking", "fast"],
           "priority": 1
         }
       ]

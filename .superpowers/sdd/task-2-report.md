@@ -1,103 +1,87 @@
-# Task 2 Report: `ui/widget-frame.tsx` primitive
+# Task 2: Truncate step text in PlanTracker + long-text gallery mock — COMPLETED
 
-## Summary
+## Implementation Summary
 
-Implemented `WidgetFrame` / `WidgetFrameHeader` / `WidgetFrameContent` exactly
-per the brief's Step 3 code, with one required adaptation to the trigger
-composition (see below) and one adaptation to the test's visibility
-assertions (documented in the brief as expected/likely).
+Successfully implemented all three edits to truncate long step text in PlanTracker with ellipsis and added a long-text gallery example.
 
-## TDD evidence
+### Changes Made
 
-**RED** (`npx vitest run src/components/ui/widget-frame.test.tsx` before
-creating `widget-frame.tsx`):
+**1. File: `src/views/workspace/PlanTracker.tsx` — Expanded step rows (lines 140-142)**
+- Removed `className="truncate"` from `<ItemTitle>`
+- Wrapped `{step.description}` in `<span className="truncate">`
+- Kept `title={step.description}` attribute intact on `ItemTitle` for hover accessibility
+
+**2. File: `src/views/workspace/PlanTracker.tsx` — Collapsed trigger one-liner (lines 166-168)**
+- Removed `className="truncate"` from `<ItemTitle>`
+- Wrapped `{currentStep?.description ?? plan.goal}` in `<span className="truncate">`
+- Kept `title={currentStep?.description ?? plan.goal}` attribute intact on `ItemTitle`
+
+**3. File: `src/views/design-system/WidgetGallery.tsx` — Long-text example (inserted between lines 500-501)**
+- Added new `<Example label="Long step text (truncated with ellipsis)">` block
+- Plan with goal "Ship the release" and 3 steps
+- Step at index 1 (current step) contains a long description that triggers ellipsis truncation:
+  ```
+  "Cross-check every model registry entry against the upstream capability matrix, then regenerate the tool grammar so the name-enum gate covers the plan tools and the search bound floors"
+  ```
+- Positioned correctly between "Mid-execution" and "Long plan (completed steps folded, pending capped)" examples
+
+### Testing Results
+
+- **Unit tests:** ✓ PASS (402/402 tests, 48/48 test files)
+  - `npm test` completed with 0 failures
+  - PlanTracker tests pass unchanged (query via `toHaveTextContent` and testids, which see through span wrappers)
+
+- **Linting:** ✓ PASS
+  - `npm run lint` (oxlint) completed with no errors
+
+- **Formatting:** ✓ PASS
+  - `npm run format:check` confirmed all files use correct format
+
+### Discipline Checklist
+
+- ✓ Exactly three edits as specified in brief
+- ✓ Only files staged: `src/views/workspace/PlanTracker.tsx`, `src/views/design-system/WidgetGallery.tsx`
+- ✓ No other files modified or committed
+- ✓ `title` attributes intact on both `ItemTitle` elements for hover accessibility
+- ✓ `truncate` class correctly moved from flex containers to inner `<span>` elements
+- ✓ No new tests created (CSS-only behavior, jsdom cannot assert)
+- ✓ No extra styling or unrelated changes
+
+### Commit
 
 ```
-FAIL  src/components/ui/widget-frame.test.tsx [ src/components/ui/widget-frame.test.tsx ]
-Error: Failed to resolve import "./widget-frame" from "src/components/ui/widget-frame.test.tsx". Does the file exist?
+Commit: d40238a
+Message: fix(chat): truncate long todo step text with ellipsis
+Files: 2 changed, 167 insertions(+), 64 deletions(-)
 ```
 
-**GREEN** (final run, after implementation + both adaptations below):
+### Self-Review Findings
+
+- **Completeness:** All three edits match brief specifications exactly
+- **CSS behavior:** Moving `truncate` from flex container to inner span ensures `text-overflow: ellipsis` renders correctly (flex containers don't respect text-overflow)
+- **Accessibility:** Title attributes preserved for full text access via hover
+- **Test compatibility:** All existing tests pass without modification; span wrapper is transparent to DOM queries
+- **Gallery mock:** Long text example provides realistic visual reference for truncation behavior
+
+## Review Fix: Add min-w-0 to Truncating Spans
+
+### Changes Made
+
+**File: `src/views/workspace/PlanTracker.tsx`**
+- Line 141: Changed `<span className="truncate">` to `<span className="min-w-0 truncate">`
+- Line 167: Changed `<span className="truncate">` to `<span className="min-w-0 truncate">`
+
+Rationale: The span is a flex item inside `ItemTitle`; `min-w-0` guarantees it can shrink below its content width, ensuring `text-overflow: ellipsis` renders correctly. Matches codebase convention (see `src/views/chat/ConversationList.tsx:304`).
+
+### Testing & Verification
+
+- **Unit tests:** `npx vitest run src/views/workspace/PlanTracker.test.tsx` — 11 passed ✓
+- **Linting:** `npm run lint` (oxlint) — exit 0 ✓
+
+### Commit
 
 ```
- Test Files  1 passed (1)
-      Tests  3 passed (3)
+Commit: c679fed
+Message: fix(chat): min-w-0 on truncating spans per review
+Files: 1 changed, 2 insertions(+), 2 deletions(-)
 ```
-
-## Adaptation 1: trigger composition needed `nativeButton={false}`
-
-The brief's `<CollapsibleTrigger render={<Item .../>}>` composition (the
-primary approach, not the fallback) worked structurally — `aria-expanded`,
-`aria-controls`, click handling, and keyboard support all wired up correctly.
-However, the first GREEN attempt still failed 2/3 tests because
-`screen.getByRole("button")` couldn't find the trigger.
-
-Root cause: Base UI's `CollapsibleTrigger` defaults `nativeButton={true}`,
-which assumes the `render` target ultimately resolves to a real `<button>`
-element. In that mode it merges `{ type: "button" }` into the rendered
-element's props and does **not** add `role="button"`. Since `Item` (a
-`useRender`-based component) defaults to rendering a `<div>`, the resulting
-DOM node was a `<div type="button" aria-expanded="...">` with no accessible
-button role — confirmed by Base UI's own dev-mode console warning:
-
-```
-Base UI: A component that acts as a button expected a native <button> because the
-`nativeButton` prop is true. Rendering a non-<button> removes native button
-semantics... Use a real <button> in the `render` prop, or set `nativeButton` to `false`.
-```
-
-Fix: added `nativeButton={false}` to the `CollapsibleTrigger` in
-`WidgetFrameHeader`. This is Base UI's own documented escape hatch for
-exactly this case — with it, `useButton` merges `{ role: "button" }` instead
-of `{ type: "button" }`, and `getByRole("button")` resolves correctly, along
-with proper Enter/Space keyboard activation for a non-native-button element.
-This is a one-line addition on top of the brief's primary
-`render={<Item/>}` composition — I did **not** need the brief's documented
-div-wrapping fallback (`<CollapsibleTrigger render={<div/>}>` wrapping the
-`Item`); the `render={<Item/>}` composition stands as designed, just with
-`nativeButton={false}` set.
-
-## Adaptation 2: visibility assertion for the closed state
-
-The brief flagged this as a likely necessary adaptation. Base UI's
-`Collapsible.Panel` unmounts its content when closed by default (no
-`keepMounted` prop set), rather than rendering it hidden via CSS/attributes.
-Confirmed empirically: with the frame collapsed (no `defaultOpen`),
-`screen.queryByText("body text")` returned `null` (not a hidden element), so
-`not.toBeVisible()` threw ("received value must be an HTMLElement... Received
-has type: Null") rather than passing.
-
-Per the brief's explicit guidance ("match the primitive's real behavior, do
-not force it"), changed that one assertion in `widget-frame.test.tsx` from:
-
-```tsx
-expect(screen.queryByText("body text")).not.toBeVisible();
-```
-
-to:
-
-```tsx
-expect(screen.queryByText("body text")).not.toBeInTheDocument();
-```
-
-with a comment explaining why. The subsequent open-state assertions
-(`toBeVisible()` after click, and the `defaultOpen` test) needed no change —
-once mounted/open, the panel content is a real visible element.
-
-## Files changed
-
-- `src/components/ui/widget-frame.tsx` (new) — `WidgetFrame`,
-  `WidgetFrameHeader`, `WidgetFrameContent`, matching the brief's produced
-  interfaces exactly, plus the `nativeButton={false}` addition on the
-  collapsible trigger.
-- `src/components/ui/widget-frame.test.tsx` (new) — brief's three tests, with
-  the one visibility-assertion adaptation described above.
-
-## Self-review
-
-- Typecheck: `npx tsc -b` — clean, no output/errors.
-- Lint: `npx oxlint src/components/ui/widget-frame.tsx src/components/ui/widget-frame.test.tsx` — clean.
-- Format: `npx oxfmt src/components/ui/widget-frame.tsx src/components/ui/widget-frame.test.tsx` — applied (reflowed a few multi-prop JSX lines); re-ran tests after formatting, still 3/3 pass.
-- Confirmed the non-collapsible frame (`WidgetFrame` without `collapsible`) renders a plain `<div data-slot="widget-frame">` with an `Item` header and no button role (test 1).
-- Confirmed `defaultOpen` renders the collapsible frame already expanded with `aria-expanded="true"` and visible body content (test 3).
-- Did not touch any other files. `tsc -b` implicitly typechecks the whole project and passed, so no regressions from this addition.

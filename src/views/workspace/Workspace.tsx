@@ -182,6 +182,17 @@ export default function Workspace({
   messagesRef.current = messages;
   const [thinking, setThinking] = useState(false);
   const [optimisticTurnStartedAt, setOptimisticTurnStartedAt] = useState<number | null>(null);
+  // The in-flight prompt's chars/4 estimate, carried ACROSS refetches: the
+  // backend emits agent-message-persisted for the user row immediately
+  // after persisting it, while its token_count is still NULL (the real
+  // count is UPDATEd only after the engine loads) — without this, the
+  // wholesale setMessages(loadedMessages) on that first event would wipe
+  // the optimistic row's estimate and blank the streaming ↑ counter.
+  const optimisticPromptTokensRef = useRef<number | null>(null);
+  // The in-flight generation's raw sampled text (mostly <think> reasoning
+  // under Require mode) — ephemeral ticker for the working shimmer, reset
+  // at every persisted-row boundary and on turn end.
+  const [liveGenText, setLiveGenText] = useState("");
   // The backend's reload-proof "a turn is genuinely running" signal
   // (ActiveGenerations, via is_generation_active). `sendInFlight` and
   // `thinking` are in-memory webview state a reload wipes; during the
@@ -223,8 +234,28 @@ export default function Workspace({
   const refreshMessages = useCallback(async () => {
     const targetConversationId = conversationId;
     syncBackendTurnActive();
-    const loadedMessages = await commands.listMessages(targetConversationId);
+    let loadedMessages = await commands.listMessages(targetConversationId);
     if (!isMountedRef.current || currentConversationIdRef.current !== targetConversationId) return;
+
+    // Keep the estimate on the just-sent prompt until its real tokenizer
+    // count lands (see optimisticPromptTokensRef).
+    const promptEstimate = optimisticPromptTokensRef.current;
+    if (promptEstimate != null) {
+      let lastUserIndex = -1;
+      for (let i = loadedMessages.length - 1; i >= 0; i--) {
+        if (loadedMessages[i].role === "user") {
+          lastUserIndex = i;
+          break;
+        }
+      }
+      if (lastUserIndex !== -1 && loadedMessages[lastUserIndex].tokenCount == null) {
+        loadedMessages = loadedMessages.slice();
+        loadedMessages[lastUserIndex] = {
+          ...loadedMessages[lastUserIndex],
+          tokenCount: promptEstimate,
+        };
+      }
+    }
 
     const questionPendingBefore = isQuestionPending(messagesRef.current);
     const questionPendingAfter = isQuestionPending(loadedMessages);
@@ -288,11 +319,16 @@ export default function Workspace({
   useEffect(() => {
     let cancelled = false;
     let unlistenPersisted: (() => void) | undefined;
+    let unlistenPiece: (() => void) | undefined;
 
     (async () => {
       unlistenPersisted = await events.onAgentMessagePersisted((p) => {
         if (p.conversationId !== conversationId) return;
         if (cancelled) return;
+        // A persisted row is a generation boundary — the live ticker's
+        // text now exists (stripped) in the transcript, or was reasoning
+        // that intentionally never will.
+        setLiveGenText("");
         void refreshMessages();
       });
       if (cancelled) {
@@ -300,9 +336,21 @@ export default function Workspace({
       }
     })();
 
+    (async () => {
+      unlistenPiece = await events.onAgentGenerationPiece((p) => {
+        if (p.conversationId !== conversationId) return;
+        if (cancelled) return;
+        setLiveGenText((prev) => prev + p.piece);
+      });
+      if (cancelled) {
+        unlistenPiece();
+      }
+    })();
+
     return () => {
       cancelled = true;
       unlistenPersisted?.();
+      unlistenPiece?.();
     };
   }, [conversationId]);
 
@@ -415,6 +463,8 @@ export default function Workspace({
 
       const submittedAt = Date.now();
       setError(null);
+      setLiveGenText("");
+      optimisticPromptTokensRef.current = estimateTokenCount(content);
       setMessages((prev) => [
         ...prev,
         {
@@ -462,8 +512,10 @@ export default function Workspace({
           }
         } finally {
           clearSendInFlight(conversationId);
+          optimisticPromptTokensRef.current = null;
           if (isMountedRef.current && currentConversationIdRef.current === conversationId) {
             setThinking(false);
+            setLiveGenText("");
             setOptimisticTurnStartedAt(null);
             dispatchedInitialTurnRef.current = null;
             // Safety net: a real refetch regardless of event timing/ordering,
@@ -532,7 +584,11 @@ export default function Workspace({
         </MessageScroller>
         <PlanTracker conversationId={conversationId} />
         {showGenericStreamingStatus && (
-          <StreamingStatus startedAt={activeTurnStartedAt} tokens={activeTurnTokens} />
+          <StreamingStatus
+            startedAt={activeTurnStartedAt}
+            tokens={activeTurnTokens}
+            stream={liveGenText}
+          />
         )}
         <div className="p-4" data-testid="workspace-composer-shell">
           {/* The view-transition name lives on the max-w-xl column, matching

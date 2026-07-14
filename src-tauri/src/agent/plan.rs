@@ -57,6 +57,13 @@ use serde::{Deserialize, Serialize};
 pub struct PlanStep {
     pub description: String,
     pub done: bool,
+    /// Set by `RefuseStep`: the step is retired -- `next_undone_step`
+    /// skips it, so `ResumeExecution` can never re-enter a step already
+    /// refused as written (the 2026-07-12 doom loop: an impossible step 0
+    /// was resumed verbatim for 200 turns). A revision arrives as a NEW
+    /// step via `AddStep`, informed by the refusal reason.
+    #[serde(default)]
+    pub refused: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -94,8 +101,8 @@ const UNION_TOOL_LINES: &[&str] = &[
     r#"{"type": "function", "function": {"name": "Write", "description": "Create or overwrite a file.", "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}, "content": {"type": "string"}}, "required": ["file_path", "content"]}}}"#,
     r#"{"type": "function", "function": {"name": "Edit", "description": "Targeted in-place edit: replace old_string with new_string inside the file.", "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}, "old_string": {"type": "string"}, "new_string": {"type": "string"}, "replace_all": {"type": "boolean"}}, "required": ["file_path", "old_string", "new_string"]}}}"#,
     r#"{"type": "function", "function": {"name": "Bash", "description": "Run a shell command.", "parameters": {"type": "object", "properties": {"command": {"type": "string"}, "timeout": {"type": "number"}}, "required": ["command"]}}}"#,
-    r#"{"type": "function", "function": {"name": "Grep", "description": "Search file contents with a regular expression. Omit path to search the current working directory.", "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}, "glob": {"type": "string"}}, "required": ["pattern"]}}}"#,
-    r#"{"type": "function", "function": {"name": "Glob", "description": "Find files by name pattern. The pattern is a single wildcard expression, e.g. \"bug_*.txt\" or \"*.rs\" -- never a space-separated list of literal filenames, that matches nothing. Omit path to search the current working directory.", "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}}, "required": ["pattern"]}}}"#,
+    r#"{"type": "function", "function": {"name": "Grep", "description": "Search file contents with a regular expression. Omit path to search the current working directory. Results are capped at 100 matches -- for counting or exhaustive listings use a Bash pipeline instead.", "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}, "glob": {"type": "string"}}, "required": ["pattern"]}}}"#,
+    r#"{"type": "function", "function": {"name": "Glob", "description": "Find files by name pattern. The pattern is a single wildcard expression, e.g. \"bug_*.txt\" or \"*.rs\" -- never a space-separated list of literal filenames, that matches nothing. Omit path to search the current working directory. Results are capped at the 100 most recently modified matches -- for counting or exhaustive listings use a Bash pipeline instead.", "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}}, "required": ["pattern"]}}}"#,
 ];
 
 /// `Task` gets its own line because it's a union tool a subagent host
@@ -128,7 +135,7 @@ const UNION_TOOL_LINES_TAIL: &[&str] = &[
 /// here automatically" became "You return to PLANNING mode automatically").
 /// Everything volatile (which mode is active, the current step, refusals,
 /// the plan checklist) lives in `PlanState::state_tail`, never here.
-fn build_plan_system_prompt(allow_task: bool) -> String {
+fn build_plan_system_prompt(allow_task: bool, dialect: crate::inference::ToolDialect) -> String {
     let mut tools: Vec<&str> = UNION_TOOL_LINES.to_vec();
     if allow_task {
         // Top-level-only tools, both keyed on the same host flag: `Task`
@@ -151,8 +158,19 @@ fn build_plan_system_prompt(allow_task: bool) -> String {
         "Read, Write, Edit, Bash, Grep, Glob, StepDone, RefuseStep"
     };
 
+    // The "unclear" triage bullet is the one host-variant sentence beyond
+    // the tool lists: a subagent has no route to a user, so its variant
+    // must not mention asking one (the invariant
+    // plan_system_prompt_omits_task_and_ask_user_for_subagents pins).
+    let call_instructions = dialect.call_format_instructions();
+    let unclear_action = if allow_task {
+        "call AskUserQuestion, and keep asking until the task is clear"
+    } else {
+        "call FinishTask explaining exactly what is missing"
+    };
+
     format!(
-        r#"You are a task agent that works in two modes, switched by tool calls. In PLANNING mode you are a planning supervisor: you maintain a plan and hand off each step's actual work to EXECUTING mode -- you do not personally edit files or run commands while planning. In EXECUTING mode you are executing one step of that larger plan with file/shell tools. The last message of the conversation always tells you which mode you are in right now.
+        r#"You are doce, a local coding agent.
 
 # Tools
 
@@ -163,30 +181,33 @@ You are provided with function signatures within <tools></tools> XML tags:
 {tools_block}
 </tools>
 
-For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
-<tool_call>
-{{"name": <function-name>, "arguments": <args-json-object>}}
-</tool_call>
+{call_instructions}
+
+# Counting and sampling
+
+Glob and Grep results are capped at 100, so never answer "how many" or "list all" by counting their output -- a capped result undercounts silently. For counts, sizes, samples, or statistics over files, run one Bash command that computes the answer directly, e.g. `find . -name "*.ts" | wc -l` for "how many .ts files?", `du -sh */ | sort -h` for "which folder is biggest?". One command, one number -- not a listing you count yourself.
+
+# Size up the request first
+
+Not every message is a task. Decide before anything else:
+- A greeting, small talk, or a question you can already answer: call FinishTask with your answer right away -- no plan. Never invent work the user did not ask for.
+- A request that is unclear, or that names files or things you cannot find: {unclear_action}. Never guess what the task might be.
+- A clear task: call CreatePlan, then ResumeExecution.
 
 # Modes
 
-PLANNING mode tools: {planning_names}.
-EXECUTING mode tools: {executing_names}.
-Only the current mode's tools are available to you -- the last message of the conversation names the mode.
+You work in two modes, switched by tool calls. The last message of the conversation always names your current mode, and only that mode's tools are available to you.
 
-# Plan granularity
+PLANNING mode tools: {planning_names}. You maintain the plan and hand each step's work to EXECUTING mode; you do not personally edit files or run commands here.
+EXECUTING mode tools: {executing_names}. You do one step's work, framed with the overall goal plus that step's own description. You must end every step by calling StepDone or RefuseStep -- never answer in plain text there, that would end the WHOLE task, not just this step.
 
-Each step is executed with its own limited number of turns, so a step must be small enough to actually finish within that. If the task repeats similar work across multiple items (e.g. multiple files), create ONE STEP PER ITEM -- a task covering 20 files needs 20 per-file steps. NEVER write a step like "repeat this process for the remaining files": a bundled step silently stops partway and the remaining items are lost. Use AddStep to extend or correct the plan afterward -- do not call CreatePlan again, that would discard progress already made. Plans you may see in earlier conversation history are finished -- each new user request starts with no plan.
+# Plans
 
-# Executing a step
+Each step runs with its own limited number of turns, so keep steps small: one step per item -- a task covering 20 files needs 20 per-file steps, never "repeat this process for the remaining files": a bundled step silently stops partway and the remaining items are lost. Extend or correct the plan with AddStep; never call CreatePlan again, that would discard progress already made. Plans in earlier conversation history are finished -- each new user request starts with no plan.
 
-Each step runs in EXECUTING mode, framed with the overall goal plus that step's own description. You must end every step by calling StepDone or RefuseStep -- never answer in plain text there, that would end the WHOLE task, not just this step.
+Once every step reports done you are back in PLANNING mode. A step reporting done is a CLAIM, not proof: before giving your final answer you MUST verify the outcome yourself with Read/Grep/Glob -- re-read the changed files or search for remaining problems. If verification shows anything still wrong, AddStep and ResumeExecution rather than accepting the claim. Only once verified, call FinishTask with your final answer.
 
-# Verification
-
-You return to PLANNING mode automatically once every step reports done, or when a step reports it could not be completed (its reason will be given to you). A step reporting done is a CLAIM, not proof. Before giving your final answer you MUST independently verify the outcome with Read/Grep/Glob -- re-read the changed files or search for remaining problems yourself. If verification shows something is genuinely still wrong, use AddStep and ResumeExecution rather than accepting the claim.
-
-Once you have verified the task is genuinely, completely done, call FinishTask with your final answer. Every response you give must be exactly one <tool_call>."#
+Every response you give must be exactly one tool call."#
     )
 }
 
@@ -207,12 +228,25 @@ Once you have verified the task is genuinely, completely done, call FinishTask w
 /// the `Task` tool line entirely (FR-016). What matters for KV reuse is
 /// byte-stability WITHIN a host across turns, and each host always passes
 /// the same flag.
-pub fn plan_system_prompt(allow_task: bool) -> &'static str {
+pub fn plan_system_prompt(
+    allow_task: bool,
+    dialect: crate::inference::ToolDialect,
+) -> &'static str {
     use std::sync::OnceLock;
-    static WITH_TASK: OnceLock<String> = OnceLock::new();
-    static WITHOUT_TASK: OnceLock<String> = OnceLock::new();
-    let cell = if allow_task { &WITH_TASK } else { &WITHOUT_TASK };
-    cell.get_or_init(|| build_plan_system_prompt(allow_task))
+    // One cache cell per (host flavor, dialect) — byte-stability WITHIN a
+    // host+model pairing is what KV reuse needs, and both inputs are
+    // stable for an engine's lifetime.
+    static WITH_TASK_HERMES: OnceLock<String> = OnceLock::new();
+    static WITHOUT_TASK_HERMES: OnceLock<String> = OnceLock::new();
+    static WITH_TASK_MINICPM: OnceLock<String> = OnceLock::new();
+    static WITHOUT_TASK_MINICPM: OnceLock<String> = OnceLock::new();
+    let cell = match (allow_task, dialect) {
+        (true, crate::inference::ToolDialect::HermesJson) => &WITH_TASK_HERMES,
+        (false, crate::inference::ToolDialect::HermesJson) => &WITHOUT_TASK_HERMES,
+        (true, crate::inference::ToolDialect::MiniCpmXml) => &WITH_TASK_MINICPM,
+        (false, crate::inference::ToolDialect::MiniCpmXml) => &WITHOUT_TASK_MINICPM,
+    };
+    cell.get_or_init(|| build_plan_system_prompt(allow_task, dialect))
 }
 
 /// The five tools owned by the plan state machine itself — used by the
@@ -253,7 +287,24 @@ pub struct PlanState {
     /// `state_tail` renders a Planning tail — carries the refusal
     /// reason into that one revision turn without lingering after.
     refusal_context: Option<String>,
+    /// Total `RefuseStep` calls this task. Past `REFUSAL_WRAP_UP_THRESHOLD`
+    /// every Planning tail tells the model to stop replanning around the
+    /// failure and FinishTask honestly — the prompt-level half of the
+    /// doom-loop fix (`PlanStep::refused` is the machine-level half).
+    refusal_count: u32,
 }
+
+/// After this many refusals in one task, Planning tails push the model to
+/// stop verify-spirals and either do the remaining work or wrap up.
+const REFUSAL_WRAP_UP_THRESHOLD: u32 = 3;
+
+/// At this many refusals the machine ends the task itself: `RefuseStep`
+/// returns `Finish` with an honest failure report instead of another
+/// planning round. A task refusing this often is going nowhere -- the
+/// 2026-07-12 doom loop never terminated on its own (it died of KV-cache
+/// exhaustion at turn ~135, well before the 200-turn cap), so the
+/// terminator must be mechanical, not another nudge.
+const REFUSAL_HARD_LIMIT: u32 = 8;
 
 /// The tool names each state may call, mirroring EXACTLY what that state's
 /// system prompt advertised before the prompts were unified -- now enforced
@@ -284,11 +335,26 @@ const PLANNING_ALLOWED_TOOLS_NO_ASK: &[&str] = &[
     "FinishTask",
 ];
 const EXECUTING_ALLOWED_TOOLS: &[&str] = &[
-    "Read", "Write", "Edit", "Bash", "Grep", "Glob", "Task", "StepDone", "RefuseStep",
+    "Read",
+    "Write",
+    "Edit",
+    "Bash",
+    "Grep",
+    "Glob",
+    "Task",
+    "StepDone",
+    "RefuseStep",
 ];
 /// FR-016: a subagent's Executing turns must not be able to sample `Task`.
 const EXECUTING_ALLOWED_TOOLS_NO_TASK: &[&str] = &[
-    "Read", "Write", "Edit", "Bash", "Grep", "Glob", "StepDone", "RefuseStep",
+    "Read",
+    "Write",
+    "Edit",
+    "Bash",
+    "Grep",
+    "Glob",
+    "StepDone",
+    "RefuseStep",
 ];
 
 impl PlanState {
@@ -315,12 +381,28 @@ impl PlanState {
         let mut sections: Vec<String> = Vec::new();
         match self.state {
             LoopState::Planning => {
-                sections.push(
-                    "You are in PLANNING mode -- maintain the plan and hand off each step's actual work to EXECUTING mode; you do not personally edit files or run commands from here.".to_string(),
-                );
+                if self.has_plan() {
+                    sections.push(
+                        "You are in PLANNING mode -- maintain the plan and hand off each step's actual work to EXECUTING mode; you do not personally edit files or run commands from here.".to_string(),
+                    );
+                } else {
+                    // The triage rule restated at the decision moment: the
+                    // last message is what a small model actually attends
+                    // to, and the 2026-07-12 "ola" doom loop showed the
+                    // system-prompt copy alone does not bind.
+                    sections.push(
+                        "You are in PLANNING mode and no plan exists yet. Size up the request first: if it is a greeting or something you can already answer, call FinishTask with your answer now -- no plan. If it is unclear or names things you cannot find, ask before planning. Only a clear task gets CreatePlan.".to_string(),
+                    );
+                }
                 if let Some(reason) = self.refusal_context.take() {
                     sections.push(format!(
-                        "The previous step could not be completed. Reason given: {reason}\n\nRevise the plan accordingly (AddStep, then ResumeExecution)."
+                        "The previous step could not be completed and was retired. Reason given: {reason}\n\nRevise the plan: AddStep steps that DO the remaining work (one per item -- never a step that only re-checks or re-verifies), then ResumeExecution. Only if the task itself is impossible -- what it names does not exist or cannot be done -- call FinishTask and say so honestly."
+                    ));
+                }
+                if self.refusal_count >= REFUSAL_WRAP_UP_THRESHOLD {
+                    sections.push(format!(
+                        "Steps have been refused {} times in this task. Stop adding steps that only verify: AddStep concrete steps that do the remaining work, one per item. If the task truly cannot proceed, call FinishTask now and report honestly what was done and what could not be.",
+                        self.refusal_count
                     ));
                 }
             }
@@ -365,12 +447,14 @@ impl PlanState {
     /// host's job, not this function's).
     pub fn handle_plan_tool(&mut self, call: &crate::agent::ToolCall) -> Option<PlanToolReply> {
         if self.state == LoopState::Planning && call.name == "FinishTask" {
-            return Some(match call.arguments.get("answer").and_then(|v| v.as_str()) {
-                Some(answer) => PlanToolReply::Finish(answer.to_string()),
-                None => PlanToolReply::Reply(
-                    "Error: FinishTask requires an answer argument".to_string(),
-                ),
-            });
+            return Some(
+                match call.arguments.get("answer").and_then(|v| v.as_str()) {
+                    Some(answer) => PlanToolReply::Finish(answer.to_string()),
+                    None => PlanToolReply::Reply(
+                        "Error: FinishTask requires an answer argument".to_string(),
+                    ),
+                },
+            );
         }
         let result = match (self.state, call.name.as_str()) {
             (LoopState::Planning, "CreatePlan") => {
@@ -393,6 +477,7 @@ impl PlanState {
                                 .map(|d| PlanStep {
                                     description: d.to_string(),
                                     done: false,
+                                    refused: false,
                                 })
                                 .collect()
                         })
@@ -426,9 +511,20 @@ impl PlanState {
                         .and_then(|v| v.as_str())
                         .unwrap_or_default()
                         .to_string();
+                    // Duplicate guard: the 2026-07-12 doom loop appended
+                    // the byte-identical step 20+ times -- each duplicate
+                    // in history makes the next more likely (repetition
+                    // collapse), so the dedup must be mechanical, not a
+                    // nudge.
+                    if self.plan.steps.iter().any(|s| s.description == description) {
+                        return Some(PlanToolReply::Reply(
+                            "Error: that exact step is already in the plan -- not added. If the work cannot proceed, stop planning: call FinishTask and tell the user honestly what you found.".to_string(),
+                        ));
+                    }
                     self.plan.steps.push(PlanStep {
                         description,
                         done: false,
+                        refused: false,
                     });
                     let n = self.plan.steps.len();
                     if n > 12 {
@@ -450,7 +546,10 @@ impl PlanState {
             (LoopState::Planning, "ResumeExecution") => match self.next_undone_step() {
                 Some(idx) => {
                     self.state = LoopState::Executing { step_index: idx };
-                    format!("Resuming at step {idx}: {}", self.plan.steps[idx].description)
+                    format!(
+                        "Resuming at step {idx}: {}",
+                        self.plan.steps[idx].description
+                    )
                 }
                 None => "Error: no undone steps -- create or add a step first".to_string(),
             },
@@ -485,8 +584,17 @@ impl PlanState {
                     "step {step_index} (\"{}\"): {reason}",
                     self.plan.steps[step_index].description
                 ));
+                self.plan.steps[step_index].refused = true;
+                self.refusal_count += 1;
                 self.state = LoopState::Planning;
-                "Step refused. Back to planning.".to_string()
+                if self.refusal_count >= REFUSAL_HARD_LIMIT {
+                    return Some(PlanToolReply::Finish(format!(
+                        "I could not complete this task: steps were refused {} times without finding a way forward. Last failure -- {reason}",
+                        self.refusal_count
+                    )));
+                }
+                "Step refused and retired -- it will not run again as written. Back to planning."
+                    .to_string()
             }
             (
                 LoopState::Executing { .. },
@@ -498,7 +606,7 @@ impl PlanState {
     }
 
     pub fn next_undone_step(&self) -> Option<usize> {
-        self.plan.steps.iter().position(|s| !s.done)
+        self.plan.steps.iter().position(|s| !s.done && !s.refused)
     }
 
     pub fn has_plan(&self) -> bool {
@@ -531,7 +639,13 @@ impl PlanState {
         match self.state {
             LoopState::Planning => {
                 for step in &self.plan.steps {
-                    let mark = if step.done { "[x]" } else { "[ ]" };
+                    let mark = if step.done {
+                        "[x]"
+                    } else if step.refused {
+                        "[!]"
+                    } else {
+                        "[ ]"
+                    };
                     lines.push(format!("{mark} {}", step.description));
                 }
             }
@@ -546,7 +660,7 @@ impl PlanState {
                     .iter()
                     .enumerate()
                     .skip(step_index + 1)
-                    .filter(|(_, s)| !s.done)
+                    .filter(|(_, s)| !s.done && !s.refused)
                     .map(|(i, _)| i)
                     .collect();
                 let shown = upcoming.len().min(2);
@@ -580,7 +694,7 @@ mod tests {
     /// carry both rules sections' validated prose intact.
     #[test]
     fn plan_system_prompt_contains_the_union_toolset_and_both_rules_sections() {
-        let prompt = plan_system_prompt(true);
+        let prompt = plan_system_prompt(true, crate::inference::ToolDialect::HermesJson);
         for tool in [
             "CreatePlan",
             "AddStep",
@@ -602,12 +716,36 @@ mod tests {
                 "union prompt must list {tool}"
             );
         }
-        assert!(prompt.contains("planning supervisor"));
-        assert!(prompt.contains("# Plan granularity"));
-        assert!(prompt.contains("ONE STEP PER ITEM"));
-        assert!(prompt.contains("# Verification"));
-        assert!(prompt.contains("A step reporting done is a CLAIM, not proof."));
-        assert!(prompt.contains("Every response you give must be exactly one <tool_call>"));
+        assert!(prompt.contains("You are doce, a local coding agent."));
+        assert!(prompt.contains("# Size up the request first"));
+        assert!(
+            prompt.contains("# Counting and sampling"),
+            "the counting-via-Bash steering section must be in the prompt"
+        );
+        // Dialect-specific call teaching (tool-dialects design): the
+        // Hermes flavor teaches <tool_call> JSON; the MiniCPM flavor
+        // teaches its <function>/<param> XML — never each other's.
+        assert!(prompt.contains("<tool_call></tool_call> XML tags"));
+        let minicpm = plan_system_prompt(true, crate::inference::ToolDialect::MiniCpmXml);
+        assert!(minicpm.contains("<function name=\"function-name\">"));
+        assert!(!minicpm.contains("<tool_call></tool_call> XML tags"));
+        assert!(minicpm.contains("Every response you give must be exactly one tool call"));
+        assert!(
+            prompt.contains("call FinishTask with your answer right away"),
+            "the greeting/direct-answer triage rule must be in the prompt"
+        );
+        assert!(
+            prompt.contains("Never invent work the user did not ask for."),
+            "the anti-confabulation rule must be in the prompt"
+        );
+        assert!(prompt.contains("# Plans"));
+        assert!(prompt.contains("one step per item"));
+        assert!(
+            prompt.contains("a bundled step silently stops partway"),
+            "the benchmark-diagnosed bundled-step rationale must stay in the prompt (dropping it cost 19/20 on tier4_planned, 2026-07-12)"
+        );
+        assert!(prompt.contains("A step reporting done is a CLAIM, not proof"));
+        assert!(prompt.contains("Every response you give must be exactly one tool call"));
     }
 
     /// FR-016's one-level nesting cap means `run_loop` rejects ANY `Task`
@@ -621,22 +759,36 @@ mod tests {
     /// the entire point of this prompt.
     #[test]
     fn plan_system_prompt_omits_task_and_ask_user_for_subagents_and_is_cached_per_variant() {
-        let sub = plan_system_prompt(false);
+        let sub = plan_system_prompt(false, crate::inference::ToolDialect::HermesJson);
         assert!(!sub.contains("\"name\": \"Task\""));
-        assert!(!sub.contains("AskUserQuestion"), "no tool line and no # Modes mention");
+        assert!(
+            !sub.contains("AskUserQuestion"),
+            "no tool line and no # Modes mention"
+        );
         assert!(sub.contains(
             "PLANNING mode tools: CreatePlan, AddStep, ResumeExecution, Read, Grep, Glob, FinishTask."
         ));
         assert!(sub.contains("\"name\": \"StepDone\""));
         assert!(sub.contains("\"name\": \"FinishTask\""));
-        let top = plan_system_prompt(true);
+        assert!(
+            sub.contains("call FinishTask explaining exactly what is missing"),
+            "the subagent triage bullet must route 'unclear' to FinishTask, not to a user it cannot reach"
+        );
+        let top = plan_system_prompt(true, crate::inference::ToolDialect::HermesJson);
         assert!(top.contains("\"name\": \"Task\""));
         assert!(top.contains("\"name\": \"AskUserQuestion\""));
+        assert!(top.contains("call AskUserQuestion, and keep asking until the task is clear"));
         assert!(top.contains(
             "PLANNING mode tools: CreatePlan, AddStep, ResumeExecution, Read, Grep, Glob, AskUserQuestion, FinishTask."
         ));
-        assert!(std::ptr::eq(plan_system_prompt(true), plan_system_prompt(true)));
-        assert!(std::ptr::eq(plan_system_prompt(false), plan_system_prompt(false)));
+        assert!(std::ptr::eq(
+            plan_system_prompt(true, crate::inference::ToolDialect::HermesJson),
+            plan_system_prompt(true, crate::inference::ToolDialect::HermesJson)
+        ));
+        assert!(std::ptr::eq(
+            plan_system_prompt(false, crate::inference::ToolDialect::HermesJson),
+            plan_system_prompt(false, crate::inference::ToolDialect::HermesJson)
+        ));
     }
 
     #[test]
@@ -660,7 +812,10 @@ mod tests {
         ps.handle_plan_tool(&call("ResumeExecution", serde_json::json!({})));
         let tail = ps.state_tail();
         assert!(tail.contains("EXECUTING"));
-        assert!(tail.contains("ship it"), "the overall goal must be in the tail");
+        assert!(
+            tail.contains("ship it"),
+            "the overall goal must be in the tail"
+        );
         assert!(tail.contains("Your current step: write tests"));
         assert!(
             tail.contains("StepDone") && tail.contains("RefuseStep"),
@@ -673,6 +828,174 @@ mod tests {
             "upcoming undone steps carry the 'next:' label (Task 14 clamp), got: {tail:?}"
         );
         assert!(tail.contains("(0/2 done)"));
+    }
+
+    /// The no-plan Planning tail must restate the triage rule (answer
+    /// directly / ask / plan) at the decision moment -- the 2026-07-12
+    /// "ola" doom loop showed the system-prompt copy alone does not bind
+    /// on a small model.
+    #[test]
+    fn state_tail_offers_direct_answer_when_no_plan_exists() {
+        let mut ps = PlanState::default();
+        let tail = ps.state_tail();
+        assert!(
+            tail.contains("call FinishTask with your answer now"),
+            "the fresh-state tail must offer the direct-answer path, got: {tail:?}"
+        );
+
+        // Once a plan exists the triage nudge must NOT linger.
+        ps.handle_plan_tool(&call(
+            "CreatePlan",
+            serde_json::json!({"goal": "g", "steps": ["s"]}),
+        ));
+        let tail = ps.state_tail();
+        assert!(!tail.contains("call FinishTask with your answer now"));
+    }
+
+    /// The doom-loop engine fix: a refused step is retired, so
+    /// ResumeExecution moves PAST it instead of re-entering it verbatim
+    /// forever ("Resuming at step 0" x84 on 2026-07-12).
+    #[test]
+    fn refused_step_is_retired_and_resume_moves_past_it() {
+        let mut ps = PlanState::default();
+        ps.handle_plan_tool(&call(
+            "CreatePlan",
+            serde_json::json!({"goal": "g", "steps": ["impossible", "possible"]}),
+        ));
+        ps.handle_plan_tool(&call("ResumeExecution", serde_json::json!({})));
+        assert_eq!(ps.state, LoopState::Executing { step_index: 0 });
+
+        let reply = ps.handle_plan_tool(&call(
+            "RefuseStep",
+            serde_json::json!({"reason": "file does not exist"}),
+        ));
+        assert_eq!(
+            reply,
+            Some(PlanToolReply::Reply(
+                "Step refused and retired -- it will not run again as written. Back to planning."
+                    .to_string()
+            ))
+        );
+
+        let reply = ps.handle_plan_tool(&call("ResumeExecution", serde_json::json!({})));
+        assert_eq!(ps.state, LoopState::Executing { step_index: 1 });
+        assert_eq!(
+            reply,
+            Some(PlanToolReply::Reply(
+                "Resuming at step 1: possible".to_string()
+            ))
+        );
+    }
+
+    /// With every step refused there is nothing to resume -- the model is
+    /// pushed toward AddStep (a corrected step) or FinishTask instead of
+    /// cycling.
+    #[test]
+    fn resume_with_only_refused_steps_reports_no_undone_steps() {
+        let mut ps = PlanState::default();
+        ps.handle_plan_tool(&call(
+            "CreatePlan",
+            serde_json::json!({"goal": "g", "steps": ["impossible"]}),
+        ));
+        ps.handle_plan_tool(&call("ResumeExecution", serde_json::json!({})));
+        ps.handle_plan_tool(&call("RefuseStep", serde_json::json!({"reason": "nope"})));
+
+        let reply = ps.handle_plan_tool(&call("ResumeExecution", serde_json::json!({})));
+        assert_eq!(
+            reply,
+            Some(PlanToolReply::Reply(
+                "Error: no undone steps -- create or add a step first".to_string()
+            ))
+        );
+        assert_eq!(ps.state, LoopState::Planning);
+    }
+
+    /// The other half of the doom loop: the byte-identical AddStep spammed
+    /// 20+ times. The dedup is mechanical -- an error reply, no growth.
+    #[test]
+    fn add_step_rejects_an_exact_duplicate() {
+        let mut ps = PlanState::default();
+        ps.handle_plan_tool(&call(
+            "CreatePlan",
+            serde_json::json!({"goal": "g", "steps": ["search for main.py"]}),
+        ));
+        let reply = ps.handle_plan_tool(&call(
+            "AddStep",
+            serde_json::json!({"description": "search for main.py"}),
+        ));
+        match reply {
+            Some(PlanToolReply::Reply(text)) => {
+                assert!(
+                    text.starts_with("Error: that exact step is already in the plan"),
+                    "duplicate AddStep must be rejected, got: {text:?}"
+                );
+            }
+            other => panic!("expected a Reply, got {other:?}"),
+        }
+        assert_eq!(ps.plan.steps.len(), 1, "the duplicate must not be added");
+    }
+
+    /// Repeated refusals must escalate to a wrap-up demand in the Planning
+    /// tail -- the backstop that ends a confabulated task well before the
+    /// 200-turn cap.
+    #[test]
+    fn state_tail_urges_finish_after_repeated_refusals() {
+        let mut ps = PlanState::default();
+        ps.handle_plan_tool(&call(
+            "CreatePlan",
+            serde_json::json!({"goal": "g", "steps": ["a", "b", "c"]}),
+        ));
+        for _ in 0..3 {
+            ps.handle_plan_tool(&call("ResumeExecution", serde_json::json!({})));
+            ps.handle_plan_tool(&call(
+                "RefuseStep",
+                serde_json::json!({"reason": "blocked"}),
+            ));
+        }
+        let tail = ps.state_tail();
+        assert!(
+            tail.contains("refused 3 times") && tail.contains("call FinishTask now"),
+            "after {REFUSAL_WRAP_UP_THRESHOLD} refusals the tail must demand a wrap-up, got: {tail:?}"
+        );
+    }
+
+    /// The deterministic doom-loop terminator: at REFUSAL_HARD_LIMIT the
+    /// machine itself ends the task with an honest failure -- the
+    /// 2026-07-12 loop never self-terminated (KV-cache death at ~135
+    /// turns), so this cannot be a nudge.
+    #[test]
+    fn refuse_step_forces_finish_at_the_hard_limit() {
+        let mut ps = PlanState::default();
+        let steps: Vec<String> = (0..8).map(|i| format!("step {i}")).collect();
+        ps.handle_plan_tool(&call(
+            "CreatePlan",
+            serde_json::json!({"goal": "g", "steps": steps}),
+        ));
+        for i in 0..7 {
+            ps.handle_plan_tool(&call("ResumeExecution", serde_json::json!({})));
+            let reply = ps.handle_plan_tool(&call(
+                "RefuseStep",
+                serde_json::json!({"reason": format!("blocked {i}")}),
+            ));
+            assert!(
+                matches!(reply, Some(PlanToolReply::Reply(_))),
+                "refusal {i} must stay a Reply, got: {reply:?}"
+            );
+        }
+        ps.handle_plan_tool(&call("ResumeExecution", serde_json::json!({})));
+        let reply = ps.handle_plan_tool(&call(
+            "RefuseStep",
+            serde_json::json!({"reason": "blocked 7"}),
+        ));
+        match reply {
+            Some(PlanToolReply::Finish(answer)) => {
+                assert!(
+                    answer.contains("refused 8 times") && answer.contains("blocked 7"),
+                    "the forced finish must report the count and last reason, got: {answer:?}"
+                );
+            }
+            other => panic!("the 8th refusal must force Finish, got {other:?}"),
+        }
     }
 
     #[test]
@@ -742,11 +1065,30 @@ mod tests {
         ps.handle_plan_tool(&call("ResumeExecution", serde_json::json!({})));
         assert_eq!(
             ps.allowed_tool_names(true),
-            ["Read", "Write", "Edit", "Bash", "Grep", "Glob", "Task", "StepDone", "RefuseStep"]
+            [
+                "Read",
+                "Write",
+                "Edit",
+                "Bash",
+                "Grep",
+                "Glob",
+                "Task",
+                "StepDone",
+                "RefuseStep"
+            ]
         );
         assert_eq!(
             ps.allowed_tool_names(false),
-            ["Read", "Write", "Edit", "Bash", "Grep", "Glob", "StepDone", "RefuseStep"]
+            [
+                "Read",
+                "Write",
+                "Edit",
+                "Bash",
+                "Grep",
+                "Glob",
+                "StepDone",
+                "RefuseStep"
+            ]
         );
     }
 
@@ -785,7 +1127,11 @@ mod tests {
         );
         assert!(ps.has_plan());
         assert_eq!(ps.plan.goal, "fix bugs");
-        assert_eq!(ps.state, LoopState::Planning, "CreatePlan alone does not start execution");
+        assert_eq!(
+            ps.state,
+            LoopState::Planning,
+            "CreatePlan alone does not start execution"
+        );
 
         let result = reply(ps.handle_plan_tool(&call("ResumeExecution", serde_json::json!({}))));
         assert!(result.contains("fix a"));
@@ -816,14 +1162,20 @@ mod tests {
         ));
         ps.handle_plan_tool(&call("ResumeExecution", serde_json::json!({})));
 
-        let result = reply(ps.handle_plan_tool(&call("StepDone", serde_json::json!({"summary": "did a"}))));
+        let result =
+            reply(ps.handle_plan_tool(&call("StepDone", serde_json::json!({"summary": "did a"}))));
         assert!(ps.plan.steps[0].done);
         assert_eq!(ps.state, LoopState::Executing { step_index: 1 });
         assert!(result.contains("step 1"));
 
-        let all_done = reply(ps.handle_plan_tool(&call("StepDone", serde_json::json!({"summary": "did b"}))));
+        let all_done =
+            reply(ps.handle_plan_tool(&call("StepDone", serde_json::json!({"summary": "did b"}))));
         assert!(ps.plan.steps[1].done);
-        assert_eq!(ps.state, LoopState::Planning, "all done returns to planning for review");
+        assert_eq!(
+            ps.state,
+            LoopState::Planning,
+            "all done returns to planning for review"
+        );
         assert!(
             all_done.contains("VERIFY"),
             "the all-steps-done result must instruct verification at the decision moment"
@@ -840,7 +1192,10 @@ mod tests {
             serde_json::json!({"description": "orphan step"}),
         )));
         assert!(result.starts_with("Error"));
-        assert!(!ps.has_plan(), "AddStep must not mutate the plan when none exists");
+        assert!(
+            !ps.has_plan(),
+            "AddStep must not mutate the plan when none exists"
+        );
         assert!(ps.plan.steps.is_empty());
 
         // A subsequent CreatePlan still works normally.
@@ -874,8 +1229,12 @@ mod tests {
     fn regular_tools_are_state_gated() {
         let mut ps = PlanState::default();
         // Planning: read-only + AskUserQuestion pass through (None = host dispatches).
-        assert!(ps.handle_plan_tool(&call("Read", serde_json::json!({}))).is_none());
-        assert!(ps.handle_plan_tool(&call("AskUserQuestion", serde_json::json!({}))).is_none());
+        assert!(ps
+            .handle_plan_tool(&call("Read", serde_json::json!({})))
+            .is_none());
+        assert!(ps
+            .handle_plan_tool(&call("AskUserQuestion", serde_json::json!({})))
+            .is_none());
         // Planning: write tools are rejected.
         let rejected = reply(ps.handle_plan_tool(&call("Write", serde_json::json!({}))));
         assert!(rejected.starts_with("Error"));
@@ -886,9 +1245,14 @@ mod tests {
         ));
         ps.handle_plan_tool(&call("ResumeExecution", serde_json::json!({})));
         // Executing: file/shell/Task pass through, plan-editing is rejected.
-        assert!(ps.handle_plan_tool(&call("Write", serde_json::json!({}))).is_none());
-        assert!(ps.handle_plan_tool(&call("Task", serde_json::json!({}))).is_none());
-        let rejected = reply(ps.handle_plan_tool(&call("AddStep", serde_json::json!({"description": "x"}))));
+        assert!(ps
+            .handle_plan_tool(&call("Write", serde_json::json!({})))
+            .is_none());
+        assert!(ps
+            .handle_plan_tool(&call("Task", serde_json::json!({})))
+            .is_none());
+        let rejected =
+            reply(ps.handle_plan_tool(&call("AddStep", serde_json::json!({"description": "x"}))));
         assert!(rejected.starts_with("Error"));
     }
 
@@ -917,17 +1281,18 @@ mod tests {
             serde_json::json!({"goal": "g", "steps": ["a"]}),
         ));
         ps.handle_plan_tool(&call("ResumeExecution", serde_json::json!({})));
-        let rejected = reply(ps.handle_plan_tool(&call(
-            "FinishTask",
-            serde_json::json!({"answer": "nope"}),
-        )));
+        let rejected =
+            reply(ps.handle_plan_tool(&call("FinishTask", serde_json::json!({"answer": "nope"}))));
         assert!(rejected.starts_with("Error"));
     }
 
     #[test]
     fn recitation_text_returns_none_without_a_plan() {
         let ps = PlanState::default();
-        assert!(ps.recitation_text().is_none(), "fresh state should have no recitation");
+        assert!(
+            ps.recitation_text().is_none(),
+            "fresh state should have no recitation"
+        );
     }
 
     /// Task 14 test (b): a small Executing plan (3 steps, 1 done) still
@@ -951,7 +1316,9 @@ mod tests {
         assert_eq!(ps.state, LoopState::Executing { step_index: 1 });
         assert!(ps.plan.steps[0].done);
 
-        let recitation = ps.recitation_text().expect("should have recitation with active plan");
+        let recitation = ps
+            .recitation_text()
+            .expect("should have recitation with active plan");
 
         assert!(recitation.contains("fix bugs"), "should contain goal");
         assert!(
@@ -974,7 +1341,10 @@ mod tests {
             !recitation.contains("more steps pending"),
             "a small plan must not hide anything behind the remaining-count line, got: {recitation:?}"
         );
-        assert!(recitation.contains("(1/3 done)"), "should show progress counter");
+        assert!(
+            recitation.contains("(1/3 done)"),
+            "should show progress counter"
+        );
     }
 
     /// Task 14 test (a): a large Executing plan (25 steps, 0-6 done,
@@ -988,6 +1358,7 @@ mod tests {
             .map(|i| PlanStep {
                 description: format!("step {i}"),
                 done: i < 7,
+                refused: false,
             })
             .collect();
         ps.plan = Plan {
@@ -996,14 +1367,22 @@ mod tests {
         };
         ps.state = LoopState::Executing { step_index: 7 };
 
-        let recitation = ps.recitation_text().expect("should have recitation with active plan");
+        let recitation = ps
+            .recitation_text()
+            .expect("should have recitation with active plan");
         assert!(
             recitation.contains("[x] 7 steps done"),
             "got: {recitation:?}"
         );
         assert!(recitation.contains("[>] step 7"), "got: {recitation:?}");
-        assert!(recitation.contains("[ ] next: step 8"), "got: {recitation:?}");
-        assert!(recitation.contains("[ ] next: step 9"), "got: {recitation:?}");
+        assert!(
+            recitation.contains("[ ] next: step 8"),
+            "got: {recitation:?}"
+        );
+        assert!(
+            recitation.contains("[ ] next: step 9"),
+            "got: {recitation:?}"
+        );
         assert!(
             recitation.contains("(15 more steps pending)"),
             "17 undone steps after current minus the 2 shown = 15, got: {recitation:?}"
@@ -1022,10 +1401,19 @@ mod tests {
     fn recitation_text_in_planning_mode_renders_every_step_regardless_of_plan_size() {
         let mut ps = PlanState::default();
         let steps: Vec<String> = (0..25).map(|i| format!("step {i}")).collect();
-        ps.handle_plan_tool(&call("CreatePlan", serde_json::json!({"goal": "g", "steps": steps})));
-        assert_eq!(ps.state, LoopState::Planning, "CreatePlan alone stays in Planning");
+        ps.handle_plan_tool(&call(
+            "CreatePlan",
+            serde_json::json!({"goal": "g", "steps": steps}),
+        ));
+        assert_eq!(
+            ps.state,
+            LoopState::Planning,
+            "CreatePlan alone stays in Planning"
+        );
 
-        let recitation = ps.recitation_text().expect("a created plan always has a recitation");
+        let recitation = ps
+            .recitation_text()
+            .expect("a created plan always has a recitation");
         for i in 0..25 {
             assert!(
                 recitation.contains(&format!("step {i}")),
@@ -1045,7 +1433,10 @@ mod tests {
     fn add_step_warns_once_the_plan_exceeds_twelve_steps() {
         let mut ps = PlanState::default();
         let steps: Vec<String> = (0..11).map(|i| format!("step {i}")).collect();
-        ps.handle_plan_tool(&call("CreatePlan", serde_json::json!({"goal": "g", "steps": steps})));
+        ps.handle_plan_tool(&call(
+            "CreatePlan",
+            serde_json::json!({"goal": "g", "steps": steps}),
+        ));
         assert_eq!(ps.plan.steps.len(), 11);
 
         // The 12th step lands exactly at the ceiling -- classic text.

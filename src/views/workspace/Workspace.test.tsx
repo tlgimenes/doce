@@ -45,6 +45,7 @@ vi.mock("@/lib/ipc", async (importOriginal) => {
     },
     events: {
       onAgentMessagePersisted: vi.fn(),
+      onAgentGenerationPiece: vi.fn(),
       onPlanUpdate: vi.fn(),
     },
   };
@@ -87,6 +88,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     // instead, since the real signal is "listMessages was called again",
     // not the event itself.
     vi.mocked(events.onAgentMessagePersisted).mockResolvedValue(() => {});
+    vi.mocked(events.onAgentGenerationPiece).mockResolvedValue(() => {});
     vi.mocked(commands.getActivePlan).mockResolvedValue(null);
     vi.mocked(events.onPlanUpdate).mockResolvedValue(() => {});
   });
@@ -2035,5 +2037,85 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     expect(
       tracker.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
+  });
+
+  it("keeps the prompt's ↑ estimate when the persisted user row lands without its token count yet", async () => {
+    let firePersisted!: (p: { conversationId: string }) => void;
+    vi.mocked(events.onAgentMessagePersisted).mockImplementation(async (cb) => {
+      firePersisted = cb;
+      return () => {};
+    });
+    // First load: empty. After the persist event: the REAL user row, whose
+    // token_count is still NULL (the backend UPDATEs it only after the
+    // engine loads and re-announces the row then).
+    vi.mocked(commands.listMessages)
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([
+        {
+          id: "u1",
+          conversationId: "conv-1",
+          role: "user",
+          contentType: "text",
+          content: "list the files here",
+          toolName: null,
+          createdAt: 1,
+          durationMs: null,
+          tokenCount: null,
+        },
+      ]);
+    vi.mocked(commands.sendAgentMessage).mockReturnValue(new Promise(() => {}));
+
+    render(<Workspace conversationId="conv-1" />);
+    await screen.findByTestId("agent-input");
+
+    await userEvent.type(screen.getByTestId("agent-input"), "list the files here");
+    await userEvent.click(screen.getByTestId("agent-send"));
+    expect(screen.getByTestId("agent-thinking-tokens")).toHaveTextContent("↑ 5");
+
+    // The refetch replaces the optimistic row with the count-less persisted
+    // row — the estimate must survive it, not blank the counter.
+    firePersisted({ conversationId: "conv-1" });
+    await waitFor(() => expect(commands.listMessages).toHaveBeenCalledTimes(2));
+    expect(screen.getByTestId("agent-thinking-tokens")).toHaveTextContent("↑ 5");
+  });
+
+  it("streams live generation pieces into the working shimmer and clears at persisted boundaries", async () => {
+    let firePiece!: (p: { conversationId: string; piece: string }) => void;
+    let firePersisted!: (p: { conversationId: string }) => void;
+    vi.mocked(events.onAgentGenerationPiece).mockImplementation(async (cb) => {
+      firePiece = cb;
+      return () => {};
+    });
+    vi.mocked(events.onAgentMessagePersisted).mockImplementation(async (cb) => {
+      firePersisted = cb;
+      return () => {};
+    });
+    vi.mocked(commands.sendAgentMessage).mockReturnValue(new Promise(() => {}));
+
+    render(<Workspace conversationId="conv-1" />);
+    await screen.findByTestId("agent-input");
+
+    await userEvent.type(screen.getByTestId("agent-input"), "go");
+    await userEvent.click(screen.getByTestId("agent-send"));
+    await screen.findByTestId("agent-thinking");
+    expect(screen.getByTestId("agent-thinking-status")).toHaveTextContent("Working");
+
+    firePiece({ conversationId: "conv-1", piece: "let me think" });
+    firePiece({ conversationId: "conv-1", piece: " about this" });
+    await waitFor(() =>
+      expect(screen.getByTestId("agent-thinking-stream")).toHaveTextContent(
+        "let me think about this",
+      ),
+    );
+
+    // Pieces for OTHER conversations are ignored.
+    firePiece({ conversationId: "conv-9", piece: " NOT MINE" });
+    expect(screen.getByTestId("agent-thinking-stream")).not.toHaveTextContent("NOT MINE");
+
+    // A persisted row is a generation boundary: the reasoning segment resets.
+    firePersisted({ conversationId: "conv-1" });
+    await waitFor(() =>
+      expect(screen.queryByTestId("agent-thinking-stream")).not.toBeInTheDocument(),
+    );
   });
 });

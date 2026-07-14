@@ -106,23 +106,24 @@ export default function WorkspaceTopbar({ conversation }: WorkspaceTopbarProps) 
   return (
     <TopbarPortal target="main">
       <div
-        className="pointer-events-none flex min-w-0 flex-1 items-center justify-between gap-3"
+        className="pointer-events-none flex min-w-0 flex-1 items-center gap-3"
         data-testid="workspace-topbar"
       >
-        {/* One row, not a column: the title anchors left and grows; the
-            path sits right — both give way with truncation when the
-            window narrows. */}
-        <Item size="xs" className="min-w-0 flex-1 justify-between gap-3 p-0">
+        {/* Full-width row: the title anchors left and claims the free
+            space, the gauge follows, and the workspace folder sits at the
+            rightmost edge — title and path both give way with truncation
+            when the window narrows. */}
+        <Item size="xs" className="min-w-0 flex-1 gap-3 p-0">
           <ItemTitle className="min-w-0 flex-1 truncate" data-testid="workspace-topbar-title">
             {conversation.title}
           </ItemTitle>
+          <div className="pointer-events-auto shrink-0" data-topbar-no-drag>
+            <ContextUsageIndicator conversationId={conversation.id} />
+          </div>
           <ItemDescription className="min-w-0 truncate" data-testid="workspace-topbar-path">
             {workspaceLabel}
           </ItemDescription>
         </Item>
-        <div className="pointer-events-auto" data-topbar-no-drag>
-          <ContextUsageIndicator conversationId={conversation.id} />
-        </div>
       </div>
     </TopbarPortal>
   );

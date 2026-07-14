@@ -45,6 +45,20 @@ pub struct AgentMessagePersisted {
     pub conversation_id: String,
 }
 
+/// One decoded piece of the top-level agent's live generation, streamed to
+/// the frontend as it samples (thinking-models design: with Require-mode
+/// output being `<think>… <tool_call>…`, this is mostly the model's
+/// reasoning — exactly what the working shimmer shows live). Pieces are
+/// raw and unstripped; the frontend treats them as ephemeral ticker text,
+/// never as transcript content, and clears its buffer at each
+/// `agent-message-persisted` boundary.
+#[derive(Debug, Clone, Serialize, specta::Type, tauri_specta::Event)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentGenerationPiece {
+    pub conversation_id: String,
+    pub piece: String,
+}
+
 /// Live plan state per conversation — the plan-tracker twin of
 /// `ActiveGenerations`: in-memory, per-process, cleared by RAII at turn
 /// end. `get_active_plan` reads it for mount/reload recovery; the
@@ -576,6 +590,10 @@ struct RealBackend<'a> {
 }
 
 impl crate::agent::AgentBackend for RealBackend<'_> {
+    fn dialect(&self) -> crate::inference::ToolDialect {
+        self.engine.dialect()
+    }
+
     fn measure(&mut self, messages: &[ChatMessage]) -> u32 {
         // Reuses `settings` (already loaded by the caller for the
         // hard-limit check) rather than a DB round-trip every turn --
@@ -631,18 +649,33 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
         // current state's set is enforced here at the sampler instead: a
         // tool outside it is unsamplable (grammar name-enum gating).
         match self.engine.render_chat_prompt(&messages) {
-            Ok(rendered) => self
-                .session
-                .generate(
-                    self.engine,
-                    &rendered,
-                    crate::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS as i32,
-                    crate::inference::ToolCallMode::Require,
-                    Some(self.plan_state.allowed_tool_names(true)),
-                    |_piece| {},
-                    || false,
-                )
-                .unwrap_or_else(|e| format!("Error: inference failed: {e}")),
+            Ok(rendered) => {
+                // Live generation ticker: every sampled piece streams to
+                // the UI (the working shimmer shows the model reasoning in
+                // real time). Best-effort — a failed emit must never
+                // affect generation.
+                let app = self.app;
+                let conversation_id = self.conversation_id;
+                self.session
+                    .generate(
+                        self.engine,
+                        &rendered,
+                        crate::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS as i32,
+                        crate::inference::ToolCallMode::Require,
+                        Some(self.plan_state.allowed_tool_names(true)),
+                        |piece| {
+                            let _ = app.emit(
+                                "agent-generation-piece",
+                                AgentGenerationPiece {
+                                    conversation_id: conversation_id.to_string(),
+                                    piece: piece.to_string(),
+                                },
+                            );
+                        },
+                        || false,
+                    )
+                    .unwrap_or_else(|e| format!("Error: inference failed: {e}"))
+            }
             Err(e) => format!("Error: failed to render chat prompt: {e}"),
         }
     }
@@ -717,6 +750,10 @@ struct SubagentBackend<'a> {
 }
 
 impl crate::agent::AgentBackend for SubagentBackend<'_> {
+    fn dialect(&self) -> crate::inference::ToolDialect {
+        self.engine.dialect()
+    }
+
     fn measure(&mut self, messages: &[ChatMessage]) -> u32 {
         self.engine
             .render_chat_prompt(messages)
@@ -1024,6 +1061,7 @@ async fn execute_top_level_tool(
         sub_context.cwd.as_deref(),
         false,
         sub_transcript_path.as_deref(),
+        engine.dialect(),
     );
     // FR-015: a fresh, isolated context — just the system prompt plus the
     // delegated task, no parent conversation history.
@@ -1236,7 +1274,7 @@ async fn emit_context_usage_update(
     )
     .display()
     .to_string();
-    let system_prompt = plan_system_message(cwd, true, Some(&transcript_path));
+    let system_prompt = plan_system_message(cwd, true, Some(&transcript_path), engine.dialect());
     if let Ok(usage) =
         crate::context::compute_usage(conn, engine, conversation_id, &skills_dir, &system_prompt)
             .await
@@ -1304,12 +1342,17 @@ async fn persist_assistant_text_reply(
 /// stay that way too). `None` (no `app_data_dir` resolvable, or a test
 /// harness with no filesystem) leaves the message byte-identical to this
 /// function's pre-transcript behavior.
-fn plan_system_message(
+/// `pub` (not just crate-visible) so the model-test harness
+/// (tests/agent_tasks.rs) seeds its planned runs with the EXACT production
+/// system message -- prompt drift between the app and the benchmark is how
+/// the 2026-07-12 "ola" doom loop shipped despite green tier-0 tests.
+pub fn plan_system_message(
     cwd: Option<&std::path::Path>,
     allow_task: bool,
     transcript_path: Option<&str>,
+    dialect: crate::inference::ToolDialect,
 ) -> String {
-    let base = crate::agent::plan::plan_system_prompt(allow_task);
+    let base = crate::agent::plan::plan_system_prompt(allow_task, dialect);
     let mut message = match cwd {
         Some(path) => format!(
             "{base}\n\nYou are currently working in the directory: {}",
@@ -1359,13 +1402,14 @@ pub(crate) fn conversation_system_message(
     cwd: Option<&std::path::Path>,
     transcript_dir: Option<&std::path::Path>,
     conversation_id: &str,
+    dialect: crate::inference::ToolDialect,
 ) -> String {
     let transcript_path = transcript_dir.map(|dir| {
         crate::context::transcript::transcript_path(dir, conversation_id)
             .display()
             .to_string()
     });
-    plan_system_message(cwd, true, transcript_path.as_deref())
+    plan_system_message(cwd, true, transcript_path.as_deref(), dialect)
 }
 
 /// 009-rich-chat-input/US2 (contracts/rich-chat-input.md): persists this
@@ -1647,6 +1691,17 @@ pub async fn send_agent_message(
                 Ok(())
             })
             .await;
+        // Re-announce the row now that it carries its real token_count:
+        // the earlier emit (right after persist_user_turn) fired while the
+        // count was still NULL, and without this second one the frontend's
+        // streaming ↑ counter would sit on its chars/4 estimate until the
+        // first tool result — the longest silent stretch of the turn.
+        let _ = app.emit(
+            "agent-message-persisted",
+            AgentMessagePersisted {
+                conversation_id: conversation_id.clone(),
+            },
+        );
     }
 
     // 010-context-window-management/US2 (FR-005/FR-006/FR-007): compacts
@@ -1661,6 +1716,7 @@ pub async fn send_agent_message(
         cwd.as_deref(),
         transcript_dir.as_deref(),
         &conversation_id,
+        engine.dialect(),
     );
     let usage = crate::context::maybe_compact(
         &conn,
@@ -1841,17 +1897,22 @@ mod tests {
             Some(std::path::Path::new("/Users/tester/code/doce")),
             true,
             None,
+            crate::inference::ToolDialect::HermesJson,
         );
         assert!(msg.contains("You are currently working in the directory: /Users/tester/code/doce"));
         // Verify the prompt body is the immutable union prompt.
-        let base = crate::agent::plan::plan_system_prompt(true);
+        let base =
+            crate::agent::plan::plan_system_prompt(true, crate::inference::ToolDialect::HermesJson);
         assert!(msg.starts_with(base));
     }
 
     #[test]
     fn plan_system_message_is_unchanged_when_no_cwd_is_known() {
-        let msg = plan_system_message(None, true, None);
-        assert_eq!(msg, crate::agent::plan::plan_system_prompt(true));
+        let msg = plan_system_message(None, true, None, crate::inference::ToolDialect::HermesJson);
+        assert_eq!(
+            msg,
+            crate::agent::plan::plan_system_prompt(true, crate::inference::ToolDialect::HermesJson)
+        );
     }
 
     /// The KV-prefix invariant: what seeds `messages[0]` must be
@@ -1863,17 +1924,47 @@ mod tests {
     fn plan_system_message_is_byte_stable_across_renders() {
         let cwd = std::path::Path::new("/Users/tester/code/doce");
         assert_eq!(
-            plan_system_message(Some(cwd), true, None),
-            plan_system_message(Some(cwd), true, None)
+            plan_system_message(
+                Some(cwd),
+                true,
+                None,
+                crate::inference::ToolDialect::HermesJson
+            ),
+            plan_system_message(
+                Some(cwd),
+                true,
+                None,
+                crate::inference::ToolDialect::HermesJson
+            )
         );
         assert_eq!(
-            plan_system_message(Some(cwd), false, None),
-            plan_system_message(Some(cwd), false, None)
+            plan_system_message(
+                Some(cwd),
+                false,
+                None,
+                crate::inference::ToolDialect::HermesJson
+            ),
+            plan_system_message(
+                Some(cwd),
+                false,
+                None,
+                crate::inference::ToolDialect::HermesJson
+            )
         );
         // The subagent flavor differs (no Task tool) but is stable too.
         assert_ne!(
-            plan_system_message(Some(cwd), true, None),
-            plan_system_message(Some(cwd), false, None)
+            plan_system_message(
+                Some(cwd),
+                true,
+                None,
+                crate::inference::ToolDialect::HermesJson
+            ),
+            plan_system_message(
+                Some(cwd),
+                false,
+                None,
+                crate::inference::ToolDialect::HermesJson
+            )
         );
     }
 
@@ -1888,10 +1979,16 @@ mod tests {
     /// already pins.
     #[test]
     fn system_prompt_names_the_transcript_when_given() {
-        let with = plan_system_message(None, true, Some("/t/c1.txt"));
+        let with = plan_system_message(
+            None,
+            true,
+            Some("/t/c1.txt"),
+            crate::inference::ToolDialect::HermesJson,
+        );
         assert!(with.contains("/t/c1.txt"));
         assert!(with.contains("transcript"));
-        let without = plan_system_message(None, true, None);
+        let without =
+            plan_system_message(None, true, None, crate::inference::ToolDialect::HermesJson);
         assert!(!without.contains("transcript"));
     }
 
@@ -2069,14 +2166,30 @@ mod tests {
         seed_conversation(&conn, "c1").await;
         let skills_dir = tempfile::tempdir().unwrap();
 
-        persist_user_turn(&conn, None, skills_dir.path(), "c1", 0, "fix the login bug", None)
-            .await
-            .unwrap();
+        persist_user_turn(
+            &conn,
+            None,
+            skills_dir.path(),
+            "c1",
+            0,
+            "fix the login bug",
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(conversation_title(&conn, "c1").await, "fix the login bug");
 
-        persist_user_turn(&conn, None, skills_dir.path(), "c1", 1, "second message", None)
-            .await
-            .unwrap();
+        persist_user_turn(
+            &conn,
+            None,
+            skills_dir.path(),
+            "c1",
+            1,
+            "second message",
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             conversation_title(&conn, "c1").await,
             "fix the login bug",
@@ -2814,10 +2927,12 @@ mod tests {
                 PlanStep {
                     description: "a".to_string(),
                     done: true,
+                    refused: false,
                 },
                 PlanStep {
                     description: "b".to_string(),
                     done: false,
+                    refused: false,
                 },
             ],
         };

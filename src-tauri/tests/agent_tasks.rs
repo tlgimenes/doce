@@ -42,18 +42,55 @@
 //! stochastic (`DOCE_GEN_SEED` respected, entropy default) -- the
 //! three-seed gate protocol lives around this suite, not inside it.
 
-use doce_lib::agent::{dispatch, run_loop, AgentBackend, AgentContext, AgentError, SYSTEM_PROMPT};
+use doce_lib::agent::{dispatch, run_loop, AgentBackend, AgentContext, AgentError};
 use doce_lib::context;
 use doce_lib::inference::{ChatMessage, InferenceEngine, PromptSession};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
+/// The flat ReAct prompt for the `run_flat_*` BASELINE harness below --
+/// moved here from `src/agent/mod.rs` (2026-07-12) because NO production
+/// code uses it: every conversation the app ships runs the plan machine.
+/// Flat runs exist only as model-capability baselines to compare planned
+/// runs against. Do NOT point a test at this prompt to claim app
+/// behavior -- that mismatch is how the "ola" doom loop shipped green
+/// (flat tier-0 answered greetings directly while the production prompt
+/// confabulated a plan).
+const FLAT_BASELINE_SYSTEM_PROMPT: &str = r#"You are a coding and system agent with access to tools.
+
+# Tools
+
+You may call one or more functions to assist with the user query.
+
+You are provided with function signatures within <tools></tools> XML tags:
+<tools>
+{"type": "function", "function": {"name": "Read", "description": "Read a file from disk.", "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}, "offset": {"type": "number"}, "limit": {"type": "number"}}, "required": ["file_path"]}}}
+{"type": "function", "function": {"name": "Write", "description": "Create or overwrite a file.", "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}, "content": {"type": "string"}}, "required": ["file_path", "content"]}}}
+{"type": "function", "function": {"name": "Edit", "description": "Targeted in-place edit: replace old_string with new_string inside the file.", "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}, "old_string": {"type": "string"}, "new_string": {"type": "string"}, "replace_all": {"type": "boolean"}}, "required": ["file_path", "old_string", "new_string"]}}}
+{"type": "function", "function": {"name": "Bash", "description": "Run a shell command.", "parameters": {"type": "object", "properties": {"command": {"type": "string"}, "timeout": {"type": "number"}}, "required": ["command"]}}}
+{"type": "function", "function": {"name": "Glob", "description": "Find files by name pattern using wildcards, e.g. \"bug_*.txt\" or \"*.rs\". The pattern is a single wildcard expression, never a space-separated list of literal filenames -- that matches nothing. Omit path to search the current working directory.", "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}}, "required": ["pattern"]}}}
+{"type": "function", "function": {"name": "Grep", "description": "Search file contents with a regular expression. Omit path to search the current working directory.", "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}, "glob": {"type": "string"}}, "required": ["pattern"]}}}
+{"type": "function", "function": {"name": "AskUserQuestion", "description": "Pause and ask the user a clarifying question instead of guessing. Only use this when genuinely ambiguous, not for routine confirmations.", "parameters": {"type": "object", "properties": {"header": {"type": "string"}, "question": {"type": "string"}, "options": {"type": "array", "items": {"type": "object", "properties": {"label": {"type": "string"}, "description": {"type": "string"}}, "required": ["label"]}}, "multiSelect": {"type": "boolean"}}, "required": ["header", "question", "options"]}}}
+</tools>
+
+For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
+<tool_call>
+{"name": <function-name>, "arguments": <args-json-object>}
+</tool_call>
+
+Call one function at a time and wait for its result before deciding your next step. Once you have enough information to answer, respond in plain text with your final answer -- never inside <tool_call> tags."#;
+
 fn installed_model_path() -> PathBuf {
+    // DOCE_BENCH_MODEL points a run at any GGUF (the ladder A/Bs models
+    // without editing code); the default is the registry's current
+    // primary as installed by the app.
+    if let Ok(path) = std::env::var("DOCE_BENCH_MODEL") {
+        return PathBuf::from(path);
+    }
     let home = std::env::var("HOME").expect("HOME must be set");
-    PathBuf::from(home).join(
-        "Library/Application Support/app.doce.desktop/models/qwen3-4b-instruct-2507-q4_k_m.gguf",
-    )
+    PathBuf::from(home)
+        .join("Library/Application Support/app.doce.desktop/models/minicpm5-1b-q4_k_m.gguf")
 }
 
 struct TaskRun {
@@ -327,7 +364,7 @@ async fn run_flat_conversation(
         conversation_id: "flat-top".to_string(),
     };
 
-    let mut history = vec![ChatMessage::system(SYSTEM_PROMPT)];
+    let mut history = vec![ChatMessage::system(FLAT_BASELINE_SYSTEM_PROMPT)];
     let mut runs = Vec::new();
     for turn in user_turns {
         history.push(ChatMessage::user(*turn));
@@ -479,7 +516,16 @@ impl AgentBackend for PlanExecBackend<'_> {
                 cwd: Some(self.cwd.to_path_buf()),
             };
             let sub_messages =
-                vec![ChatMessage::system(SYSTEM_PROMPT), ChatMessage::user(prompt)];
+                // KNOWN HARNESS DIVERGENCE: production subagents run the
+                // plan machine (`plan_system_message(cwd, false, ..)`,
+                // commands/agent.rs) -- this baseline harness spawns a
+                // FLAT subagent instead. Fine for capability baselines;
+                // do not read Task-delegation results here as app
+                // behavior.
+                vec![
+                    ChatMessage::system(FLAT_BASELINE_SYSTEM_PROMPT),
+                    ChatMessage::user(prompt),
+                ];
             let mut sub_backend = FlatBackend {
                 engine: self.engine,
                 session: self
@@ -546,35 +592,28 @@ fn report_plan(name: &str, plan: &doce_lib::agent::plan::Plan) {
     }
 }
 
-/// Runs `task` through the single two-state loop (`PlanExecBackend`) --
-/// one `run_loop` call, not two, and one continuous conversation shared by
-/// planning and every step's execution.
-async fn run_planned_task(
+/// Runs a multi-turn conversation through the two-state loop -- one
+/// `run_loop` call per user turn, seeded with PRODUCTION's exact
+/// messages[0] via the same `plan_system_message` constructor
+/// `send_agent_message` uses (union prompt + cwd line + transcript
+/// pointer -- prompt drift between app and benchmark is how the
+/// 2026-07-12 "ola" doom loop shipped despite green tier-0 tests). Each
+/// user turn starts with a FRESH `PlanState`, and each turn's final
+/// answer is appended back into the running history, both mirroring
+/// production (`send_agent_message` builds a new plan state per send;
+/// finished turns replay as history). One engine session for the whole
+/// conversation, matching production's KV reuse.
+async fn run_planned_conversation(
     engine: &InferenceEngine,
-    task: &str,
+    user_turns: &[&str],
     cwd: &Path,
-    max_plan_turns: u32,
-) -> TaskRun {
+    max_turns_per_user_turn: u32,
+) -> Vec<TaskRun> {
     let context = AgentContext {
         is_subagent: false,
-        max_turns: max_plan_turns,
+        max_turns: max_turns_per_user_turn,
         cwd: Some(cwd.to_path_buf()),
     };
-    // Seeded ONCE with the immutable union prompt + the same cwd suffix
-    // production's plan_system_message appends (without it the model has no
-    // anchor for path arguments and was observed globbing the filesystem
-    // root ("path": "/"), concluding the task's files don't exist) --
-    // byte-stable for the whole run, matching production's messages[0].
-    let initial_messages = vec![
-        ChatMessage::system(format!(
-            "{}\n\nYou are currently working in the directory: {}",
-            doce_lib::agent::plan::plan_system_prompt(true),
-            cwd.display()
-        )),
-        ChatMessage::user(task),
-    ];
-    let start = Instant::now();
-
     // Reserves room for the output tokens AND the per-turn state tail
     // `PlanExecBackend::generate` pushes after run_loop's threshold check
     // has already passed (see `limits::STATE_TAIL_RESERVE_TOKENS`),
@@ -583,10 +622,14 @@ async fn run_planned_task(
         doce_lib::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS
             + doce_lib::context::limits::STATE_TAIL_RESERVE_TOKENS,
     );
-    // 2026-07-09 payload-files design: see `run_flat_task`'s identical
-    // tempdir -- a fresh root SIBLING to `cwd`, kept alive for this whole
-    // run (including every `Task`-spawned subagent) by staying a local here.
+    // 2026-07-09 payload-files design: a fresh tempdir SIBLING to `cwd`
+    // (never nested inside it -- see `FlatBackend::payload_dir`'s doc
+    // comment), kept alive for this whole conversation by staying a local
+    // here. Also hosts the transcript file, outside the workspace like
+    // production's app-data dir.
     let payload_root = tempdir().expect("payload tempdir should create");
+    let transcript_path = payload_root.path().join("transcript.txt");
+    std::fs::write(&transcript_path, "").expect("transcript file should create");
     let mut backend = PlanExecBackend {
         engine,
         session: engine.new_session().expect("session should create"),
@@ -599,45 +642,64 @@ async fn run_planned_task(
         conversation_id: "planned-top".to_string(),
     };
 
-    let result = run_loop(&context, initial_messages, &mut backend).await;
-    report_plan("planned", &backend.plan_state.plan);
+    let mut history = vec![ChatMessage::system(
+        doce_lib::commands::agent::plan_system_message(
+            Some(cwd),
+            true,
+            Some(&transcript_path.display().to_string()),
+            // The EXACT production prompt for the model under test: its
+            // dialect comes from the loaded GGUF, same as the app.
+            engine.dialect(),
+        ),
+    )];
+    let mut runs = Vec::new();
+    for turn in user_turns {
+        backend.plan_state = doce_lib::agent::plan::PlanState::default();
+        history.push(ChatMessage::user(*turn));
+        let turns_before = backend.turns;
+        let trace_before = backend.trace.len();
+        let start = Instant::now();
 
-    TaskRun {
-        result,
-        turns_taken: backend.turns,
-        elapsed: start.elapsed(),
-        trace: backend.trace,
+        let result = run_loop(&context, history.clone(), &mut backend).await;
+
+        if let Ok(answer) = &result {
+            history.push(ChatMessage::assistant(answer.clone()));
+        }
+        report_plan("planned", &backend.plan_state.plan);
+        runs.push(TaskRun {
+            result,
+            turns_taken: backend.turns - turns_before,
+            elapsed: start.elapsed(),
+            trace: backend.trace[trace_before..].to_vec(),
+        });
     }
+    runs
 }
 
-// --- Tier 0: conversational baselines (no tools involved) ---
-
-#[tokio::test]
-#[ignore]
-async fn tier0_greeting_answers_directly_without_tools() {
-    let engine = InferenceEngine::load(&installed_model_path(), 4).expect("model should load");
-    let dir = tempdir().unwrap();
-
-    let run = run_flat_task(
-        &engine,
-        "Hello!",
-        dir.path(),
-        AgentContext::top_level().max_turns,
-    )
-    .await;
-    report("tier0_greeting", &run);
-
-    let answer = run.result.expect("tier 0 must always succeed");
-    assert!(
-        !answer.trim().is_empty(),
-        "expected a non-empty greeting reply"
-    );
-    assert!(
-        run.trace.is_empty(),
-        "a plain greeting must be answered directly, without tool calls; got: {:?}",
-        run.trace
-    );
+/// Runs a single `task` through the two-state loop -- the one-user-turn
+/// case of `run_planned_conversation`.
+async fn run_planned_task(
+    engine: &InferenceEngine,
+    task: &str,
+    cwd: &Path,
+    max_plan_turns: u32,
+) -> TaskRun {
+    run_planned_conversation(engine, &[task], cwd, max_plan_turns)
+        .await
+        .pop()
+        .expect("one run per user turn")
 }
+
+// --- Tier 0: conversational baselines, on the PRODUCTION path ---
+//
+// Every conversation the app runs goes through the plan machine
+// (`send_agent_message` -> `plan_system_message` -> the two-state loop);
+// the flat `run_flat_*` harness below is a model-capability baseline
+// only. Tier 0 lived on the flat path until 2026-07-12, which is exactly
+// how the "ola" doom loop shipped green: the flat prompt answered
+// greetings directly while the production prompt confabulated a plan.
+// Conversational baselines therefore MUST run through
+// `run_planned_conversation`/`run_planned_task`, never `run_flat_*`.
 
 #[tokio::test]
 #[ignore]
@@ -645,16 +707,23 @@ async fn tier0_multi_turn_recalls_user_name() {
     let engine = InferenceEngine::load(&installed_model_path(), 4).expect("model should load");
     let dir = tempdir().unwrap();
 
-    let runs = run_flat_conversation(
+    let runs = run_planned_conversation(
         &engine,
         &["Hi! My name is Heitor.", "What is my name?"],
         dir.path(),
-        AgentContext::top_level().max_turns,
+        8,
     )
     .await;
     report("tier0_name_turn1", &runs[0]);
     report("tier0_name_turn2", &runs[1]);
 
+    for run in &runs {
+        assert!(
+            !run.trace.iter().any(|t| t.contains("tool=CreatePlan")),
+            "small talk must not create a plan; got trace: {:?}",
+            run.trace
+        );
+    }
     runs[0]
         .result
         .as_ref()
@@ -666,6 +735,71 @@ async fn tier0_multi_turn_recalls_user_name() {
     assert!(
         answer.contains("Heitor"),
         "expected the model to recall the name from the first turn, got: {answer:?}"
+    );
+}
+
+// --- Tier 0 (plan machine): conversational baselines through the
+// PRODUCTION prompt+state machine. The flat tier-0 tests above never
+// exercised what ships: on 2026-07-12 a bare "ola" through the plan host
+// confabulated a "fix the syntax error in main.py" plan and looped to the
+// 200-turn cap. These pin the triage behavior on the real path. ---
+
+#[tokio::test]
+#[ignore]
+async fn tier0_plan_greeting_answers_directly_without_planning() {
+    let engine = InferenceEngine::load(&installed_model_path(), 4).expect("model should load");
+    let dir = tempdir().unwrap();
+
+    for greeting in ["ola", "Hello!"] {
+        let run = run_planned_task(&engine, greeting, dir.path(), 8).await;
+        report(&format!("tier0_plan_greeting({greeting})"), &run);
+
+        assert!(
+            !run.trace.iter().any(|t| t.contains("tool=CreatePlan")),
+            "a greeting must never create a plan; got trace: {:?}",
+            run.trace
+        );
+        let answer = run.result.expect("a greeting must produce a direct answer");
+        assert!(
+            !answer.trim().is_empty(),
+            "expected a non-empty greeting reply"
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore]
+async fn tier0_plan_vague_request_asks_before_planning() {
+    let engine = InferenceEngine::load(&installed_model_path(), 4).expect("model should load");
+    let dir = tempdir().unwrap();
+
+    let run = run_planned_task(
+        &engine,
+        "something is broken, please fix it",
+        dir.path(),
+        24,
+    )
+    .await;
+    report("tier0_plan_vague", &run);
+
+    // Read/Grep/Glob before deciding is fine (assessment); the first
+    // COMMITTING move must be a question, not a plan invented around
+    // files the user never named.
+    let first_decision = run
+        .trace
+        .iter()
+        .find(|t| {
+            t.contains("tool=CreatePlan")
+                || t.contains("tool=AskUserQuestion")
+                || t.contains("tool=FinishTask")
+        })
+        .cloned();
+    assert!(
+        first_decision
+            .as_deref()
+            .is_some_and(|t| t.contains("tool=AskUserQuestion")),
+        "a vague request must be clarified before any plan; first decision: {first_decision:?}, full trace: {:?}",
+        run.trace
     );
 }
 
@@ -877,8 +1011,16 @@ fn tier4_score(dir: &Path) -> (usize, usize, Vec<String>) {
         } else {
             failures.push(format!(
                 "bug_{i:02}: {}{}",
-                if marker_gone { "" } else { "marker still present; " },
-                if fixed_line_present { "" } else { "fixed line missing" }
+                if marker_gone {
+                    ""
+                } else {
+                    "marker still present; "
+                },
+                if fixed_line_present {
+                    ""
+                } else {
+                    "fixed line missing"
+                }
             ));
         }
     }

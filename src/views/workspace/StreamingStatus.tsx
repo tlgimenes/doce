@@ -9,13 +9,38 @@ interface StreamingStatusProps {
   /** Live in/out token totals for the in-flight turn — grows as tool
    * results land. Omitted (null) when the caller has no turn yet. */
   tokens?: TurnTokenTotals | null;
+  /** The in-flight generation's raw sampled text (mostly the model's
+   * <think> reasoning) — its latest line BECOMES the working line,
+   * advancing line by line as the model reasons. */
+  stream?: string;
+}
+
+/**
+ * The reasoning line currently shown in place of "Working": the latest
+ * non-empty line of the think block. Content after `</think>` is the
+ * tool-call tail — grammar syntax, not reasoning — so the display reverts
+ * to the fallback once thinking closes. `null` means "nothing to show
+ * yet".
+ */
+function currentThinkingLine(stream: string): string | null {
+  const think = stream.split("</think>")[0].replace("<think>", "");
+  if (stream.includes("</think>")) return null;
+  const lines = think
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+  return lines.length > 0 ? lines[lines.length - 1] : null;
 }
 
 function formatElapsedMs(elapsedMs: number) {
   return `${(Math.max(0, elapsedMs) / 1000).toFixed(1)}s`;
 }
 
-export default function StreamingStatus({ startedAt, tokens = null }: StreamingStatusProps) {
+export default function StreamingStatus({
+  startedAt,
+  tokens = null,
+  stream = "",
+}: StreamingStatusProps) {
   const [fallbackStartedAt] = useState(() => Date.now());
   const effectiveStartedAt = startedAt ?? fallbackStartedAt;
   const [now, setNow] = useState(() => Date.now());
@@ -25,12 +50,20 @@ export default function StreamingStatus({ startedAt, tokens = null }: StreamingS
     return () => window.clearInterval(intervalId);
   }, []);
 
+  const thinkingLine = currentThinkingLine(stream);
+
   return (
     <div className="px-4" data-testid="agent-thinking">
       <div className="mx-auto max-w-xl py-2">
         <Marker>
-          <MarkerContent>
-            <span role="status" aria-atomic="true" aria-label="Working" className="shimmer">
+          <MarkerContent className="shrink-0">
+            <span
+              role="status"
+              aria-atomic="true"
+              aria-label="Working"
+              className="shimmer"
+              data-testid="agent-thinking-status"
+            >
               Working
             </span>
           </MarkerContent>
@@ -52,6 +85,19 @@ export default function StreamingStatus({ startedAt, tokens = null }: StreamingS
               {tokens.input > 0 && <>↑ {formatTokenCount(tokens.input)}</>}
               {tokens.input > 0 && tokens.output > 0 && " "}
               {tokens.output > 0 && <>↓ {formatTokenCount(tokens.output)}</>}
+            </span>
+          )}
+          {/* The model's current reasoning line rides the SAME row, after
+              the counters — line-by-line as the think block streams, gone
+              once </think> closes (the tool-call tail is grammar syntax,
+              not reasoning). */}
+          {thinkingLine != null && (
+            <span
+              aria-hidden="true"
+              className="min-w-0 flex-1 truncate text-xs leading-5 text-muted-foreground"
+              data-testid="agent-thinking-stream"
+            >
+              {thinkingLine}
             </span>
           )}
         </Marker>

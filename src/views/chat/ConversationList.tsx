@@ -271,8 +271,11 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
                     data-testid="conversation-item"
                     data-conversation-id={c.id}
                   >
+                    {/* cursor-pointer on the div: the row's text spans sit
+                        at z-10 ABOVE the invisible overlay button, so its
+                        native pointer cursor never shows through. */}
                     <div
-                      className="relative grid min-h-12 w-full min-w-0 grid-cols-[minmax(0,1fr)_min-content] items-center gap-2 px-2 py-2"
+                      className="relative grid min-h-12 w-full min-w-0 cursor-pointer grid-cols-[minmax(0,1fr)_min-content] items-center gap-2 px-2 py-2"
                       data-testid="conversation-thread-button"
                       onClick={() => selectConversation(c)}
                     >

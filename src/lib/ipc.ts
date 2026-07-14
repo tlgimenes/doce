@@ -18,6 +18,17 @@ export interface StartModelInstallResult {
   resumed: boolean;
 }
 
+/** One registry model as the Settings "Model" section presents it —
+ * bundled registry entry merged with this install's DB state. */
+export interface AvailableModel {
+  modelId: string;
+  quantization: string;
+  capabilityTags: string[];
+  recommended: boolean;
+  installed: boolean;
+  active: boolean;
+}
+
 export interface ModelRow {
   id: string;
   hardwareTier: string;
@@ -548,6 +559,7 @@ export const commands = {
       { modelId },
     ),
   listModels: () => invoke<ModelRow[]>("list_models"),
+  listAvailableModels: () => invoke<AvailableModel[]>("list_available_models"),
   setActiveModel: (modelId: string) => invoke<void>("set_active_model", { modelId }),
   createConversation: (workspaceId?: string) =>
     invoke<Conversation>("create_conversation", { workspaceId }),
@@ -616,6 +628,14 @@ export interface AskUserQuestionEventPayload {
  * paired tool_result, or the final answer — so the frontend can re-fetch
  * `list_messages` and re-render as the loop progresses, instead of waiting
  * for `send_agent_message`'s single promise to resolve at the very end. */
+/** One decoded piece of the top-level agent's live generation — mostly
+ * `<think>` reasoning under Require mode. Ephemeral ticker text only,
+ * never transcript content; buffers clear at each persisted-row boundary. */
+export interface AgentGenerationPiecePayload {
+  conversationId: string;
+  piece: string;
+}
+
 export interface AgentMessagePersistedPayload {
   conversationId: string;
 }
@@ -629,6 +649,8 @@ export const events = {
     listen<ContextUsage>("context-usage-update", (e) => cb(e.payload)),
   onAgentMessagePersisted: (cb: (p: AgentMessagePersistedPayload) => void): Promise<UnlistenFn> =>
     listen<AgentMessagePersistedPayload>("agent-message-persisted", (e) => cb(e.payload)),
+  onAgentGenerationPiece: (cb: (p: AgentGenerationPiecePayload) => void): Promise<UnlistenFn> =>
+    listen<AgentGenerationPiecePayload>("agent-generation-piece", (e) => cb(e.payload)),
   onPlanUpdate: (cb: (p: PlanUpdatePayload) => void): Promise<UnlistenFn> =>
     listen<PlanUpdatePayload>("plan-update", (e) => cb(e.payload)),
 };

@@ -37,8 +37,12 @@ pub async fn get_context_usage(
         .app_data_dir()
         .ok()
         .map(|d| d.join("transcripts"));
-    let system_prompt =
-        conversation_system_message(cwd.as_deref(), transcript_dir.as_deref(), &conversation_id);
+    let system_prompt = conversation_system_message(
+        cwd.as_deref(),
+        transcript_dir.as_deref(),
+        &conversation_id,
+        engine.dialect(),
+    );
 
     context::compute_usage(&conn, engine, &conversation_id, &skills_dir, &system_prompt).await
 }
@@ -72,8 +76,12 @@ pub async fn compact_conversation(
         .ok()
         .map(|d| d.join("transcripts"));
     let cwd = conversation_cwd(&conn, &conversation_id).await?;
-    let system_prompt =
-        conversation_system_message(cwd.as_deref(), transcript_dir.as_deref(), &conversation_id);
+    let system_prompt = conversation_system_message(
+        cwd.as_deref(),
+        transcript_dir.as_deref(),
+        &conversation_id,
+        engine.dialect(),
+    );
     context::maybe_compact(
         &conn,
         transcript_dir,

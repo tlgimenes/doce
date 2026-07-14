@@ -30,39 +30,14 @@ pub mod rich_content;
 pub mod subagent;
 pub mod tools;
 
-/// Describes the built-in tool set in the model's own trained format —
-/// this is the `system`-role message of every flat agent loop run (see
-/// `run_loop`'s `initial_messages`), not raw text concatenated onto the
-/// user's task. The `<tools>` block of JSON function signatures and the
-/// `<tool_call>` emission instruction reproduce Qwen3's chat-template
-/// tool wording as closely as possible: a small model reproduces formats
-/// it was trained on far more reliably than formats taught in-context.
-/// Empirical guidance earned against the real model (the Glob
-/// wildcard-vs-filename-list mistake, "clarify only when genuinely
-/// ambiguous") lives in each function's `description` field.
-pub const SYSTEM_PROMPT: &str = r#"You are a coding and system agent with access to tools.
-
-# Tools
-
-You may call one or more functions to assist with the user query.
-
-You are provided with function signatures within <tools></tools> XML tags:
-<tools>
-{"type": "function", "function": {"name": "Read", "description": "Read a file from disk.", "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}, "offset": {"type": "number"}, "limit": {"type": "number"}}, "required": ["file_path"]}}}
-{"type": "function", "function": {"name": "Write", "description": "Create or overwrite a file.", "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}, "content": {"type": "string"}}, "required": ["file_path", "content"]}}}
-{"type": "function", "function": {"name": "Edit", "description": "Targeted in-place edit: replace old_string with new_string inside the file.", "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}, "old_string": {"type": "string"}, "new_string": {"type": "string"}, "replace_all": {"type": "boolean"}}, "required": ["file_path", "old_string", "new_string"]}}}
-{"type": "function", "function": {"name": "Bash", "description": "Run a shell command.", "parameters": {"type": "object", "properties": {"command": {"type": "string"}, "timeout": {"type": "number"}}, "required": ["command"]}}}
-{"type": "function", "function": {"name": "Glob", "description": "Find files by name pattern using wildcards, e.g. \"bug_*.txt\" or \"*.rs\". The pattern is a single wildcard expression, never a space-separated list of literal filenames -- that matches nothing. Omit path to search the current working directory.", "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}}, "required": ["pattern"]}}}
-{"type": "function", "function": {"name": "Grep", "description": "Search file contents with a regular expression. Omit path to search the current working directory.", "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}, "glob": {"type": "string"}}, "required": ["pattern"]}}}
-{"type": "function", "function": {"name": "AskUserQuestion", "description": "Pause and ask the user a clarifying question instead of guessing. Only use this when genuinely ambiguous, not for routine confirmations.", "parameters": {"type": "object", "properties": {"header": {"type": "string"}, "question": {"type": "string"}, "options": {"type": "array", "items": {"type": "object", "properties": {"label": {"type": "string"}, "description": {"type": "string"}}, "required": ["label"]}}, "multiSelect": {"type": "boolean"}}, "required": ["header", "question", "options"]}}}
-</tools>
-
-For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
-<tool_call>
-{"name": <function-name>, "arguments": <args-json-object>}
-</tool_call>
-
-Call one function at a time and wait for its result before deciding your next step. Once you have enough information to answer, respond in plain text with your final answer -- never inside <tool_call> tags."#;
+// NOTE: the flat ReAct system prompt that used to live here as
+// `SYSTEM_PROMPT` was moved to tests/agent_tasks.rs
+// (`FLAT_BASELINE_SYSTEM_PROMPT`) on 2026-07-12: no production code
+// referenced it -- every shipped conversation runs the plan machine
+// (`plan::plan_system_prompt` via `commands::agent::plan_system_message`)
+// -- yet its presence in src let the tier-0 tests read as covering the
+// app while actually exercising a dead path (how the "ola" doom loop
+// shipped green).
 
 use crate::inference::ChatMessage;
 use serde::{Deserialize, Serialize};
@@ -98,19 +73,12 @@ pub enum AgentError {
 /// fallback. Anything matching neither is the final answer verbatim — a
 /// model that doesn't follow the convention degrades to "always answers
 /// directly", not a crash.
-pub fn parse_response(text: &str) -> LoopStep {
-    if let Some(inner) = first_tool_call_tag(text) {
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(inner.trim()) {
-            if let (Some(name), Some(arguments)) = (
-                value.get("name").and_then(|n| n.as_str()),
-                value.get("arguments"),
-            ) {
-                return LoopStep::ToolCall(ToolCall {
-                    name: name.to_string(),
-                    arguments: arguments.clone(),
-                });
-            }
-        }
+pub fn parse_response(text: &str, dialect: crate::inference::ToolDialect) -> LoopStep {
+    // The dialect owns the primary extraction (tool-dialects design):
+    // Hermes keeps the historical first-tag-pair-anywhere behavior;
+    // MiniCPM parses its `<function>` XML.
+    if let Some((name, arguments)) = dialect.parse_first(text) {
+        return LoopStep::ToolCall(ToolCall { name, arguments });
     }
     if let Some(json_str) = first_balanced_json_object(text) {
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&json_str) {
@@ -294,6 +262,13 @@ pub trait AgentBackend {
     fn compact(&mut self, messages: &[ChatMessage]) -> Vec<ChatMessage>;
     async fn generate(&mut self, messages: Vec<ChatMessage>) -> String;
     async fn execute_tool(&mut self, tool_call_id: String, call: ToolCall) -> ToolExecution;
+
+    /// The active model's tool-call dialect — output parsing routes
+    /// through it. Defaults to Hermes (the historical assumption) so test
+    /// backends need no override.
+    fn dialect(&self) -> crate::inference::ToolDialect {
+        crate::inference::ToolDialect::HermesJson
+    }
 }
 
 /// Runs the tool-use loop to completion: repeatedly generates a response,
@@ -301,8 +276,8 @@ pub trait AgentBackend {
 /// the model produces a plain-text final answer or the turn cap is hit.
 ///
 /// `initial_messages` is a real role-tagged conversation (typically a
-/// `system` message from `SYSTEM_PROMPT` plus a `user` message with the
-/// task) rather than one flat string — `backend.generate` is expected to
+/// `system` message from `commands::agent::plan_system_message` plus a
+/// `user` message with the task) rather than one flat string — `backend.generate` is expected to
 /// render this through the model's own chat template (see
 /// `inference::InferenceEngine::render_chat_prompt`) before tokenizing,
 /// since chat-tuned models are trained on role-tagged turns, not raw
@@ -314,12 +289,24 @@ pub async fn run_loop<B: AgentBackend>(
 ) -> Result<String, AgentError> {
     let mut messages = initial_messages;
 
+    // Futile-repetition breaker: the last (call, raw result) exchange and
+    // how many consecutive turns it has repeated EXACTLY. A small model
+    // that has stopped acting re-issues the identical call verbatim
+    // (observed 2026-07-12: tier4 re-ran the same Grep 50 turns straight,
+    // one file from done, burning the whole turn budget) -- when the same
+    // call keeps producing the same result, the result itself must say
+    // that repeating it is pointless. Compared on the RAW result, before
+    // the note is appended, so the streak survives its own annotation.
+    let mut last_exchange: Option<(ToolCall, String)> = None;
+    let mut futile_streak: u32 = 0;
+
     for _turn in 0..context.max_turns {
         if backend.measure(&messages) > backend.threshold() {
             messages = backend.compact(&messages);
         }
         let response = backend.generate(messages.clone()).await;
-        match parse_response(&response) {
+        let dialect = backend.dialect();
+        match parse_response(&response, dialect) {
             LoopStep::Done(text) => {
                 // A response that STARTED a tool call but never closed it
                 // is a generation cut off by the max-token cap, not a real
@@ -330,11 +317,27 @@ pub async fn run_loop<B: AgentBackend>(
                 // task with the truncated text as the "answer" — observed
                 // for real: a 20-step CreatePlan cut off mid-JSON became
                 // the turn's final answer and the task ended at 0/20.
-                if text.contains("<tool_call>") && !text.contains("</tool_call>") {
+                // Thinking-models corollary of the same truncation class:
+                // a generation that spent its whole token budget INSIDE an
+                // unclosed <think> block strips to an empty string
+                // (inference::strip_think_blocks) — and an empty string is
+                // never a legitimate final answer (the plan contract
+                // demands a tool call; even FinishTask carries text).
+                // Observed for real (2026-07-13, MiniCPM5-1B): "tudo bem?"
+                // produced a zero-length assistant message.
+                if text.trim().is_empty() {
                     messages.push(ChatMessage::assistant(text));
                     messages.push(ChatMessage::user(
-                        "Your tool call was cut off before the closing </tool_call> tag. Re-issue the complete call -- if it was long, make it more concise.",
+                        "Your response was cut off inside your reasoning, before any tool call was produced. Keep your thinking brief this time and end with exactly one tool call.",
                     ));
+                    continue;
+                }
+                if dialect.has_unclosed_call(&text) {
+                    messages.push(ChatMessage::assistant(text));
+                    messages.push(ChatMessage::user(format!(
+                        "Your tool call was cut off before the closing {} tag. Re-issue the complete call -- if it was long, make it more concise.",
+                        dialect.closing_tag()
+                    )));
                     continue;
                 }
                 return Ok(text);
@@ -346,7 +349,7 @@ pub async fn run_loop<B: AgentBackend>(
                 messages.push(ChatMessage::tool_use(
                     tool_call_id.clone(),
                     tool_name.clone(),
-                    arguments,
+                    arguments.clone(),
                 ));
                 let execution = if call.name == "Task" && context.is_subagent {
                     // FR-016: one-level nesting — a subagent cannot itself
@@ -362,7 +365,25 @@ pub async fn run_loop<B: AgentBackend>(
                 };
                 match execution {
                     ToolExecution::Finish(answer) => return Ok(answer),
-                    ToolExecution::Result(result) => {
+                    ToolExecution::Result(mut result) => {
+                        let call_now = ToolCall {
+                            name: tool_name.clone(),
+                            arguments,
+                        };
+                        futile_streak = match &last_exchange {
+                            Some((prev_call, prev_result))
+                                if *prev_call == call_now && *prev_result == result =>
+                            {
+                                futile_streak + 1
+                            }
+                            _ => 1,
+                        };
+                        last_exchange = Some((call_now, result.clone()));
+                        if futile_streak >= 3 {
+                            result.push_str(&format!(
+                                "\n\nNote: this exact call has now returned this exact result {futile_streak} times in a row. Repeating it changes nothing -- act on this result, or take a different action."
+                            ));
+                        }
                         messages.push(ChatMessage::tool_result(tool_call_id, tool_name, result));
                     }
                 }
@@ -393,7 +414,7 @@ mod tests {
     }
 
     impl FakeBackend {
-fn new(
+        fn new(
             responses: Vec<String>,
             on_execute: impl FnMut(String, ToolCall) -> ToolExecution + 'static,
         ) -> Self {
@@ -429,13 +450,74 @@ fn new(
         }
     }
 
+    /// The futile-repetition breaker: the same call returning the same
+    /// result 3+ turns in a row gets the result annotated so the model is
+    /// told, in the freshest context, that repeating is pointless
+    /// (observed 2026-07-12: tier4 re-ran one identical Grep for ~50
+    /// turns, one file from done, to the turn cap).
+    #[tokio::test]
+    async fn run_loop_annotates_futile_identical_call_repetition() {
+        struct RepeatBackend {
+            last_result_seen: Option<String>,
+        }
+        impl AgentBackend for RepeatBackend {
+            fn measure(&mut self, _messages: &[ChatMessage]) -> u32 {
+                0
+            }
+            fn threshold(&self) -> u32 {
+                u32::MAX
+            }
+            fn compact(&mut self, _messages: &[ChatMessage]) -> Vec<ChatMessage> {
+                panic!("compact should never run in this test")
+            }
+            async fn generate(&mut self, messages: Vec<ChatMessage>) -> String {
+                if let Some(content) = messages.iter().rev().find_map(|m| match &m.content {
+                    crate::inference::MessageContent::ToolResult { content, .. } => {
+                        Some(content.clone())
+                    }
+                    _ => None,
+                }) {
+                    self.last_result_seen = Some(content);
+                }
+                "<tool_call>\n{\"name\": \"Grep\", \"arguments\": {\"pattern\": \"x\"}}\n</tool_call>"
+                    .to_string()
+            }
+            async fn execute_tool(
+                &mut self,
+                _tool_call_id: String,
+                _call: ToolCall,
+            ) -> ToolExecution {
+                ToolExecution::Result("same result".to_string())
+            }
+        }
+
+        let mut backend = RepeatBackend {
+            last_result_seen: None,
+        };
+        let context = AgentContext {
+            is_subagent: false,
+            max_turns: 5,
+            cwd: None,
+        };
+        let result = run_loop(&context, vec![ChatMessage::user("go")], &mut backend).await;
+        assert!(matches!(result, Err(AgentError::TurnCapExceeded(5))));
+
+        let last = backend.last_result_seen.expect("tool results were seen");
+        assert!(
+            last.contains("times in a row")
+                && last.contains("act on this result")
+                && last.starts_with("same result"),
+            "the 3rd+ identical exchange must carry the futility note appended to the raw result, got: {last:?}"
+        );
+    }
+
     #[test]
     fn parses_a_native_format_tool_call() {
         // Qwen3's trained (Hermes-style) format: JSON inside
         // <tool_call></tool_call> XML tags.
         let text =
             "<tool_call>\n{\"name\": \"Read\", \"arguments\": {\"file_path\": \"/tmp/f.txt\"}}\n</tool_call>";
-        let step = parse_response(text);
+        let step = parse_response(text, crate::inference::ToolDialect::HermesJson);
         assert_eq!(
             step,
             LoopStep::ToolCall(ToolCall {
@@ -452,7 +534,7 @@ fn new(
         // a garbage final answer.
         let text = r#"{"tool_call": {"name": "Read", "arguments": {"file_path": "/tmp/f.txt"}}}"#;
         assert_eq!(
-            parse_response(text),
+            parse_response(text, crate::inference::ToolDialect::HermesJson),
             LoopStep::ToolCall(ToolCall {
                 name: "Read".to_string(),
                 arguments: serde_json::json!({"file_path": "/tmp/f.txt"}),
@@ -464,13 +546,19 @@ fn new(
     fn an_unclosed_tool_call_tag_is_a_final_answer_not_a_crash() {
         // e.g. generation cut off by the max-token cap mid-call.
         let text = "<tool_call>\n{\"name\": \"Read\", \"arguments\": {\"file_p";
-        assert_eq!(parse_response(text), LoopStep::Done(text.to_string()));
+        assert_eq!(
+            parse_response(text, crate::inference::ToolDialect::HermesJson),
+            LoopStep::Done(text.to_string())
+        );
     }
 
     #[test]
     fn plain_text_is_a_final_answer() {
         assert_eq!(
-            parse_response("The answer is 4."),
+            parse_response(
+                "The answer is 4.",
+                crate::inference::ToolDialect::HermesJson
+            ),
             LoopStep::Done("The answer is 4.".to_string())
         );
     }
@@ -478,7 +566,10 @@ fn new(
     #[test]
     fn malformed_json_falls_back_to_plain_text() {
         let text = "<tool_call>\n{\"name\": \"Read\"}\n</tool_call>"; // missing "arguments"
-        assert_eq!(parse_response(text), LoopStep::Done(text.to_string()));
+        assert_eq!(
+            parse_response(text, crate::inference::ToolDialect::HermesJson),
+            LoopStep::Done(text.to_string())
+        );
     }
 
     #[test]
@@ -490,7 +581,7 @@ fn new(
         // answer" — the tool never actually got called).
         let text = "<tool_call>\n{\"name\": \"Read\", \"arguments\": {\"file_path\": \"/a.txt\"}}\n</tool_call>\n<tool_call>\n{\"name\": \"Grep\", \"arguments\": {\"pattern\": \"x\"}}\n</tool_call>";
         assert_eq!(
-            parse_response(text),
+            parse_response(text, crate::inference::ToolDialect::HermesJson),
             LoopStep::ToolCall(ToolCall {
                 name: "Read".to_string(),
                 arguments: serde_json::json!({"file_path": "/a.txt"}),
@@ -502,7 +593,7 @@ fn new(
     fn extracts_a_tool_call_wrapped_in_surrounding_prose() {
         let text = "Sure, let me check that file.\n<tool_call>\n{\"name\": \"Read\", \"arguments\": {\"file_path\": \"/a.txt\"}}\n</tool_call>\nLet me know if that's not what you wanted.";
         assert_eq!(
-            parse_response(text),
+            parse_response(text, crate::inference::ToolDialect::HermesJson),
             LoopStep::ToolCall(ToolCall {
                 name: "Read".to_string(),
                 arguments: serde_json::json!({"file_path": "/a.txt"}),
@@ -513,7 +604,7 @@ fn new(
     #[test]
     fn a_closing_brace_inside_a_string_argument_does_not_end_the_call_early() {
         let text = "<tool_call>\n{\"name\": \"Write\", \"arguments\": {\"file_path\": \"/a.txt\", \"content\": \"func f() { return 1; }\"}}\n</tool_call>";
-        let step = parse_response(text);
+        let step = parse_response(text, crate::inference::ToolDialect::HermesJson);
         assert_eq!(
             step,
             LoopStep::ToolCall(ToolCall {
@@ -526,7 +617,10 @@ fn new(
     #[test]
     fn plain_prose_with_no_json_at_all_is_a_final_answer() {
         let text = "The secret ingredient is pancakes.";
-        assert_eq!(parse_response(text), LoopStep::Done(text.to_string()));
+        assert_eq!(
+            parse_response(text, crate::inference::ToolDialect::HermesJson),
+            LoopStep::Done(text.to_string())
+        );
     }
 
     #[tokio::test]

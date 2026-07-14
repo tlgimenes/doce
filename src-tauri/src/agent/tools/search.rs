@@ -15,11 +15,18 @@ pub enum SearchToolError {
     Io(#[from] std::io::Error),
 }
 
-const GLOB_RESULT_CAP: usize = 100;
+/// Result cap, disclosed to the model twice over (2026-07-13): the tool
+/// description in the system prompt states the cap up front, and a capped
+/// run appends an explicit truncation notice to `model_text` (plus
+/// `truncated: true` in the detail) — never a silently-chopped prefix
+/// presented as complete. The prompt also steers counting/aggregation
+/// questions to Bash pipelines, which have no such cap. Public because
+/// `dispatch` names this number in the truncation notice — the message and
+/// the behavior must not drift apart.
+pub const GLOB_RESULT_CAP: usize = 100;
 
-/// Public (unlike `GLOB_RESULT_CAP`) because `dispatch`'s Grep arm names
-/// this number in the truncation notice it appends to `model_text` — the
-/// message and the behavior must not drift apart.
+/// Same story as `GLOB_RESULT_CAP`: capped, but disclosed — in the tool
+/// description and via the truncation notice.
 pub const GREP_RESULT_CAP: usize = 100;
 
 /// Per-file size ceiling for `Grep`. Found necessary in production: a Grep
@@ -31,11 +38,32 @@ pub const GREP_RESULT_CAP: usize = 100;
 /// be a useful text payload".
 pub const GREP_MAX_FILE_LEN: u64 = 10 * 1024 * 1024;
 
+/// What a `glob_search` found plus the same honesty signal `GrepOutcome`
+/// carries: `truncated` is exact (`len > cap` before the truncate, never a
+/// `len == cap` guess), so an exactly-at-the-cap complete result stays
+/// `false`.
+#[derive(Debug, Clone)]
+pub struct GlobOutcome {
+    pub matches: Vec<PathBuf>,
+    pub truncated: bool,
+}
+
 /// `Glob` (research.md's tool contract table): sorted by mtime (newest
-/// first), capped at 100 results, does not respect `.gitignore` — matches
-/// Claude Code's own behavior, where `Glob` is a raw filename-pattern
-/// search and `Grep`'s gitignore-awareness is the one that filters noise.
-pub fn glob_search(pattern: &str, base: &Path) -> Result<Vec<PathBuf>, SearchToolError> {
+/// first), bounded by `GLOB_RESULT_CAP`, does not respect `.gitignore` —
+/// matches Claude Code's own behavior, where `Glob` is a raw
+/// filename-pattern search and `Grep`'s gitignore-awareness is the one
+/// that filters noise.
+pub fn glob_search(pattern: &str, base: &Path) -> Result<GlobOutcome, SearchToolError> {
+    glob_search_capped(pattern, base, GLOB_RESULT_CAP)
+}
+
+/// Cap-parameterized core, split out so tests can exercise truncation
+/// without materializing `GLOB_RESULT_CAP + 1` real files.
+fn glob_search_capped(
+    pattern: &str,
+    base: &Path,
+    cap: usize,
+) -> Result<GlobOutcome, SearchToolError> {
     let full_pattern = base.join(pattern);
     let full_pattern_str = full_pattern.to_string_lossy().to_string();
 
@@ -50,8 +78,12 @@ pub fn glob_search(pattern: &str, base: &Path) -> Result<Vec<PathBuf>, SearchToo
         .collect();
 
     matches.sort_by_key(|(_, mtime)| std::cmp::Reverse(*mtime));
-    matches.truncate(GLOB_RESULT_CAP);
-    Ok(matches.into_iter().map(|(path, _)| path).collect())
+    let truncated = matches.len() > cap;
+    matches.truncate(cap);
+    Ok(GlobOutcome {
+        matches: matches.into_iter().map(|(path, _)| path).collect(),
+        truncated,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -91,11 +123,22 @@ pub struct GrepOutcome {
 /// of this function's own on top: files over `GREP_MAX_FILE_LEN` are
 /// skipped outright (checked via metadata, before opening), and the walk
 /// stops entirely once `GREP_RESULT_CAP` matches have accumulated —
-/// mirroring `Glob`'s existing 100-result cap.
+/// mirroring `Glob`'s own safety bound.
 pub fn grep(
     pattern: &str,
     base: &Path,
     glob_filter: Option<&str>,
+) -> Result<GrepOutcome, SearchToolError> {
+    grep_capped(pattern, base, glob_filter, GREP_RESULT_CAP)
+}
+
+/// Cap-parameterized core, split out so tests can exercise truncation
+/// without generating `GREP_RESULT_CAP + 1` real matches.
+fn grep_capped(
+    pattern: &str,
+    base: &Path,
+    glob_filter: Option<&str>,
+    cap: usize,
 ) -> Result<GrepOutcome, SearchToolError> {
     // `multi_line(true)` + `crlf(true)` on the matcher AND
     // `LineTerminator::crlf()` on the searcher is ripgrep's own `--crlf`
@@ -130,7 +173,7 @@ pub fn grep(
         // until it has proof of a 101st match, so `truncated` below is
         // exact rather than a "len == cap" guess that would falsely flag
         // an exactly-100-match complete result.
-        if results.len() > GREP_RESULT_CAP {
+        if results.len() > cap {
             break;
         }
         let Ok(entry) = entry else { continue };
@@ -175,13 +218,13 @@ pub fn grep(
                 // `false` stops this file's search once the cap is
                 // overshot by one; the walk loop's own check above stops
                 // the remaining tree.
-                Ok(results.len() <= GREP_RESULT_CAP)
+                Ok(results.len() <= cap)
             }),
         );
     }
 
-    let truncated = results.len() > GREP_RESULT_CAP;
-    results.truncate(GREP_RESULT_CAP);
+    let truncated = results.len() > cap;
+    results.truncate(cap);
     Ok(GrepOutcome {
         matches: results,
         truncated,
@@ -203,8 +246,12 @@ mod tests {
         fs::write(dir.path().join("c.txt"), "").unwrap();
 
         let results = glob_search("*.rs", dir.path()).unwrap();
-        assert_eq!(results.len(), 2);
-        assert!(results.iter().all(|p| p.extension().unwrap() == "rs"));
+        assert_eq!(results.matches.len(), 2);
+        assert!(results
+            .matches
+            .iter()
+            .all(|p| p.extension().unwrap() == "rs"));
+        assert!(!results.truncated);
     }
 
     #[test]
@@ -217,19 +264,30 @@ mod tests {
         fs::write(&newer, "").unwrap();
 
         let results = glob_search("*.rs", dir.path()).unwrap();
-        assert_eq!(results[0], newer);
-        assert_eq!(results[1], older);
+        assert_eq!(results.matches[0], newer);
+        assert_eq!(results.matches[1], older);
     }
 
     #[test]
-    fn glob_caps_at_100_results() {
+    fn glob_bounds_results_and_reports_the_truncation() {
         let dir = tempdir().unwrap();
-        for i in 0..150 {
+        for i in 0..8 {
             fs::write(dir.path().join(format!("f{i}.rs")), "").unwrap();
         }
 
-        let results = glob_search("*.rs", dir.path()).unwrap();
-        assert_eq!(results.len(), 100);
+        let outcome = glob_search_capped("*.rs", dir.path(), 5).unwrap();
+        assert_eq!(outcome.matches.len(), 5);
+        assert!(
+            outcome.truncated,
+            "hitting the bound with more matches left must be reported"
+        );
+
+        let complete = glob_search_capped("*.rs", dir.path(), 8).unwrap();
+        assert_eq!(complete.matches.len(), 8);
+        assert!(
+            !complete.truncated,
+            "a complete result set is not truncated"
+        );
     }
 
     #[test]
@@ -337,14 +395,14 @@ mod tests {
     #[test]
     fn grep_caps_total_matches_and_reports_the_truncation() {
         let dir = tempdir().unwrap();
-        let many_matches = "needle here\n".repeat(150);
+        let many_matches = "needle here\n".repeat(9);
         fs::write(dir.path().join("many.txt"), many_matches).unwrap();
 
-        let outcome = grep("needle", dir.path(), None).unwrap();
+        let outcome = grep_capped("needle", dir.path(), None, 6).unwrap();
         assert_eq!(
             outcome.matches.len(),
-            100,
-            "matches must be capped like Glob's existing 100-result cap"
+            6,
+            "matches must be bounded like Glob's safety bound"
         );
         assert!(
             outcome.truncated,
@@ -354,15 +412,15 @@ mod tests {
 
     #[test]
     fn grep_with_exactly_the_cap_count_is_complete_not_truncated() {
-        // "Exactly 100 matches, complete" and "capped at 100, more exist"
-        // must be distinguishable — a conservative len == cap heuristic
-        // would falsely flag this case.
+        // "Exactly at the cap, complete" and "capped, more exist" must be
+        // distinguishable — a conservative len == cap heuristic would
+        // falsely flag this case.
         let dir = tempdir().unwrap();
-        let exactly_cap = "needle here\n".repeat(100);
+        let exactly_cap = "needle here\n".repeat(6);
         fs::write(dir.path().join("exact.txt"), exactly_cap).unwrap();
 
-        let outcome = grep("needle", dir.path(), None).unwrap();
-        assert_eq!(outcome.matches.len(), 100);
+        let outcome = grep_capped("needle", dir.path(), None, 6).unwrap();
+        assert_eq!(outcome.matches.len(), 6);
         assert!(!outcome.truncated, "a complete result set is not truncated");
     }
 }

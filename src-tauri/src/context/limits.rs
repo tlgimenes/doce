@@ -95,7 +95,12 @@ pub const DEFAULT_TOOL_OUTPUT_OFFLOAD_TOKENS: usize = (CONTEXT_WINDOW_TOKENS / 1
 /// turn 2). The grammar guarantees a tool call ends at its closing tag and EOG
 /// ends short answers early, so the extra headroom costs nothing on turns that
 /// don't need it.
-pub const AGENT_TURN_MAX_OUTPUT_TOKENS: u32 = 1024;
+/// Raised 1024 -> 2048 for thinking models (2026-07-13): the reasoning
+/// block spends output budget BEFORE the tool call, and 1024 was observed
+/// exhausted mid-think (the whole response then strips to empty). EOG
+/// still ends short turns early, so the extra headroom costs nothing on
+/// turns that don't think long.
+pub const AGENT_TURN_MAX_OUTPUT_TOKENS: u32 = 2048;
 
 /// Headroom for the per-turn state tail (`agent::plan::PlanState::state_tail`)
 /// -- ~4.7% (3/64) of `CONTEXT_WINDOW_TOKENS`. Every plan host pushes the
@@ -131,11 +136,13 @@ mod tests {
         );
         assert!(AGENT_TURN_MAX_OUTPUT_TOKENS >= CONTEXT_WINDOW_TOKENS / 16);
         // The tail reserve must comfortably cover a big plan's tail
-        // (hundreds of tokens) without the combined per-turn reserve
-        // eating a meaningful slice of the window.
+        // (hundreds of tokens). The combined per-turn reserve widened
+        // /8 -> /4 for thinking models (2026-07-13): reasoning spends
+        // output budget by design, so up to a quarter of the window per
+        // turn is the accepted envelope now.
         assert!(STATE_TAIL_RESERVE_TOKENS >= CONTEXT_WINDOW_TOKENS / 32);
         assert!(
-            STATE_TAIL_RESERVE_TOKENS + AGENT_TURN_MAX_OUTPUT_TOKENS <= CONTEXT_WINDOW_TOKENS / 8
+            STATE_TAIL_RESERVE_TOKENS + AGENT_TURN_MAX_OUTPUT_TOKENS <= CONTEXT_WINDOW_TOKENS / 4
         );
     }
 }

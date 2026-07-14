@@ -549,23 +549,34 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
 
         <Section
           title="Working / thinking stream"
-          description="The live turn indicator docked above the composer: shimmer + chron + the turn's ↑/↓ token accumulator, with the model's streaming reasoning as a one-line tail ticker. Chrons tick live here; the stream states are mock snapshots."
+          description="The live turn indicator docked above the composer: the model's current reasoning line IS the shimmering working line, advancing line by line as it thinks — chron + the turn's ↑/↓ accumulator on the right. Chrons tick live; stream states are mock snapshots."
         >
           <Example label="Just started (no tokens yet)">
             <StreamingStatus startedAt={Date.now()} />
           </Example>
-          <Example label="Input accumulated, thinking">
+          <Example label="Reasoning line replaces Working">
             <StreamingStatus
               startedAt={Date.now() - 4200}
               tokens={{ input: 1042, output: 0 }}
-              stream="The user wants to know how many TypeScript files exist. I should not count Glob output since it caps at 100 — a find pipeline gives the exact number."
+              stream={
+                "<think>\nThe user wants a count of TypeScript files.\nGlob caps at 100, so a find pipeline is the honest tool."
+              }
             />
           </Example>
-          <Example label="Long reasoning (tail truncation)">
+          <Example label="Long line (truncates)">
             <StreamingStatus
               startedAt={Date.now() - 31000}
               tokens={{ input: 8300, output: 512 }}
-              stream={`${"First I read the dispatch module, then compared the tool schemas against the registry entries. ".repeat(4)}Now checking whether the grammar's name-enum gate covers the plan tools too.`}
+              stream={
+                "<think>\nComparing every tool schema against the registry entries and checking whether the grammar name-enum gate covers the plan tools as well as the executing-mode set before answering."
+              }
+            />
+          </Example>
+          <Example label="Thinking closed (tool call generating)">
+            <StreamingStatus
+              startedAt={Date.now() - 9000}
+              tokens={{ input: 2100, output: 0 }}
+              stream={'<think>\nplan settled\n</think><tool_call>{"name": "Read"'}
             />
           </Example>
         </Section>

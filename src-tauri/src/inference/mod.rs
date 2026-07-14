@@ -11,6 +11,9 @@ use std::num::NonZeroU32;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub mod dialect;
+pub use dialect::ToolDialect;
+
 #[derive(Debug, thiserror::Error)]
 pub enum InferenceError {
     #[error("llama.cpp backend error: {0}")]
@@ -217,14 +220,17 @@ impl ChatMessage {
     /// that branch doesn't actually fire correctly against this model at
     /// runtime (see `ChatMessage::tool_result`'s doc comment).
     pub fn text(&self) -> String {
+        self.text_for(ToolDialect::HermesJson)
+    }
+
+    /// Like [`Self::text`], but replaying tool exchanges in the given
+    /// dialect's trained shape (tool-dialects design) — the engine passes
+    /// its detected dialect so a MiniCPM history replays as `<function>`
+    /// XML, never Hermes JSON.
+    pub fn text_for(&self, dialect: ToolDialect) -> String {
         match &self.content {
             MessageContent::Text(s) => s.clone(),
-            MessageContent::ToolUse { name, input, .. } => {
-                format!(
-                    "<tool_call>\n{}\n</tool_call>",
-                    serde_json::json!({ "name": name, "arguments": input })
-                )
-            }
+            MessageContent::ToolUse { name, input, .. } => dialect.render_tool_use(name, input),
             // No "Tool result for {tool_name}:" framing -- Qwen's own
             // convention (per its chat template) is just the raw content
             // inside the tags, relying on tool_call/tool_result ordering
@@ -233,9 +239,7 @@ impl ChatMessage {
             // the text itself. Qwen's own template actually wraps with
             // newlines (`\n<tool_response>\n` + content + `\n</tool_response>`)
             // but that's not preserved here -- a single-line wrap instead.
-            MessageContent::ToolResult { content, .. } => {
-                format!("<tool_response>{content}</tool_response>")
-            }
+            MessageContent::ToolResult { content, .. } => dialect.render_tool_result(content),
         }
     }
 }
@@ -287,9 +291,10 @@ const NAME_KV_ENUM_RULE: &str = r#"name-kv ::= "\"name\"" space ":" space name-v
 /// (`name-value ::= ("\"CreatePlan\"" | "\"AddStep\"" | ...) space`), which
 /// is how the plan engine's per-state tool gating is enforced at the
 /// sampler. Pure string assembly, unit-tested without a model.
-fn tool_call_grammar(
+pub(crate) fn hermes_tool_call_grammar(
     json_grammar: &str,
     allowed_names: Option<&[&str]>,
+    allow_think_prefix: bool,
 ) -> Result<String, InferenceError> {
     let json_grammar = json_grammar.replacen("root ::=", "tool-json ::=", 1);
     let json_grammar = match allowed_names {
@@ -299,13 +304,13 @@ fn tool_call_grammar(
             // surfaced here rather than compiled into a sampler that can
             // never produce a token.
             return Err(InferenceError::Backend(
-                "tool_call_grammar: allowed_names must not be empty".to_string(),
+                "hermes_tool_call_grammar: allowed_names must not be empty".to_string(),
             ));
         }
         Some(names) => {
             if !json_grammar.contains(NAME_KV_STRING_RULE) {
                 return Err(InferenceError::Backend(format!(
-                    "tool_call_grammar: expected name rule {NAME_KV_STRING_RULE:?} not found — json_schema_to_grammar output shape changed"
+                    "hermes_tool_call_grammar: expected name rule {NAME_KV_STRING_RULE:?} not found — json_schema_to_grammar output shape changed"
                 )));
             }
             let alternation = names
@@ -319,9 +324,25 @@ fn tool_call_grammar(
             )
         }
     };
-    Ok(format!(
-        "{json_grammar}\nroot ::= \"<tool_call>\\n\" tool-json \"\\n</tool_call>\""
-    ))
+    if allow_think_prefix {
+        // Thinking-models design (2026-07-13): Require mode's guarantee
+        // ("the response cannot END as prose") stays, but the language is
+        // widened with an optional reasoning scratchpad first. The opening
+        // tag is itself optional because thinking chat templates pre-open
+        // the block in the generation prompt — the model only emits the
+        // CLOSE. `think-char` is the standard GBNF until-literal ladder
+        // for "</think>": anything except a "<" that begins that exact
+        // closing tag.
+        Ok(format!(
+            "{json_grammar}\n\
+             root ::= think-prefix? \"<tool_call>\\n\" tool-json \"\\n</tool_call>\"\n{}",
+            dialect::THINK_PREFIX_RULES
+        ))
+    } else {
+        Ok(format!(
+            "{json_grammar}\nroot ::= \"<tool_call>\\n\" tool-json \"\\n</tool_call>\""
+        ))
+    }
 }
 
 /// Owns the single loaded model + backend for the whole app (research.md
@@ -330,6 +351,11 @@ pub struct InferenceEngine {
     backend: LlamaBackend,
     model: LlamaModel,
     n_threads: i32,
+    /// Detected once at load from the GGUF's embedded chat template —
+    /// which output convention this model was trained on (tool-dialects
+    /// design). Missing/unreadable template keeps the historical Hermes
+    /// assumption.
+    dialect: ToolDialect,
 }
 
 impl InferenceEngine {
@@ -338,7 +364,16 @@ impl InferenceEngine {
         let model_params = LlamaModelParams::default();
         let model = LlamaModel::load_from_file(&backend, model_path, &model_params)
             .map_err(|e| InferenceError::ModelLoad(e.to_string()))?;
-        Ok(Self { backend, model, n_threads })
+        let dialect = model
+            .meta_val_str("tokenizer.chat_template")
+            .map(|t| ToolDialect::detect(&t))
+            .unwrap_or_default();
+        Ok(Self {
+            backend,
+            model,
+            n_threads,
+            dialect,
+        })
     }
 
     /// Renders role-tagged `messages` through the model's own chat template
@@ -360,7 +395,7 @@ impl InferenceEngine {
 
         let llama_messages: Vec<LlamaChatMessage> = messages
             .iter()
-            .map(|m| LlamaChatMessage::new(m.role.clone(), m.text()))
+            .map(|m| LlamaChatMessage::new(m.role.clone(), m.text_for(self.dialect)))
             .collect::<Result<_, _>>()
             .map_err(|e| InferenceError::Backend(e.to_string()))?;
 
@@ -456,7 +491,13 @@ impl InferenceEngine {
     ) -> Result<LlamaSampler, InferenceError> {
         let json_grammar = json_schema_to_grammar(&tool_call_schema().to_string())
             .map_err(|e| InferenceError::Backend(e.to_string()))?;
-        let grammar_str = tool_call_grammar(&json_grammar, allowed_names)?;
+        // The think prefix only matters for the non-lazy (Require) grammar:
+        // lazy mode's trigger already lets ANY prefix (thinking included)
+        // stream freely before the grammar engages at the dialect's call
+        // opener.
+        let grammar_str = self
+            .dialect
+            .grammar(&json_grammar, allowed_names, required)?;
         if required {
             LlamaSampler::grammar(&self.model, &grammar_str, "root")
                 .map_err(|e| InferenceError::Backend(e.to_string()))
@@ -465,11 +506,18 @@ impl InferenceEngine {
                 &self.model,
                 &grammar_str,
                 "root",
-                [b"<tool_call>".as_slice()],
+                [self.dialect.lazy_trigger()],
                 &[],
             )
             .map_err(|e| InferenceError::Backend(e.to_string()))
         }
+    }
+
+    /// The tool-call dialect this model was trained on (detected from its
+    /// chat template at load) — the agent loop routes output parsing
+    /// through it.
+    pub fn dialect(&self) -> ToolDialect {
+        self.dialect
     }
 
     /// Opens a fresh persistent inference context whose KV cache can be
@@ -621,14 +669,16 @@ impl PromptSession<'_> {
         // thus no fresh logits at the final position to sample the first
         // output token from — so we deliberately re-decode the last prompt
         // token to regenerate them.
-        let common =
-            common_prefix_len(&tokens, &self.cached).min(tokens.len().saturating_sub(1));
+        let common = common_prefix_len(&tokens, &self.cached).min(tokens.len().saturating_sub(1));
 
         // Drop the KV entries past the shared prefix — range `[common, end)`
         // on sequence 0 (`p1 = None` means "to the end"; llama.cpp's range is
         // half-open `[p0, p1)`), leaving `[0, common)` intact for reuse.
         // Truncate `cached` in the same breath so the two never disagree.
-        let common = match self.ctx.clear_kv_cache_seq(Some(0), Some(common as u32), None) {
+        let common = match self
+            .ctx
+            .clear_kv_cache_seq(Some(0), Some(common as u32), None)
+        {
             Ok(true) => common,
             // `Ok(false)` means the backend REFUSED the partial-range
             // removal (llama.cpp documents partial sequence removals as
@@ -752,8 +802,56 @@ impl PromptSession<'_> {
             self.cached.push(token);
         }
 
-        Ok(output)
+        // Thinking-models design (2026-07-13): reasoning is model-internal.
+        // Stripping at THIS single return point means every consumer — the
+        // agent loop's tool-call parser, subagents, summarization — sees
+        // clean text, and a model thinking ABOUT `<tool_call>` syntax can
+        // never confuse the parser.
+        Ok(strip_think_blocks(&output))
     }
+}
+
+/// Removes `<think>…</think>` reasoning from a generation
+/// (thinking-models design, docs/superpowers/specs/2026-07-13). Handles
+/// the three shapes thinking models actually produce:
+/// - complete `<think>…</think>` blocks (any number);
+/// - an orphan leading `</think>` — thinking chat templates (e.g.
+///   Qwen3-Thinking) pre-open the block in the generation prompt, so the
+///   model's own output starts mid-think and only ever emits the CLOSE:
+///   everything through that close is reasoning;
+/// - an unclosed trailing `<think>…` (the token budget ran out
+///   mid-thought): dropped, same as any other truncated garbage.
+pub fn strip_think_blocks(text: &str) -> String {
+    let mut rest = text;
+    let mut out = String::new();
+    loop {
+        match (rest.find("<think>"), rest.find("</think>")) {
+            // A complete (or template-pre-opened) block: drop through the
+            // close. When an open exists but sits AFTER the close, the
+            // close is the pre-opened block's end and the open starts a
+            // new block handled by the next iteration.
+            (Some(open), Some(close)) if open < close => {
+                out.push_str(&rest[..open]);
+                rest = &rest[close + "</think>".len()..];
+            }
+            (_, Some(close)) => {
+                rest = &rest[close + "</think>".len()..];
+            }
+            // Unclosed trailing think: budget ran out mid-thought.
+            (Some(open), None) => {
+                out.push_str(&rest[..open]);
+                rest = "";
+            }
+            (None, None) => {
+                out.push_str(rest);
+                break;
+            }
+        }
+        if rest.is_empty() {
+            break;
+        }
+    }
+    out.trim_start().to_string()
 }
 
 #[cfg(test)]
@@ -762,7 +860,10 @@ mod tests {
 
     #[test]
     fn empty_prompt_has_no_chunks() {
-        assert_eq!(prefill_chunks_from(0, 0, 512), Vec::<std::ops::Range<usize>>::new());
+        assert_eq!(
+            prefill_chunks_from(0, 0, 512),
+            Vec::<std::ops::Range<usize>>::new()
+        );
     }
 
     #[test]
@@ -855,7 +956,10 @@ mod tests {
         // length 3: positions are absolute (continue from 3), not re-based.
         assert_eq!(prefill_chunks_from(3, 10, 512), vec![3..10]);
         // A suffix longer than one batch splits, still absolute-positioned.
-        assert_eq!(prefill_chunks_from(500, 1025, 512), vec![500..1012, 1012..1025]);
+        assert_eq!(
+            prefill_chunks_from(500, 1025, 512),
+            vec![500..1012, 1012..1025]
+        );
         // A one-token suffix (the degenerate `common == len - 1` case).
         assert_eq!(prefill_chunks_from(9, 10, 512), vec![9..10]);
     }
@@ -869,7 +973,7 @@ mod tests {
     #[test]
     fn tool_call_grammar_without_names_wraps_the_json_object_in_tool_call_tags() {
         let json_grammar = json_schema_to_grammar(&tool_call_schema().to_string()).unwrap();
-        let grammar = tool_call_grammar(&json_grammar, None).unwrap();
+        let grammar = hermes_tool_call_grammar(&json_grammar, None, false).unwrap();
         assert!(grammar.contains("tool-json ::="));
         assert!(grammar.contains("root ::= \"<tool_call>\\n\" tool-json \"\\n</tool_call>\""));
         // Unconstrained: the name field is still a plain JSON string.
@@ -879,7 +983,9 @@ mod tests {
     #[test]
     fn tool_call_grammar_with_allowed_names_constrains_the_name_field_to_an_enum() {
         let json_grammar = json_schema_to_grammar(&tool_call_schema().to_string()).unwrap();
-        let grammar = tool_call_grammar(&json_grammar, Some(&["CreatePlan", "AddStep"])).unwrap();
+        let grammar =
+            hermes_tool_call_grammar(&json_grammar, Some(&["CreatePlan", "AddStep"]), false)
+                .unwrap();
         assert!(grammar.contains("name-kv ::= \"\\\"name\\\"\" space \":\" space name-value"));
         assert!(grammar.contains(r#"name-value ::= ("\"CreatePlan\"" | "\"AddStep\"") space"#));
         assert!(
@@ -894,7 +1000,8 @@ mod tests {
     #[test]
     fn tool_call_grammar_with_a_single_allowed_name_is_a_one_literal_enum() {
         let json_grammar = json_schema_to_grammar(&tool_call_schema().to_string()).unwrap();
-        let grammar = tool_call_grammar(&json_grammar, Some(&["FinishTask"])).unwrap();
+        let grammar =
+            hermes_tool_call_grammar(&json_grammar, Some(&["FinishTask"]), false).unwrap();
         assert!(grammar.contains(r#"name-value ::= ("\"FinishTask\"") space"#));
     }
 
@@ -904,14 +1011,83 @@ mod tests {
         // surfaced loudly rather than compiled into a sampler that can
         // never produce a token.
         let json_grammar = json_schema_to_grammar(&tool_call_schema().to_string()).unwrap();
-        assert!(tool_call_grammar(&json_grammar, Some(&[])).is_err());
+        assert!(hermes_tool_call_grammar(&json_grammar, Some(&[]), false).is_err());
     }
 
     #[test]
     fn tool_call_grammar_errors_when_the_name_rule_shape_is_missing() {
         // Guards against a llama.cpp upgrade changing json_schema_to_grammar's
         // output shape: gating must fail loudly, never silently un-gate.
-        assert!(tool_call_grammar("root ::= something-else", Some(&["Read"])).is_err());
+        assert!(
+            hermes_tool_call_grammar("root ::= something-else", Some(&["Read"]), false).is_err()
+        );
+    }
+
+    #[test]
+    fn tool_call_grammar_with_think_prefix_widens_root_but_still_requires_the_call() {
+        // Thinking-models design: Require mode's root allows an OPTIONAL
+        // reasoning block, then the mandatory tool call — the response
+        // still cannot end as prose.
+        let json_grammar = json_schema_to_grammar(&tool_call_schema().to_string()).unwrap();
+        let grammar = hermes_tool_call_grammar(&json_grammar, Some(&["Read"]), true).unwrap();
+        assert!(grammar
+            .contains("root ::= think-prefix? \"<tool_call>\\n\" tool-json \"\\n</tool_call>\""));
+        // The opening tag is optional (thinking templates pre-open the
+        // block in the generation prompt); the close is required.
+        assert!(grammar.contains("think-prefix ::= \"<think>\"? think-char* \"</think>\""));
+        // Name-enum gating composes with the think prefix unchanged.
+        assert!(grammar.contains(r#"name-value ::= ("\"Read\"") space"#));
+    }
+
+    // --- strip_think_blocks (thinking-models design, 2026-07-13) ---
+
+    #[test]
+    fn strip_think_passes_plain_text_through() {
+        assert_eq!(strip_think_blocks("hello there"), "hello there");
+    }
+
+    #[test]
+    fn strip_think_removes_a_complete_block() {
+        assert_eq!(
+            strip_think_blocks("<think>let me reason</think>\n<tool_call>x</tool_call>"),
+            "<tool_call>x</tool_call>"
+        );
+    }
+
+    #[test]
+    fn strip_think_treats_an_orphan_close_as_a_template_preopened_block() {
+        // Thinking chat templates (e.g. Qwen3-Thinking) pre-open <think> in
+        // the generation prompt, so the model's own output starts mid-think
+        // and only emits the CLOSE.
+        assert_eq!(
+            strip_think_blocks("reasoning about stuff</think>\nthe answer"),
+            "the answer"
+        );
+    }
+
+    #[test]
+    fn strip_think_drops_an_unclosed_trailing_block() {
+        // Token budget ran out mid-thought — no visible answer remains.
+        assert_eq!(strip_think_blocks("prefix <think>never closed"), "prefix ");
+    }
+
+    #[test]
+    fn strip_think_removes_multiple_blocks() {
+        assert_eq!(
+            strip_think_blocks("<think>a</think>one<think>b</think> two"),
+            "one two"
+        );
+    }
+
+    #[test]
+    fn strip_think_shields_the_tool_call_parser_from_think_content() {
+        // A model thinking ABOUT tool-call syntax must not confuse the
+        // parser downstream: the fake call inside think is removed, the
+        // real one survives.
+        let out = strip_think_blocks(
+            "<think>maybe <tool_call> is wrong here</think><tool_call>\n{}\n</tool_call>",
+        );
+        assert_eq!(out, "<tool_call>\n{}\n</tool_call>");
     }
 
     #[test]

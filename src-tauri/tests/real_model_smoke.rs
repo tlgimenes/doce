@@ -11,7 +11,14 @@
 //! against a real, already-installed model, rather than asserting on pure
 //! logic alone.
 
-use doce_lib::agent::{parse_response, LoopStep, SYSTEM_PROMPT};
+use doce_lib::agent::{parse_response, LoopStep};
+
+/// The exact production prompt for the model under test — the same
+/// helper the app itself seeds turns with (prompt drift between app and
+/// smoke test is how the 2026-07-12 doom loop shipped green).
+fn system_prompt(engine: &doce_lib::inference::InferenceEngine) -> String {
+    doce_lib::commands::agent::plan_system_message(None, true, None, engine.dialect())
+}
 use doce_lib::context::{self, ContextSettings};
 use doce_lib::inference::{ChatMessage, InferenceEngine, ToolCallMode};
 use doce_lib::storage::conversations::HistoryMessage;
@@ -19,10 +26,15 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 fn installed_model_path() -> PathBuf {
+    // DOCE_BENCH_MODEL points a run at any GGUF (the ladder A/Bs models
+    // without editing code); the default is the registry's current
+    // primary as installed by the app.
+    if let Ok(path) = std::env::var("DOCE_BENCH_MODEL") {
+        return PathBuf::from(path);
+    }
     let home = std::env::var("HOME").expect("HOME must be set");
-    PathBuf::from(home).join(
-        "Library/Application Support/app.doce.desktop/models/qwen3-4b-instruct-2507-q4_k_m.gguf",
-    )
+    PathBuf::from(home)
+        .join("Library/Application Support/app.doce.desktop/models/minicpm5-1b-q4_k_m.gguf")
 }
 
 #[test]
@@ -209,7 +221,7 @@ fn grammar_constrained_tool_call_produces_syntactically_valid_json_against_the_r
     let engine = InferenceEngine::load(&path, 4).expect("model should load");
 
     let messages = vec![
-        ChatMessage::system(SYSTEM_PROMPT),
+        ChatMessage::system(system_prompt(&engine)),
         ChatMessage::user(
             "Use the Bash tool right now to run the command `pwd`. Call the tool, don't just describe it.",
         ),
@@ -230,7 +242,7 @@ fn grammar_constrained_tool_call_produces_syntactically_valid_json_against_the_r
         .expect("generation should succeed");
     println!("real model tool-call output: {result:?}");
 
-    match parse_response(&result) {
+    match parse_response(&result, engine.dialect()) {
         LoopStep::ToolCall(call) => {
             assert_eq!(call.name, "Bash");
             assert!(
@@ -265,7 +277,7 @@ fn tool_result_renders_wrapped_in_qwens_own_tool_response_tags() {
     let engine = InferenceEngine::load(&path, 4).expect("model should load");
 
     let messages = vec![
-        ChatMessage::system(SYSTEM_PROMPT),
+        ChatMessage::system(system_prompt(&engine)),
         ChatMessage::user("Run `pwd` using the Bash tool."),
         ChatMessage::tool_use("call-1", "Bash", serde_json::json!({"command": "pwd"})),
         ChatMessage::tool_result("call-1", "Bash", "/tmp/example"),

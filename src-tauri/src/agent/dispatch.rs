@@ -104,11 +104,10 @@ fn wrong_key_hint(
         .unwrap_or_default()
 }
 
-/// A zero-match Grep whose pattern contains unescaped regex
-/// metacharacters is ambiguous between "nothing matches" and "the
-/// pattern doesn't mean what you think" — name the suspicion instead of
-/// letting an empty result read as verification.
-fn regex_literalness_hint(pattern: &str) -> Option<String> {
+/// True when the pattern contains an unescaped regex metacharacter — a
+/// zero-match Grep with one is ambiguous between "nothing matches" and
+/// "the pattern doesn't mean what you think".
+fn has_unescaped_metachars(pattern: &str) -> bool {
     let mut prev_backslash = false;
     for c in pattern.chars() {
         if prev_backslash {
@@ -120,12 +119,36 @@ fn regex_literalness_hint(pattern: &str) -> Option<String> {
             continue;
         }
         if "+*?()[]{}|".contains(c) {
-            return Some(format!(
-                " Note: your pattern contains '{c}', a regex metacharacter — if you meant the literal character, escape it as '\\{c}' and search again."
-            ));
+            return true;
         }
     }
-    None
+    false
+}
+
+/// True when an Edit `old_string` looks copied from Read output WITH the
+/// line-number gutter (`"     1\t..."`) — observed 2026-07-12 (tier4): the
+/// model pasted numbered Read lines into old_string, got "no match found"
+/// every retry, then wrote the gutter INTO the file via new_string. The
+/// bare error names the mismatch but not its cause; this names the cause.
+fn looks_like_read_gutter(old_string: &str) -> bool {
+    old_string.lines().any(|line| {
+        let trimmed = line.trim_start_matches(' ');
+        let digit_count = trimmed.chars().take_while(char::is_ascii_digit).count();
+        digit_count > 0 && trimmed.chars().nth(digit_count) == Some('\t')
+    })
+}
+
+/// The pattern with every regex metacharacter escaped — the literal-text
+/// reading of what the model typed.
+fn escape_regex_literal(pattern: &str) -> String {
+    let mut escaped = String::with_capacity(pattern.len() * 2);
+    for c in pattern.chars() {
+        if "\\.+*?()[]{}|^$".contains(c) {
+            escaped.push('\\');
+        }
+        escaped.push(c);
+    }
+    escaped
 }
 
 /// (tool, required string-typed args). The NVIDIA SLM-agents "simple
@@ -223,7 +246,7 @@ pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
         // frontend crash, not a cosmetic gap).
         let detail = match call.name.as_str() {
             "Glob" => {
-                json!({"toolName": "Glob", "pattern": a("pattern"), "path": a("path"), "matches": [], "outcome": {"ok": false, "error": error}})
+                json!({"toolName": "Glob", "pattern": a("pattern"), "path": a("path"), "matches": [], "truncated": false, "outcome": {"ok": false, "error": error}})
             }
             "Grep" => {
                 json!({"toolName": "Grep", "pattern": a("pattern"), "path": a("path"), "glob": a("glob"), "matches": [], "truncated": false, "skippedOversized": 0, "outcome": {"ok": false, "error": error}})
@@ -387,7 +410,14 @@ pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
                     }
                 }
                 Err(e) => {
-                    let text = format!("Error: {e}");
+                    let mut text = format!("Error: {e}");
+                    if matches!(e, fs::ToolError::NoMatch { .. })
+                        && looks_like_read_gutter(old_string)
+                    {
+                        text.push_str(
+                            " Your old_string looks copied from Read output INCLUDING the line-number gutter (\"     1\\t...\") -- those numbers are display only, not file content. Pass the line's raw text, without numbers or tabs.",
+                        );
+                    }
                     let mut detail = base_detail;
                     detail["outcome"] = json!({"ok": false, "error": text});
                     ToolOutcome {
@@ -453,12 +483,25 @@ pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
             let base =
                 resolve_optional_base(cwd, call.arguments.get("path").and_then(|v| v.as_str()));
             match search::glob_search(pattern, &base) {
-                Ok(paths) => {
-                    let matches: Vec<String> =
-                        paths.iter().map(|p| p.display().to_string()).collect();
+                Ok(outcome) => {
+                    let matches: Vec<String> = outcome
+                        .matches
+                        .iter()
+                        .map(|p| p.display().to_string())
+                        .collect();
                     ToolOutcome {
                         model_text: if !matches.is_empty() {
-                            matches.join("\n")
+                            let mut text = matches.join("\n");
+                            // Same disclosure Grep already makes: without
+                            // it, a bounded result reads as the complete
+                            // truth ("you have exactly N files").
+                            if outcome.truncated {
+                                text.push_str(&format!(
+                                    "\n(Results capped at {} matches — narrow the pattern or path to see the rest.)",
+                                    search::GLOB_RESULT_CAP
+                                ));
+                            }
+                            text
                         } else if pattern.contains(char::is_whitespace) {
                             // A real glob pattern is a single wildcard
                             // expression and never contains whitespace --
@@ -480,6 +523,7 @@ pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
                         detail: json!({
                             "toolName": "Glob", "pattern": pattern,
                             "path": base.display().to_string(), "matches": matches,
+                            "truncated": outcome.truncated,
                         }),
                     }
                 }
@@ -489,6 +533,7 @@ pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
                         detail: json!({
                             "toolName": "Glob", "pattern": pattern,
                             "path": base.display().to_string(), "matches": [],
+                            "truncated": false,
                         }),
                         model_text: text,
                     }
@@ -507,7 +552,26 @@ pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
                 resolve_optional_base(cwd, call.arguments.get("path").and_then(|v| v.as_str()));
             let glob_filter = call.arguments.get("glob").and_then(|v| v.as_str());
             match search::grep(pattern, &base, glob_filter) {
-                Ok(outcome) => {
+                Ok(mut outcome) => {
+                    // Zero regex matches + unescaped metacharacters: run
+                    // the literal-text reading OURSELVES instead of hinting
+                    // the model to. Observed twice (tier4, 2026-07-12): the
+                    // model verified with "compute a + b" (`+` quantifies
+                    // the space, matches nothing), trusted the empty
+                    // result over the escape-and-retry hint, and reported
+                    // false success. An empty result that would read as
+                    // verification must not depend on the model re-trying.
+                    let mut literal_fallback = false;
+                    if outcome.matches.is_empty() && has_unescaped_metachars(pattern) {
+                        if let Ok(literal) =
+                            search::grep(&escape_regex_literal(pattern), &base, glob_filter)
+                        {
+                            if !literal.matches.is_empty() {
+                                literal_fallback = true;
+                                outcome = literal;
+                            }
+                        }
+                    }
                     let match_values: Vec<serde_json::Value> = outcome
                         .matches
                         .iter()
@@ -520,16 +584,25 @@ pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
                         })
                         .collect();
                     let mut model_text = if outcome.matches.is_empty() {
-                        let mut text = "No matches found".to_string();
-                        text.push_str(&regex_literalness_hint(pattern).unwrap_or_default());
-                        text
+                        if has_unescaped_metachars(pattern) {
+                            "No matches found (searched both as a regex and as literal text -- your pattern contains regex metacharacters, so both readings were checked)".to_string()
+                        } else {
+                            "No matches found".to_string()
+                        }
                     } else {
-                        outcome
+                        let lines = outcome
                             .matches
                             .iter()
                             .map(|m| format!("{}:{}:{}", m.path.display(), m.line_number, m.line))
                             .collect::<Vec<_>>()
-                            .join("\n")
+                            .join("\n");
+                        if literal_fallback {
+                            format!(
+                                "Note: the pattern matched nothing as a REGEX ('+' etc. are metacharacters there); the matches below treat it as LITERAL text instead.\n{lines}"
+                            )
+                        } else {
+                            lines
+                        }
                     };
                     // Truncation/skip disclosure: without these lines the
                     // model can't tell "exactly N matches, complete" from
@@ -1244,10 +1317,15 @@ mod tests {
 
     #[test]
     fn us4_grep_cap_and_size_skips_are_signaled_not_silent() {
-        // Cap signal: the model must be able to tell "capped at 100" apart
-        // from "exactly 100 matches, complete".
+        // Cap signal: the model must be able to tell "capped" apart from
+        // "exactly at the bound, complete". One past the safety bound is
+        // enough to trip it.
         let dir = tempdir().unwrap();
-        stdfs::write(dir.path().join("many.txt"), "needle here\n".repeat(150)).unwrap();
+        stdfs::write(
+            dir.path().join("many.txt"),
+            "needle here\n".repeat(crate::agent::tools::search::GREP_RESULT_CAP + 1),
+        )
+        .unwrap();
         let capped = execute(
             &call(
                 "Grep",
@@ -1256,9 +1334,15 @@ mod tests {
             None,
         );
         assert_eq!(capped.detail["truncated"], true);
-        assert_eq!(capped.detail["matches"].as_array().unwrap().len(), 100);
+        assert_eq!(
+            capped.detail["matches"].as_array().unwrap().len(),
+            crate::agent::tools::search::GREP_RESULT_CAP
+        );
         assert!(
-            capped.model_text.contains("capped at 100"),
+            capped.model_text.contains(&format!(
+                "capped at {}",
+                crate::agent::tools::search::GREP_RESULT_CAP
+            )),
             "model_text must carry the truncation signal, got: {:?}",
             capped.model_text.lines().last()
         );
@@ -1289,10 +1373,13 @@ mod tests {
     }
 
     #[test]
-    fn zero_match_grep_with_unescaped_metachars_hints_at_escaping() {
-        // Observed for real: the model verified its work by grepping for
-        // "compute a + b" — `+` quantifies the space, matches nothing —
-        // and trusted the empty result, reporting false success (0/20).
+    fn zero_match_grep_with_unescaped_metachars_falls_back_to_literal_search() {
+        // Observed for real, TWICE: the model verified its work by
+        // grepping for "compute a + b" — `+` quantifies the space, matches
+        // nothing — and trusted the empty result, reporting false success
+        // (0/20 on 2026-07-09; again 17/20 on 2026-07-12 when the fix was
+        // only an escape-and-retry hint the model ignored). The tool now
+        // runs the literal reading itself and returns those matches.
         let dir = tempdir().unwrap();
         stdfs::write(dir.path().join("f.txt"), "compute a + b now\n").unwrap();
 
@@ -1303,10 +1390,62 @@ mod tests {
             ),
             None,
         );
-        assert!(result.model_text.contains("No matches found"));
         assert!(
-            result.model_text.contains("\\+"),
-            "must show the escaped form, got: {:?}",
+            result.model_text.contains("compute a + b now"),
+            "the literal fallback must surface the match, got: {:?}",
+            result.model_text
+        );
+        assert!(
+            result.model_text.contains("LITERAL text"),
+            "the reinterpretation must be disclosed, got: {:?}",
+            result.model_text
+        );
+    }
+
+    #[test]
+    fn no_match_edit_with_line_number_gutter_names_the_cause() {
+        // Observed 2026-07-12 (tier4): old_string copied from Read output
+        // with the "     1\t" gutter, "no match found" on every retry,
+        // then the gutter written INTO the file via new_string.
+        let dir = tempdir().unwrap();
+        stdfs::write(dir.path().join("f.txt"), "let x = 1;\n").unwrap();
+
+        let result = execute(
+            &call(
+                "Edit",
+                serde_json::json!({
+                    "file_path": dir.path().join("f.txt").to_str().unwrap(),
+                    "old_string": "     1\tlet x = 1;",
+                    "new_string": "let x = 2;",
+                }),
+            ),
+            None,
+        );
+        assert!(
+            result.model_text.contains("no match found")
+                && result.model_text.contains("line-number gutter"),
+            "a gutter-shaped old_string must be named as the cause, got: {:?}",
+            result.model_text
+        );
+    }
+
+    #[test]
+    fn zero_match_grep_reports_both_readings_checked_when_literal_also_misses() {
+        let dir = tempdir().unwrap();
+        stdfs::write(dir.path().join("f.txt"), "nothing relevant here\n").unwrap();
+
+        let result = execute(
+            &call(
+                "Grep",
+                serde_json::json!({"pattern": "compute a + b", "path": dir.path().to_str().unwrap()}),
+            ),
+            None,
+        );
+        assert!(
+            result
+                .model_text
+                .contains("No matches found (searched both as a regex and as literal text"),
+            "a doubly-empty result must say both readings were checked, got: {:?}",
             result.model_text
         );
     }
