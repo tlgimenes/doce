@@ -49,6 +49,7 @@ pub fn run() {
     }
 
     app_builder = app_builder.plugin(tauri_plugin_dialog::init());
+    app_builder = app_builder.plugin(tauri_plugin_shell::init());
 
     #[cfg(feature = "wdio")]
     {
