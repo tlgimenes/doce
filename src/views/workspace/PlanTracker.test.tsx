@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, act } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import PlanTracker from "./PlanTracker";
 import { commands, events } from "@/lib/ipc";
 import type { PlanSnapshot, PlanUpdatePayload } from "@/lib/ipc";
@@ -75,7 +74,13 @@ describe("PlanTracker", () => {
         }),
       }),
     );
-    expect(screen.getByTestId("plan-current-step")).toHaveTextContent("2/3");
+    const updatedRows = screen.getAllByTestId("plan-step");
+    expect(updatedRows).toHaveLength(3);
+    expect(updatedRows[2]).toHaveAttribute("data-current", "true");
+    expect(updatedRows[1].querySelector('[data-slot="checkbox"]')).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
   });
 
   it("unmounts when the turn ends (plan: null)", async () => {
@@ -130,106 +135,64 @@ describe("PlanTracker", () => {
       currentStepIndex: 2,
     });
     act(() => firePlanUpdate({ conversationId: "c1", plan: fresherPlan }));
-    expect(screen.getByTestId("plan-current-step")).toHaveTextContent("2/3");
+    expect(screen.getByText("Fix bug_01.txt")).toHaveClass("line-through");
 
     // The stale recovery invoke resolves after the fresher event -- must
     // not clobber what the event already established.
     await act(async () => {
       resolveRecovery(snapshot());
     });
-    expect(screen.getByTestId("plan-current-step")).toHaveTextContent("2/3");
+    expect(screen.getByText("Fix bug_01.txt")).toHaveClass("line-through");
   });
 
-  it("collapses completed steps and caps pending once the plan exceeds 6 steps", async () => {
-    const many = snapshot({
-      steps: [
-        { description: "s0", done: true },
-        { description: "s1", done: true },
-        { description: "s2", done: true },
-        { description: "s3", done: false },
-        { description: "s4", done: false },
-        { description: "s5", done: false },
-        { description: "s6", done: false },
-        { description: "s7", done: false },
-        { description: "s8", done: false },
-      ],
-      currentStepIndex: 3,
-    });
-    vi.mocked(commands.getActivePlan).mockResolvedValue(many);
+  it("renders every step in source order with Marker completion and current-state styling", async () => {
+    vi.mocked(commands.getActivePlan).mockResolvedValue(snapshot());
     render(<PlanTracker conversationId="c1" />);
-    await userEvent.click(await screen.findByTestId("plan-current-step"));
 
-    expect(screen.getByTestId("plan-done-collapsed")).toHaveTextContent("3 done");
-    // Current (s3) + up to 4 pending (s4..s7) visible, rest summarized.
-    expect(screen.getAllByTestId("plan-step")).toHaveLength(5);
-    expect(screen.getByTestId("plan-more")).toHaveTextContent("+1 more");
+    const rows = await screen.findAllByTestId("plan-step");
+    expect(rows).toHaveLength(3);
+    expect(rows.map((row) => row.textContent)).toEqual([
+      "Find all bug markers",
+      "Fix bug_01.txt",
+      "Fix bug_02.txt",
+    ]);
+
+    const checkboxes = rows.map((row) => row.querySelector('[data-slot="checkbox"]'));
+    expect(checkboxes).toHaveLength(3);
+    expect(checkboxes[0]).toHaveAttribute("aria-checked", "true");
+    expect(checkboxes[1]).toHaveAttribute("aria-checked", "false");
+    expect(checkboxes[2]).toHaveAttribute("aria-checked", "false");
+    checkboxes.forEach((checkbox) =>
+      expect(checkbox).toHaveAttribute("aria-disabled", "true"),
+    );
+
+    expect(screen.getByText("Find all bug markers")).toHaveClass("line-through");
+    expect(rows[0]).toHaveClass("text-muted-foreground");
+    expect(rows[1]).toHaveClass("text-foreground");
+    expect(rows[2]).toHaveClass("text-muted-foreground");
+    expect(rows[1]).toHaveAttribute("data-current", "true");
+    expect(rows[0]).not.toHaveAttribute("data-current");
   });
 
-  it("shows the current step and progress in the collapsed one-liner", async () => {
-    vi.mocked(commands.getActivePlan).mockResolvedValue({
-      goal: "Ship the feature",
-      currentStepIndex: 1,
-      steps: [
-        { description: "Write tests", done: true },
-        { description: "Implement", done: false },
-        { description: "Verify", done: false },
-      ],
-    });
-    render(<PlanTracker conversationId="conv-1" />);
+  it("uses a three-row scroll viewport with Shadcn's bottom fade", async () => {
+    vi.mocked(commands.getActivePlan).mockResolvedValue(
+      snapshot({
+        steps: [
+          { description: "s0", done: true },
+          { description: "s1", done: false },
+          { description: "s2", done: false },
+          { description: "s3", done: false },
+        ],
+        currentStepIndex: 1,
+      }),
+    );
+    render(<PlanTracker conversationId="c1" />);
 
-    const trigger = await screen.findByTestId("plan-current-step");
-    expect(trigger).toHaveTextContent("Implement");
-    expect(trigger).toHaveTextContent("1/3");
-    expect(trigger).toHaveAttribute("aria-expanded", "false");
-    // Spinner removed by user directive — no spinner anywhere in the panel.
-    expect(trigger.querySelector('[data-slot="spinner"]')).toBeNull();
-  });
+    const scroller = await screen.findByTestId("plan-task-scroller");
+    expect(scroller).toHaveStyle({ maxHeight: "3.75rem" });
+    expect(screen.getAllByTestId("plan-step")).toHaveLength(4);
 
-  it("falls back to the goal while planning (currentStepIndex null)", async () => {
-    vi.mocked(commands.getActivePlan).mockResolvedValue({
-      goal: "Ship the feature",
-      currentStepIndex: null,
-      steps: [{ description: "Write tests", done: false }],
-    });
-    render(<PlanTracker conversationId="conv-1" />);
-
-    expect(await screen.findByTestId("plan-current-step")).toHaveTextContent("Ship the feature");
-  });
-
-  it("expands upward into the full step list", async () => {
-    vi.mocked(commands.getActivePlan).mockResolvedValue({
-      goal: "Ship the feature",
-      currentStepIndex: 1,
-      steps: [
-        { description: "Write tests", done: true },
-        { description: "Implement", done: false },
-        { description: "Verify", done: false },
-      ],
-    });
-    render(<PlanTracker conversationId="conv-1" />);
-    await userEvent.click(await screen.findByTestId("plan-current-step"));
-
-    const steps = screen.getAllByTestId("plan-step");
-    expect(steps).toHaveLength(3);
-    expect(steps[0]).toHaveAttribute("data-state", "done");
-    expect(steps[1]).toHaveAttribute("data-state", "current");
-    // The list renders BEFORE the trigger in DOM order (upward expansion).
-    expect(
-      steps[0].compareDocumentPosition(screen.getByTestId("plan-current-step")) &
-        Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-  });
-
-  it("shows a Check icon in the one-liner when every step is done", async () => {
-    vi.mocked(commands.getActivePlan).mockResolvedValue({
-      goal: "Ship the feature",
-      currentStepIndex: null,
-      steps: [{ description: "Write tests", done: true }],
-    });
-    render(<PlanTracker conversationId="conv-1" />);
-
-    const trigger = await screen.findByTestId("plan-current-step");
-    expect(trigger.querySelector('[data-slot="spinner"]')).toBeNull();
-    expect(trigger).toHaveTextContent("1/1");
+    const viewport = screen.getByTestId("plan-task-viewport");
+    expect(viewport).toHaveClass("overflow-y-auto", "scroll-fade-b");
   });
 });
