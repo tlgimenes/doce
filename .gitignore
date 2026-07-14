@@ -47,3 +47,6 @@ src/lib/bindings.ts
 
 # Local implementation worktrees
 .worktrees/
+
+# Bundled llama-server sidecar (built via scripts/build-llama-server.sh)
+src-tauri/binaries/llama-server-*
