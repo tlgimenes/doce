@@ -760,16 +760,17 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
             crate::inference::http::tool_choice_for(crate::inference::ToolCallMode::Require)
                 .map(|s| s.to_string()),
         );
-        // Structural `prompt + max_tokens <= window` guarantee
-        // (restore-output-cap task): estimate this turn's prompt size
-        // through the single `token_estimate` seam, then clamp
-        // `AGENT_TURN_MAX_OUTPUT_TOKENS` down to whatever headroom is left.
-        let prompt_est: u32 = messages
-            .iter()
-            .map(|m| crate::inference::token_estimate(&m.text()))
-            .sum();
+        // Always-max-output (FR-1): the ceiling is the window itself, so the
+        // clamp yields `window - prompt_est - margin` -- the max output that
+        // structurally fits -- instead of a flat 2048 cap. prompt_est uses the
+        // server-decoded OpenAI shape (FR-4), the same shape the compaction
+        // trigger measures, over the exact `messages` this turn sends (tail included).
+        let prompt_est = crate::inference::token_estimate(
+            &serde_json::to_string(&crate::inference::http::to_openai_messages(&messages))
+                .unwrap_or_default(),
+        );
         req.max_tokens = Some(crate::context::limits::clamp_output_tokens(
-            crate::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS,
+            crate::context::limits::AGENT_TURN_OUTPUT_CEILING,
             crate::inference::CONTEXT_WINDOW_TOKENS,
             prompt_est,
         ));
@@ -969,15 +970,17 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
             crate::inference::http::tool_choice_for(crate::inference::ToolCallMode::Require)
                 .map(|s| s.to_string()),
         );
-        // Same structural `prompt + max_tokens <= window` guarantee as
-        // `RealBackend::generate` (restore-output-cap task), sized against
-        // this subagent's own `messages`/`engine`.
-        let prompt_est: u32 = messages
-            .iter()
-            .map(|m| crate::inference::token_estimate(&m.text()))
-            .sum();
+        // Always-max-output (FR-1): the ceiling is the window itself, so the
+        // clamp yields `window - prompt_est - margin` -- the max output that
+        // structurally fits -- instead of a flat 2048 cap. prompt_est uses the
+        // server-decoded OpenAI shape (FR-4), the same shape the compaction
+        // trigger measures, over the exact `messages` this turn sends (tail included).
+        let prompt_est = crate::inference::token_estimate(
+            &serde_json::to_string(&crate::inference::http::to_openai_messages(&messages))
+                .unwrap_or_default(),
+        );
         req.max_tokens = Some(crate::context::limits::clamp_output_tokens(
-            crate::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS,
+            crate::context::limits::AGENT_TURN_OUTPUT_CEILING,
             crate::inference::CONTEXT_WINDOW_TOKENS,
             prompt_est,
         ));

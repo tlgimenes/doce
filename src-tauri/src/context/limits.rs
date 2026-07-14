@@ -95,15 +95,15 @@ pub const DEFAULT_HARD_LIMIT_PCT: f64 = 0.9;
 /// file (2026-07-09 payload-files design, `context::payload::stage_tool_result`).
 pub const DEFAULT_TOOL_OUTPUT_OFFLOAD_TOKENS: usize = (CONTEXT_WINDOW_TOKENS / 16) as usize;
 
-/// `reserve` for the per-turn fit inside
-/// `agent::run_loop` (`context::fit_turn_to_budget`) -- and, since the
-/// restore-output-cap task, the output-token CEILING `clamp_output_tokens`
-/// uses for agent turns. It is no longer the literal `max_tokens` sent on
-/// the wire: the request's actual `max_tokens` is
-/// `clamp_output_tokens(AGENT_TURN_MAX_OUTPUT_TOKENS, window, prompt_est)`,
-/// which never exceeds this ceiling and shrinks below it once
-/// `prompt_est + margin` eats into the window, so `prompt + max_tokens <=
-/// window` holds structurally rather than by convention.
+/// The budgeting RESERVE (not the wire `max_tokens` ceiling -- see
+/// `AGENT_TURN_OUTPUT_CEILING`) subtracted by the plan-host `threshold`
+/// computations and the `STATE_TAIL_RESERVE_TOKENS` envelope, and by
+/// `agent::run_loop`'s own `fit_turn_to_budget` reserve. Since the
+/// always-max-output task, this is no longer what `clamp_output_tokens`
+/// uses as `ceiling` for agent turns (that's `AGENT_TURN_OUTPUT_CEILING`
+/// now, the window itself) -- this constant lives on purely as the
+/// conservative slack those budgets still reserve ahead of a turn, before
+/// the turn's own request ever asks the clamp for its actual `max_tokens`.
 ///
 /// Raised from 256 (~3.1% of the 8192 window) to 1024 (~6.2% of
 /// `CONTEXT_WINDOW_TOKENS`) after a real benchmark failure: a well-granulated
@@ -120,6 +120,17 @@ pub const DEFAULT_TOOL_OUTPUT_OFFLOAD_TOKENS: usize = (CONTEXT_WINDOW_TOKENS / 1
 /// turns that don't think long.
 pub const AGENT_TURN_MAX_OUTPUT_TOKENS: u32 = 2048;
 
+/// The output-token CEILING for agent turns under the always-max-output policy:
+/// agent turns request as much output as fits the window, so the ceiling IS the
+/// window and `clamp_output_tokens` returns `window - prompt_est - margin`,
+/// shrinking only when the prompt is large. `OUTPUT_RESERVE_TOKENS`
+/// (`SERVER_CTX_SIZE - CONTEXT_WINDOW_TOKENS` = 4096) stays as slack beyond the
+/// clamp's `window`, so `prompt + max_tokens <= CONTEXT_WINDOW_TOKENS <
+/// SERVER_CTX_SIZE` holds even if `prompt_est` slightly under-counts. Distinct
+/// from `AGENT_TURN_MAX_OUTPUT_TOKENS`, which remains the conservative RESERVE
+/// the plan-host `threshold`/`STATE_TAIL_RESERVE` budgets subtract.
+pub const AGENT_TURN_OUTPUT_CEILING: u32 = CONTEXT_WINDOW_TOKENS;
+
 /// The floor `clamp_output_tokens` never sizes a request's `max_tokens`
 /// below, even once headroom (`window - prompt_estimate - margin`) is fully
 /// exhausted -- a request with less than this is more likely to fail the
@@ -132,7 +143,7 @@ pub const MIN_OUTPUT_TOKENS: u32 = 512;
 /// Sizes a request's `max_tokens` so `prompt + max_tokens <= window` is
 /// structurally guaranteed rather than merely conventional (qwen-code's
 /// `clampOutputTokensToWindow`). `ceiling` is the caller's preferred cap
-/// (e.g. `AGENT_TURN_MAX_OUTPUT_TOKENS`); `window` is the model's context
+/// (e.g. `AGENT_TURN_OUTPUT_CEILING`); `window` is the model's context
 /// window; `prompt_estimate` is this turn's estimated prompt token count
 /// (`inference::token_estimate`). `margin` reserves headroom beyond the
 /// prompt itself -- the larger of a flat 1024 tokens or 1/20th of the
@@ -209,5 +220,26 @@ mod tests {
         // margin = max(1024, 16384/20=819) = 1024;
         // window - prompt_estimate - margin = 16384 - 13500 - 1024 = 1860.
         assert_eq!(clamp_output_tokens(2048, 16384, 13500), 1860);
+    }
+
+    // --- AGENT_TURN_OUTPUT_CEILING (always-max-output policy) ---
+
+    #[test]
+    fn agent_output_ceiling_lets_output_fill_the_free_window() {
+        let window = CONTEXT_WINDOW_TOKENS;
+        let out = clamp_output_tokens(AGENT_TURN_OUTPUT_CEILING, window, 1000);
+        assert!(
+            out > AGENT_TURN_MAX_OUTPUT_TOKENS,
+            "expected max-fit output, got {out}"
+        );
+        assert_eq!(out, window - (1000 + 1024.max(window / 20)));
+        assert!(1000 + out <= window); // structural guarantee still holds
+    }
+
+    #[test]
+    fn agent_output_ceiling_floors_at_min_when_prompt_nearly_fills_window() {
+        let window = CONTEXT_WINDOW_TOKENS;
+        let out = clamp_output_tokens(AGENT_TURN_OUTPUT_CEILING, window, window - 100);
+        assert_eq!(out, MIN_OUTPUT_TOKENS);
     }
 }
