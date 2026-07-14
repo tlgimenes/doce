@@ -6,7 +6,7 @@
 //! arguments-as-string, sampling defaults) is unit-testable without a
 //! running server.
 
-use super::{ChatMessage, MessageContent, ToolCallMode};
+use super::{ChatMessage, InferenceError, MessageContent, ToolCallMode};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -299,6 +299,12 @@ pub enum ChatChunk {
         prompt: u32,
         completion: u32,
     },
+    /// `choices[0].finish_reason`, once the server sets it to a non-null
+    /// string (e.g. `"stop"`, `"tool_calls"`) — a sibling of `delta` on the
+    /// same choice object, not nested inside it, so it is surfaced as its
+    /// own chunk rather than folded into the content/reasoning/tool-call
+    /// handling above.
+    FinishReason(String),
     Done,
 }
 
@@ -337,46 +343,53 @@ pub fn parse_sse_line(line: &str) -> Option<Vec<ChatChunk>> {
     let v: Value = serde_json::from_str(data).ok()?;
     let mut chunks = Vec::new();
 
-    if let Some(delta) = v
+    if let Some(choice) = v
         .get("choices")
         .and_then(|c| c.as_array())
         .and_then(|a| a.first())
-        .and_then(|choice| choice.get("delta"))
     {
-        if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
-            chunks.push(ChatChunk::Content(content.to_string()));
-        }
-        if let Some(reasoning) = delta.get("reasoning_content").and_then(|c| c.as_str()) {
-            chunks.push(ChatChunk::Reasoning(reasoning.to_string()));
-        }
-        if let Some(tool_calls) = delta.get("tool_calls").and_then(|t| t.as_array()) {
-            for tc in tool_calls {
-                let index = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as u32;
-                let id = tc.get("id").and_then(|i| i.as_str()).map(|s| s.to_string());
-                let function = tc.get("function");
-                let name = function
-                    .and_then(|f| f.get("name"))
-                    .and_then(|n| n.as_str())
-                    .map(|s| s.to_string());
-                // Tolerance rule: `arguments` is normally a JSON-encoded
-                // string fragment, but some server builds send a
-                // fully-parsed object instead — re-serialize it to a
-                // string here so `ChatChunk::ToolCallFragment::args` is
-                // always the same shape downstream.
-                let args = function
-                    .and_then(|f| f.get("arguments"))
-                    .map(|a| match a {
-                        Value::String(s) => s.clone(),
-                        other => other.to_string(),
-                    })
-                    .unwrap_or_default();
-                chunks.push(ChatChunk::ToolCallFragment {
-                    index,
-                    id,
-                    name,
-                    args,
-                });
+        if let Some(delta) = choice.get("delta") {
+            if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
+                chunks.push(ChatChunk::Content(content.to_string()));
             }
+            if let Some(reasoning) = delta.get("reasoning_content").and_then(|c| c.as_str()) {
+                chunks.push(ChatChunk::Reasoning(reasoning.to_string()));
+            }
+            if let Some(tool_calls) = delta.get("tool_calls").and_then(|t| t.as_array()) {
+                for tc in tool_calls {
+                    let index = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as u32;
+                    let id = tc.get("id").and_then(|i| i.as_str()).map(|s| s.to_string());
+                    let function = tc.get("function");
+                    let name = function
+                        .and_then(|f| f.get("name"))
+                        .and_then(|n| n.as_str())
+                        .map(|s| s.to_string());
+                    // Tolerance rule: `arguments` is normally a JSON-encoded
+                    // string fragment, but some server builds send a
+                    // fully-parsed object instead — re-serialize it to a
+                    // string here so `ChatChunk::ToolCallFragment::args` is
+                    // always the same shape downstream.
+                    let args = function
+                        .and_then(|f| f.get("arguments"))
+                        .map(|a| match a {
+                            Value::String(s) => s.clone(),
+                            other => other.to_string(),
+                        })
+                        .unwrap_or_default();
+                    chunks.push(ChatChunk::ToolCallFragment {
+                        index,
+                        id,
+                        name,
+                        args,
+                    });
+                }
+            }
+        }
+        // `finish_reason` sits alongside `delta` on the choice object, not
+        // nested inside it — checked independently so a line that carries
+        // only a finish reason (an empty `delta: {}`) still surfaces it.
+        if let Some(finish_reason) = choice.get("finish_reason").and_then(|f| f.as_str()) {
+            chunks.push(ChatChunk::FinishReason(finish_reason.to_string()));
         }
     }
 
@@ -468,6 +481,166 @@ impl ToolCallAccum {
             .or_else(|_| serde_json::from_str::<Value>(&args))
             .ok()?;
         Some((name, value))
+    }
+}
+
+/// The result of one complete `LlamaServerClient::chat` call — everything
+/// the caller needs once the stream ends (or, in a later task, once it's
+/// ready to fold into a persisted `ChatMessage`): the model's own text,
+/// its reasoning (stripped `<think>`-equivalent, but here it's the
+/// server-native `reasoning_content` delta rather than a tag to strip),
+/// a resolved tool call if one was made, why the stream stopped, and the
+/// token accounting for the turn.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChatOutcome {
+    /// `ToolCallAccum::finish`'s result — `None` unless the model actually
+    /// emitted `tool_calls` deltas this turn.
+    pub tool_call: Option<(String, Value)>,
+    /// Concatenated `ChatChunk::Content` deltas, in arrival order.
+    pub text: String,
+    /// Concatenated `ChatChunk::Reasoning` deltas, in arrival order.
+    pub reasoning: String,
+    /// The last `ChatChunk::FinishReason` seen before the stream ended
+    /// (`"stop"`, `"tool_calls"`, etc.) — empty if the server never sent
+    /// one, which callers should treat the same as an unknown reason.
+    pub finish_reason: String,
+    /// `(prompt_tokens, completion_tokens)` from the trailing usage event
+    /// llama-server sends because `ChatRequest::build` always sets
+    /// `stream_options.include_usage`. `None` only if the server dropped
+    /// the connection before that event arrived (e.g. mid-stream error).
+    pub usage: Option<(u32, u32)>,
+}
+
+/// Talks to one llama-server instance's OpenAI-compatible
+/// `/v1/chat/completions` endpoint over HTTP + SSE. Holds a `reqwest::Client`
+/// (not recreated per call) so connection pooling/keep-alive work across
+/// turns, matching the one-worker-per-app model `InferenceEngine` already
+/// uses for the in-process llama.cpp path — this is the equivalent front
+/// door for the llama-server cutover, deliberately just data-in/data-out
+/// with no state of its own beyond the base URL and HTTP client.
+pub struct LlamaServerClient {
+    base_url: String,
+    http: reqwest::Client,
+}
+
+impl LlamaServerClient {
+    /// `base_url` is the sidecar's own root (e.g. `http://127.0.0.1:PORT`),
+    /// with no trailing slash assumed either way — `chat` always joins it
+    /// with a leading `/v1/chat/completions`.
+    pub fn new(base_url: impl Into<String>) -> Self {
+        Self {
+            base_url: base_url.into(),
+            http: reqwest::Client::new(),
+        }
+    }
+
+    /// POSTs `req` to `{base_url}/v1/chat/completions` and drives the SSE
+    /// response to a `ChatOutcome`, calling `on_piece` with each
+    /// content/reasoning fragment as it arrives so a caller can stream
+    /// progress to the UI the same way `InferenceEngine::generate`'s
+    /// `on_token` already does for the in-process path.
+    ///
+    /// `cancel` is checked before the request is sent at all (an
+    /// already-cancelled token never touches the network) and raced against
+    /// every await point after that (the initial `send()` and every body
+    /// chunk read) via `tokio::select!`, so a cancellation lands promptly
+    /// instead of only once the stream naturally ends — the same "checked
+    /// between steps, not just before starting" discipline
+    /// `PromptSession::generate`'s `should_cancel` uses for the in-process
+    /// decode loop.
+    ///
+    /// Reads the response body via `Response::chunk()` (an async pull, one
+    /// `Bytes` frame at a time) rather than `bytes_stream()` — behaviorally
+    /// identical, but avoids pulling in `futures_util::StreamExt` as a new
+    /// direct dependency just to call `.next()` on the `Stream` `bytes_stream`
+    /// returns. Frames are appended to a line buffer and split on `\n`, since
+    /// SSE frames from the wire don't reliably land on line boundaries.
+    pub async fn chat(
+        &self,
+        req: ChatRequest,
+        mut on_piece: impl FnMut(&str),
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<ChatOutcome, InferenceError> {
+        if cancel.is_cancelled() {
+            return Err(InferenceError::Cancelled);
+        }
+
+        let url = format!("{}/v1/chat/completions", self.base_url);
+        let mut response = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(InferenceError::Cancelled),
+            result = self
+                .http
+                .post(&url)
+                .header("content-type", "application/json")
+                .json(&req)
+                .send() => result.map_err(|e| InferenceError::Backend(e.to_string()))?,
+        };
+
+        let mut buf = String::new();
+        let mut accum = ToolCallAccum::default();
+        let mut text = String::new();
+        let mut reasoning = String::new();
+        let mut finish_reason = String::new();
+        let mut usage = None;
+
+        loop {
+            let body_chunk = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Err(InferenceError::Cancelled),
+                result = response.chunk() => result.map_err(|e| InferenceError::Backend(e.to_string()))?,
+            };
+            let Some(bytes) = body_chunk else {
+                // The connection closed without an explicit `[DONE]` line —
+                // treat whatever was accumulated as final rather than
+                // erroring, the same tolerance `parse_sse_line` already
+                // extends to individual malformed lines.
+                break;
+            };
+            buf.push_str(&String::from_utf8_lossy(&bytes));
+
+            while let Some(pos) = buf.find('\n') {
+                let line = buf[..pos].trim_end_matches('\r').to_string();
+                buf.drain(..=pos);
+                let Some(sse_chunks) = parse_sse_line(&line) else {
+                    continue;
+                };
+                for sse_chunk in sse_chunks {
+                    match sse_chunk {
+                        ChatChunk::Content(s) => {
+                            on_piece(&s);
+                            text.push_str(&s);
+                        }
+                        ChatChunk::Reasoning(s) => {
+                            on_piece(&s);
+                            reasoning.push_str(&s);
+                        }
+                        ChatChunk::ToolCallFragment { .. } => accum.push_fragment(sse_chunk),
+                        ChatChunk::Usage { prompt, completion } => {
+                            usage = Some((prompt, completion));
+                        }
+                        ChatChunk::FinishReason(s) => finish_reason = s,
+                        ChatChunk::Done => {
+                            return Ok(ChatOutcome {
+                                tool_call: accum.finish(),
+                                text,
+                                reasoning,
+                                finish_reason,
+                                usage,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(ChatOutcome {
+            tool_call: accum.finish(),
+            text,
+            reasoning,
+            finish_reason,
+            usage,
+        })
     }
 }
 
@@ -681,5 +854,104 @@ mod tests {
     #[test]
     fn parse_sse_line_returns_none_for_malformed_json() {
         assert!(parse_sse_line("data: not json").is_none());
+    }
+
+    #[test]
+    fn parses_finish_reason_from_a_choice() {
+        let l = r#"data: {"choices":[{"delta":{},"finish_reason":"stop","index":0}]}"#;
+        assert!(matches!(
+            &parse_sse_line(l).unwrap()[0],
+            ChatChunk::FinishReason(s) if s == "stop"
+        ));
+    }
+
+    // --- streaming HTTP client (task 2.3) ---
+
+    fn sample_request() -> ChatRequest {
+        ChatRequest::build(
+            "qwen",
+            vec![serde_json::json!({"role":"user","content":"hi"})],
+            None,
+            None,
+        )
+    }
+
+    #[tokio::test]
+    async fn chat_returns_tool_call_from_sse() {
+        let server = wiremock::MockServer::start().await;
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"hmm\"},\"index\":0}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"Read\",\"arguments\":\"{\\\"file_path\\\":\\\"/x\\\"}\"}}]},\"index\":0}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\",\"index\":0}]}\n\n",
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":4}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/v1/chat/completions"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_raw(body, "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+        let client = LlamaServerClient::new(server.uri());
+        let out = client
+            .chat(
+                sample_request(),
+                |_p| {},
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let (name, args) = out.tool_call.unwrap();
+        assert_eq!(name, "Read");
+        assert_eq!(args["file_path"], "/x");
+        assert_eq!(out.reasoning, "hmm");
+        assert_eq!(out.usage, Some((9, 4)));
+        assert_eq!(out.finish_reason, "tool_calls");
+    }
+
+    #[tokio::test]
+    async fn chat_aborts_on_cancel() {
+        let token = tokio_util::sync::CancellationToken::new();
+        token.cancel();
+        let client = LlamaServerClient::new("http://127.0.0.1:1"); // unreachable; cancel wins
+        let r = client.chat(sample_request(), |_p| {}, &token).await;
+        assert!(matches!(r, Err(InferenceError::Cancelled)));
+    }
+
+    #[tokio::test]
+    async fn chat_streams_text_only_response() {
+        let server = wiremock::MockServer::start().await;
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hel\"},\"index\":0}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"lo\"},\"index\":0}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\",\"index\":0}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/v1/chat/completions"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_raw(body, "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+        let client = LlamaServerClient::new(server.uri());
+        let mut pieces: Vec<String> = Vec::new();
+        let out = client
+            .chat(
+                sample_request(),
+                |p| pieces.push(p.to_string()),
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(out.tool_call.is_none());
+        assert_eq!(out.text, "hello");
+        assert_eq!(out.finish_reason, "stop");
+        assert_eq!(pieces, vec!["hel".to_string(), "lo".to_string()]);
     }
 }

@@ -21,6 +21,14 @@ pub enum InferenceError {
     Backend(String),
     #[error("model load failed: {0}")]
     ModelLoad(String),
+    /// A `http::LlamaServerClient::chat` call was cut short by its
+    /// `CancellationToken` — either already cancelled before the request
+    /// started, or cancelled mid-stream. Distinct from `Backend` (a real
+    /// transport/protocol failure) because a cancelled turn is an
+    /// intentional stop, not an error the caller should retry or surface as
+    /// a backend fault.
+    #[error("inference cancelled")]
+    Cancelled,
 }
 
 /// The client-side `LlamaBatch`'s fixed capacity — llama.cpp can't decode
