@@ -237,6 +237,13 @@ pub struct ChatRequest {
     pub top_k: u32,
     pub min_p: f32,
     pub presence_penalty: f32,
+    /// Sampler seed for reproducible generation. `None` (the production
+    /// default) omits the field entirely, so llama-server seeds from entropy
+    /// and successive runs vary. The benchmark harness sets it from
+    /// `DOCE_GEN_SEED` (see `seed_from_env`) to make an A/B reproducible;
+    /// llama-server honors a per-request `seed` in the sampler.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
     /// Only meaningful (and only sent) alongside `stream: true` — llama-server
     /// echoes token-usage in the final SSE event when this is set.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -250,7 +257,9 @@ impl ChatRequest {
     /// the coding sampling preset (`temperature=0.6, top_p=0.95, top_k=20,
     /// min_p=0.0, presence_penalty=0.0`). `tools`/`tool_choice` are passed
     /// straight through — `None` for both omits them from the serialized
-    /// JSON entirely (matching `ToolCallMode::Forbid`'s mapping).
+    /// JSON entirely (matching `ToolCallMode::Forbid`'s mapping). The sampler
+    /// `seed` comes from `DOCE_GEN_SEED` — `None`/entropy in production, set
+    /// only by the benchmark harness for a reproducible A/B.
     pub fn build(
         model: impl Into<String>,
         messages: Vec<Value>,
@@ -272,9 +281,21 @@ impl ChatRequest {
             top_k: 20,
             min_p: 0.0,
             presence_penalty: 0.0,
+            seed: seed_from_env(),
             stream_options: stream.then(|| serde_json::json!({"include_usage": true})),
         }
     }
+}
+
+/// Reads an optional reproducibility seed from `DOCE_GEN_SEED`. Returns `None`
+/// when unset or non-numeric, so production (which never sets it) keeps
+/// entropy seeding; the benchmark harness exports it (e.g. 11/22/33) to pin
+/// sampling for a reproducible A/B. Kept consistent with the `[metrics] …
+/// seed=` line the agent-task ladder prints from the same env var.
+fn seed_from_env() -> Option<u64> {
+    std::env::var("DOCE_GEN_SEED")
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
 }
 
 /// One decoded piece of a streaming `/v1/chat/completions` response —
@@ -762,6 +783,22 @@ mod tests {
         assert_eq!(v["stream_options"]["include_usage"], true);
         assert!(v.get("tools").is_none());
         assert!(v.get("tool_choice").is_none());
+        // seed is omitted (entropy seeding) unless DOCE_GEN_SEED is set to a
+        // valid integer — the production default. Guarded so a seeded
+        // benchmark run that also happens to exercise unit tests won't flake.
+        if std::env::var("DOCE_GEN_SEED").is_err() {
+            assert!(v.get("seed").is_none());
+        }
+    }
+
+    #[test]
+    fn chat_request_serializes_seed_when_set() {
+        // Field is public; set it directly so the test is independent of the
+        // process env (build() sources it from DOCE_GEN_SEED).
+        let mut req = ChatRequest::build("qwen", vec![], None, None);
+        req.seed = Some(11);
+        let v = serde_json::to_value(&req).unwrap();
+        assert_eq!(v["seed"], 11);
     }
 
     #[test]
