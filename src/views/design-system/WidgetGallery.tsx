@@ -7,6 +7,8 @@ import EditDiffWidget from "@/views/chat/tool-widgets/EditDiffWidget";
 import BashWidget from "@/views/chat/tool-widgets/BashWidget";
 import SearchResultsWidget from "@/views/chat/tool-widgets/SearchResultsWidget";
 import TaskWidget from "@/views/chat/tool-widgets/TaskWidget";
+import { PlanTrackerCard } from "@/views/workspace/PlanTracker";
+import StreamingStatus from "@/views/workspace/StreamingStatus";
 import AskUserQuestionWidget from "@/views/chat/tool-widgets/AskUserQuestionWidget";
 import UserAskWidget from "@/views/chat/tool-widgets/UserAskWidget";
 import UnknownToolWidget from "@/views/chat/tool-widgets/UnknownToolWidget";
@@ -474,6 +476,96 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
                 subagentConversationId: "design-system-preview",
                 state: "complete",
               }}
+            />
+          </Example>
+        </Section>
+
+        <Section
+          title="Plan tracker"
+          description="The live plan/todo strip docked above the composer — a collapsed one-liner with n/m progress; expanding opens the step list upward. Rendered here from mock snapshots."
+        >
+          <Example label="Mid-execution">
+            <PlanTrackerCard
+              plan={{
+                goal: "Refactor the auth module",
+                currentStepIndex: 2,
+                steps: [
+                  { description: "Read the existing auth flow", done: true },
+                  { description: "Add tests for token refresh", done: true },
+                  { description: "Extract the session store", done: false },
+                  { description: "Wire the new store into login", done: false },
+                ],
+              }}
+            />
+          </Example>
+          <Example label="Long step text (truncated with ellipsis)">
+            <PlanTrackerCard
+              plan={{
+                goal: "Ship the release",
+                currentStepIndex: 1,
+                steps: [
+                  { description: "Audit the changelog", done: true },
+                  {
+                    description:
+                      "Cross-check every model registry entry against the upstream capability matrix, then regenerate the tool grammar so the name-enum gate covers the plan tools and the search bound floors",
+                    done: false,
+                  },
+                  { description: "Tag and publish", done: false },
+                ],
+              }}
+            />
+          </Example>
+          <Example label="Long plan (completed steps folded, pending capped)">
+            <PlanTrackerCard
+              plan={{
+                goal: "Fix every bug file",
+                currentStepIndex: 5,
+                steps: [
+                  ...Array.from({ length: 5 }, (_, i) => ({
+                    description: `Fix bug_0${i}.txt`,
+                    done: true,
+                  })),
+                  ...Array.from({ length: 7 }, (_, i) => ({
+                    description: `Fix bug_0${i + 5}.txt`,
+                    done: false,
+                  })),
+                ],
+              }}
+            />
+          </Example>
+          <Example label="All done (back in planning)">
+            <PlanTrackerCard
+              plan={{
+                goal: "Rename the config module",
+                currentStepIndex: null,
+                steps: [
+                  { description: "Rename the files", done: true },
+                  { description: "Update the imports", done: true },
+                ],
+              }}
+            />
+          </Example>
+        </Section>
+
+        <Section
+          title="Working / thinking stream"
+          description="The live turn indicator docked above the composer: shimmer + chron + the turn's ↑/↓ token accumulator, with the model's streaming reasoning as a one-line tail ticker. Chrons tick live here; the stream states are mock snapshots."
+        >
+          <Example label="Just started (no tokens yet)">
+            <StreamingStatus startedAt={Date.now()} />
+          </Example>
+          <Example label="Input accumulated, thinking">
+            <StreamingStatus
+              startedAt={Date.now() - 4200}
+              tokens={{ input: 1042, output: 0 }}
+              stream="The user wants to know how many TypeScript files exist. I should not count Glob output since it caps at 100 — a find pipeline gives the exact number."
+            />
+          </Example>
+          <Example label="Long reasoning (tail truncation)">
+            <StreamingStatus
+              startedAt={Date.now() - 31000}
+              tokens={{ input: 8300, output: 512 }}
+              stream={`${"First I read the dispatch module, then compared the tool schemas against the registry entries. ".repeat(4)}Now checking whether the grammar's name-enum gate covers the plan tools too.`}
             />
           </Example>
         </Section>

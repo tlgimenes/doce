@@ -82,6 +82,19 @@ export default function PlanTracker({ conversationId }: PlanTrackerProps) {
 
   if (!plan || plan.steps.length === 0) return null;
 
+  return (
+    <div className="px-4">
+      <PlanTrackerCard plan={plan} />
+    </div>
+  );
+}
+
+/**
+ * The presentational plan card, split from the live container above so the
+ * WidgetGallery (Cmd+D) can render it from mock snapshots — the place to
+ * iterate on its look without driving a real agent turn.
+ */
+export function PlanTrackerCard({ plan }: { plan: PlanSnapshot }) {
   const doneCount = plan.steps.filter((s) => s.done).length;
   const allDone = doneCount === plan.steps.length;
   const currentStep = plan.currentStepIndex != null ? plan.steps[plan.currentStepIndex] : undefined;
@@ -99,74 +112,72 @@ export default function PlanTracker({ conversationId }: PlanTrackerProps) {
   const hiddenCount = rows.length - pendingVisible.length;
 
   return (
-    <div className="px-4">
-      <Collapsible className="mx-auto max-w-xl" data-testid="plan-tracker">
-        {/* Content BEFORE the trigger: the list expands upward, Claude
+    <Collapsible className="mx-auto max-w-xl" data-testid="plan-tracker">
+      {/* Content BEFORE the trigger: the list expands upward, Claude
             Code style — the one-liner stays anchored just above the
             composer. */}
-        <CollapsibleContent>
-          <Progress
-            className="px-2 py-1"
-            value={plan.steps.length > 0 ? (doneCount / plan.steps.length) * 100 : 0}
-          />
-          {collapseDone && doneCount > 0 && (
-            <ItemDescription className="px-2" data-testid="plan-done-collapsed">
-              ✓ {doneCount} done
-            </ItemDescription>
-          )}
-          <ItemGroup>
-            {pendingVisible.map(({ step, index }) => (
-              <Item
-                key={index}
-                size="xs"
-                data-state={stepState(step, index, plan.currentStepIndex)}
-                data-current={index === plan.currentStepIndex ? "true" : undefined}
-                data-testid="plan-step"
-              >
-                <ItemMedia variant="icon">{step.done ? <Check /> : <Circle />}</ItemMedia>
-                <ItemContent>
-                  <ItemTitle className="truncate" title={step.description}>
-                    {step.description}
-                  </ItemTitle>
-                </ItemContent>
-              </Item>
-            ))}
-          </ItemGroup>
-          {hiddenCount > 0 && (
-            <ItemDescription className="px-2" data-testid="plan-more">
-              +{hiddenCount} more
-            </ItemDescription>
-          )}
-        </CollapsibleContent>
-        <CollapsibleTrigger
-          nativeButton={false}
-          render={
+      <CollapsibleContent>
+        <Progress
+          className="px-2 py-1"
+          value={plan.steps.length > 0 ? (doneCount / plan.steps.length) * 100 : 0}
+        />
+        {collapseDone && doneCount > 0 && (
+          <ItemDescription className="px-2" data-testid="plan-done-collapsed">
+            ✓ {doneCount} done
+          </ItemDescription>
+        )}
+        <ItemGroup>
+          {pendingVisible.map(({ step, index }) => (
             <Item
+              key={index}
               size="xs"
-              variant="muted"
-              className="group/plan w-full cursor-pointer"
-              data-testid="plan-current-step"
-            />
-          }
-        >
-          <ItemMedia variant="icon">{allDone ? <Check /> : <Circle />}</ItemMedia>
-          <ItemContent>
-            <ItemTitle className="truncate" title={currentStep?.description ?? plan.goal}>
-              {currentStep?.description ?? plan.goal}
-            </ItemTitle>
-          </ItemContent>
-          <ItemActions>
-            <Badge variant="secondary">
-              {doneCount}/{plan.steps.length}
-            </Badge>
-            <ChevronDown
-              aria-hidden="true"
-              className="size-4 shrink-0 text-muted-foreground transition-transform group-aria-expanded/plan:rotate-180"
-            />
-          </ItemActions>
-        </CollapsibleTrigger>
-      </Collapsible>
-    </div>
+              data-state={stepState(step, index, plan.currentStepIndex)}
+              data-current={index === plan.currentStepIndex ? "true" : undefined}
+              data-testid="plan-step"
+            >
+              <ItemMedia variant="icon">{step.done ? <Check /> : <Circle />}</ItemMedia>
+              <ItemContent>
+                <ItemTitle title={step.description}>
+                  <span className="truncate">{step.description}</span>
+                </ItemTitle>
+              </ItemContent>
+            </Item>
+          ))}
+        </ItemGroup>
+        {hiddenCount > 0 && (
+          <ItemDescription className="px-2" data-testid="plan-more">
+            +{hiddenCount} more
+          </ItemDescription>
+        )}
+      </CollapsibleContent>
+      <CollapsibleTrigger
+        nativeButton={false}
+        render={
+          <Item
+            size="xs"
+            variant="muted"
+            className="group/plan w-full cursor-pointer"
+            data-testid="plan-current-step"
+          />
+        }
+      >
+        <ItemMedia variant="icon">{allDone ? <Check /> : <Circle />}</ItemMedia>
+        <ItemContent>
+          <ItemTitle title={currentStep?.description ?? plan.goal}>
+            <span className="truncate">{currentStep?.description ?? plan.goal}</span>
+          </ItemTitle>
+        </ItemContent>
+        <ItemActions>
+          <Badge variant="secondary">
+            {doneCount}/{plan.steps.length}
+          </Badge>
+          <ChevronDown
+            aria-hidden="true"
+            className="size-4 shrink-0 text-muted-foreground transition-transform group-aria-expanded/plan:rotate-180"
+          />
+        </ItemActions>
+      </CollapsibleTrigger>
+    </Collapsible>
   );
 }
 
