@@ -1697,6 +1697,7 @@ pub async fn send_agent_message(
     active_generations: State<'_, ActiveGenerations>,
     active_plans: State<'_, ActivePlans>,
     pending_questions: State<'_, PendingQuestions>,
+    compaction_failures: State<'_, crate::context::CompactionFailures>,
     conversation_id: String,
     content: String,
     rich_content: Option<String>,
@@ -1877,6 +1878,7 @@ pub async fn send_agent_message(
         &skills_dir,
         &system_prompt,
         false,
+        &compaction_failures,
     )
     .await?;
     let settings = crate::context::ContextSettings::load(&conn).await?;

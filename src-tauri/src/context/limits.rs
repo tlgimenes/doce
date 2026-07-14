@@ -77,6 +77,14 @@ pub const SUMMARY_MAX_TOKENS: i32 = (CONTEXT_WINDOW_TOKENS / 16) as i32;
 pub const SUMMARIZATION_PROMPT: &str =
     "Summarize the conversation so far concisely, preserving key facts, decisions, and unresolved tasks. Respond with only the summary text, nothing else.";
 
+/// Auto-compaction gives up retrying a summarization that keeps getting
+/// rejected by `context::evaluate_summary` (empty/truncated/inflated) after
+/// this many CONSECUTIVE failures for the same conversation --
+/// `context::breaker_open` -- until a FORCED "Compact now" run succeeds and
+/// resets the count (`context::CompactionFailures`). Mirrors qwen-code's
+/// `MAX_CONSECUTIVE_FAILURES`.
+pub const MAX_CONSECUTIVE_COMPACTION_FAILURES: u32 = 3;
+
 pub const DEFAULT_WARN_THRESHOLD_PCT: f64 = 0.5;
 pub const DEFAULT_COMPACT_THRESHOLD_PCT: f64 = 0.75;
 pub const DEFAULT_HARD_LIMIT_PCT: f64 = 0.9;

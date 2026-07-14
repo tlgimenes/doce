@@ -54,6 +54,7 @@ pub async fn compact_conversation(
     app: AppHandle,
     db_cell: State<'_, DbCell>,
     server_state: State<'_, crate::inference::server::ServerState>,
+    compaction_failures: State<'_, context::CompactionFailures>,
     conversation_id: String,
 ) -> Result<ContextUsage, String> {
     let conn = db_cell.get(&app).await?.clone();
@@ -92,6 +93,7 @@ pub async fn compact_conversation(
         &skills_dir,
         &system_prompt,
         true,
+        &compaction_failures,
     )
     .await
 }

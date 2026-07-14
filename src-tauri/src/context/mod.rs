@@ -373,14 +373,89 @@ fn messages_to_summarize(
         .collect()
 }
 
+/// Why a candidate summary was rejected (or accepted). The rejection cases
+/// mirror qwen-code's COMPRESSION_FAILED_* guards.
+#[derive(Debug, PartialEq)]
+pub enum SummaryDecision {
+    Accept,
+    RejectEmpty,     // empty after trimming
+    RejectTruncated, // the summarization completion hit its max_tokens
+    RejectInflated,  // the summary is not smaller than what it replaces
+}
+
+/// Decides whether a candidate summary is safe to apply. `finish_reason` is
+/// the server's stop reason for the summarization call; `pre_tokens` is the
+/// estimated size of the history span being summarized; `post_tokens` the
+/// estimated size of the summary that would replace it. Checked in this
+/// order -- empty beats truncated beats inflated -- so a pathological
+/// candidate that is simultaneously empty-after-trim AND reports
+/// `finish_reason: "length"` (e.g. the model emitted nothing but pure
+/// whitespace/stop tokens before hitting its cap) is reported as the more
+/// fundamental failure (`RejectEmpty`) rather than the truncation guard.
+pub fn evaluate_summary(
+    summary: &str,
+    finish_reason: Option<&str>,
+    pre_tokens: u32,
+    post_tokens: u32,
+) -> SummaryDecision {
+    if summary.trim().is_empty() {
+        return SummaryDecision::RejectEmpty;
+    }
+    if finish_reason == Some("length") {
+        return SummaryDecision::RejectTruncated;
+    }
+    if post_tokens >= pre_tokens {
+        return SummaryDecision::RejectInflated;
+    }
+    SummaryDecision::Accept
+}
+
+/// The outcome of a `summarize_and_persist` attempt -- distinguishes "there
+/// was nothing eligible to summarize" (`messages_to_summarize` came back
+/// empty, a true no-op) from "the model's candidate summary was rejected"
+/// (`evaluate_summary`). Both leave history completely untouched, but only
+/// a rejection should count against `CompactionFailures` -- `maybe_compact`
+/// is the sole caller that needs to tell the two apart.
+pub enum SummaryResult {
+    Persisted(String),
+    NothingToSummarize,
+    Rejected(SummaryDecision),
+}
+
+/// Consecutive failed auto-compaction attempts per conversation. Guards
+/// against burning llama-server round-trips on a model that can't produce a
+/// usable summary: after `limits::MAX_CONSECUTIVE_COMPACTION_FAILURES`,
+/// auto-compaction NOOPs (`breaker_open`) until a FORCED compaction
+/// succeeds and resets the count. In-memory (session-scoped) -- a restart
+/// resets it, which is fine. Mirrors `commands::conversations::ActiveGenerations`'s
+/// shape exactly: a bare `Mutex<HashMap<..>>` newtype, `.manage()`d in
+/// `lib.rs`, read from Tauri commands via `State<'_, CompactionFailures>`.
+pub struct CompactionFailures(pub std::sync::Mutex<std::collections::HashMap<String, u32>>);
+
+/// Pure breaker decision (unit-tested): true when auto-compaction
+/// (`force == false`) should skip the summarize call entirely because this
+/// conversation has already hit `limits::MAX_CONSECUTIVE_COMPACTION_FAILURES`
+/// consecutive rejections. A forced run (manual "Compact now") always
+/// ignores the breaker -- that's the recovery path a successful forced
+/// compaction resets the counter through.
+pub fn breaker_open(failures: u32, force: bool) -> bool {
+    !force && failures >= limits::MAX_CONSECUTIVE_COMPACTION_FAILURES
+}
+
 /// Tier 2: summarizes everything except the most recent `protected_recent`
 /// messages and the first user message (`messages_to_summarize`) by
 /// generating through the supervised `llama-server` (the HTTP client at
 /// `base_url`, in `Forbid` mode — no tools, no `tool_choice` — exactly how
-/// production's `RealBackend` calls it, minus tools), and persists the result
-/// as a `context_notice` row (`kind:"summarized"`) that
+/// production's `RealBackend` calls it, minus tools). A candidate summary is
+/// screened by `evaluate_summary` before anything is persisted -- guards
+/// against a small local model returning an empty, truncated, or bloated
+/// summary that would otherwise silently corrupt or grow the context. On
+/// ANY rejection, history is left completely untouched: no notice is
+/// persisted, nothing else changes. Only on acceptance is the result
+/// persisted as a `context_notice` row (`kind:"summarized"`) that
 /// `load_history_annotated` will splice in on every subsequent load.
-/// Returns `Ok(None)` (no-op) when there's nothing eligible to summarize.
+/// Returns `SummaryResult::NothingToSummarize` (no-op) when there's nothing
+/// eligible to summarize.
 pub async fn summarize_and_persist(
     conn: &tokio_rusqlite::Connection,
     transcript_dir: Option<std::path::PathBuf>,
@@ -388,10 +463,10 @@ pub async fn summarize_and_persist(
     conversation_id: &str,
     history: &[HistoryMessage],
     protected_recent: usize,
-) -> Result<Option<String>, String> {
+) -> Result<SummaryResult, String> {
     let to_summarize = messages_to_summarize(history, protected_recent);
     if to_summarize.is_empty() {
-        return Ok(None);
+        return Ok(SummaryResult::NothingToSummarize);
     }
 
     let mut messages = vec![ChatMessage::system(SUMMARIZATION_PROMPT)];
@@ -417,17 +492,48 @@ pub async fn summarize_and_persist(
         .chat(req, |_piece| {}, &cancel)
         .await
         .map_err(|e| e.to_string())?;
-    let summary = outcome.text;
 
-    let notice_json = serde_json::json!({
-        "kind": "summarized",
-        "summary": summary,
-        "notice": "Conversation condensed to save space",
-    })
-    .to_string();
-    persist_notice(conn, transcript_dir, conversation_id, notice_json).await?;
+    let summary = outcome.text.trim().to_string();
+    // The same chars/4-over-the-request-shape estimate everything else in
+    // this module uses (`usage_from_history`/`usage_from_fitted_messages`),
+    // applied to just the span being replaced -- `evaluate_summary`'s
+    // `pre_tokens`/`post_tokens` are only ever compared to each other, so
+    // both sides using the same heuristic is what makes the comparison
+    // meaningful.
+    let pre_tokens = token_estimate(
+        &serde_json::to_string(&crate::inference::http::to_openai_messages(
+            &to_summarize
+                .iter()
+                .map(|m| m.chat.clone())
+                .collect::<Vec<_>>(),
+        ))
+        .unwrap_or_default(),
+    );
+    let post_tokens = token_estimate(&summary);
+    // `ChatOutcome::finish_reason` is a plain `String` ("" sentinel for "the
+    // server never sent one" — see its own doc comment), not `Option<...>`;
+    // normalize the empty-string sentinel to `None` here so
+    // `evaluate_summary`'s `Some("length")` comparison only ever means a
+    // real, observed truncation.
+    let finish_reason = if outcome.finish_reason.is_empty() {
+        None
+    } else {
+        Some(outcome.finish_reason.as_str())
+    };
 
-    Ok(Some(summary))
+    match evaluate_summary(&summary, finish_reason, pre_tokens, post_tokens) {
+        SummaryDecision::Accept => {
+            let notice_json = serde_json::json!({
+                "kind": "summarized",
+                "summary": summary,
+                "notice": "Conversation condensed to save space",
+            })
+            .to_string();
+            persist_notice(conn, transcript_dir, conversation_id, notice_json).await?;
+            Ok(SummaryResult::Persisted(summary))
+        }
+        rejected => Ok(SummaryResult::Rejected(rejected)),
+    }
 }
 
 /// Orchestrates the tiered compaction pipeline: computes usage, and — if
@@ -444,6 +550,16 @@ pub async fn summarize_and_persist(
 /// it; the manual `compact_conversation` command does not, since a user
 /// explicitly asking to compact should see the resulting usage, not an
 /// error, even if it's still high afterward).
+///
+/// `failures` is the caller's `CompactionFailures` circuit breaker (one
+/// counter per conversation). If tier 2 is reached and `breaker_open`
+/// returns true (auto-compaction, `force == false`, already at
+/// `limits::MAX_CONSECUTIVE_COMPACTION_FAILURES` consecutive rejections),
+/// the summarize call is skipped entirely and `state` is set to the warn
+/// state `"compactionStalled"` — tier 1 still ran above, so a partial
+/// clearing is not lost. A `Rejected` summary increments the counter
+/// (history is left untouched either way — `summarize_and_persist`'s own
+/// contract); a `Persisted` summary (whether auto or forced) resets it to 0.
 #[allow(clippy::too_many_arguments)]
 pub async fn maybe_compact(
     conn: &tokio_rusqlite::Connection,
@@ -453,6 +569,7 @@ pub async fn maybe_compact(
     skills_dir: &Path,
     system_prompt: &str,
     force: bool,
+    failures: &CompactionFailures,
 ) -> Result<ContextUsage, String> {
     let settings = ContextSettings::load(conn).await?;
     let mut history = load_history_via_conn(conn, conversation_id, skills_dir).await?;
@@ -497,7 +614,23 @@ pub async fn maybe_compact(
     }
 
     if over_compact_threshold(&usage) {
-        let summarized = summarize_and_persist(
+        let n = failures
+            .0
+            .lock()
+            .unwrap()
+            .get(conversation_id)
+            .copied()
+            .unwrap_or(0);
+        if breaker_open(n, force) {
+            // Auto-compaction only -- a forced run always ignores the
+            // breaker (see this function's own doc comment). Tier 1 already
+            // ran above, so any partial clearing it did is kept; only the
+            // llama-server round-trip is skipped.
+            usage.state = "compactionStalled".to_string();
+            return Ok(usage);
+        }
+
+        match summarize_and_persist(
             conn,
             transcript_dir.clone(),
             base_url,
@@ -505,14 +638,31 @@ pub async fn maybe_compact(
             &history,
             PROTECTED_RECENT_MESSAGES,
         )
-        .await?;
-        if summarized.is_some() {
-            changed = true;
-            // summarize_and_persist just persisted a new context_notice row
-            // that changes load_history_annotated's splice point -- reload
-            // rather than trying to reconstruct the spliced view in memory.
-            history = load_history_via_conn(conn, conversation_id, skills_dir).await?;
-            usage = usage_from_history(conversation_id, &history, system_prompt, &settings).await?;
+        .await?
+        {
+            SummaryResult::Persisted(_) => {
+                changed = true;
+                failures.0.lock().unwrap().remove(conversation_id);
+                // summarize_and_persist just persisted a new context_notice row
+                // that changes load_history_annotated's splice point -- reload
+                // rather than trying to reconstruct the spliced view in memory.
+                history = load_history_via_conn(conn, conversation_id, skills_dir).await?;
+                usage =
+                    usage_from_history(conversation_id, &history, system_prompt, &settings).await?;
+            }
+            SummaryResult::NothingToSummarize => {}
+            SummaryResult::Rejected(_) => {
+                // History is untouched (summarize_and_persist's own
+                // contract on any rejection) -- only the failure count
+                // moves, so a persistently-bad model stops burning
+                // round-trips once the breaker opens.
+                *failures
+                    .0
+                    .lock()
+                    .unwrap()
+                    .entry(conversation_id.to_string())
+                    .or_insert(0) += 1;
+            }
         }
     }
 
@@ -1316,5 +1466,142 @@ mod tests {
             ContextSettings::from_raw(&raw).tool_output_offload_tokens,
             limits::DEFAULT_TOOL_OUTPUT_OFFLOAD_TOKENS
         );
+    }
+
+    // --- evaluate_summary (compaction fail-safe guards) ---
+    //
+    // Mirrors qwen-code's COMPRESSION_FAILED_* guards: a candidate summary
+    // from a small local model must never be applied blind. Precedence
+    // matters -- empty beats truncated beats inflated -- so each rejection
+    // case is tested both in isolation and, where two conditions could fire
+    // together, for which one wins.
+
+    #[test]
+    fn evaluate_summary_rejects_an_empty_summary() {
+        assert_eq!(
+            evaluate_summary("", None, 100, 10),
+            SummaryDecision::RejectEmpty
+        );
+    }
+
+    #[test]
+    fn evaluate_summary_rejects_a_whitespace_only_summary() {
+        assert_eq!(
+            evaluate_summary("   \n\t  ", None, 100, 10),
+            SummaryDecision::RejectEmpty
+        );
+    }
+
+    #[test]
+    fn evaluate_summary_rejects_a_truncated_summary() {
+        // Non-empty and shrinking, but finish_reason "length" means the
+        // completion was cut off mid-summary -- unsafe to apply even though
+        // it "looks" small.
+        assert_eq!(
+            evaluate_summary(
+                "a partial summary that got cut off",
+                Some("length"),
+                100,
+                10
+            ),
+            SummaryDecision::RejectTruncated
+        );
+    }
+
+    #[test]
+    fn evaluate_summary_rejects_an_inflated_summary() {
+        // post_tokens >= pre_tokens: the "summary" is not actually smaller
+        // than what it would replace.
+        assert_eq!(
+            evaluate_summary(
+                "a summary that grew bigger than the original",
+                Some("stop"),
+                10,
+                10
+            ),
+            SummaryDecision::RejectInflated
+        );
+        assert_eq!(
+            evaluate_summary("an even bigger summary", Some("stop"), 10, 20),
+            SummaryDecision::RejectInflated
+        );
+    }
+
+    #[test]
+    fn evaluate_summary_accepts_a_nonempty_nontruncated_shrinking_summary() {
+        assert_eq!(
+            evaluate_summary("a concise summary", Some("stop"), 100, 10),
+            SummaryDecision::Accept
+        );
+    }
+
+    #[test]
+    fn evaluate_summary_accepts_when_finish_reason_is_absent() {
+        // A missing finish_reason (e.g. an older/mocked server response)
+        // must not be mistaken for "length" -- only an explicit
+        // `Some("length")` triggers RejectTruncated.
+        assert_eq!(
+            evaluate_summary("a concise summary", None, 100, 10),
+            SummaryDecision::Accept
+        );
+    }
+
+    #[test]
+    fn evaluate_summary_empty_beats_truncated() {
+        // Both conditions fire (empty AND finish_reason "length") --
+        // RejectEmpty must win, since it's the more fundamental failure.
+        assert_eq!(
+            evaluate_summary("   ", Some("length"), 100, 10),
+            SummaryDecision::RejectEmpty
+        );
+    }
+
+    #[test]
+    fn evaluate_summary_truncated_beats_inflated() {
+        // Both conditions fire (finish_reason "length" AND post >= pre) --
+        // RejectTruncated must win over RejectInflated.
+        assert_eq!(
+            evaluate_summary("not empty", Some("length"), 10, 20),
+            SummaryDecision::RejectTruncated
+        );
+    }
+
+    // --- breaker_open (consecutive-failure circuit breaker) ---
+
+    #[test]
+    fn breaker_open_is_false_under_the_threshold() {
+        assert!(!breaker_open(0, false));
+        assert!(!breaker_open(
+            limits::MAX_CONSECUTIVE_COMPACTION_FAILURES - 1,
+            false
+        ));
+    }
+
+    #[test]
+    fn breaker_open_is_true_at_or_above_the_threshold() {
+        assert!(breaker_open(
+            limits::MAX_CONSECUTIVE_COMPACTION_FAILURES,
+            false
+        ));
+        assert!(breaker_open(
+            limits::MAX_CONSECUTIVE_COMPACTION_FAILURES + 5,
+            false
+        ));
+    }
+
+    #[test]
+    fn breaker_open_is_always_false_when_forced_regardless_of_failure_count() {
+        // A forced "Compact now" always ignores the breaker -- that's the
+        // recovery path a successful forced compaction resets the counter
+        // through.
+        assert!(!breaker_open(0, true));
+        assert!(!breaker_open(
+            limits::MAX_CONSECUTIVE_COMPACTION_FAILURES,
+            true
+        ));
+        assert!(!breaker_open(
+            limits::MAX_CONSECUTIVE_COMPACTION_FAILURES + 100,
+            true
+        ));
     }
 }
