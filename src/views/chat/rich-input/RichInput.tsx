@@ -5,7 +5,7 @@ import { Placeholder } from "@tiptap/extension-placeholder";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
-import { ArrowUp, Plus } from "lucide-react";
+import { ArrowUp, Plus, Square } from "lucide-react";
 import { InputGroup, InputGroupAddon, InputGroupButton } from "@/components/ui/input-group";
 import { cn } from "@/lib/cn";
 import { commands, type RichMessageContent } from "@/lib/ipc";
@@ -115,6 +115,19 @@ export interface RichInputProps {
   /** `data-testid` for the submit button, same purpose as `inputTestId`. */
   submitTestId?: string;
   /**
+   * Generation-cancellation (Task 4.2b): while a turn is generating, the
+   * send button becomes a STOP button that halts the turn. `isGenerating`
+   * is the workspace's `turnInFlight` signal; the composer is also
+   * `disabled` during a turn (the Tiptap editor stays uneditable — you
+   * can't type mid-turn), but the stop button is the one control that MUST
+   * stay clickable while generating, so its enabled state is deliberately
+   * independent of `disabled`. Omitted (both undefined) on surfaces with no
+   * running turn to stop (`EmptyState.tsx`), which then always shows send.
+   */
+  isGenerating?: boolean;
+  /** Fired when the stop button is clicked — halts the running turn. */
+  onStop?: () => void;
+  /**
    * Imperative focus requests are represented as a changing value rather
    * than a boolean so callers can request focus repeatedly while this
    * component stays mounted.
@@ -172,6 +185,8 @@ export default function RichInput({
   placeholder,
   inputTestId,
   submitTestId,
+  isGenerating,
+  onStop,
   autoFocusToken,
   contextGauge,
 }: RichInputProps) {
@@ -528,18 +543,36 @@ export default function RichInput({
             <Plus size={16} />
           </InputGroupButton>
           {contextGauge}
-          <InputGroupButton
-            variant="default"
-            size="icon-sm"
-            className="ml-auto aria-disabled:opacity-50"
-            onClick={submitCurrentContent}
-            disabled={disabled}
-            aria-disabled={disabled || isEmpty}
-            aria-label="Send message"
-            data-testid={submitTestId}
-          >
-            <ArrowUp size={16} />
-          </InputGroupButton>
+          {isGenerating ? (
+            // Generation-cancellation (Task 4.2b): a plain icon swap in the
+            // send button's own slot (same `ml-auto`/`icon-sm` shape, so
+            // layout never shifts). Deliberately NOT `disabled` even though
+            // the composer is `disabled` during a turn — this is the one
+            // control that must stay clickable while generating.
+            <InputGroupButton
+              variant="destructive"
+              size="icon-sm"
+              className="ml-auto"
+              onClick={onStop}
+              aria-label="Stop generating"
+              data-testid="stop-generation"
+            >
+              <Square size={16} className="fill-current" />
+            </InputGroupButton>
+          ) : (
+            <InputGroupButton
+              variant="default"
+              size="icon-sm"
+              className="ml-auto aria-disabled:opacity-50"
+              onClick={submitCurrentContent}
+              disabled={disabled}
+              aria-disabled={disabled || isEmpty}
+              aria-label="Send message"
+              data-testid={submitTestId}
+            >
+              <ArrowUp size={16} />
+            </InputGroupButton>
+          )}
         </InputGroupAddon>
       </InputGroup>
       {/* Inline error surface for an oversized/unreadable attachment —

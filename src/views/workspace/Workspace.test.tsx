@@ -2,7 +2,7 @@ import { StrictMode } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import Workspace from "./Workspace";
+import Workspace, { __resetSendInFlightRegistryForTests } from "./Workspace";
 import { commands, events } from "@/lib/ipc";
 import type { RichMessageContent } from "@/lib/ipc";
 
@@ -75,6 +75,10 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
   beforeEach(() => {
     vi.clearAllMocks();
     scrollToEndSpy.mockClear();
+    // The in-flight-send registry is module-global and survives unmount, so
+    // a prior test that left a turn pending (never-resolving `sendAgentMessage`
+    // mock) would otherwise leak `turnInFlight` into this test.
+    __resetSendInFlightRegistryForTests();
     vi.mocked(commands.listMessages).mockResolvedValue([]);
     vi.mocked(commands.isGenerationActive).mockResolvedValue(false);
     // No model loaded in these unit tests — ContextUsageIndicator's
@@ -1916,7 +1920,11 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
       expect(screen.getByTestId("agent-thinking")).toBeInTheDocument();
     });
 
-    await userEvent.click(screen.getByTestId("agent-send"));
+    // While the turn is still pending, the send control is swapped for the
+    // stop button (generation-cancellation, Task 4.2b) — there is no send
+    // button to re-fire a second send from, and the editor stays disabled.
+    expect(screen.queryByTestId("agent-send")).not.toBeInTheDocument();
+    expect(screen.getByTestId("stop-generation")).toBeInTheDocument();
     expect(commands.sendAgentMessage).toHaveBeenCalledTimes(1);
 
     resolveSend("first send done");

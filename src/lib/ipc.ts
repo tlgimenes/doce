@@ -603,6 +603,7 @@ export const commands = {
     invoke<ContextUsage>("compact_conversation", { conversationId }),
   isGenerationActive: (conversationId: string) =>
     invoke<boolean>("is_generation_active", { conversationId }),
+  stopGeneration: (conversationId: string) => invoke<void>("stop_generation", { conversationId }),
   getActivePlan: (conversationId: string) =>
     invoke<PlanSnapshot | null>("get_active_plan", { conversationId }),
 };

@@ -374,6 +374,94 @@ describe("RichInput (009-rich-chat-input, US1)", () => {
 });
 
 /**
+ * Generation-cancellation (Task 4.2b): while a turn is generating, the send
+ * button swaps to a STOP button (same slot, plain icon swap) that halts the
+ * turn; clicking it calls `onStop`. The stop button must stay clickable even
+ * though the composer is `disabled` during a turn — it is the one control
+ * that must work while generating.
+ */
+describe("RichInput (generation-cancellation, Task 4.2b — stop button)", () => {
+  it("shows the send button (not the stop button) when not generating", () => {
+    render(
+      <RichInput
+        onSubmit={vi.fn()}
+        skillsEnabled={false}
+        disabled={false}
+        placeholder="p"
+        inputTestId="test-input"
+        submitTestId="test-submit"
+      />,
+    );
+
+    expect(screen.getByTestId("test-submit")).toBeInTheDocument();
+    expect(screen.queryByTestId("stop-generation")).not.toBeInTheDocument();
+  });
+
+  it("swaps the send button for the stop button while generating, and clicking it calls onStop", async () => {
+    const onStop = vi.fn();
+    render(
+      <RichInput
+        onSubmit={vi.fn()}
+        skillsEnabled={false}
+        // The composer is disabled during a turn — the stop button must still
+        // work, so this drives the real production shape (disabled + generating).
+        disabled={true}
+        isGenerating={true}
+        onStop={onStop}
+        placeholder="p"
+        inputTestId="test-input"
+        submitTestId="test-submit"
+      />,
+    );
+
+    // The send control is gone; the stop control has taken its slot.
+    expect(screen.queryByTestId("test-submit")).not.toBeInTheDocument();
+    const stop = screen.getByTestId("stop-generation");
+    expect(stop).toBeInTheDocument();
+    expect(stop).toHaveAccessibleName("Stop generating");
+    // The critical invariant: the stop button does NOT inherit the composer's
+    // `disabled` state — it is the one control that stays live during a turn.
+    expect(stop).not.toBeDisabled();
+
+    await userEvent.click(stop);
+    expect(onStop).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns to the send button once generation ends", () => {
+    const { rerender } = render(
+      <RichInput
+        onSubmit={vi.fn()}
+        skillsEnabled={false}
+        disabled={true}
+        isGenerating={true}
+        onStop={vi.fn()}
+        placeholder="p"
+        inputTestId="test-input"
+        submitTestId="test-submit"
+      />,
+    );
+
+    expect(screen.getByTestId("stop-generation")).toBeInTheDocument();
+
+    rerender(
+      <RichInput
+        onSubmit={vi.fn()}
+        skillsEnabled={false}
+        disabled={false}
+        isGenerating={false}
+        onStop={vi.fn()}
+        placeholder="p"
+        inputTestId="test-input"
+        submitTestId="test-submit"
+      />,
+    );
+
+    expect(screen.queryByTestId("stop-generation")).not.toBeInTheDocument();
+    expect(screen.getByTestId("test-submit")).toBeInTheDocument();
+  });
+});
+
+/**
  * 009-rich-chat-input, User Story 2 (T023/T024): the paste-collapse
  * `editorProps.handlePaste` handler and the submit-time
  * doc-to-`RichMessageContent` wiring (research.md's "Paste-collapse via

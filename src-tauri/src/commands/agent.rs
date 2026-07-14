@@ -23,6 +23,14 @@ use tauri::{AppHandle, Emitter, Manager, State};
 /// through every backend for a value the server discards.
 const LLAMA_SERVER_MODEL_ID: &str = "doce";
 
+/// The assistant-reply text a gracefully-cancelled turn persists (Task 4.2b).
+/// Kept minimal and unobtrusive — renders as italic "(stopped)" in the
+/// transcript. Persisting an assistant *text* row (rather than returning with
+/// nothing persisted) is what makes `compute_status` read a stopped
+/// conversation as `done` instead of `failed`. `pub(crate)` so the
+/// `compute_status` unit test can assert against the real marker.
+pub(crate) const STOPPED_TURN_MARKER: &str = "_(stopped)_";
+
 /// Maps `LlamaServerClient::chat`'s result into the agent loop's
 /// `TurnOutcome`. On success every `ChatOutcome` field carries straight
 /// over. On a HARD transport/server failure the message lands in
@@ -1951,16 +1959,25 @@ pub async fn send_agent_message(
 
     let final_text = match result {
         Ok(text) => text,
-        // Graceful cancellation (Task 4.2a): a stopped turn is an INTENTIONAL
-        // halt, not a failure. Return early — before persisting any assistant
-        // text — so nothing garbage lands in the transcript. The RAII guards
-        // (`_active_guard`, `_plan_guard`) clear this conversation's
-        // `ActiveGenerations`/`ActivePlans` entries on this return, and
-        // returning `Ok` (not `Err`) means the frontend's own `catch` never
-        // paints an "Error:" banner for a user's own stop. The ephemeral
-        // generation ticker clears at the next turn boundary on the frontend
-        // (its stop-button reaction is Task 4.2b).
-        Err(AgentError::Cancelled) => return Ok(String::new()),
+        // Graceful cancellation (Task 4.2a/4.2b): a stopped turn is an
+        // INTENTIONAL halt, not a failure. Fall through to the SAME persist +
+        // `agent-message-persisted` emit as the normal path below, but with a
+        // minimal, unobtrusive stopped marker as this turn's assistant reply
+        // (rendered as italic "(stopped)" in the transcript) rather than an
+        // "Error:" line. This buys two things:
+        //   1. `compute_status` sees an assistant *text* row — not an `error`
+        //      content_type, and not a user message with no reply — so a
+        //      stopped conversation reads as `done` (neutral), never `failed`
+        //      (which would render as the red "Blocked"/"Failed" sidebar dot,
+        //      wrong for a user-initiated stop).
+        //   2. the existing persist emits `agent-message-persisted`, so the
+        //      frontend clears its live ticker and refreshes the transcript +
+        //      status automatically — no new event needed.
+        // Returning `Ok` (not `Err`) keeps the frontend's own `catch` from
+        // painting an error banner for a user's own stop, and the RAII guards
+        // (`_active_guard`, `_plan_guard`) still clear this conversation's
+        // `ActiveGenerations`/`ActivePlans` entries on the return below.
+        Err(AgentError::Cancelled) => STOPPED_TURN_MARKER.to_string(),
         Err(e) => format!("Error: {e}"),
     };
 

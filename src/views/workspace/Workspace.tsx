@@ -101,6 +101,19 @@ function clearSendInFlight(conversationId: string) {
   notifySendInFlightListeners();
 }
 
+/**
+ * Test-only: clears the module-global in-flight-send registry. The registry
+ * is deliberately module-scoped and survives unmount (so a pending send stays
+ * "in flight" across a conversation remount — the very behavior the remount
+ * test exercises), which means a test that leaves a turn pending (a
+ * never-resolving `sendAgentMessage` mock) would otherwise leak that state
+ * into the next test. Not referenced in production code.
+ */
+export function __resetSendInFlightRegistryForTests() {
+  conversationsWithSendInFlight.clear();
+  notifySendInFlightListeners();
+}
+
 function requestConversationRefresh(
   conversationId: string,
   payload: ConversationRefreshPayload = {},
@@ -532,6 +545,19 @@ export default function Workspace({
     [conversationId, pendingToolCall, refreshMessages, turnInFlight],
   );
 
+  // Generation-cancellation (Task 4.2b): fire-and-forget stop of the running
+  // turn, following the same invoke convention as `send`/`/compact`. A user's
+  // own stop must NEVER paint an error banner, so failures are only logged —
+  // stopping an already-finished turn is a documented backend no-op. The
+  // transcript + status refresh themselves off the backend's own
+  // `agent-message-persisted` event once the loop halts (the cancel arm now
+  // persists a stopped marker), so nothing to update here.
+  const handleStop = useCallback(() => {
+    void commands.stopGeneration(conversationId).catch((e) => {
+      console.error("stop_generation failed", e);
+    });
+  }, [conversationId]);
+
   useEffect(() => {
     if (!pendingInitialTurn) return;
     if (pendingInitialTurn.conversationId !== conversationId) return;
@@ -604,6 +630,8 @@ export default function Workspace({
                 }}
                 skillsEnabled={true}
                 disabled={turnInFlight || pendingToolCall !== null}
+                isGenerating={turnInFlight}
+                onStop={handleStop}
                 placeholder="Describe a task…"
                 inputTestId="agent-input"
                 submitTestId="agent-send"

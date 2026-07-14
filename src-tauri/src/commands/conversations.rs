@@ -583,6 +583,32 @@ mod tests {
     }
 
     #[test]
+    fn stopped_turn_marker_reply_is_done_not_failed() {
+        // Generation-cancellation (Task 4.2b): a gracefully-stopped turn
+        // persists the stopped marker as an assistant *text* reply (not an
+        // `error` row, and not leaving a bare user message with no reply), so
+        // a stopped conversation must read as the neutral `done`, never the
+        // red `failed`. Assert against the real marker `send_agent_message`'s
+        // cancel arm persists, so a marker change can't silently regress this.
+        let conn = test_connection();
+        insert_conversation(&conn, "c1");
+        insert_message(&conn, "c1", 0, "user", "text", "hi", None);
+        insert_message(
+            &conn,
+            "c1",
+            1,
+            "assistant",
+            "text",
+            crate::commands::agent::STOPPED_TURN_MARKER,
+            None,
+        );
+        assert_eq!(
+            compute_status(&conn, "c1", &HashSet::new()).unwrap(),
+            "done"
+        );
+    }
+
+    #[test]
     fn unanswered_user_message_with_nothing_active_is_failed() {
         let conn = test_connection();
         insert_conversation(&conn, "c1");
