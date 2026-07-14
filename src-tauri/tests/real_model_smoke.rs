@@ -1,29 +1,40 @@
-//! 010-context-window-management: a real-model smoke test, `#[ignore]`d by
-//! default (it needs an actual installed GGUF on this machine, unlike every
-//! other test in this codebase, which are all model-free per
-//! `context/mod.rs`'s own doc comment on why `compute_usage`/`maybe_compact`
-//! aren't unit-tested). Run explicitly via:
+//! 010-context-window-management: a real-model smoke suite, `#[ignore]`d by
+//! default (it needs an actual installed GGUF + the built `llama-server`
+//! sidecar on this machine, unlike every other test in this codebase, which
+//! are all model-free per `context/mod.rs`'s own doc comment on why
+//! `compute_usage`/`maybe_compact` aren't unit-tested). Run explicitly via:
 //!   cargo test --test real_model_smoke -- --ignored --nocapture
 //!
+//! The llama-server cutover moved generation off the in-process
+//! `InferenceEngine` onto the HTTP client (`inference::http`), so the
+//! generation smokes here now spawn a REAL `llama-server` (via
+//! `common::TestServer`) and POST at it through `LlamaServerClient::chat` --
+//! the exact path production's `RealBackend`/`SubagentBackend` use --
+//! rather than driving the in-process engine. The pure-tokenizer /
+//! chat-template smokes still exercise the engine directly (token counting
+//! and `render_chat_prompt` stay in-process until Task 5.1 strips the engine
+//! to a vocab-only tokenizer).
+//!
 //! This is the closest thing to a live manual QA pass this environment can
-//! do without a way to drive/inspect the native Tauri window directly — it
-//! exercises the actual `InferenceEngine`/`context` integration end-to-end
-//! against a real, already-installed model, rather than asserting on pure
-//! logic alone.
+//! do without a way to drive/inspect the native Tauri window directly.
 
-use doce_lib::agent::{parse_response, LoopStep};
+mod common;
 
-/// The exact production prompt for the model under test — the same
-/// helper the app itself seeds turns with (prompt drift between app and
-/// smoke test is how the 2026-07-12 doom loop shipped green).
-fn system_prompt(engine: &doce_lib::inference::InferenceEngine) -> String {
-    doce_lib::commands::agent::plan_system_message(None, true, None, engine.dialect())
-}
+use doce_lib::agent::{dispatch, run_loop, AgentBackend, AgentContext, ToolCall, ToolExecution};
 use doce_lib::context::{self, ContextSettings};
+use doce_lib::inference::http::{
+    to_openai_messages, tool_choice_for, tools_array, ChatRequest, LlamaServerClient,
+};
 use doce_lib::inference::{ChatMessage, InferenceEngine, ToolCallMode};
 use doce_lib::storage::conversations::HistoryMessage;
 use std::path::PathBuf;
-use std::time::Instant;
+
+/// The exact production prompt for the model under test — the same helper
+/// the app itself seeds turns with (prompt drift between app and smoke test
+/// is how the 2026-07-12 doom loop shipped green).
+fn system_prompt(engine: &InferenceEngine) -> String {
+    doce_lib::commands::agent::plan_system_message(None, true, None, engine.dialect())
+}
 
 fn installed_model_path() -> PathBuf {
     // DOCE_BENCH_MODEL points a run at any GGUF (the ladder A/Bs models
@@ -34,7 +45,7 @@ fn installed_model_path() -> PathBuf {
     }
     let home = std::env::var("HOME").expect("HOME must be set");
     PathBuf::from(home)
-        .join("Library/Application Support/app.doce.desktop/models/minicpm5-1b-q4_k_m.gguf")
+        .join("Library/Application Support/app.doce.desktop/models/qwen3.5-4b-q4_k_m.gguf")
 }
 
 #[test]
@@ -46,6 +57,8 @@ fn count_tokens_and_context_window_report_sane_values_against_the_real_model() {
         "expected the real installed model at {path:?}"
     );
 
+    // Pure tokenizer/context-window introspection — no generation, so this
+    // stays on the in-process engine (Task 5.1 keeps exactly this much of it).
     let engine = InferenceEngine::load(&path, 4).expect("model should load");
     assert_eq!(
         engine.context_window(),
@@ -61,164 +74,67 @@ fn count_tokens_and_context_window_report_sane_values_against_the_real_model() {
     assert!(count > 0 && count < 30, "unexpected token count: {count}");
 }
 
-#[test]
+#[tokio::test]
 #[ignore]
-fn render_chat_prompt_and_generate_produce_a_real_short_completion() {
-    let path = installed_model_path();
-    let engine = InferenceEngine::load(&path, 4).expect("model should load");
+async fn a_real_short_completion_streams_from_the_server() {
+    let model = installed_model_path();
+    let Some(server) = common::TestServer::spawn(&model).await else {
+        return; // sidecar binary or model GGUF absent -- skip (see TestServer)
+    };
 
     let messages = vec![
         ChatMessage::system("You are a terse assistant. Answer in exactly one word."),
         ChatMessage::user("What is the capital of France? Reply with just the city name."),
     ];
-    let rendered = engine
-        .render_chat_prompt(&messages)
-        .expect("chat template should render");
-
-    let mut output = String::new();
-    let result = engine.generate(
-        &rendered,
-        16,
-        doce_lib::inference::ToolCallMode::Forbid,
+    // No tools -> `Forbid` maps to (tools: None, tool_choice: None): a plain
+    // free-text completion, the cutover equivalent of the old
+    // `engine.generate(.., ToolCallMode::Forbid, None, ..)`.
+    let req = ChatRequest::build(
+        "doce",
+        to_openai_messages(&messages),
         None,
-        |piece| output.push_str(piece),
-        || false,
+        tool_choice_for(ToolCallMode::Forbid).map(|s| s.to_string()),
     );
-
-    let full_text = result.expect("generation should succeed");
-    println!("real model output: {full_text:?}");
-    assert!(
-        !full_text.trim().is_empty(),
-        "expected a non-empty completion"
-    );
-    assert_eq!(
-        output, full_text,
-        "on_token callback must match the returned text"
-    );
-}
-
-#[test]
-#[ignore]
-fn prompt_session_prefix_reuse_matches_a_fresh_context_and_is_faster() {
-    // The empirical proof the KV-prefix-reuse task stands on: a second
-    // `PromptSession::generate` whose prompt EXTENDS the first's shares a
-    // large prefix with what the session already holds materialized, so it
-    // re-decodes only the divergent suffix -- yet must sample the EXACT same
-    // output a fresh, from-scratch context would for that same extended
-    // prompt (same fixed seed). If prefix reuse changed the logits at any
-    // position, the sampled tokens would diverge; equality is the semantic
-    // guarantee. The second call must also be visibly faster than the fresh
-    // full-prompt decode, since it skips re-prefilling the shared prefix.
-    std::env::set_var("DOCE_GEN_SEED", "20240709");
-    let path = installed_model_path();
-    let engine = InferenceEngine::load(&path, 4).expect("model should load");
-
-    // A deliberately long system prompt so the shared prefix is large and
-    // the re-prefill it saves is measurable, not lost in the noise.
-    let long_system = format!(
-        "You are a meticulous assistant. {}",
-        "Follow every instruction precisely and answer tersely. ".repeat(80)
-    );
-    let base_messages = vec![
-        ChatMessage::system(long_system.clone()),
-        ChatMessage::user("Name one primary color. Answer with just the color."),
-    ];
-    let base_prompt = engine
-        .render_chat_prompt(&base_messages)
-        .expect("render base");
-
-    // The second prompt extends the first: same system + same first user
-    // turn, then an assistant turn and a follow-up user turn. Everything up
-    // to the divergence point is a shared prefix reused from the first call.
-    let extended_messages = vec![
-        ChatMessage::system(long_system),
-        ChatMessage::user("Name one primary color. Answer with just the color."),
-        ChatMessage::assistant("Red"),
-        ChatMessage::user("Now name a different primary color, just the color."),
-    ];
-    let extended_prompt = engine
-        .render_chat_prompt(&extended_messages)
-        .expect("render extended");
-
-    let mut session = engine.new_session().expect("session should create");
-
-    let t0 = Instant::now();
-    // The first call's own output is irrelevant; it exists only to populate
-    // the session's KV cache so the second call has a prefix to reuse.
-    let _first = session
-        .generate(
-            &engine,
-            &base_prompt,
-            32,
-            ToolCallMode::Forbid,
-            None,
-            |_| {},
-            || false,
-        )
-        .expect("first session generate");
-    let first_elapsed = t0.elapsed().as_secs_f64();
-
-    let t1 = Instant::now();
-    let session_second = session
-        .generate(
-            &engine,
-            &extended_prompt,
-            32,
-            ToolCallMode::Forbid,
-            None,
-            |_| {},
-            || false,
-        )
-        .expect("second session generate (prefix reuse)");
-    let second_elapsed = t1.elapsed().as_secs_f64();
-
-    // A brand-new context decodes the whole extended prompt from scratch --
-    // the exact thing prefix reuse is meant to be equivalent to.
-    let t2 = Instant::now();
-    let fresh = engine
-        .generate(
-            &extended_prompt,
-            32,
-            ToolCallMode::Forbid,
-            None,
-            |_| {},
-            || false,
-        )
-        .expect("fresh full-context generate");
-    let fresh_elapsed = t2.elapsed().as_secs_f64();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let mut streamed = String::new();
+    let outcome = LlamaServerClient::new(server.base_url.clone())
+        .chat(req, |piece| streamed.push_str(piece), &cancel)
+        .await
+        .expect("generation should succeed");
 
     println!(
-        "[prompt_session_smoke] first_call={first_elapsed:.3}s \
-         second_call_prefix_reuse={second_elapsed:.3}s fresh_full_decode={fresh_elapsed:.3}s"
-    );
-    println!("[prompt_session_smoke] session_second={session_second:?}");
-    println!("[prompt_session_smoke] fresh={fresh:?}");
-
-    std::env::remove_var("DOCE_GEN_SEED");
-
-    assert_eq!(
-        session_second, fresh,
-        "prefix reuse must produce byte-identical output to a fresh-context \
-         decode of the same prompt with the same seed"
+        "real model output: text={:?} reasoning={:?}",
+        outcome.text, outcome.reasoning
     );
     assert!(
-        second_elapsed < fresh_elapsed,
-        "the prefix-reusing second call ({second_elapsed:.3}s) should be \
-         faster than the fresh full-prompt decode ({fresh_elapsed:.3}s)"
+        !outcome.text.trim().is_empty(),
+        "expected a non-empty completion"
+    );
+    // `on_piece` receives BOTH content and reasoning deltas, so the streamed
+    // text is a superset of `outcome.text` -- at minimum SOMETHING streamed
+    // as the completion was produced.
+    assert!(
+        !streamed.is_empty(),
+        "expected the on_piece callback to receive streamed deltas"
     );
 }
 
-#[test]
+#[tokio::test]
 #[ignore]
-fn grammar_constrained_tool_call_produces_syntactically_valid_json_against_the_real_model() {
-    // The actual point of this test: `allow_tool_calls: true` should make a
-    // `<tool_call>` response *guaranteed* well-formed -- the tags plus
-    // schema-valid JSON inside, not just "prompted for and hopefully
-    // correct" -- the whole reason grammar-constrained decoding replaced
-    // free-text parsing as the way `agent::parse_response` gets a
-    // trustworthy tool call.
-    let path = installed_model_path();
-    let engine = InferenceEngine::load(&path, 4).expect("model should load");
+async fn grammar_constrained_tool_call_produces_a_well_formed_tool_call_against_the_server() {
+    // The actual point of this test: providing `tools` makes the server parse
+    // the model's tool call into a STRUCTURED `ChatOutcome::tool_call` (tags
+    // plus schema-valid JSON), which is exactly what replaced the old
+    // free-text `<tool_call>` scraping `agent::parse_response` used to do.
+    // `tool_choice:"required"` over a single-tool set forces exactly one
+    // well-formed Bash call.
+    let model = installed_model_path();
+    let Some(server) = common::TestServer::spawn(&model).await else {
+        return;
+    };
+    // Loaded only to seed the EXACT production system prompt for this model
+    // (its dialect comes from the loaded GGUF, same as the app).
+    let engine = InferenceEngine::load(&model, 4).expect("model should load");
 
     let messages = vec![
         ChatMessage::system(system_prompt(&engine)),
@@ -226,53 +142,42 @@ fn grammar_constrained_tool_call_produces_syntactically_valid_json_against_the_r
             "Use the Bash tool right now to run the command `pwd`. Call the tool, don't just describe it.",
         ),
     ];
-    let rendered = engine
-        .render_chat_prompt(&messages)
-        .expect("render should succeed");
-
-    let result = engine
-        .generate(
-            &rendered,
-            128,
-            doce_lib::inference::ToolCallMode::Allow,
-            None,
-            |_| {},
-            || false,
-        )
+    let req = ChatRequest::build(
+        "doce",
+        to_openai_messages(&messages),
+        Some(tools_array(&["Bash"])),
+        tool_choice_for(ToolCallMode::Require).map(|s| s.to_string()),
+    );
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let outcome = LlamaServerClient::new(server.base_url.clone())
+        .chat(req, |_piece| {}, &cancel)
+        .await
         .expect("generation should succeed");
-    println!("real model tool-call output: {result:?}");
+    println!("real model tool-call output: {:?}", outcome.tool_call);
 
-    match parse_response(&result, engine.dialect()) {
-        LoopStep::ToolCall(call) => {
-            assert_eq!(call.name, "Bash");
-            assert!(
-                call.arguments
-                    .get("command")
-                    .and_then(|v| v.as_str())
-                    .is_some(),
-                "expected a string `command` argument, got: {:?}",
-                call.arguments
-            );
-        }
-        LoopStep::Done(text) => {
-            panic!("expected a real tool call once it committed to the <tool_call> path, got plain text: {text:?}");
-        }
-    }
+    let (name, args) = outcome
+        .tool_call
+        .expect("Require mode must yield a structured tool call, not plain text");
+    assert_eq!(name, "Bash");
+    assert!(
+        args.get("command").and_then(|v| v.as_str()).is_some(),
+        "expected a string `command` argument, got: {args:?}"
+    );
 }
 
 #[test]
 #[ignore]
 fn tool_result_renders_wrapped_in_qwens_own_tool_response_tags() {
     // Verifies ChatMessage::tool_result's actual rendering against the
-    // real model. First tried making the role itself "tool" (on the
-    // theory that Qwen's chat template would apply its own
+    // real model's chat template. First tried making the role itself "tool"
+    // (on the theory that Qwen's chat template would apply its own
     // role=="tool" -> <tool_response> branch), but that didn't fire in
     // practice -- llama.cpp's template engine rendered an unrecognized
     // role as a bare, never-trained-on `<|im_start|>tool` block instead.
     // So the role stays "user" (reliably handled) and the *text* is
     // wrapped in the literal <tool_response> tags Qwen expects, with no
-    // extra "Tool result for X:" framing -- confirmed here against the
-    // real chat template, not just that it compiles.
+    // extra "Tool result for X:" framing. This exercises the in-process
+    // `render_chat_prompt` (which stays until Task 5.1), NOT generation.
     let path = installed_model_path();
     let engine = InferenceEngine::load(&path, 4).expect("model should load");
 
@@ -297,11 +202,13 @@ fn tool_result_renders_wrapped_in_qwens_own_tool_response_tags() {
     );
 }
 
-#[test]
+#[tokio::test]
 #[ignore]
-fn apply_lightweight_clearing_then_summarize_against_the_real_model() {
-    let path = installed_model_path();
-    let engine = InferenceEngine::load(&path, 4).expect("model should load");
+async fn apply_lightweight_clearing_then_summarize_against_the_server() {
+    let model = installed_model_path();
+    let Some(server) = common::TestServer::spawn(&model).await else {
+        return;
+    };
 
     // A synthetic history with more tool messages than TOOL_KEEP_N, plus
     // enough real turns that summarize_and_persist has non-protected
@@ -337,28 +244,29 @@ fn apply_lightweight_clearing_then_summarize_against_the_real_model() {
     let cleared = context::apply_lightweight_clearing(&mut history, 4, None);
     assert!(cleared > 0, "expected some tool messages to be cleared");
 
-    // Real summarization call against the real model -- the whole point of
-    // this test is proving `summarize_and_persist`'s prompt/generate/parse
-    // path works end-to-end, not just that its Rust compiles.
+    // Real summarization call against the real SERVER -- the summarize path
+    // (`context/mod.rs`) is the LAST in-process `engine.generate` caller and
+    // flips to this same client in Task 5.1; this smoke proves the
+    // prompt/generate path works end-to-end over HTTP. `Forbid` (no tools):
+    // a summary must never be able to emit a tool call.
     let protected_recent = 4;
     let to_summarize = &history[..history.len() - protected_recent];
     let mut messages = vec![ChatMessage::system(
         "Summarize the conversation so far concisely, preserving key facts, decisions, and unresolved tasks. Respond with only the summary text, nothing else.",
     )];
     messages.extend(to_summarize.iter().map(|m| m.chat.clone()));
-    let rendered = engine
-        .render_chat_prompt(&messages)
-        .expect("render should succeed");
-    let summary = engine
-        .generate(
-            &rendered,
-            256,
-            doce_lib::inference::ToolCallMode::Forbid,
-            None,
-            |_| {},
-            || false,
-        )
-        .expect("summarization generate should succeed");
+    let req = ChatRequest::build(
+        "doce",
+        to_openai_messages(&messages),
+        None,
+        tool_choice_for(ToolCallMode::Forbid).map(|s| s.to_string()),
+    );
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let summary = LlamaServerClient::new(server.base_url.clone())
+        .chat(req, |_piece| {}, &cancel)
+        .await
+        .expect("summarization generate should succeed")
+        .text;
 
     println!("real model summary: {summary:?}");
     assert!(!summary.trim().is_empty(), "expected a non-empty summary");
@@ -370,5 +278,108 @@ fn apply_lightweight_clearing_then_summarize_against_the_real_model() {
     assert_eq!(
         settings.warn_threshold_pct,
         ContextSettings::DEFAULT_WARN_THRESHOLD_PCT
+    );
+}
+
+/// A minimal `AgentBackend` for the one-tool-call real-server smoke below:
+/// the flat (plan-less) loop with just the `Read` tool on the table,
+/// generating through `LlamaServerClient::chat` (the cutover path).
+/// `requires_tool_call() == false`, so once the model has read the file it
+/// ends the loop with a plain-text final answer. Records whether a `Read`
+/// call ever happened — the assertion the smoke turns on.
+struct ReadSmokeBackend {
+    base_url: String,
+    cwd: PathBuf,
+    saw_read: bool,
+}
+
+impl AgentBackend for ReadSmokeBackend {
+    // The smoke's history is a handful of short messages, so it can never
+    // approach the budget: measure 0 against a MAX threshold means compact
+    // never runs.
+    fn measure(&mut self, _messages: &[ChatMessage]) -> u32 {
+        0
+    }
+
+    fn threshold(&self) -> u32 {
+        u32::MAX
+    }
+
+    fn compact(&mut self, messages: &[ChatMessage]) -> Vec<ChatMessage> {
+        messages.to_vec()
+    }
+
+    fn requires_tool_call(&self) -> bool {
+        false
+    }
+
+    async fn generate(&mut self, messages: Vec<ChatMessage>) -> doce_lib::agent::TurnOutcome {
+        let req = ChatRequest::build(
+            "doce",
+            to_openai_messages(&messages),
+            Some(tools_array(&["Read"])),
+            tool_choice_for(ToolCallMode::Allow).map(|s| s.to_string()),
+        );
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let result = LlamaServerClient::new(self.base_url.clone())
+            .chat(req, |_piece| {}, &cancel)
+            .await;
+        common::chat_outcome_to_turn_outcome(result)
+    }
+
+    async fn execute_tool(&mut self, _tool_call_id: String, call: ToolCall) -> ToolExecution {
+        if call.name == "Read" {
+            self.saw_read = true;
+        }
+        let outcome = dispatch::execute(&call, Some(&self.cwd));
+        ToolExecution::Result(outcome.model_text)
+    }
+}
+
+#[tokio::test]
+#[ignore]
+async fn real_server_one_tool_call_reads_a_file_and_answers() {
+    // End-to-end proof of the cutover path: a real server + the real agent
+    // loop, one tool call, one file. The model must Read a file we plant in
+    // a tempdir and echo its contents back -- exercising generate ->
+    // structured tool_call -> dispatch -> tool_result -> final answer.
+    let model = installed_model_path();
+    let Some(server) = common::TestServer::spawn(&model).await else {
+        return;
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let secret = "the launch code is orange-marmalade-42";
+    std::fs::write(dir.path().join("notes.txt"), format!("{secret}\n")).unwrap();
+
+    let mut backend = ReadSmokeBackend {
+        base_url: server.base_url.clone(),
+        cwd: dir.path().to_path_buf(),
+        saw_read: false,
+    };
+    let context = AgentContext {
+        is_subagent: false,
+        max_turns: 12,
+        cwd: Some(dir.path().to_path_buf()),
+    };
+    let messages = vec![
+        ChatMessage::system(
+            "You are a coding agent with a Read tool. Use it to read files from disk, \
+             then answer the user in plain text.",
+        ),
+        ChatMessage::user(
+            "Read the file notes.txt in the current directory and tell me exactly what it says.",
+        ),
+    ];
+
+    let answer = run_loop(&context, messages, &mut backend)
+        .await
+        .expect("the smoke task must produce a final answer");
+    println!("real-server smoke answer: {answer:?}");
+
+    assert!(backend.saw_read, "expected the model to call the Read tool");
+    assert!(
+        answer.contains("orange-marmalade-42"),
+        "expected the final answer to reference the file's content, got: {answer:?}"
     );
 }

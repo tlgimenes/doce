@@ -2829,9 +2829,8 @@ mod tests {
 
     fn test_model_path() -> std::path::PathBuf {
         let home = std::env::var("HOME").expect("HOME must be set");
-        std::path::PathBuf::from(home).join(
-            "Library/Application Support/app.doce.desktop/models/qwen3-4b-instruct-2507-q4_k_m.gguf",
-        )
+        std::path::PathBuf::from(home)
+            .join("Library/Application Support/app.doce.desktop/models/qwen3.5-4b-q4_k_m.gguf")
     }
 
     #[tokio::test]
