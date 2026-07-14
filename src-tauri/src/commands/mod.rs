@@ -18,8 +18,6 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             models::start_model_install,
             models::get_model_install_status,
             models::list_models,
-            models::list_available_models,
-            models::set_active_model,
             conversations::create_conversation,
             conversations::list_conversations,
             conversations::list_messages,

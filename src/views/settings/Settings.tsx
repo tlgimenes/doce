@@ -22,13 +22,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-  commands,
-  events,
-  type AvailableModel,
-  type McpServerConnection,
-  type SkillSummary,
-} from "@/lib/ipc";
+import { commands, type McpServerConnection, type SkillSummary } from "@/lib/ipc";
 
 interface SettingsProps {
   onClose: () => void;
@@ -60,80 +54,15 @@ export default function Settings({ onClose }: SettingsProps) {
   const [command, setCommand] = useState("");
   const [argsInput, setArgsInput] = useState("");
   const [toolsByServer, setToolsByServer] = useState<Record<string, string[] | "error">>({});
-  const [models, setModels] = useState<AvailableModel[]>([]);
-  // modelId -> download percent (0-100) while an install runs.
-  const [installProgress, setInstallProgress] = useState<Record<string, number>>({});
 
   const refresh = () => {
     commands.listMcpServers().then(setServers);
     commands.listSkills().then(setSkills);
-    commands
-      .listAvailableModels()
-      .then(setModels)
-      .catch(() => {});
   };
 
   useEffect(() => {
     refresh();
   }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    let unlisten: (() => void) | undefined;
-    void events
-      .onModelInstallProgress((p) => {
-        if (cancelled) return;
-        if (p.state === "installed" || p.state.startsWith("error")) {
-          setInstallProgress((prev) => {
-            const next = { ...prev };
-            delete next[p.modelId];
-            return next;
-          });
-          commands
-            .listAvailableModels()
-            .then((next) => {
-              if (!cancelled) setModels(next);
-            })
-            .catch(() => {});
-          return;
-        }
-        if (p.bytesTotal > 0) {
-          setInstallProgress((prev) => ({
-            ...prev,
-            [p.modelId]: Math.round((p.bytesDownloaded / p.bytesTotal) * 100),
-          }));
-        }
-      })
-      .then((fn) => {
-        if (cancelled) fn();
-        else unlisten = fn;
-      });
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, []);
-
-  const installModel = async (modelId: string) => {
-    setInstallProgress((prev) => ({ ...prev, [modelId]: 0 }));
-    try {
-      await commands.startModelInstall(modelId);
-    } catch {
-      setInstallProgress((prev) => {
-        const next = { ...prev };
-        delete next[modelId];
-        return next;
-      });
-    }
-  };
-
-  const activateModel = async (modelId: string) => {
-    await commands.setActiveModel(modelId);
-    commands
-      .listAvailableModels()
-      .then(setModels)
-      .catch(() => {});
-  };
 
   const addServer = async () => {
     if (!name.trim() || !command.trim()) return;
@@ -210,63 +139,6 @@ export default function Settings({ onClose }: SettingsProps) {
                 </SelectContent>
               </Select>
             </Field>
-          </CardContent>
-        </Card>
-
-        <Card size="sm" className="mb-6" data-testid="settings-model-panel">
-          <CardHeader>
-            <CardTitle>Model</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <ItemGroup className="gap-2">
-              {models.map((m) => {
-                const progress = installProgress[m.modelId];
-                const installing = progress != null;
-                return (
-                  <Item key={m.modelId} size="xs" data-testid="model-item">
-                    <ItemContent className="min-w-0 gap-0.5">
-                      <ItemTitle className="flex-wrap">
-                        <span className="font-mono text-xs">{m.modelId}</span>
-                        {m.active && <Badge variant="default">Active</Badge>}
-                        {!m.active && m.installed && <Badge variant="outline">Installed</Badge>}
-                        {m.recommended && <Badge variant="secondary">Recommended</Badge>}
-                      </ItemTitle>
-                      <ItemDescription className="text-xs">
-                        {[m.quantization, ...m.capabilityTags].join(" · ")}
-                      </ItemDescription>
-                    </ItemContent>
-                    <ItemActions>
-                      {installing ? (
-                        <span
-                          className="font-mono text-xs text-muted-foreground tabular-nums"
-                          data-testid="model-install-progress"
-                        >
-                          {progress}%
-                        </span>
-                      ) : m.active ? null : m.installed ? (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => activateModel(m.modelId)}
-                          data-testid="activate-model"
-                        >
-                          Activate
-                        </Button>
-                      ) : (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => installModel(m.modelId)}
-                          data-testid="install-model"
-                        >
-                          Install
-                        </Button>
-                      )}
-                    </ItemActions>
-                  </Item>
-                );
-              })}
-            </ItemGroup>
           </CardContent>
         </Card>
 

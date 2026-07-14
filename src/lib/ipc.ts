@@ -18,17 +18,6 @@ export interface StartModelInstallResult {
   resumed: boolean;
 }
 
-/** One registry model as the Settings "Model" section presents it —
- * bundled registry entry merged with this install's DB state. */
-export interface AvailableModel {
-  modelId: string;
-  quantization: string;
-  capabilityTags: string[];
-  recommended: boolean;
-  installed: boolean;
-  active: boolean;
-}
-
 export interface ModelRow {
   id: string;
   hardwareTier: string;
@@ -561,8 +550,6 @@ export const commands = {
       { modelId },
     ),
   listModels: () => invoke<ModelRow[]>("list_models"),
-  listAvailableModels: () => invoke<AvailableModel[]>("list_available_models"),
-  setActiveModel: (modelId: string) => invoke<void>("set_active_model", { modelId }),
   createConversation: (workspaceId?: string) =>
     invoke<Conversation>("create_conversation", { workspaceId }),
   listConversations: (workspaceId?: string) =>

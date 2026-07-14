@@ -114,9 +114,9 @@ pub async fn start_model_install(
                 let now = now_ms();
                 // Zero-config (FR-001/FR-005): the model onboarding just
                 // installed becomes the active one automatically — there is
-                // no picker step where the user would otherwise choose.
-                // `set_active_model` stays available for the settings-only
-                // override (FR-005).
+                // no picker step where the user would otherwise choose (Task
+                // 6.2 removed the Settings manual picker/switch surface
+                // entirely; the registry converged on a single model).
                 let _ = conn
                     .call(move |conn: &mut Connection| -> rusqlite::Result<()> {
                         let tx = conn.transaction()?;
@@ -243,130 +243,6 @@ pub async fn list_models(
     })
     .await
     .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-#[specta::specta]
-pub async fn set_active_model(
-    app: AppHandle,
-    db_cell: State<'_, DbCell>,
-    inference: State<'_, crate::commands::conversations::InferenceState>,
-    server_state: State<'_, crate::inference::server::ServerState>,
-    model_id: String,
-) -> Result<(), String> {
-    let conn = db_cell.get(&app).await?;
-    let model_id_for_lookup = model_id.clone();
-    conn.call(move |conn: &mut Connection| -> rusqlite::Result<()> {
-        let tx = conn.transaction()?;
-        tx.execute("UPDATE models SET is_active = 0 WHERE is_active = 1", [])?;
-        tx.execute("UPDATE models SET is_active = 1 WHERE id = ?1", [&model_id])?;
-        tx.commit()?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| e.to_string())?;
-
-    // The engine is loaded lazily and cached for the app's lifetime —
-    // without this, a switch would keep serving the OLD weights until
-    // restart. Awaiting the lock also serializes behind any in-flight
-    // turn, so a running generation finishes on the model it started with.
-    *inference.0.lock().await = None;
-
-    // Task 3.3: the supervised `llama-server` is still pointed at the OLD
-    // model's GGUF, so restart it on the newly-activated model's weights.
-    // Best-effort: the DB switch already committed; a failed respawn is
-    // logged, and the next turn's `ensure_running` retries. Skipped when the
-    // new model has no `local_path` yet (activated but not downloaded).
-    let local_path: Option<String> = conn
-        .call(
-            move |conn: &mut Connection| -> rusqlite::Result<Option<String>> {
-                conn.query_row(
-                    "SELECT local_path FROM models WHERE id = ?1",
-                    [&model_id_for_lookup],
-                    |row| row.get::<_, Option<String>>(0),
-                )
-            },
-        )
-        .await
-        .ok()
-        .flatten();
-    if let Some(path) = local_path {
-        if let Err(e) = server_state
-            .restart(&app, std::path::Path::new(&path))
-            .await
-        {
-            eprintln!("[llama-server] failed to restart after model switch: {e}");
-        }
-    }
-    Ok(())
-}
-
-/// One registry model as the Settings "Model" section presents it: the
-/// bundled registry entry (deduped across tiers) merged with this
-/// install's DB state. `recommended` marks the model
-/// `best_candidate_for_tier` would pick for this machine.
-#[derive(Debug, Clone, Serialize, specta::Type)]
-#[serde(rename_all = "camelCase")]
-pub struct AvailableModel {
-    pub model_id: String,
-    pub quantization: String,
-    pub capability_tags: Vec<String>,
-    pub recommended: bool,
-    pub installed: bool,
-    pub active: bool,
-}
-
-#[tauri::command]
-#[specta::specta]
-pub async fn list_available_models(
-    app: AppHandle,
-    db_cell: State<'_, DbCell>,
-) -> Result<Vec<AvailableModel>, String> {
-    let registry = model_registry::bundled();
-    let profile = hardware::detect();
-    let recommended = model_registry::best_candidate_for_tier(&registry, &profile.tier)
-        .map(|m| m.model_id.clone());
-
-    let conn = db_cell.get(&app).await?;
-    let db_rows: Vec<(String, bool, bool)> = conn
-        .call(
-            |conn: &mut Connection| -> rusqlite::Result<Vec<(String, bool, bool)>> {
-                let mut stmt =
-                    conn.prepare("SELECT id, is_active, installed_at IS NOT NULL FROM models")?;
-                let rows = stmt
-                    .query_map([], |row| {
-                        Ok((
-                            row.get(0)?,
-                            row.get::<_, i64>(1)? == 1,
-                            row.get::<_, i64>(2)? == 1,
-                        ))
-                    })?
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(rows)
-            },
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let mut seen = HashSet::new();
-    let mut out = Vec::new();
-    for tier in &registry.tiers {
-        for candidate in &tier.models {
-            if !seen.insert(candidate.model_id.clone()) {
-                continue;
-            }
-            let db = db_rows.iter().find(|(id, _, _)| id == &candidate.model_id);
-            out.push(AvailableModel {
-                model_id: candidate.model_id.clone(),
-                quantization: candidate.quantization.clone(),
-                capability_tags: candidate.capability_tags.clone(),
-                recommended: recommended.as_deref() == Some(candidate.model_id.as_str()),
-                installed: db.map(|(_, _, installed)| *installed).unwrap_or(false),
-                active: db.map(|(_, active, _)| *active).unwrap_or(false),
-            });
-        }
-    }
-    Ok(out)
 }
 
 pub fn now_ms() -> i64 {

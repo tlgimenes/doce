@@ -45,9 +45,7 @@ vi.mock("@/lib/ipc", () => ({
     compactConversation: vi.fn(),
     isGenerationActive: vi.fn(),
     getActivePlan: vi.fn(),
-    listAvailableModels: vi.fn(),
     startModelInstall: vi.fn(),
-    setActiveModel: vi.fn(),
   },
   events: {
     onContextUsageUpdate: vi.fn(),
@@ -139,7 +137,6 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     vi.mocked(events.onContextUsageUpdate).mockResolvedValue(() => {});
     vi.mocked(events.onAgentMessagePersisted).mockResolvedValue(() => {});
     vi.mocked(events.onAgentGenerationPiece).mockResolvedValue(() => {});
-    vi.mocked(commands.listAvailableModels).mockResolvedValue([]);
     vi.mocked(events.onModelInstallProgress).mockResolvedValue(() => {});
     vi.mocked(commands.getActivePlan).mockResolvedValue(null);
     vi.mocked(events.onPlanUpdate).mockResolvedValue(() => {});

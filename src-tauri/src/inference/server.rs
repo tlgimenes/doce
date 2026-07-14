@@ -487,9 +487,12 @@ impl ServerState {
     }
 
     /// Unconditionally tears down the current server (if any) and spawns a
-    /// fresh one for `model_path`, returning its base_url. The model-switch
-    /// entry point (`set_active_model`): the caller already knows the active
-    /// model changed, so there's no Reuse case to consider here.
+    /// fresh one for `model_path`, returning its base_url. A model-switch
+    /// entry point: the caller already knows the active model changed, so
+    /// there's no Reuse case to consider here. Currently unreferenced —
+    /// Task 6.2 removed the Settings manual model-switch surface that used
+    /// to call this when the registry converged on a single model; kept as
+    /// the restart primitive for if manual switching returns.
     pub async fn restart(&self, app: &AppHandle, model_path: &Path) -> Result<String, String> {
         let mut guard = self.0.lock().await;
         if let Some(running) = guard.take() {

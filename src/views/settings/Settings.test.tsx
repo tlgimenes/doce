@@ -1,10 +1,10 @@
 import { type ReactElement } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render as rtlRender, screen, waitFor, within } from "@testing-library/react";
+import { render as rtlRender, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ThemeProvider } from "next-themes";
 import Settings from "./Settings";
-import { commands, events } from "@/lib/ipc";
+import { commands } from "@/lib/ipc";
 
 vi.mock("@/lib/ipc", () => ({
   commands: {
@@ -12,12 +12,6 @@ vi.mock("@/lib/ipc", () => ({
     listSkills: vi.fn(),
     addMcpServer: vi.fn(),
     listMcpServerTools: vi.fn(),
-    listAvailableModels: vi.fn(),
-    startModelInstall: vi.fn(),
-    setActiveModel: vi.fn(),
-  },
-  events: {
-    onModelInstallProgress: vi.fn(),
   },
 }));
 
@@ -38,8 +32,6 @@ describe("Settings (User Story 4: MCP servers + skills)", () => {
     vi.clearAllMocks();
     vi.mocked(commands.listMcpServers).mockResolvedValue([]);
     vi.mocked(commands.listSkills).mockResolvedValue([]);
-    vi.mocked(commands.listAvailableModels).mockResolvedValue([]);
-    vi.mocked(events.onModelInstallProgress).mockResolvedValue(() => {});
   });
 
   // next-themes mirrors the active theme onto the real
@@ -220,8 +212,6 @@ describe("Settings appearance (dark-mode toggler)", () => {
     vi.clearAllMocks();
     vi.mocked(commands.listMcpServers).mockResolvedValue([]);
     vi.mocked(commands.listSkills).mockResolvedValue([]);
-    vi.mocked(commands.listAvailableModels).mockResolvedValue([]);
-    vi.mocked(events.onModelInstallProgress).mockResolvedValue(() => {});
   });
 
   afterEach(() => {
@@ -262,65 +252,5 @@ describe("Settings appearance (dark-mode toggler)", () => {
     await waitFor(() => {
       expect(document.documentElement.classList.contains("dark")).toBe(false);
     });
-  });
-
-  it("lists registry models with install/activate actions (Model section)", async () => {
-    vi.mocked(commands.listAvailableModels)
-      .mockResolvedValueOnce([
-        {
-          modelId: "minicpm5-1b-q4_k_m",
-          quantization: "Q4_K_M",
-          capabilityTags: ["tool-calling", "thinking", "fast"],
-          recommended: true,
-          installed: false,
-          active: false,
-        },
-        {
-          modelId: "qwen3-4b-thinking-2507-q4_k_m",
-          quantization: "Q4_K_M",
-          capabilityTags: ["tool-calling", "thinking", "general"],
-          recommended: false,
-          installed: true,
-          active: true,
-        },
-      ])
-      .mockResolvedValue([]);
-    vi.mocked(commands.startModelInstall).mockResolvedValue({
-      modelId: "minicpm5-1b-q4_k_m",
-      resumed: false,
-    });
-
-    render(<Settings onClose={vi.fn()} />);
-
-    const items = await screen.findAllByTestId("model-item");
-    expect(items).toHaveLength(2);
-    // Not-installed + recommended → Install button; active → no action.
-    expect(within(items[0]).getByText("Recommended")).toBeInTheDocument();
-    expect(within(items[1]).getByText("Active")).toBeInTheDocument();
-    expect(within(items[1]).queryByTestId("activate-model")).not.toBeInTheDocument();
-
-    await userEvent.click(within(items[0]).getByTestId("install-model"));
-    expect(commands.startModelInstall).toHaveBeenCalledWith("minicpm5-1b-q4_k_m");
-    // Progress placeholder appears while the download runs.
-    expect(await within(items[0]).findByTestId("model-install-progress")).toHaveTextContent("0%");
-  });
-
-  it("activates an installed, inactive model and refreshes the list", async () => {
-    vi.mocked(commands.listAvailableModels).mockResolvedValue([
-      {
-        modelId: "minicpm5-1b-q4_k_m",
-        quantization: "Q4_K_M",
-        capabilityTags: ["thinking"],
-        recommended: true,
-        installed: true,
-        active: false,
-      },
-    ]);
-    vi.mocked(commands.setActiveModel).mockResolvedValue();
-
-    render(<Settings onClose={vi.fn()} />);
-
-    await userEvent.click(await screen.findByTestId("activate-model"));
-    expect(commands.setActiveModel).toHaveBeenCalledWith("minicpm5-1b-q4_k_m");
   });
 });
