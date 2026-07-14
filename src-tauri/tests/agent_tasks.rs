@@ -49,6 +49,38 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
+/// Adapts the pre-cutover in-process `engine.generate` STRING into the
+/// structured `TurnOutcome` the `AgentBackend::generate` contract now returns
+/// (Task 4.1), by running the SAME `parse_response` the loop used before the
+/// cutover. These benchmark backends stay on the in-process engine on purpose
+/// — they are the pre-cutover capability harness and the client re-point is
+/// explicitly Task 8.1 — so this keeps them runnable with no server
+/// dependency while satisfying the new signature. This is why `parse_response`
+/// must stay alive (Task 7 deletes it).
+fn engine_generation_to_turn_outcome(
+    engine: &InferenceEngine,
+    response: String,
+) -> doce_lib::agent::TurnOutcome {
+    match doce_lib::agent::parse_response(&response, engine.dialect()) {
+        doce_lib::agent::LoopStep::ToolCall(tc) => doce_lib::agent::TurnOutcome {
+            tool_call: Some((tc.name, tc.arguments)),
+            text: String::new(),
+            reasoning: String::new(),
+            finish_reason: "tool_calls".to_string(),
+            usage: None,
+            error: None,
+        },
+        doce_lib::agent::LoopStep::Done(text) => doce_lib::agent::TurnOutcome {
+            tool_call: None,
+            text,
+            reasoning: String::new(),
+            finish_reason: "stop".to_string(),
+            usage: None,
+            error: None,
+        },
+    }
+}
+
 /// The flat ReAct prompt for the `run_flat_*` BASELINE harness below --
 /// moved here from `src/agent/mod.rs` (2026-07-12) because NO production
 /// code uses it: every conversation the app ships runs the plan machine.
@@ -265,7 +297,14 @@ impl AgentBackend for FlatBackend<'_> {
         context::fit_turn_to_budget(self.engine, messages).unwrap_or_else(|_| messages.to_vec())
     }
 
-    async fn generate(&mut self, messages: Vec<ChatMessage>) -> String {
+    // Flat baseline runs under `ToolCallMode::Allow`, so a no-tool-call turn
+    // is an ordinary plain-text final answer (`LoopStep::Done`), not a
+    // Require-mode invariant violation to retry.
+    fn requires_tool_call(&self) -> bool {
+        false
+    }
+
+    async fn generate(&mut self, messages: Vec<ChatMessage>) -> doce_lib::agent::TurnOutcome {
         self.turns += 1;
         let rendered = self
             .engine
@@ -274,8 +313,11 @@ impl AgentBackend for FlatBackend<'_> {
         // max_tokens matches commands::agent's real generate() call
         // (limits::AGENT_TURN_MAX_OUTPUT_TOKENS) for the same reason. Goes
         // through the persistent session (KV-prefix reuse), exactly as
-        // production's RealBackend does.
-        self.session
+        // production's RealBackend did pre-cutover. Task 4.1: adapt the
+        // returned STRING into a `TurnOutcome` via `parse_response` — this
+        // benchmark harness stays in-process (client re-point is Task 8.1).
+        let response = self
+            .session
             .generate(
                 self.engine,
                 &rendered,
@@ -285,7 +327,8 @@ impl AgentBackend for FlatBackend<'_> {
                 |_| {},
                 || false,
             )
-            .unwrap_or_else(|e| format!("Error: generation failed: {e}"))
+            .unwrap_or_else(|e| format!("Error: generation failed: {e}"));
+        engine_generation_to_turn_outcome(self.engine, response)
     }
 
     async fn execute_tool(
@@ -448,7 +491,7 @@ impl AgentBackend for PlanExecBackend<'_> {
         context::fit_turn_to_budget(self.engine, messages).unwrap_or_else(|_| messages.to_vec())
     }
 
-    async fn generate(&mut self, mut messages: Vec<ChatMessage>) -> String {
+    async fn generate(&mut self, mut messages: Vec<ChatMessage>) -> doce_lib::agent::TurnOutcome {
         self.turns += 1;
         // Stable-prefix architecture, exactly as production's `RealBackend`:
         // `messages[0]` is the immutable union prompt + cwd line seeded by
@@ -469,7 +512,12 @@ impl AgentBackend for PlanExecBackend<'_> {
             .engine
             .render_chat_prompt(&messages)
             .expect("chat template should render");
-        self.session
+        // Require mode (default `requires_tool_call() == true`): a no-tool-call
+        // turn is a Require-mode invariant violation run_loop corrects+retries.
+        // Task 4.1: adapt the returned STRING into a `TurnOutcome` via
+        // `parse_response` — in-process harness (client re-point is Task 8.1).
+        let response = self
+            .session
             .generate(
                 self.engine,
                 &rendered,
@@ -479,7 +527,8 @@ impl AgentBackend for PlanExecBackend<'_> {
                 |_| {},
                 || false,
             )
-            .unwrap_or_else(|e| format!("Error: generation failed: {e}"))
+            .unwrap_or_else(|e| format!("Error: generation failed: {e}"));
+        engine_generation_to_turn_outcome(self.engine, response)
     }
 
     async fn execute_tool(

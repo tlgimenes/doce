@@ -3,7 +3,7 @@ use crate::agent::tools::ask_user::{PendingQuestions, QuestionOption};
 use crate::agent::{dispatch, run_loop, subagent, AgentContext, ToolCall, ToolExecution};
 use crate::commands::conversations::{ActiveGenerations, InferenceState};
 use crate::commands::models::now_ms;
-use crate::inference::{ChatMessage, InferenceEngine, PromptSession};
+use crate::inference::{ChatMessage, InferenceEngine};
 use crate::storage::conversations::load_history;
 use crate::storage::DbCell;
 use rusqlite::Connection;
@@ -12,6 +12,48 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
+
+/// The `model` field llama-server's `/v1/chat/completions` request carries.
+/// The supervised server loads exactly one model, so it ignores this value —
+/// a stable placeholder is all it needs, and a fixed string keeps the
+/// prompt-cache key identical across turns (the active model can't change
+/// mid-server without a restart). Chosen over threading the on-disk model id
+/// through every backend for a value the server discards.
+const LLAMA_SERVER_MODEL_ID: &str = "doce";
+
+/// Maps `LlamaServerClient::chat`'s result into the agent loop's
+/// `TurnOutcome`. On success every `ChatOutcome` field carries straight
+/// over. On a HARD transport/server failure the message lands in
+/// `TurnOutcome::error` — which run_loop checks FIRST and TERMINATES on,
+/// surfacing it as the final answer (the pre-cutover behavior where
+/// `"Error: inference failed: {e}"` became the returned string) — rather
+/// than an empty no-tool-call outcome that Require mode would retry forever
+/// against a dead server. Shared by both `RealBackend` and `SubagentBackend`.
+fn chat_result_to_turn_outcome(
+    result: Result<crate::inference::http::ChatOutcome, crate::inference::InferenceError>,
+) -> crate::agent::TurnOutcome {
+    match result {
+        Ok(outcome) => crate::agent::TurnOutcome {
+            tool_call: outcome.tool_call,
+            text: outcome.text,
+            reasoning: outcome.reasoning,
+            finish_reason: outcome.finish_reason,
+            usage: outcome.usage,
+            error: None,
+        },
+        Err(e) => {
+            let msg = format!("Error: inference failed: {e}");
+            crate::agent::TurnOutcome {
+                tool_call: None,
+                text: msg.clone(),
+                reasoning: String::new(),
+                finish_reason: String::new(),
+                usage: None,
+                error: Some(msg),
+            }
+        }
+    }
+}
 
 /// 004-tool-call-widgets (`001`'s originally-specified `ask-user-question`
 /// event, implemented here — contracts/tool-widgets.md): fired the moment
@@ -565,13 +607,16 @@ async fn handle_ask_user_question(
 /// and event emission that loop actually runs against.
 struct RealBackend<'a> {
     engine: &'a InferenceEngine,
-    /// One persistent inference context for the whole turn: each turn's
-    /// prompt extends the previous one's, so its KV cache reuses the shared
-    /// prefix and re-decodes only the newest tool exchange, rather than
-    /// re-prefilling the entire growing history every turn. Owned (not a
-    /// borrow) so its `LlamaContext` is dropped with the backend, before the
-    /// engine's mutex guard is released in `send_agent_message`.
-    session: PromptSession<'a>,
+    /// The supervised `llama-server`'s base URL (`http://127.0.0.1:PORT`),
+    /// resolved by `send_agent_message`'s `ServerState::ensure_running` call
+    /// before the loop starts. Generation goes through
+    /// `inference::http::LlamaServerClient::chat` against this URL (the
+    /// cutover): the turn cannot generate without a live server, so a failure
+    /// to bring one up fails the turn upstream rather than reaching here.
+    /// (Cross-turn KV-prefix reuse is now the server's own `cache_prompt`
+    /// concern, so the per-turn in-process `PromptSession` this backend used
+    /// to hold — to feed the old `session.generate` — is gone.)
+    base_url: String,
     conn: &'a tokio_rusqlite::Connection,
     conversation_id: &'a str,
     app: &'a AppHandle,
@@ -626,62 +671,70 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
             .unwrap_or_else(|_| messages.to_vec())
     }
 
-    async fn generate(&mut self, mut messages: Vec<ChatMessage>) -> String {
+    async fn generate(&mut self, mut messages: Vec<ChatMessage>) -> crate::agent::TurnOutcome {
         // Stable-prefix prompt architecture: `messages[0]` is the immutable
         // union prompt (+ turn-stable cwd line) seeded by
-        // `send_agent_message` and NEVER touched here, so the session's KV
-        // prefix survives every Planning<->Executing and step->step
-        // transition -- only the tail below (plus the newest tool exchange)
-        // re-decodes each turn. Everything volatile (mode banner, current
-        // step framing, refusal context, recitation checklist) rides in ONE
-        // tail message, appended to this call's own clone of `messages`
-        // (run_loop clones before every `generate`), never written back to
-        // run_loop's canonical list.
+        // `send_agent_message` and NEVER touched here, so the server's
+        // `cache_prompt` KV prefix survives every Planning<->Executing and
+        // step->step transition -- only the tail below (plus the newest tool
+        // exchange) re-decodes each turn. Everything volatile (mode banner,
+        // current step framing, refusal context, recitation checklist) rides
+        // in ONE tail message, appended to this call's own clone of
+        // `messages` (run_loop clones before every `generate`), never written
+        // back to run_loop's canonical list.
         // Single-mode harness: the tail is the todo recitation, and only
         // exists once todos do.
         let tail = self.plan_state.todo_tail();
         if !tail.is_empty() {
             messages.push(ChatMessage::user(tail));
         }
-        // The plan loop REQUIRES a tool call at the sampler level in BOTH
-        // states: a plain-text reply anywhere would end the entire task,
-        // and the model was observed degrading into exactly that
-        // (`StepDone(...)` as prose mid-step; a bare "ResumeExecution"
-        // text after twenty repetitive AddStep calls). "Done" is itself a
-        // tool call now (FinishTask), so requiring tool calls never traps
-        // the loop. The union prompt advertises BOTH states' tools, so the
-        // current state's set is enforced here at the sampler instead: a
-        // tool outside it is unsamplable (grammar name-enum gating).
-        match self.engine.render_chat_prompt(&messages) {
-            Ok(rendered) => {
-                // Live generation ticker: every sampled piece streams to
-                // the UI (the working shimmer shows the model reasoning in
-                // real time). Best-effort — a failed emit must never
-                // affect generation.
-                let app = self.app;
-                let conversation_id = self.conversation_id;
-                self.session
-                    .generate(
-                        self.engine,
-                        &rendered,
-                        crate::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS as i32,
-                        crate::inference::ToolCallMode::Require,
-                        Some(self.plan_state.single_mode_tool_names(true)),
-                        |piece| {
-                            let _ = app.emit(
-                                "agent-generation-piece",
-                                AgentGenerationPiece {
-                                    conversation_id: conversation_id.to_string(),
-                                    piece: piece.to_string(),
-                                },
-                            );
+        // The plan loop REQUIRES a tool call in BOTH states: a plain-text
+        // reply anywhere would end the entire task, and the model was
+        // observed degrading into exactly that (`StepDone(...)` as prose
+        // mid-step; a bare "ResumeExecution" text after twenty repetitive
+        // AddStep calls). "Done" is itself a tool call now (FinishTask), so
+        // requiring tool calls never traps the loop -- `tool_choice:required`
+        // enforces it server-side, and run_loop corrects+retries a turn that
+        // slips through with no call rather than ending the task.
+        let req = crate::inference::http::ChatRequest::build(
+            LLAMA_SERVER_MODEL_ID,
+            crate::inference::http::to_openai_messages(&messages),
+            Some(crate::inference::http::tools_array(
+                self.plan_state.single_mode_tool_names(true),
+            )),
+            crate::inference::http::tool_choice_for(crate::inference::ToolCallMode::Require)
+                .map(|s| s.to_string()),
+        );
+
+        // Live generation ticker: every content/reasoning piece streams to
+        // the UI as it arrives (the working shimmer). `agent-generation-piece`
+        // is documented ephemeral, raw, unstripped ticker text -- the
+        // frontend never treats it as transcript content -- so the client's
+        // `on_piece` (called for BOTH content and reasoning deltas) wires
+        // straight through. Best-effort: a failed emit must never affect
+        // generation. The real answer/tool-call comes from the returned
+        // `ChatOutcome`, never from these pieces.
+        let app = self.app;
+        let conversation_id = self.conversation_id;
+        // Task 4.1 passes a fresh never-cancelled token; real cancellation
+        // wiring is Task 4.2.
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let result = crate::inference::http::LlamaServerClient::new(self.base_url.clone())
+            .chat(
+                req,
+                |piece| {
+                    let _ = app.emit(
+                        "agent-generation-piece",
+                        AgentGenerationPiece {
+                            conversation_id: conversation_id.to_string(),
+                            piece: piece.to_string(),
                         },
-                        || false,
-                    )
-                    .unwrap_or_else(|e| format!("Error: inference failed: {e}"))
-            }
-            Err(e) => format!("Error: failed to render chat prompt: {e}"),
-        }
+                    );
+                },
+                &cancel,
+            )
+            .await;
+        chat_result_to_turn_outcome(result)
     }
 
     async fn execute_tool(&mut self, tool_call_id: String, call: ToolCall) -> ToolExecution {
@@ -729,6 +782,7 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
                 self.cwd,
                 self.app,
                 self.pending,
+                &self.base_url,
             )
             .await,
         )
@@ -751,6 +805,11 @@ struct SubagentBackend<'a> {
     /// the spawn site, which holds the AppHandle this backend deliberately
     /// doesn't. None only in unit tests that don't exercise staging.
     app_data_dir: Option<std::path::PathBuf>,
+    /// The supervised `llama-server`'s base URL, threaded down from the
+    /// spawning `RealBackend` (this backend has no `AppHandle` of its own to
+    /// resolve it from). Generation goes through the same
+    /// `LlamaServerClient::chat` path as the top-level loop.
+    base_url: String,
 }
 
 impl crate::agent::AgentBackend for SubagentBackend<'_> {
@@ -774,33 +833,37 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
             .unwrap_or_else(|_| messages.to_vec())
     }
 
-    async fn generate(&mut self, mut messages: Vec<ChatMessage>) -> String {
+    async fn generate(&mut self, mut messages: Vec<ChatMessage>) -> crate::agent::TurnOutcome {
         // Same stable-prefix architecture as `RealBackend::generate` (see
         // that impl's doc comment for the full rationale): `messages[0]` is
         // the immutable subagent union prompt (`allow_task = false` -- no
         // `Task` tool, FR-016) seeded by `execute_top_level_tool`, never
         // touched here; all volatile state rides the single tail message,
-        // and the current state's tool set is enforced at the sampler.
+        // and the current state's tool set is enforced server-side by
+        // `tool_choice:required` over the subagent's own 7-tool set.
         // Single-mode harness: the tail is the todo recitation, and only
         // exists once todos do.
         let tail = self.plan_state.todo_tail();
         if !tail.is_empty() {
             messages.push(ChatMessage::user(tail));
         }
-        match self.engine.render_chat_prompt(&messages) {
-            Ok(rendered) => self
-                .engine
-                .generate(
-                    &rendered,
-                    crate::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS as i32,
-                    crate::inference::ToolCallMode::Require,
-                    Some(self.plan_state.single_mode_tool_names(false)),
-                    |_piece| {},
-                    || false,
-                )
-                .unwrap_or_else(|e| format!("Error: inference failed: {e}")),
-            Err(e) => format!("Error: failed to render chat prompt: {e}"),
-        }
+        let req = crate::inference::http::ChatRequest::build(
+            LLAMA_SERVER_MODEL_ID,
+            crate::inference::http::to_openai_messages(&messages),
+            Some(crate::inference::http::tools_array(
+                self.plan_state.single_mode_tool_names(false),
+            )),
+            crate::inference::http::tool_choice_for(crate::inference::ToolCallMode::Require)
+                .map(|s| s.to_string()),
+        );
+        // FR-015 isolation: the subagent's own transcript isn't rendered by
+        // any current view, so there's no live ticker to feed -- `on_piece`
+        // is a no-op, same as the pre-cutover `|_piece| {}`.
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let result = crate::inference::http::LlamaServerClient::new(self.base_url.clone())
+            .chat(req, |_piece| {}, &cancel)
+            .await;
+        chat_result_to_turn_outcome(result)
     }
 
     async fn execute_tool(&mut self, tool_call_id: String, call: ToolCall) -> ToolExecution {
@@ -926,6 +989,7 @@ async fn execute_top_level_tool(
     cwd: Option<&std::path::Path>,
     app: &AppHandle,
     pending: &PendingQuestions,
+    base_url: &str,
 ) -> String {
     // Resolved once, reused for every persist call this function makes
     // (including the subagent's own final-answer row below, which lives
@@ -1097,6 +1161,10 @@ async fn execute_top_level_tool(
         threshold: sub_threshold,
         plan_state,
         app_data_dir: app.path().app_data_dir().ok(),
+        // FR-015: the subagent generates through the SAME supervised server
+        // as its parent — threaded down from `RealBackend`, which resolved it
+        // before the top-level loop started.
+        base_url: base_url.to_string(),
     };
     let sub_started_at = now_ms();
     let sub_result = run_loop(&sub_context, sub_messages, &mut sub_backend).await;
@@ -1664,22 +1732,17 @@ pub async fn send_agent_message(
         .ok();
     let model_path = model_path.ok_or_else(|| "no active model installed".to_string())?;
 
-    // Task 3.3: make sure the supervised `llama-server` is up for the active
+    // Task 4.1: make sure the supervised `llama-server` is up for the active
     // model before the turn runs — spawns it if this is the first turn after
-    // a launch/switch, reuses the running one otherwise. Task 4 will generate
-    // through the returned base_url; for now generation still goes through the
-    // in-process `InferenceEngine` below, so the base_url is intentionally
-    // ignored (an idle server may briefly coexist with the engine — expected).
-    // Best-effort *this task only*: generation doesn't depend on the server
-    // yet, so a spawn failure is logged rather than failing an otherwise-fine
-    // engine-served turn. Task 4 (generation through the server) makes this a
-    // hard prerequisite.
-    if let Err(e) = server_state
+    // a launch/switch, reuses the running one otherwise — and capture its
+    // base_url. Generation now goes THROUGH this server (`RealBackend` /
+    // `SubagentBackend` -> `LlamaServerClient::chat`), so a live server is a
+    // HARD prerequisite: if it can't come up, the turn cannot generate, so
+    // fail here rather than proceeding to generate against a dead server.
+    let base_url = server_state
         .ensure_running(&app, std::path::Path::new(&model_path))
         .await
-    {
-        eprintln!("[llama-server] failed to ensure running for turn: {e}");
-    }
+        .map_err(|e| format!("llama-server failed to start for this turn: {e}"))?;
 
     {
         let mut guard = inference.0.lock().await;
@@ -1811,13 +1874,9 @@ pub async fn send_agent_message(
             + crate::context::limits::STATE_TAIL_RESERVE_TOKENS,
     );
 
-    // One session for the whole turn (KV-prefix reuse across turns). Built
-    // here, inside the engine-guard scope, so its `LlamaContext`'s borrow of
-    // the model stays valid for as long as the backend runs.
-    let session = engine.new_session().map_err(|e| e.to_string())?;
     let mut backend = RealBackend {
         engine,
-        session,
+        base_url,
         conn: &conn,
         conversation_id: &conversation_id,
         app: &app,
@@ -1830,9 +1889,11 @@ pub async fn send_agent_message(
         transcript_dir: transcript_dir.clone(),
     };
     let result = run_loop(&context, initial_messages, &mut backend).await;
-    // Drop the backend (and with it the session's `LlamaContext`, which
-    // borrows the model) BEFORE releasing the engine guard — the context's
-    // Drop must run while the engine it borrows is still locked in scope.
+    // Drop the backend (which borrows `engine` from the guard) BEFORE
+    // releasing the engine guard — the borrow must end while the guard is
+    // still in scope. (Generation runs against the server now, so there is no
+    // per-turn `LlamaContext` to tear down here; the backend still uses the
+    // in-process engine for measure/compact token counting.)
     drop(backend);
     drop(guard);
 
@@ -2683,6 +2744,9 @@ mod tests {
             threshold: 1024,
             plan_state: crate::agent::plan::PlanState::default(),
             app_data_dir: None,
+            // This test only drives `execute_tool` (never `generate`), so no
+            // server is contacted — a dummy base_url just satisfies the field.
+            base_url: String::new(),
         };
         use crate::agent::AgentBackend;
         let call = crate::agent::ToolCall {
@@ -2715,6 +2779,9 @@ mod tests {
             threshold: 1024,
             plan_state: crate::agent::plan::PlanState::default(),
             app_data_dir: Some(app_data_dir.path().to_path_buf()),
+            // Drives only `execute_tool`, never `generate` — see the sibling
+            // test above; a dummy base_url satisfies the field.
+            base_url: String::new(),
         };
         use crate::agent::AgentBackend;
 

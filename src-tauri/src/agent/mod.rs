@@ -54,6 +54,45 @@ pub enum LoopStep {
     Done(String),
 }
 
+/// One turn's structured generation result — what `AgentBackend::generate`
+/// now returns instead of a raw `String` the loop had to re-parse. Since
+/// the cutover, generation goes through `inference::http::LlamaServerClient::
+/// chat`, which hands back a *structured* `ChatOutcome` (a resolved tool
+/// call, not text to grammar-parse); the fields here mirror it one-to-one
+/// (see `ChatOutcome`), plus `error` for the transport-failure case that the
+/// in-process engine used to fold into its returned string.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TurnOutcome {
+    /// The single tool call the model made this turn, already resolved to
+    /// `(name, arguments)` — `None` when the model produced no call (a
+    /// plain-text answer, or, under Require, an invariant-violating turn the
+    /// loop corrects and retries). Requests set `parallel_tool_calls:false`,
+    /// so this is at most one call.
+    pub tool_call: Option<(String, serde_json::Value)>,
+    /// The assistant's final text — used only when this turn is NOT a tool
+    /// call (an Allow/Forbid final answer, or the assistant text carried
+    /// into a Require correction turn).
+    pub text: String,
+    /// Streamed `<think>`-equivalent reasoning (already emitted live via the
+    /// `on_piece` ticker during generation) — carried for completeness; the
+    /// loop does not read it directly.
+    pub reasoning: String,
+    /// Why generation stopped: `"stop"`, `"tool_calls"`, `"length"`, … — the
+    /// loop keys the Require-mode correction on `"length"` (re-issue briefly)
+    /// vs. everything else (require exactly one tool call).
+    pub finish_reason: String,
+    /// `(prompt_tokens, completion_tokens)` for later token accounting — not
+    /// wired into the loop yet.
+    pub usage: Option<(u32, u32)>,
+    /// A HARD transport/server failure (`chat` returned `Err`). When `Some`,
+    /// run_loop TERMINATES the turn surfacing this text as the final answer
+    /// — it must NEVER be retried (a no-tool-call *success* under Require is
+    /// what retries; a dead server would otherwise loop forever). Mirrors the
+    /// pre-cutover behavior where `"Error: inference failed: {e}"` became the
+    /// final string.
+    pub error: Option<String>,
+}
+
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum AgentError {
     #[error("agent loop exceeded its {0}-turn cap without producing a final answer")]
@@ -250,12 +289,32 @@ pub trait AgentBackend {
     fn measure(&mut self, messages: &[ChatMessage]) -> u32;
     fn threshold(&self) -> u32;
     fn compact(&mut self, messages: &[ChatMessage]) -> Vec<ChatMessage>;
-    async fn generate(&mut self, messages: Vec<ChatMessage>) -> String;
+    async fn generate(&mut self, messages: Vec<ChatMessage>) -> TurnOutcome;
     async fn execute_tool(&mut self, tool_call_id: String, call: ToolCall) -> ToolExecution;
 
-    /// The active model's tool-call dialect — output parsing routes
-    /// through it. Defaults to Hermes (the historical assumption) so test
-    /// backends need no override.
+    /// Whether this backend generates with tool calls REQUIRED at the
+    /// sampler (`ToolCallMode::Require`). The production plan loop — top-level
+    /// (`RealBackend`) and subagent (`SubagentBackend`) — does, so a turn
+    /// that returned NO tool call is an INVARIANT VIOLATION: run_loop feeds a
+    /// correction and retries rather than ending the task, because under
+    /// Require the only legitimate finish is a `FinishTask` tool call
+    /// (dispatched to `ToolExecution::Finish`). When `false` (Allow/Forbid —
+    /// the flat benchmark harness, and the scripted unit-test backends whose
+    /// tests end on a plain-text final answer), a no-tool-call turn is an
+    /// ordinary `LoopStep::Done`. Defaults to `true`: the production path is
+    /// Require, and defaulting a new backend to "correct-and-retry, don't end
+    /// the task as garbage" is the safe failure mode (the exact regression
+    /// the old grammar prevented).
+    fn requires_tool_call(&self) -> bool {
+        true
+    }
+
+    /// The active model's tool-call dialect — retained for the pre-cutover
+    /// benchmark backends that still adapt `engine.generate`'s String via
+    /// `parse_response` (flipped to the client in Task 8.1). run_loop no
+    /// longer reads it (generation is structured now), but leaving the
+    /// default here keeps those backends' overrides valid. Defaults to Hermes
+    /// (the historical assumption).
     fn dialect(&self) -> crate::inference::ToolDialect {
         crate::inference::ToolDialect::HermesJson
     }
@@ -294,89 +353,95 @@ pub async fn run_loop<B: AgentBackend>(
         if backend.measure(&messages) > backend.threshold() {
             messages = backend.compact(&messages);
         }
-        let response = backend.generate(messages.clone()).await;
-        let dialect = backend.dialect();
-        match parse_response(&response, dialect) {
-            LoopStep::Done(text) => {
-                // A response that STARTED a tool call but never closed it
-                // is a generation cut off by the max-token cap, not a real
-                // final answer — the grammar guarantees any started call is
-                // well-formed through its closing tag, so truncation is the
-                // one way a garbage call escapes it. Feed a correction back
-                // (consuming a turn) instead of silently ending the whole
-                // task with the truncated text as the "answer" — observed
-                // for real: a 20-step CreatePlan cut off mid-JSON became
-                // the turn's final answer and the task ended at 0/20.
-                // Thinking-models corollary of the same truncation class:
-                // a generation that spent its whole token budget INSIDE an
-                // unclosed <think> block strips to an empty string
-                // (inference::strip_think_blocks) — and an empty string is
-                // never a legitimate final answer (the plan contract
-                // demands a tool call; even FinishTask carries text).
-                // Observed for real (2026-07-13, MiniCPM5-1B): "tudo bem?"
-                // produced a zero-length assistant message.
-                if text.trim().is_empty() {
-                    messages.push(ChatMessage::assistant(text));
-                    messages.push(ChatMessage::user(
-                        "Your response was cut off inside your reasoning, before any tool call was produced. Keep your thinking brief this time and end with exactly one tool call.",
-                    ));
+        let outcome = backend.generate(messages.clone()).await;
+
+        // A HARD transport/server failure (`chat` returned `Err`) TERMINATES
+        // the turn, surfacing the error text as the final answer — exactly
+        // the pre-cutover behavior where `"Error: inference failed: {e}"`
+        // became the returned string. This is checked FIRST and never
+        // retried: because a no-tool-call Require turn now *retries* (below),
+        // a dead server must not become an infinite retry loop.
+        if let Some(error) = outcome.error {
+            return Ok(error);
+        }
+
+        let call = match outcome.tool_call {
+            Some((name, arguments)) => ToolCall { name, arguments },
+            None => {
+                // No tool call this turn. Under Require (the production plan
+                // loop) that is an INVARIANT VIOLATION — the model was
+                // required to call a tool and didn't — never a finished task:
+                // the only legitimate finish is a `FinishTask` tool call
+                // (handled in the `ToolExecution::Finish` arm below). Feed a
+                // correction and RETRY (consuming a turn, bounded by the same
+                // turn cap + futile-streak guards), re-homing the old
+                // truncated-generation recovery:
+                //   - `finish_reason == "length"`: the generation spent its
+                //     whole token budget (typically inside <think>) before
+                //     emitting a call — ask it to keep thinking brief and end
+                //     with one call. Observed for real: a 20-step CreatePlan
+                //     cut off mid-JSON, and (MiniCPM5-1B) a zero-length reply.
+                //   - otherwise (e.g. "stop" but no call): require exactly one
+                //     tool call. Letting an empty/among-text required turn
+                //     masquerade as Done is the exact "ended the task as
+                //     garbage" failure the old grammar prevented.
+                if backend.requires_tool_call() {
+                    let correction = if outcome.finish_reason == "length" {
+                        "Your response was cut off inside your reasoning, before any tool call was produced. Keep your thinking brief this time and end with exactly one tool call."
+                    } else {
+                        "You must respond with exactly one tool call."
+                    };
+                    messages.push(ChatMessage::assistant(outcome.text));
+                    messages.push(ChatMessage::user(correction));
                     continue;
                 }
-                if dialect.has_unclosed_call(&text) {
-                    messages.push(ChatMessage::assistant(text));
-                    messages.push(ChatMessage::user(format!(
-                        "Your tool call was cut off before the closing {} tag. Re-issue the complete call -- if it was long, make it more concise.",
-                        dialect.closing_tag()
-                    )));
-                    continue;
-                }
-                return Ok(text);
+                // Allow/Forbid: a plain-text reply is the final answer.
+                return Ok(outcome.text);
             }
-            LoopStep::ToolCall(call) => {
-                let tool_call_id = uuid::Uuid::now_v7().to_string();
-                let tool_name = call.name.clone();
-                let arguments = call.arguments.clone();
-                messages.push(ChatMessage::tool_use(
-                    tool_call_id.clone(),
-                    tool_name.clone(),
-                    arguments.clone(),
-                ));
-                let execution = if call.name == "Task" && context.is_subagent {
-                    // FR-016: one-level nesting — a subagent cannot itself
-                    // spawn a further subagent. Fed back as an ordinary
-                    // tool-error result rather than aborting the loop, so
-                    // the model can recover (e.g. do the work itself).
-                    ToolExecution::Result(
-                        "Error: subagents cannot spawn further subagents (one-level nesting limit)"
-                            .to_string(),
-                    )
-                } else {
-                    backend.execute_tool(tool_call_id.clone(), call).await
+        };
+
+        let tool_call_id = uuid::Uuid::now_v7().to_string();
+        let tool_name = call.name.clone();
+        let arguments = call.arguments.clone();
+        messages.push(ChatMessage::tool_use(
+            tool_call_id.clone(),
+            tool_name.clone(),
+            arguments.clone(),
+        ));
+        let execution = if call.name == "Task" && context.is_subagent {
+            // FR-016: one-level nesting — a subagent cannot itself
+            // spawn a further subagent. Fed back as an ordinary
+            // tool-error result rather than aborting the loop, so
+            // the model can recover (e.g. do the work itself).
+            ToolExecution::Result(
+                "Error: subagents cannot spawn further subagents (one-level nesting limit)"
+                    .to_string(),
+            )
+        } else {
+            backend.execute_tool(tool_call_id.clone(), call).await
+        };
+        match execution {
+            ToolExecution::Finish(answer) => return Ok(answer),
+            ToolExecution::Result(mut result) => {
+                let call_now = ToolCall {
+                    name: tool_name.clone(),
+                    arguments,
                 };
-                match execution {
-                    ToolExecution::Finish(answer) => return Ok(answer),
-                    ToolExecution::Result(mut result) => {
-                        let call_now = ToolCall {
-                            name: tool_name.clone(),
-                            arguments,
-                        };
-                        futile_streak = match &last_exchange {
-                            Some((prev_call, prev_result))
-                                if *prev_call == call_now && *prev_result == result =>
-                            {
-                                futile_streak + 1
-                            }
-                            _ => 1,
-                        };
-                        last_exchange = Some((call_now, result.clone()));
-                        if futile_streak >= 3 {
-                            result.push_str(&format!(
-                                "\n\nNote: this exact call has now returned this exact result {futile_streak} times in a row. Repeating it changes nothing -- act on this result, or take a different action."
-                            ));
-                        }
-                        messages.push(ChatMessage::tool_result(tool_call_id, tool_name, result));
+                futile_streak = match &last_exchange {
+                    Some((prev_call, prev_result))
+                        if *prev_call == call_now && *prev_result == result =>
+                    {
+                        futile_streak + 1
                     }
+                    _ => 1,
+                };
+                last_exchange = Some((call_now, result.clone()));
+                if futile_streak >= 3 {
+                    result.push_str(&format!(
+                        "\n\nNote: this exact call has now returned this exact result {futile_streak} times in a row. Repeating it changes nothing -- act on this result, or take a different action."
+                    ));
                 }
+                messages.push(ChatMessage::tool_result(tool_call_id, tool_name, result));
             }
         }
     }
@@ -388,6 +453,33 @@ pub async fn run_loop<B: AgentBackend>(
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// Adapts a canned model STRING into the structured `TurnOutcome` the
+    /// backend contract now returns, by running the same `parse_response`
+    /// the pre-cutover loop used — so string-scripted test backends
+    /// (`FakeBackend`, `RepeatBackend`) keep expressing their intent as
+    /// Hermes `<tool_call>` text without a semantic rewrite. Mirrors the
+    /// benchmark backends' adaptation in `tests/agent_tasks.rs`.
+    fn outcome_from_string(s: &str) -> TurnOutcome {
+        match parse_response(s, crate::inference::ToolDialect::HermesJson) {
+            LoopStep::ToolCall(tc) => TurnOutcome {
+                tool_call: Some((tc.name, tc.arguments)),
+                text: String::new(),
+                reasoning: String::new(),
+                finish_reason: "tool_calls".to_string(),
+                usage: None,
+                error: None,
+            },
+            LoopStep::Done(text) => TurnOutcome {
+                tool_call: None,
+                text,
+                reasoning: String::new(),
+                finish_reason: "stop".to_string(),
+                usage: None,
+                error: None,
+            },
+        }
+    }
 
     /// Test-only `AgentBackend`: `responses` is a canned reply sequence
     /// (repeating the last entry once exhausted, so a test that keeps
@@ -429,10 +521,61 @@ mod tests {
             panic!("compact should never run in this test")
         }
 
-        async fn generate(&mut self, _messages: Vec<ChatMessage>) -> String {
+        // These tool-dispatch/nesting flow tests end on a plain-text final
+        // answer (Allow semantics), so a no-tool-call turn is `Done`, not a
+        // Require-mode invariant violation. The Require-mode invariant is
+        // covered by `ScriptedBackend`'s tests below.
+        fn requires_tool_call(&self) -> bool {
+            false
+        }
+
+        async fn generate(&mut self, _messages: Vec<ChatMessage>) -> TurnOutcome {
             let response = self.responses[self.call_index.min(self.responses.len() - 1)].clone();
             self.call_index += 1;
-            response
+            outcome_from_string(&response)
+        }
+
+        async fn execute_tool(&mut self, tool_call_id: String, call: ToolCall) -> ToolExecution {
+            (self.on_execute)(tool_call_id, call)
+        }
+    }
+
+    /// Test-only Require-mode `AgentBackend`: returns a QUEUE of pre-built
+    /// `TurnOutcome`s (repeating the last once exhausted), tracks how many
+    /// times `generate` was called, and records the last user-role message
+    /// text it saw — so a test can assert the loop RETRIED (>1 generate call)
+    /// and which correction it fed back. `requires_tool_call` defaults to
+    /// `true`, exercising the production plan-loop semantics.
+    struct ScriptedBackend {
+        outcomes: Vec<TurnOutcome>,
+        call_index: usize,
+        generate_calls: u32,
+        last_user_text: Option<String>,
+        on_execute: Box<dyn FnMut(String, ToolCall) -> ToolExecution>,
+    }
+
+    impl AgentBackend for ScriptedBackend {
+        fn measure(&mut self, _messages: &[ChatMessage]) -> u32 {
+            0
+        }
+
+        fn threshold(&self) -> u32 {
+            u32::MAX
+        }
+
+        fn compact(&mut self, _messages: &[ChatMessage]) -> Vec<ChatMessage> {
+            panic!("compact should never run in this test")
+        }
+
+        async fn generate(&mut self, messages: Vec<ChatMessage>) -> TurnOutcome {
+            self.generate_calls += 1;
+            self.last_user_text = messages.iter().rev().find_map(|m| match &m.content {
+                crate::inference::MessageContent::Text(t) if m.role == "user" => Some(t.clone()),
+                _ => None,
+            });
+            let outcome = self.outcomes[self.call_index.min(self.outcomes.len() - 1)].clone();
+            self.call_index += 1;
+            outcome
         }
 
         async fn execute_tool(&mut self, tool_call_id: String, call: ToolCall) -> ToolExecution {
@@ -460,7 +603,7 @@ mod tests {
             fn compact(&mut self, _messages: &[ChatMessage]) -> Vec<ChatMessage> {
                 panic!("compact should never run in this test")
             }
-            async fn generate(&mut self, messages: Vec<ChatMessage>) -> String {
+            async fn generate(&mut self, messages: Vec<ChatMessage>) -> TurnOutcome {
                 if let Some(content) = messages.iter().rev().find_map(|m| match &m.content {
                     crate::inference::MessageContent::ToolResult { content, .. } => {
                         Some(content.clone())
@@ -469,8 +612,9 @@ mod tests {
                 }) {
                     self.last_result_seen = Some(content);
                 }
-                "<tool_call>\n{\"name\": \"Grep\", \"arguments\": {\"pattern\": \"x\"}}\n</tool_call>"
-                    .to_string()
+                outcome_from_string(
+                    "<tool_call>\n{\"name\": \"Grep\", \"arguments\": {\"pattern\": \"x\"}}\n</tool_call>",
+                )
             }
             async fn execute_tool(
                 &mut self,
@@ -635,39 +779,172 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_truncated_tool_call_gets_a_correction_turn_instead_of_becoming_the_final_answer() {
-        // The grammar guarantees a STARTED tool call is well-formed to its
-        // closing tag -- the one hole is the max-token cap cutting
-        // generation off mid-call. Observed for real: a 20-step CreatePlan
-        // truncated mid-JSON silently became the whole turn's "final
-        // answer" (benchmark scored 0/20 at turn 2). The loop must feed a
-        // correction back instead.
+    async fn a_required_turn_with_no_tool_call_retries_instead_of_becoming_the_final_answer() {
+        // THE HEART of the cutover invariant: under Require (the production
+        // plan loop), a successful generate that produced NO tool call is an
+        // invariant violation -- the model was required to call a tool and
+        // didn't. It must NEVER masquerade as a finished task (the exact
+        // "ended the task as garbage" failure the old grammar prevented).
+        // The loop feeds a correction and RETRIES; the only legitimate finish
+        // is a later FinishTask tool call.
         let context = AgentContext::top_level();
-        let executed = std::sync::Arc::new(AtomicU32::new(0));
-        let executed_clone = executed.clone();
-        let mut backend = FakeBackend::new(
-            vec![
-                "<tool_call>\n{\"name\": \"Read\", \"arguments\": {\"file_p".to_string(),
-                "<tool_call>\n{\"name\": \"Read\", \"arguments\": {\"file_path\": \"/f.txt\"}}\n</tool_call>"
-                    .to_string(),
-                "Recovered and done.".to_string(),
+        let mut backend = ScriptedBackend {
+            outcomes: vec![
+                // A "stop"-finish turn with free text but no tool call.
+                TurnOutcome {
+                    tool_call: None,
+                    text: "here is my final answer".to_string(),
+                    reasoning: String::new(),
+                    finish_reason: "stop".to_string(),
+                    usage: None,
+                    error: None,
+                },
+                // A later turn finally calls FinishTask -- the ONLY way a
+                // Require-mode loop ends with a final answer.
+                TurnOutcome {
+                    tool_call: Some((
+                        "FinishTask".to_string(),
+                        serde_json::json!({"answer": "verified done"}),
+                    )),
+                    text: String::new(),
+                    reasoning: String::new(),
+                    finish_reason: "tool_calls".to_string(),
+                    usage: None,
+                    error: None,
+                },
             ],
-            move |_tool_call_id, call| {
-                assert_eq!(call.name, "Read");
-                executed_clone.fetch_add(1, Ordering::SeqCst);
-                ToolExecution::Result("hello".to_string())
-            },
-        );
+            call_index: 0,
+            generate_calls: 0,
+            last_user_text: None,
+            on_execute: Box::new(|_tool_call_id, call| {
+                assert_eq!(call.name, "FinishTask");
+                ToolExecution::Finish("verified done".to_string())
+            }),
+        };
 
         let result = run_loop(&context, vec![ChatMessage::user("start")], &mut backend)
             .await
             .unwrap();
 
-        assert_eq!(result, "Recovered and done.");
+        assert_eq!(result, "verified done");
+        assert!(
+            backend.generate_calls > 1,
+            "the empty required turn must RETRY, not finish -- expected >1 generate call, got {}",
+            backend.generate_calls
+        );
         assert_eq!(
-            executed.load(Ordering::SeqCst),
-            1,
-            "the re-issued call must actually execute"
+            backend.last_user_text.as_deref(),
+            Some("You must respond with exactly one tool call."),
+            "a non-length no-tool-call turn must get the generic 'exactly one tool call' correction"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_length_finish_with_no_tool_call_triggers_the_brief_recovery_retry() {
+        // The re-homed truncated-generation recovery: under Require, a turn
+        // that stopped for `finish_reason == "length"` (spent its whole token
+        // budget, typically inside <think>) before emitting a call gets the
+        // "keep your thinking brief" correction and retries -- NOT the generic
+        // one, and never a finished task. Observed for real: a 20-step
+        // CreatePlan cut off mid-JSON, and a MiniCPM zero-length reply.
+        let context = AgentContext::top_level();
+        let mut backend = ScriptedBackend {
+            outcomes: vec![
+                TurnOutcome {
+                    tool_call: None,
+                    text: String::new(),
+                    reasoning: String::new(),
+                    finish_reason: "length".to_string(),
+                    usage: None,
+                    error: None,
+                },
+                TurnOutcome {
+                    tool_call: Some((
+                        "FinishTask".to_string(),
+                        serde_json::json!({"answer": "recovered"}),
+                    )),
+                    text: String::new(),
+                    reasoning: String::new(),
+                    finish_reason: "tool_calls".to_string(),
+                    usage: None,
+                    error: None,
+                },
+            ],
+            call_index: 0,
+            generate_calls: 0,
+            last_user_text: None,
+            on_execute: Box::new(|_tool_call_id, _call| {
+                ToolExecution::Finish("recovered".to_string())
+            }),
+        };
+
+        let result = run_loop(&context, vec![ChatMessage::user("start")], &mut backend)
+            .await
+            .unwrap();
+
+        assert_eq!(result, "recovered");
+        assert!(
+            backend.generate_calls > 1,
+            "a length-truncated required turn must RETRY, not finish"
+        );
+        assert!(
+            backend
+                .last_user_text
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Keep your thinking brief"),
+            "a length-finish no-tool-call turn must get the brief-recovery correction, got: {:?}",
+            backend.last_user_text
+        );
+    }
+
+    #[tokio::test]
+    async fn a_transport_error_terminates_the_turn_and_never_retries() {
+        // CORRECTNESS: because a no-tool-call Require turn now retries, a HARD
+        // transport/server error must NOT become an infinite retry -- it
+        // terminates the turn surfacing its text as the final answer, exactly
+        // the pre-cutover behavior where "Error: inference failed: {e}" became
+        // the returned string. The FinishTask outcome that follows must never
+        // be reached.
+        let context = AgentContext::top_level();
+        let mut backend = ScriptedBackend {
+            outcomes: vec![
+                TurnOutcome {
+                    tool_call: None,
+                    text: String::new(),
+                    reasoning: String::new(),
+                    finish_reason: String::new(),
+                    usage: None,
+                    error: Some("Error: inference failed: connection refused".to_string()),
+                },
+                TurnOutcome {
+                    tool_call: Some((
+                        "FinishTask".to_string(),
+                        serde_json::json!({"answer": "should never run"}),
+                    )),
+                    text: String::new(),
+                    reasoning: String::new(),
+                    finish_reason: "tool_calls".to_string(),
+                    usage: None,
+                    error: None,
+                },
+            ],
+            call_index: 0,
+            generate_calls: 0,
+            last_user_text: None,
+            on_execute: Box::new(|_tool_call_id, _call| {
+                panic!("a transport error must terminate before any tool executes")
+            }),
+        };
+
+        let result = run_loop(&context, vec![ChatMessage::user("start")], &mut backend)
+            .await
+            .unwrap();
+
+        assert_eq!(result, "Error: inference failed: connection refused");
+        assert_eq!(
+            backend.generate_calls, 1,
+            "a transport error must NOT retry -- exactly one generate call"
         );
     }
 
