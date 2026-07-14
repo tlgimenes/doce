@@ -91,12 +91,25 @@ pub struct TurnOutcome {
     /// pre-cutover behavior where `"Error: inference failed: {e}"` became the
     /// final string.
     pub error: Option<String>,
+    /// The turn was cancelled (`chat` returned `InferenceError::Cancelled`
+    /// because its `CancellationToken` fired). Distinct from `error`: a
+    /// cancelled turn is an INTENTIONAL user-requested stop, not a fault —
+    /// run_loop halts the loop with `AgentError::Cancelled` (no retry,
+    /// nothing persisted as an answer), rather than surfacing an "Error:"
+    /// banner or a garbage final string.
+    pub cancelled: bool,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum AgentError {
     #[error("agent loop exceeded its {0}-turn cap without producing a final answer")]
     TurnCapExceeded(u32),
+    /// The turn was stopped by a `CancellationToken` (the `stop_generation`
+    /// command). An intentional halt, NOT a failure: `send_agent_message`
+    /// finalizes it quietly (no persisted answer, no error banner) and the
+    /// `Task`-tool subagent path folds it into a benign stopped tool result.
+    #[error("agent loop cancelled")]
+    Cancelled,
 }
 
 /// The convention the model is prompted to follow — Qwen's own trained
@@ -365,6 +378,18 @@ pub async fn run_loop<B: AgentBackend>(
             return Ok(error);
         }
 
+        // Graceful cancellation: the turn was stopped mid-flight (the
+        // `stop_generation` command fired this turn's `CancellationToken`).
+        // This is an INTENTIONAL halt, not a fault — stop the loop AT ONCE
+        // with a distinct error the caller finalizes quietly: no retry, no
+        // further `generate` call, nothing persisted as an answer. Checked
+        // right after the transport-error terminator and before the
+        // tool_call match, so a cancel never masquerades as a no-tool-call
+        // retry or an ordinary final answer.
+        if outcome.cancelled {
+            return Err(AgentError::Cancelled);
+        }
+
         let call = match outcome.tool_call {
             Some((name, arguments)) => ToolCall { name, arguments },
             None => {
@@ -469,6 +494,7 @@ mod tests {
                 finish_reason: "tool_calls".to_string(),
                 usage: None,
                 error: None,
+                cancelled: false,
             },
             LoopStep::Done(text) => TurnOutcome {
                 tool_call: None,
@@ -477,6 +503,7 @@ mod tests {
                 finish_reason: "stop".to_string(),
                 usage: None,
                 error: None,
+                cancelled: false,
             },
         }
     }
@@ -798,6 +825,7 @@ mod tests {
                     finish_reason: "stop".to_string(),
                     usage: None,
                     error: None,
+                    cancelled: false,
                 },
                 // A later turn finally calls FinishTask -- the ONLY way a
                 // Require-mode loop ends with a final answer.
@@ -811,6 +839,7 @@ mod tests {
                     finish_reason: "tool_calls".to_string(),
                     usage: None,
                     error: None,
+                    cancelled: false,
                 },
             ],
             call_index: 0,
@@ -857,6 +886,7 @@ mod tests {
                     finish_reason: "length".to_string(),
                     usage: None,
                     error: None,
+                    cancelled: false,
                 },
                 TurnOutcome {
                     tool_call: Some((
@@ -868,6 +898,7 @@ mod tests {
                     finish_reason: "tool_calls".to_string(),
                     usage: None,
                     error: None,
+                    cancelled: false,
                 },
             ],
             call_index: 0,
@@ -916,6 +947,7 @@ mod tests {
                     finish_reason: String::new(),
                     usage: None,
                     error: Some("Error: inference failed: connection refused".to_string()),
+                    cancelled: false,
                 },
                 TurnOutcome {
                     tool_call: Some((
@@ -927,6 +959,7 @@ mod tests {
                     finish_reason: "tool_calls".to_string(),
                     usage: None,
                     error: None,
+                    cancelled: false,
                 },
             ],
             call_index: 0,
@@ -945,6 +978,56 @@ mod tests {
         assert_eq!(
             backend.generate_calls, 1,
             "a transport error must NOT retry -- exactly one generate call"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_turn_halts_the_loop_at_once_without_a_further_generate() {
+        // Graceful cancellation (Task 4.2a): a turn whose `chat` was stopped
+        // by its `CancellationToken` comes back `cancelled: true`. run_loop
+        // must halt IMMEDIATELY with `AgentError::Cancelled` -- no retry, no
+        // second `generate`, no tool execution -- so the caller can finalize
+        // the stop quietly rather than surfacing an error or a garbage answer.
+        let context = AgentContext::top_level();
+        let mut backend = ScriptedBackend {
+            outcomes: vec![
+                TurnOutcome {
+                    tool_call: None,
+                    text: String::new(),
+                    reasoning: String::new(),
+                    finish_reason: String::new(),
+                    usage: None,
+                    error: None,
+                    cancelled: true,
+                },
+                // Must never be reached: a cancel stops the loop at once.
+                TurnOutcome {
+                    tool_call: Some((
+                        "FinishTask".to_string(),
+                        serde_json::json!({"answer": "should never run"}),
+                    )),
+                    text: String::new(),
+                    reasoning: String::new(),
+                    finish_reason: "tool_calls".to_string(),
+                    usage: None,
+                    error: None,
+                    cancelled: false,
+                },
+            ],
+            call_index: 0,
+            generate_calls: 0,
+            last_user_text: None,
+            on_execute: Box::new(|_tool_call_id, _call| {
+                panic!("a cancelled turn must halt before any tool executes")
+            }),
+        };
+
+        let result = run_loop(&context, vec![ChatMessage::user("start")], &mut backend).await;
+
+        assert_eq!(result, Err(AgentError::Cancelled));
+        assert_eq!(
+            backend.generate_calls, 1,
+            "a cancelled turn must halt at once -- exactly one generate call, no retry"
         );
     }
 

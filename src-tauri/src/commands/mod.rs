@@ -26,6 +26,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             conversations::mark_conversation_seen,
             conversations::archive_conversation,
             conversations::is_generation_active,
+            conversations::stop_generation,
             context::get_context_usage,
             context::compact_conversation,
             search::search_conversations,

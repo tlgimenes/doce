@@ -3,7 +3,7 @@ use crate::inference::InferenceEngine;
 use crate::storage::DbCell;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, State};
 use tokio::sync::Mutex as AsyncMutex;
@@ -17,12 +17,14 @@ impl Default for InferenceState {
     }
 }
 
-/// Conversation ids with a turn currently running — the live signal
-/// `compute_status` uses for `in_progress` (FR-011). Populated by
-/// `send_agent_message` for the duration of each turn (RAII guard, so
-/// every early-return clears it).
+/// Conversation ids with a turn currently running, each mapped to that
+/// turn's `CancellationToken` — the live signal `compute_status` uses for
+/// `in_progress` (FR-011) AND the handle `stop_generation` fires to halt a
+/// running turn. Populated by `send_agent_message` for the duration of each
+/// turn (RAII guard, so every early-return clears the entry — normal
+/// completion just drops the token, it does NOT `.cancel()`).
 #[derive(Default)]
-pub struct ActiveGenerations(pub Mutex<HashSet<String>>);
+pub struct ActiveGenerations(pub Mutex<HashMap<String, tokio_util::sync::CancellationToken>>);
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -199,7 +201,16 @@ pub async fn list_conversations(
     workspace_id: Option<String>,
 ) -> Result<Vec<Conversation>, String> {
     let conn = db_cell.get(&app).await?;
-    let active = active_generations.0.lock().unwrap().clone();
+    // `compute_status` only needs the SET of in-progress ids, not their
+    // tokens — project the map's keys into the `HashSet<String>` its
+    // signature (unchanged) still takes.
+    let active = active_generations
+        .0
+        .lock()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect::<HashSet<_>>();
     conn.call(
         move |conn: &mut Connection| -> rusqlite::Result<Vec<Conversation>> {
             list_conversations_in_conn(conn, workspace_id.as_deref(), &active)
@@ -330,7 +341,24 @@ pub fn is_generation_active(
         .0
         .lock()
         .unwrap()
-        .contains(&conversation_id)
+        .contains_key(&conversation_id)
+}
+
+/// Stops a running agent turn: fires the `CancellationToken` this
+/// conversation's in-flight generation is threaded onto, so
+/// `LlamaServerClient::chat` returns `InferenceError::Cancelled`, the loop
+/// halts with `AgentError::Cancelled`, and `send_agent_message` finalizes
+/// the turn quietly (no persisted answer, no error banner). The entry is
+/// deliberately left in the map — `send_agent_message`'s
+/// `ActiveGenerationGuard` removes it when the turn unwinds — so a token
+/// fired here is the SAME one the still-running turn holds. Cancelling an
+/// unknown or already-finished id is a harmless no-op (nothing to fire).
+#[tauri::command]
+#[specta::specta]
+pub fn stop_generation(active_generations: State<'_, ActiveGenerations>, conversation_id: String) {
+    if let Some(token) = active_generations.0.lock().unwrap().get(&conversation_id) {
+        token.cancel();
+    }
 }
 
 #[cfg(test)]

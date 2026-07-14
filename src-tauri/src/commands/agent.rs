@@ -1,6 +1,8 @@
 use crate::agent::rich_content::{expand_segments, RichMessageContent};
 use crate::agent::tools::ask_user::{PendingQuestions, QuestionOption};
-use crate::agent::{dispatch, run_loop, subagent, AgentContext, ToolCall, ToolExecution};
+use crate::agent::{
+    dispatch, run_loop, subagent, AgentContext, AgentError, ToolCall, ToolExecution,
+};
 use crate::commands::conversations::{ActiveGenerations, InferenceState};
 use crate::commands::models::now_ms;
 use crate::inference::{ChatMessage, InferenceEngine};
@@ -40,7 +42,24 @@ fn chat_result_to_turn_outcome(
             finish_reason: outcome.finish_reason,
             usage: outcome.usage,
             error: None,
+            cancelled: false,
         },
+        // A cancelled turn is an INTENTIONAL stop, not a transport fault: the
+        // `stop_generation` command fired this turn's `CancellationToken`, so
+        // `chat` returned `Cancelled`. Surface it as `cancelled: true` (NOT
+        // `error`) so run_loop halts with `AgentError::Cancelled` and the turn
+        // finalizes quietly — no "Error:" banner, no garbage answer persisted.
+        Err(crate::inference::InferenceError::Cancelled) => crate::agent::TurnOutcome {
+            tool_call: None,
+            text: String::new(),
+            reasoning: String::new(),
+            finish_reason: String::new(),
+            usage: None,
+            error: None,
+            cancelled: true,
+        },
+        // A REAL transport/server fault (`Backend`, `ModelLoad`) still
+        // terminates the turn surfacing its text as the final answer.
         Err(e) => {
             let msg = format!("Error: inference failed: {e}");
             crate::agent::TurnOutcome {
@@ -50,6 +69,7 @@ fn chat_result_to_turn_outcome(
                 finish_reason: String::new(),
                 usage: None,
                 error: Some(msg),
+                cancelled: false,
             }
         }
     }
@@ -617,6 +637,12 @@ struct RealBackend<'a> {
     /// concern, so the per-turn in-process `PromptSession` this backend used
     /// to hold — to feed the old `session.generate` — is gone.)
     base_url: String,
+    /// This turn's cancellation handle, threaded down from
+    /// `send_agent_message` (which registered the same token in
+    /// `ActiveGenerations` so `stop_generation` can fire it). Passed to every
+    /// `chat` call; cloned into any subagent this turn spawns so stopping the
+    /// parent stops an in-flight subagent too.
+    cancel: tokio_util::sync::CancellationToken,
     conn: &'a tokio_rusqlite::Connection,
     conversation_id: &'a str,
     app: &'a AppHandle,
@@ -716,9 +742,9 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
         // `ChatOutcome`, never from these pieces.
         let app = self.app;
         let conversation_id = self.conversation_id;
-        // Task 4.1 passes a fresh never-cancelled token; real cancellation
-        // wiring is Task 4.2.
-        let cancel = tokio_util::sync::CancellationToken::new();
+        // This turn's real cancellation handle (Task 4.2a): the SAME token
+        // `send_agent_message` registered in `ActiveGenerations`, so a
+        // `stop_generation` call fires it and cuts this `chat` short.
         let result = crate::inference::http::LlamaServerClient::new(self.base_url.clone())
             .chat(
                 req,
@@ -731,7 +757,7 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
                         },
                     );
                 },
-                &cancel,
+                &self.cancel,
             )
             .await;
         chat_result_to_turn_outcome(result)
@@ -783,6 +809,7 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
                 self.app,
                 self.pending,
                 &self.base_url,
+                &self.cancel,
             )
             .await,
         )
@@ -810,6 +837,12 @@ struct SubagentBackend<'a> {
     /// resolve it from). Generation goes through the same
     /// `LlamaServerClient::chat` path as the top-level loop.
     base_url: String,
+    /// The PARENT turn's cancellation handle, cloned down from
+    /// `RealBackend::cancel` — so a `stop_generation` on the parent
+    /// conversation also cuts short an in-flight subagent's `chat`. Once
+    /// fired, the subagent's loop halts with `AgentError::Cancelled`, which
+    /// `execute_top_level_tool` folds into a benign stopped tool result.
+    cancel: tokio_util::sync::CancellationToken,
 }
 
 impl crate::agent::AgentBackend for SubagentBackend<'_> {
@@ -858,10 +891,11 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
         );
         // FR-015 isolation: the subagent's own transcript isn't rendered by
         // any current view, so there's no live ticker to feed -- `on_piece`
-        // is a no-op, same as the pre-cutover `|_piece| {}`.
-        let cancel = tokio_util::sync::CancellationToken::new();
+        // is a no-op, same as the pre-cutover `|_piece| {}`. Cancellation
+        // rides the PARENT turn's token (Task 4.2a): stopping the parent
+        // stops an in-flight subagent too.
         let result = crate::inference::http::LlamaServerClient::new(self.base_url.clone())
-            .chat(req, |_piece| {}, &cancel)
+            .chat(req, |_piece| {}, &self.cancel)
             .await;
         chat_result_to_turn_outcome(result)
     }
@@ -990,6 +1024,7 @@ async fn execute_top_level_tool(
     app: &AppHandle,
     pending: &PendingQuestions,
     base_url: &str,
+    cancel: &tokio_util::sync::CancellationToken,
 ) -> String {
     // Resolved once, reused for every persist call this function makes
     // (including the subagent's own final-answer row below, which lives
@@ -1165,12 +1200,21 @@ async fn execute_top_level_tool(
         // as its parent — threaded down from `RealBackend`, which resolved it
         // before the top-level loop started.
         base_url: base_url.to_string(),
+        // Share the parent turn's cancellation token so stopping the parent
+        // stops this subagent's in-flight generation too (Task 4.2a).
+        cancel: cancel.clone(),
     };
     let sub_started_at = now_ms();
     let sub_result = run_loop(&sub_context, sub_messages, &mut sub_backend).await;
 
     let sub_final = match sub_result {
         Ok(text) => text,
+        // A stopped subagent (the parent's `stop_generation` fired the shared
+        // token) is a benign halt, not a failure — hand back a neutral
+        // stopped result rather than an "Error:" line. The parent's next
+        // `generate` uses that same now-cancelled token and comes back
+        // `cancelled: true`, so the parent halts on its own next iteration.
+        Err(AgentError::Cancelled) => "(subagent stopped)".to_string(),
         Err(e) => format!("Error: {e}"),
     };
 
@@ -1705,11 +1749,18 @@ pub async fn send_agent_message(
     // An RAII guard (not a manual remove-before-every-`?`) covers every
     // early-return between here and the end, including ones this function
     // already had before this feature touched it.
+    // Task 4.2a: this turn's real cancellation handle. Registered in
+    // `ActiveGenerations` (keyed by conversation) so `stop_generation` can
+    // fire it, and threaded into `RealBackend` (and, via it, any subagent)
+    // so a firing cuts the in-flight `chat` short. The RAII guard below
+    // removes the map entry on every exit path — normal completion just
+    // drops the token, it never calls `.cancel()`.
+    let cancel = tokio_util::sync::CancellationToken::new();
     active_generations
         .0
         .lock()
         .unwrap()
-        .insert(conversation_id.clone());
+        .insert(conversation_id.clone(), cancel.clone());
     let _active_guard = ActiveGenerationGuard {
         active_generations: &active_generations,
         conversation_id: conversation_id.clone(),
@@ -1877,6 +1928,7 @@ pub async fn send_agent_message(
     let mut backend = RealBackend {
         engine,
         base_url,
+        cancel: cancel.clone(),
         conn: &conn,
         conversation_id: &conversation_id,
         app: &app,
@@ -1899,6 +1951,16 @@ pub async fn send_agent_message(
 
     let final_text = match result {
         Ok(text) => text,
+        // Graceful cancellation (Task 4.2a): a stopped turn is an INTENTIONAL
+        // halt, not a failure. Return early — before persisting any assistant
+        // text — so nothing garbage lands in the transcript. The RAII guards
+        // (`_active_guard`, `_plan_guard`) clear this conversation's
+        // `ActiveGenerations`/`ActivePlans` entries on this return, and
+        // returning `Ok` (not `Err`) means the frontend's own `catch` never
+        // paints an "Error:" banner for a user's own stop. The ephemeral
+        // generation ticker clears at the next turn boundary on the frontend
+        // (its stop-button reaction is Task 4.2b).
+        Err(AgentError::Cancelled) => return Ok(String::new()),
         Err(e) => format!("Error: {e}"),
     };
 
@@ -1978,6 +2040,35 @@ pub async fn answer_user_question(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancelled_chat_result_maps_to_a_quiet_cancelled_outcome_not_an_error() {
+        // Task 4.2a graceful-cancel contract: a `chat` cut short by its token
+        // is an INTENTIONAL stop, so it must map to `cancelled: true` with NO
+        // `error` — run_loop halts quietly on this, rather than surfacing an
+        // "Error:" banner or persisting a garbage answer.
+        let outcome = chat_result_to_turn_outcome(Err(crate::inference::InferenceError::Cancelled));
+        assert!(outcome.cancelled, "a cancelled chat must set cancelled");
+        assert_eq!(outcome.error, None, "a cancel is NOT a transport error");
+        assert_eq!(outcome.tool_call, None);
+        assert!(outcome.text.is_empty());
+    }
+
+    #[test]
+    fn a_backend_fault_stays_an_error_not_a_cancellation() {
+        // Guards the intentional-stop vs. real-fault distinction: a `Backend`
+        // transport fault must still surface via `error` (terminating the turn
+        // with a final answer) and must NOT be mistaken for a cancellation.
+        let outcome = chat_result_to_turn_outcome(Err(crate::inference::InferenceError::Backend(
+            "boom".to_string(),
+        )));
+        assert!(!outcome.cancelled, "a backend fault is not a cancellation");
+        assert!(
+            outcome.error.as_deref().is_some_and(|e| e.contains("boom")),
+            "a backend fault must surface its message via `error`, got: {:?}",
+            outcome.error
+        );
+    }
 
     #[test]
     fn plan_system_message_appends_the_cwd_line_when_known() {
@@ -2747,6 +2838,8 @@ mod tests {
             // This test only drives `execute_tool` (never `generate`), so no
             // server is contacted — a dummy base_url just satisfies the field.
             base_url: String::new(),
+            // Likewise never fired: `execute_tool` doesn't touch `cancel`.
+            cancel: tokio_util::sync::CancellationToken::new(),
         };
         use crate::agent::AgentBackend;
         let call = crate::agent::ToolCall {
@@ -2782,6 +2875,8 @@ mod tests {
             // Drives only `execute_tool`, never `generate` — see the sibling
             // test above; a dummy base_url satisfies the field.
             base_url: String::new(),
+            // Never fired: `execute_tool` doesn't touch `cancel`.
+            cancel: tokio_util::sync::CancellationToken::new(),
         };
         use crate::agent::AgentBackend;
 

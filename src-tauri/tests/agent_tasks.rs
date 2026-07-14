@@ -69,6 +69,7 @@ fn engine_generation_to_turn_outcome(
             finish_reason: "tool_calls".to_string(),
             usage: None,
             error: None,
+            cancelled: false,
         },
         doce_lib::agent::LoopStep::Done(text) => doce_lib::agent::TurnOutcome {
             tool_call: None,
@@ -77,6 +78,7 @@ fn engine_generation_to_turn_outcome(
             finish_reason: "stop".to_string(),
             usage: None,
             error: None,
+            cancelled: false,
         },
     }
 }
