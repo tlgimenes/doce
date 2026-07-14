@@ -277,6 +277,200 @@ impl ChatRequest {
     }
 }
 
+/// One decoded piece of a streaming `/v1/chat/completions` response —
+/// `parse_sse_line`'s output unit. `ToolCallFragment::args` is always a
+/// STRING fragment: llama-server normally streams `function.arguments` as
+/// string chunks to be concatenated by `index` (see `ToolCallAccum`), but
+/// some server builds send a fully-parsed JSON OBJECT instead — that
+/// tolerance is resolved in `parse_sse_line` itself, by re-serializing the
+/// object back to a string, so every downstream consumer of `ChatChunk`
+/// only ever has one shape to handle.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChatChunk {
+    Content(String),
+    Reasoning(String),
+    ToolCallFragment {
+        index: u32,
+        id: Option<String>,
+        name: Option<String>,
+        args: String,
+    },
+    Usage {
+        prompt: u32,
+        completion: u32,
+    },
+    Done,
+}
+
+/// Parses one line of an SSE stream from llama-server's
+/// `/v1/chat/completions` endpoint into zero or more `ChatChunk`s.
+/// Tolerant by design — this is fed straight from the wire, one line per
+/// call, so it never panics: a line that isn't an `data:` event (blank
+/// lines, SSE comments/keepalives, any other non-`data:` line) or whose
+/// JSON payload fails to parse both return `None`, and the caller's job is
+/// simply to skip the line and keep reading, not to treat it as a stream
+/// error.
+///
+/// `data: [DONE]` — llama-server's (and every OpenAI-compatible server's)
+/// sentinel for stream end — maps to `Some(vec![ChatChunk::Done])` rather
+/// than going through JSON parsing at all, since `[DONE]` is deliberately
+/// not valid JSON.
+///
+/// A single line CAN legitimately map to more than one chunk (e.g. a
+/// content delta alongside a reasoning delta, or several `tool_calls[]`
+/// entries in one event), hence `Vec` rather than a single `ChatChunk`; an
+/// empty `Vec` never escapes this function — a chunk that decodes to
+/// nothing collapses to `None`, keeping "skip this line" a single check at
+/// every call site instead of two.
+pub fn parse_sse_line(line: &str) -> Option<Vec<ChatChunk>> {
+    let data = line
+        .strip_prefix("data: ")
+        .or_else(|| line.strip_prefix("data:"))?
+        .trim();
+    if data.is_empty() {
+        return None;
+    }
+    if data == "[DONE]" {
+        return Some(vec![ChatChunk::Done]);
+    }
+
+    let v: Value = serde_json::from_str(data).ok()?;
+    let mut chunks = Vec::new();
+
+    if let Some(delta) = v
+        .get("choices")
+        .and_then(|c| c.as_array())
+        .and_then(|a| a.first())
+        .and_then(|choice| choice.get("delta"))
+    {
+        if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
+            chunks.push(ChatChunk::Content(content.to_string()));
+        }
+        if let Some(reasoning) = delta.get("reasoning_content").and_then(|c| c.as_str()) {
+            chunks.push(ChatChunk::Reasoning(reasoning.to_string()));
+        }
+        if let Some(tool_calls) = delta.get("tool_calls").and_then(|t| t.as_array()) {
+            for tc in tool_calls {
+                let index = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as u32;
+                let id = tc.get("id").and_then(|i| i.as_str()).map(|s| s.to_string());
+                let function = tc.get("function");
+                let name = function
+                    .and_then(|f| f.get("name"))
+                    .and_then(|n| n.as_str())
+                    .map(|s| s.to_string());
+                // Tolerance rule: `arguments` is normally a JSON-encoded
+                // string fragment, but some server builds send a
+                // fully-parsed object instead — re-serialize it to a
+                // string here so `ChatChunk::ToolCallFragment::args` is
+                // always the same shape downstream.
+                let args = function
+                    .and_then(|f| f.get("arguments"))
+                    .map(|a| match a {
+                        Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    })
+                    .unwrap_or_default();
+                chunks.push(ChatChunk::ToolCallFragment {
+                    index,
+                    id,
+                    name,
+                    args,
+                });
+            }
+        }
+    }
+
+    // The final usage chunk has empty `choices:[]`, so this is checked
+    // independently of the `choices[0].delta` block above, not as an
+    // `else`.
+    if let Some(usage) = v.get("usage").filter(|u| !u.is_null()) {
+        if let (Some(prompt), Some(completion)) = (
+            usage.get("prompt_tokens").and_then(|p| p.as_u64()),
+            usage.get("completion_tokens").and_then(|c| c.as_u64()),
+        ) {
+            chunks.push(ChatChunk::Usage {
+                prompt: prompt as u32,
+                completion: completion as u32,
+            });
+        }
+    }
+
+    if chunks.is_empty() {
+        None
+    } else {
+        Some(chunks)
+    }
+}
+
+/// Accumulates `ChatChunk::ToolCallFragment`s across a streamed response
+/// into one complete tool call, keyed by `index` — the wire sends `name`
+/// once and `arguments` as string fragments spread across many SSE events,
+/// so nothing is a usable tool call until the stream (or at least that
+/// `index`) finishes. `doce`'s requests always set `parallel_tool_calls:
+/// false` (see `ChatRequest::build`), so in practice there is only ever one
+/// index in play — `index: 0` — but fragments are still bucketed by index
+/// rather than assumed single-stream, in case a server ignores that
+/// request flag.
+#[derive(Default)]
+pub struct ToolCallAccum {
+    /// `index -> (id, name, concatenated arguments)`. `BTreeMap` (not
+    /// `HashMap`) so `finish` can deterministically pick the
+    /// lowest/first/primary index without a separate insertion-order
+    /// tracker.
+    calls: std::collections::BTreeMap<u32, (Option<String>, Option<String>, String)>,
+}
+
+impl ToolCallAccum {
+    /// Folds one chunk in. Non-`ToolCallFragment` chunks (`Content`,
+    /// `Reasoning`, `Usage`, `Done`) are silently ignored — this accumulator
+    /// only ever cares about tool-call fragments, so callers can feed it
+    /// every chunk from `parse_sse_line` unfiltered. `id`/`name` are set
+    /// once (first non-`None` wins — the wire only ever sends each once,
+    /// on the fragment that opens that index) and `args` is concatenated in
+    /// arrival order.
+    pub fn push_fragment(&mut self, chunk: ChatChunk) {
+        let ChatChunk::ToolCallFragment {
+            index,
+            id,
+            name,
+            args,
+        } = chunk
+        else {
+            return;
+        };
+        let entry = self.calls.entry(index).or_default();
+        if entry.0.is_none() {
+            entry.0 = id;
+        }
+        if entry.1.is_none() {
+            entry.1 = name;
+        }
+        entry.2.push_str(&args);
+    }
+
+    /// Resolves the first/primary tool call (the lowest accumulated index —
+    /// always `0` in practice, see the struct doc comment) into its final
+    /// `(name, arguments)` shape. The accumulated `args` string is parsed
+    /// two ways, most-expected-shape first: first as a JSON object (the
+    /// normal case — `arguments` is a JSON-encoded object), then, if that
+    /// doesn't fit (e.g. a buggy build streamed a bare scalar), as any
+    /// JSON value at all. Only if BOTH fail — a syntactically broken
+    /// string, e.g. a stream that got cut off mid-argument — is `None`
+    /// returned, so the caller treats it as a malformed tool call needing a
+    /// correction turn rather than a half-formed value. `None` also covers
+    /// the "nothing was ever accumulated" and "a name never arrived" cases
+    /// — both leave no usable tool call to return.
+    pub fn finish(self) -> Option<(String, Value)> {
+        let (_, name, args) = self.calls.into_iter().next()?.1;
+        let name = name?;
+        let value = serde_json::from_str::<serde_json::Map<String, Value>>(&args)
+            .map(Value::Object)
+            .or_else(|_| serde_json::from_str::<Value>(&args))
+            .ok()?;
+        Some((name, value))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -381,5 +575,79 @@ mod tests {
         let v = serde_json::to_value(&req).unwrap();
         assert_eq!(v["tool_choice"], "auto");
         assert_eq!(v["tools"][0]["function"]["name"], "Read");
+    }
+
+    // --- SSE stream parser (task 2.2) ---
+
+    #[test]
+    fn parses_content_and_reasoning_deltas() {
+        let l = r#"data: {"choices":[{"delta":{"content":"hel"},"index":0}]}"#;
+        assert!(matches!(&parse_sse_line(l).unwrap()[0], ChatChunk::Content(s) if s=="hel"));
+        let r = r#"data: {"choices":[{"delta":{"reasoning_content":"think"},"index":0}]}"#;
+        assert!(matches!(&parse_sse_line(r).unwrap()[0], ChatChunk::Reasoning(s) if s=="think"));
+    }
+
+    #[test]
+    fn accumulates_tool_call_fragments_by_index() {
+        let mut acc = ToolCallAccum::default();
+        acc.push_fragment(ChatChunk::ToolCallFragment {
+            index: 0,
+            id: Some("c1".into()),
+            name: Some("Read".into()),
+            args: String::new(),
+        });
+        acc.push_fragment(ChatChunk::ToolCallFragment {
+            index: 0,
+            id: None,
+            name: None,
+            args: "{\"file_path\":".into(),
+        });
+        acc.push_fragment(ChatChunk::ToolCallFragment {
+            index: 0,
+            id: None,
+            name: None,
+            args: "\"/x\"}".into(),
+        });
+        let (name, args) = acc.finish().unwrap();
+        assert_eq!(name, "Read");
+        assert_eq!(args["file_path"], "/x");
+    }
+
+    #[test]
+    fn tolerates_arguments_as_object() {
+        let l = r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"Read","arguments":{"file_path":"/x"}}}]}}]}"#;
+        let chunks = parse_sse_line(l).unwrap();
+        let mut acc = ToolCallAccum::default();
+        for c in chunks {
+            acc.push_fragment(c);
+        }
+        assert_eq!(acc.finish().unwrap().1["file_path"], "/x");
+    }
+
+    #[test]
+    fn parses_usage_tail_and_done() {
+        let u = r#"data: {"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":5}}"#;
+        assert!(matches!(
+            parse_sse_line(u).unwrap()[0],
+            ChatChunk::Usage {
+                prompt: 12,
+                completion: 5
+            }
+        ));
+        assert!(matches!(
+            parse_sse_line("data: [DONE]").unwrap()[0],
+            ChatChunk::Done
+        ));
+    }
+
+    #[test]
+    fn parse_sse_line_returns_none_for_a_blank_line() {
+        assert!(parse_sse_line("").is_none());
+        assert!(parse_sse_line("   ").is_none());
+    }
+
+    #[test]
+    fn parse_sse_line_returns_none_for_malformed_json() {
+        assert!(parse_sse_line("data: not json").is_none());
     }
 }
