@@ -1,7 +1,5 @@
-pub mod dialect;
 pub mod http;
 pub mod server;
-pub use dialect::ToolDialect;
 
 #[derive(Debug, thiserror::Error)]
 pub enum InferenceError {
@@ -193,41 +191,27 @@ impl ChatMessage {
         }
     }
 
-    /// The plain string this message renders to for the model's own
-    /// prompt — the one pure transform between the structured shape above
-    /// and what the llama-server sidecar's chat template needs (a
-    /// flat string per turn). A `ToolUse` renders in Qwen's own trained
-    /// (Hermes-style) format — `{"name": ..., "arguments": ...}` JSON
-    /// inside `<tool_call></tool_call>` tags with the same newline
-    /// placement Qwen's embedded Jinja template produces — so the model's
-    /// past actions replay in exactly the shape it was trained to emit. A
-    /// `ToolResult`'s text is wrapped in the literal `<tool_response>...
-    /// </tool_response>` tags Qwen's own chat template uses (confirmed
-    /// against its real, embedded Jinja template) -- reproduced here as
-    /// plain text rather than relying on template role-branching, since
-    /// that branch doesn't actually fire correctly against this model at
-    /// runtime (see `ChatMessage::tool_result`'s doc comment).
+    /// The flat per-message string used ONLY as this crate's chars/4 cost
+    /// proxy (`context`'s per-message token accounting / tier-1 clearing)
+    /// and in test assertions — it is NEVER sent to the model (the
+    /// llama-server sidecar's own chat template renders the wire prompt
+    /// from the structured `tools`/`messages` arrays). It renders the fixed
+    /// Hermes shape doce's single (Qwen-family) model was trained on: a
+    /// `ToolUse` as `{"name": ..., "arguments": ...}` JSON inside
+    /// `<tool_call></tool_call>` tags, and a `ToolResult`'s content wrapped
+    /// in literal `<tool_response>...</tool_response>` tags — so the cost
+    /// proxy measures a byte length representative of what the template
+    /// actually emits.
     pub fn text(&self) -> String {
-        self.text_for(ToolDialect::HermesJson)
-    }
-
-    /// Like [`Self::text`], but replaying tool exchanges in the given
-    /// dialect's trained shape (tool-dialects design) — the engine passes
-    /// its detected dialect so a MiniCPM history replays as `<function>`
-    /// XML, never Hermes JSON.
-    pub fn text_for(&self, dialect: ToolDialect) -> String {
         match &self.content {
             MessageContent::Text(s) => s.clone(),
-            MessageContent::ToolUse { name, input, .. } => dialect.render_tool_use(name, input),
-            // No "Tool result for {tool_name}:" framing -- Qwen's own
-            // convention (per its chat template) is just the raw content
-            // inside the tags, relying on tool_call/tool_result ordering
-            // (never more than one pending at a time in this loop) to
-            // establish which tool it came from, not a repeated name in
-            // the text itself. Qwen's own template actually wraps with
-            // newlines (`\n<tool_response>\n` + content + `\n</tool_response>`)
-            // but that's not preserved here -- a single-line wrap instead.
-            MessageContent::ToolResult { content, .. } => dialect.render_tool_result(content),
+            MessageContent::ToolUse { name, input, .. } => format!(
+                "<tool_call>\n{}\n</tool_call>",
+                serde_json::json!({ "name": name, "arguments": input })
+            ),
+            MessageContent::ToolResult { content, .. } => {
+                format!("<tool_response>{content}</tool_response>")
+            }
         }
     }
 }

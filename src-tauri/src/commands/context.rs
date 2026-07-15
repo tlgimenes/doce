@@ -1,6 +1,5 @@
 use crate::commands::agent::{conversation_cwd, conversation_system_message};
 use crate::context::{self, ContextUsage};
-use crate::inference::ToolDialect;
 use crate::storage::DbCell;
 use tauri::{AppHandle, Manager, State};
 
@@ -39,12 +38,8 @@ pub async fn get_context_usage(
         .app_data_dir()
         .ok()
         .map(|d| d.join("transcripts"));
-    let system_prompt = conversation_system_message(
-        cwd.as_deref(),
-        transcript_dir.as_deref(),
-        &conversation_id,
-        ToolDialect::HermesJson,
-    );
+    let system_prompt =
+        conversation_system_message(cwd.as_deref(), transcript_dir.as_deref(), &conversation_id);
 
     // FR-2: `.cloned()` to drop the lock before `compute_usage` runs.
     let observed = compaction_state
@@ -102,12 +97,8 @@ pub async fn compact_conversation(
         .ok()
         .map(|d| d.join("transcripts"));
     let cwd = conversation_cwd(&conn, &conversation_id).await?;
-    let system_prompt = conversation_system_message(
-        cwd.as_deref(),
-        transcript_dir.as_deref(),
-        &conversation_id,
-        ToolDialect::HermesJson,
-    );
+    let system_prompt =
+        conversation_system_message(cwd.as_deref(), transcript_dir.as_deref(), &conversation_id);
     context::maybe_compact(
         &conn,
         transcript_dir,

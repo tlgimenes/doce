@@ -24,16 +24,15 @@ use doce_lib::context::{self, ContextSettings};
 use doce_lib::inference::http::{
     to_openai_messages, tool_choice_for, tools_array, ChatRequest, LlamaServerClient,
 };
-use doce_lib::inference::{ChatMessage, ToolCallMode, ToolDialect};
+use doce_lib::inference::{ChatMessage, ToolCallMode};
 use doce_lib::storage::conversations::HistoryMessage;
 use std::path::PathBuf;
 
 /// The exact production prompt for the model under test — the same helper
 /// the app itself seeds turns with (prompt drift between app and smoke test
-/// is how the 2026-07-12 doom loop shipped green). doce ships one Hermes
-/// model, so the dialect is pinned to `HermesJson`, same as production.
+/// is how the 2026-07-12 doom loop shipped green).
 fn system_prompt() -> String {
-    doce_lib::commands::agent::plan_system_message(None, true, None, ToolDialect::HermesJson)
+    doce_lib::commands::agent::plan_system_message(None, true, None)
 }
 
 fn installed_model_path() -> PathBuf {

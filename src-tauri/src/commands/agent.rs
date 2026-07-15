@@ -5,7 +5,7 @@ use crate::agent::{
 };
 use crate::commands::conversations::ActiveGenerations;
 use crate::commands::models::now_ms;
-use crate::inference::{ChatMessage, ToolDialect};
+use crate::inference::ChatMessage;
 use crate::storage::conversations::load_history;
 use crate::storage::DbCell;
 use rusqlite::Connection;
@@ -1251,7 +1251,6 @@ async fn execute_top_level_tool(
         sub_context.cwd.as_deref(),
         false,
         sub_transcript_path.as_deref(),
-        ToolDialect::HermesJson,
     );
     // FR-015: a fresh, isolated context — just the system prompt plus the
     // delegated task, no parent conversation history.
@@ -1531,8 +1530,7 @@ async fn emit_context_usage_update(
     )
     .display()
     .to_string();
-    let system_prompt =
-        plan_system_message(cwd, true, Some(&transcript_path), ToolDialect::HermesJson);
+    let system_prompt = plan_system_message(cwd, true, Some(&transcript_path));
     // FR-2: `.cloned()` to drop the lock before `compute_usage` runs.
     let observed = observed_usage
         .0
@@ -1593,6 +1591,42 @@ async fn persist_assistant_text_reply(
     .map_err(|e| e.to_string())
 }
 
+/// Reads `<cwd>/AGENTS.md` (SP3 project-instructions) and returns it wrapped
+/// under a `# Project instructions` header, bounded to
+/// `PROJECT_INSTRUCTIONS_MAX_TOKENS` (a too-large file is truncated with a
+/// marker). `None` when `cwd` is `None`, the file is absent/unreadable, or
+/// its content is empty after trimming — in which case the system message is
+/// byte-identical to before this feature (no header, no blank section).
+fn project_instructions_section(cwd: Option<&std::path::Path>) -> Option<String> {
+    let cwd = cwd?;
+    let raw = std::fs::read_to_string(cwd.join("AGENTS.md")).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let cap = crate::context::limits::PROJECT_INSTRUCTIONS_MAX_TOKENS;
+    let body = if (crate::inference::token_estimate(trimmed) as usize) <= cap {
+        trimmed.to_string()
+    } else {
+        // Truncate the head to ~cap tokens. `token_estimate` weights
+        // non-ASCII at ~1.1 tok/char (not the ASCII ~4 chars/tok), so a flat
+        // `cap * 4` char budget under-truncates a CJK-heavy file -- re-measure
+        // and shrink (char-granular, never a byte-slice panic) until the head
+        // actually fits the cap. `.min(take - 1)` guarantees strict decrease,
+        // so it converges in a few steps and always terminates.
+        let mut take = cap.saturating_mul(4);
+        loop {
+            let head: String = trimmed.chars().take(take).collect();
+            let est = crate::inference::token_estimate(&head) as usize;
+            if est <= cap || take == 0 {
+                break format!("{head}\n\n[project instructions truncated to fit context]");
+            }
+            take = (take.saturating_mul(cap) / est.max(1)).min(take - 1);
+        }
+    };
+    Some(format!("# Project instructions\n{body}"))
+}
+
 /// The plan engine's immutable union prompt plus the cwd line that tells
 /// the model where it's working, plus (2026-07-09 transcript design) a
 /// line naming this host's own materialized transcript — what seeds
@@ -1616,13 +1650,16 @@ async fn persist_assistant_text_reply(
 /// (tests/agent_tasks.rs) seeds its planned runs with the EXACT production
 /// system message -- prompt drift between the app and the benchmark is how
 /// the 2026-07-12 "ola" doom loop shipped despite green tier-0 tests.
+/// Right after the cwd line (2026-07-14, SP3 component c): an
+/// `AGENTS.md` project-instructions section, when `project_instructions_section`
+/// finds one — folded in via the cwd-aware tail only, so the cached
+/// `single_mode_system_prompt` base (and its KV-prefix) stays untouched.
 pub fn plan_system_message(
     cwd: Option<&std::path::Path>,
     allow_task: bool,
     transcript_path: Option<&str>,
-    dialect: crate::inference::ToolDialect,
 ) -> String {
-    let base = crate::agent::plan::single_mode_system_prompt(allow_task, dialect);
+    let base = crate::agent::plan::single_mode_system_prompt(allow_task);
     let mut message = match cwd {
         Some(path) => format!(
             "{base}\n\nYou are currently working in the directory: {}",
@@ -1630,6 +1667,9 @@ pub fn plan_system_message(
         ),
         None => base.to_string(),
     };
+    if let Some(section) = project_instructions_section(cwd) {
+        message.push_str(&format!("\n\n{section}"));
+    }
     if let Some(path) = transcript_path {
         message.push_str(&format!(
             "\n\n# Transcript\nThis conversation's transcript — everything so far, including content no longer in your context — is at \"{path}\". Read it to recall earlier work."
@@ -1672,14 +1712,13 @@ pub(crate) fn conversation_system_message(
     cwd: Option<&std::path::Path>,
     transcript_dir: Option<&std::path::Path>,
     conversation_id: &str,
-    dialect: crate::inference::ToolDialect,
 ) -> String {
     let transcript_path = transcript_dir.map(|dir| {
         crate::context::transcript::transcript_path(dir, conversation_id)
             .display()
             .to_string()
     });
-    plan_system_message(cwd, true, transcript_path.as_deref(), dialect)
+    plan_system_message(cwd, true, transcript_path.as_deref())
 }
 
 /// 009-rich-chat-input/US2 (contracts/rich-chat-input.md): persists this
@@ -1993,12 +2032,8 @@ pub async fn send_agent_message(
     let plan_state = crate::agent::plan::PlanState::default();
     // The top-level agent seed names ITS OWN conversation's transcript
     // (contrast the subagent seed above, which names `subagent_id`'s).
-    let system_prompt = conversation_system_message(
-        cwd.as_deref(),
-        transcript_dir.as_deref(),
-        &conversation_id,
-        ToolDialect::HermesJson,
-    );
+    let system_prompt =
+        conversation_system_message(cwd.as_deref(), transcript_dir.as_deref(), &conversation_id);
     let usage = crate::context::maybe_compact(
         &conn,
         transcript_dir.clone(),
@@ -2226,27 +2261,17 @@ mod tests {
             Some(std::path::Path::new("/Users/tester/code/doce")),
             true,
             None,
-            crate::inference::ToolDialect::HermesJson,
         );
         assert!(msg.contains("You are currently working in the directory: /Users/tester/code/doce"));
         // Verify the prompt body is the immutable union prompt.
-        let base = crate::agent::plan::single_mode_system_prompt(
-            true,
-            crate::inference::ToolDialect::HermesJson,
-        );
+        let base = crate::agent::plan::single_mode_system_prompt(true);
         assert!(msg.starts_with(base));
     }
 
     #[test]
     fn plan_system_message_is_unchanged_when_no_cwd_is_known() {
-        let msg = plan_system_message(None, true, None, crate::inference::ToolDialect::HermesJson);
-        assert_eq!(
-            msg,
-            crate::agent::plan::single_mode_system_prompt(
-                true,
-                crate::inference::ToolDialect::HermesJson
-            )
-        );
+        let msg = plan_system_message(None, true, None);
+        assert_eq!(msg, crate::agent::plan::single_mode_system_prompt(true));
     }
 
     /// The KV-prefix invariant: what seeds `messages[0]` must be
@@ -2258,47 +2283,17 @@ mod tests {
     fn plan_system_message_is_byte_stable_across_renders() {
         let cwd = std::path::Path::new("/Users/tester/code/doce");
         assert_eq!(
-            plan_system_message(
-                Some(cwd),
-                true,
-                None,
-                crate::inference::ToolDialect::HermesJson
-            ),
-            plan_system_message(
-                Some(cwd),
-                true,
-                None,
-                crate::inference::ToolDialect::HermesJson
-            )
+            plan_system_message(Some(cwd), true, None),
+            plan_system_message(Some(cwd), true, None)
         );
         assert_eq!(
-            plan_system_message(
-                Some(cwd),
-                false,
-                None,
-                crate::inference::ToolDialect::HermesJson
-            ),
-            plan_system_message(
-                Some(cwd),
-                false,
-                None,
-                crate::inference::ToolDialect::HermesJson
-            )
+            plan_system_message(Some(cwd), false, None),
+            plan_system_message(Some(cwd), false, None)
         );
         // The subagent flavor differs (no Task tool) but is stable too.
         assert_ne!(
-            plan_system_message(
-                Some(cwd),
-                true,
-                None,
-                crate::inference::ToolDialect::HermesJson
-            ),
-            plan_system_message(
-                Some(cwd),
-                false,
-                None,
-                crate::inference::ToolDialect::HermesJson
-            )
+            plan_system_message(Some(cwd), true, None),
+            plan_system_message(Some(cwd), false, None)
         );
     }
 
@@ -2313,17 +2308,104 @@ mod tests {
     /// already pins.
     #[test]
     fn system_prompt_names_the_transcript_when_given() {
-        let with = plan_system_message(
-            None,
-            true,
-            Some("/t/c1.txt"),
-            crate::inference::ToolDialect::HermesJson,
-        );
+        let with = plan_system_message(None, true, Some("/t/c1.txt"));
         assert!(with.contains("/t/c1.txt"));
         assert!(with.contains("transcript"));
-        let without =
-            plan_system_message(None, true, None, crate::inference::ToolDialect::HermesJson);
+        let without = plan_system_message(None, true, None);
         assert!(!without.contains("transcript"));
+    }
+
+    // --- SP3 component (c): AGENTS.md project-instructions ingestion ---
+
+    /// The KV-prefix invariant, extended: a cwd with NO `AGENTS.md` must
+    /// still render byte-identical to today (no header, no blank section),
+    /// exactly like `plan_system_message_appends_the_cwd_line_when_known`
+    /// pins for the pre-feature shape.
+    #[test]
+    fn plan_system_message_without_agents_md_is_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let msg = plan_system_message(Some(dir.path()), true, None);
+        assert!(!msg.contains("# Project instructions"));
+        assert!(msg.contains(&format!(
+            "You are currently working in the directory: {}",
+            dir.path().display()
+        )));
+    }
+
+    #[test]
+    fn plan_system_message_injects_agents_md_after_the_cwd_line() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("AGENTS.md"), "Always use tabs, not spaces.").unwrap();
+
+        let msg = plan_system_message(Some(dir.path()), true, Some("/t/c1.txt"));
+        assert!(msg.contains("# Project instructions"));
+        assert!(msg.contains("Always use tabs, not spaces."));
+
+        let cwd_idx = msg
+            .find("You are currently working in the directory")
+            .unwrap();
+        let section_idx = msg.find("# Project instructions").unwrap();
+        let transcript_idx = msg.find("# Transcript").unwrap();
+        assert!(
+            cwd_idx < section_idx,
+            "project instructions must come after the cwd line"
+        );
+        assert!(
+            section_idx < transcript_idx,
+            "project instructions must come before the transcript pointer"
+        );
+    }
+
+    #[test]
+    fn project_instructions_section_truncates_an_oversized_file() {
+        let dir = tempfile::tempdir().unwrap();
+        // Comfortably exceed PROJECT_INSTRUCTIONS_MAX_TOKENS worth of content.
+        let huge = "word ".repeat(20_000);
+        std::fs::write(dir.path().join("AGENTS.md"), &huge).unwrap();
+
+        let section = project_instructions_section(Some(dir.path())).unwrap();
+        assert!(section.contains("[project instructions truncated to fit context]"));
+
+        let cap = crate::context::limits::PROJECT_INSTRUCTIONS_MAX_TOKENS;
+        let estimate = crate::inference::token_estimate(&section) as usize;
+        // Roughly within the cap, plus a little slack for the header/marker.
+        assert!(
+            estimate <= cap + 64,
+            "truncated section should be close to the cap, got {estimate} tokens (cap {cap})"
+        );
+    }
+
+    #[test]
+    fn project_instructions_section_truncates_a_non_ascii_file_within_the_cap() {
+        // token_estimate weights non-ASCII at ~1.1 tok/char, so a flat
+        // `cap * 4` char budget would leave a CJK head at ~4.4x the cap. The
+        // re-measure loop must still bring it within the cap.
+        let dir = tempfile::tempdir().unwrap();
+        let huge: String = "文字".repeat(20_000);
+        std::fs::write(dir.path().join("AGENTS.md"), &huge).unwrap();
+
+        let section = project_instructions_section(Some(dir.path())).unwrap();
+        assert!(section.contains("[project instructions truncated to fit context]"));
+
+        let cap = crate::context::limits::PROJECT_INSTRUCTIONS_MAX_TOKENS;
+        let estimate = crate::inference::token_estimate(&section) as usize;
+        assert!(
+            estimate <= cap + 64,
+            "non-ASCII truncated section should be within the cap, got {estimate} tokens (cap {cap})"
+        );
+    }
+
+    #[test]
+    fn project_instructions_section_is_none_for_absent_or_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        // No AGENTS.md at all.
+        assert!(project_instructions_section(Some(dir.path())).is_none());
+        // No cwd known.
+        assert!(project_instructions_section(None).is_none());
+
+        // Whitespace-only AGENTS.md.
+        std::fs::write(dir.path().join("AGENTS.md"), "   \n\t  \n").unwrap();
+        assert!(project_instructions_section(Some(dir.path())).is_none());
     }
 
     // --- 004-tool-call-widgets: US3 (AskUserQuestion pause/resume) ---

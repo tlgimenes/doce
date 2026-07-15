@@ -74,8 +74,29 @@ pub const PROTECTED_RECENT_MESSAGES: usize = 10;
 /// would police that prompt-side).
 pub const SUMMARY_MAX_TOKENS: i32 = (CONTEXT_WINDOW_TOKENS / 16) as i32;
 
-pub const SUMMARIZATION_PROMPT: &str =
-    "Summarize the conversation so far concisely, preserving key facts, decisions, and unresolved tasks. Respond with only the summary text, nothing else.";
+/// A structured `<state_snapshot>` compaction prompt (SP3 component b):
+/// replaces the old one-sentence summary with named sections so a resumed
+/// turn recovers goal/task/files/decisions/pending/next-step, not just prose.
+/// Kept LEANER than claude-code's 9-section format — tuned for the local 4B
+/// model and the `SUMMARY_MAX_TOKENS` (~1024) budget: terse fragments, an
+/// explicit ~800-token cap (headroom below `SUMMARY_MAX_TOKENS` so the call
+/// never hits `finish_reason:"length"` and gets rejected by `evaluate_summary`),
+/// and omit-empty-sections so a short conversation yields a short snapshot
+/// (never an inflated one).
+pub const SUMMARIZATION_PROMPT: &str = "You are compacting a coding-agent conversation to free up context space. Produce a state snapshot that lets the agent resume seamlessly with no loss of continuity.
+
+Use EXACTLY this structure. Write terse fragments, not prose. Omit any section that is empty. One line per file, decision, or pending item.
+
+<state_snapshot>
+GOAL: the user's overall objective
+CURRENT TASK: what is in progress right now
+FILES TOUCHED: path — what changed
+DECISIONS: choices made and why
+PENDING: unresolved steps, in order
+NEXT ACTION: the single immediate next step
+</state_snapshot>
+
+Keep the whole snapshot under about 800 tokens. Output ONLY the <state_snapshot> block — nothing before or after it.";
 
 /// Auto-compaction gives up retrying a summarization that keeps getting
 /// rejected by `context::evaluate_summary` (empty/truncated/inflated) after
@@ -177,6 +198,12 @@ pub fn clamp_output_tokens(ceiling: u32, window: u32, prompt_estimate: u32) -> u
 /// `fit_turn_to_budget`'s reserve.
 pub const STATE_TAIL_RESERVE_TOKENS: u32 = 768;
 
+/// Max tokens of an `AGENTS.md` project-instructions file folded into the
+/// cwd-aware system message (SP3). A file over this is truncated (tail
+/// dropped) with a marker, so a huge instructions file can't crowd out the
+/// conversation. ~12.5% of `CONTEXT_WINDOW_TOKENS`.
+pub const PROJECT_INSTRUCTIONS_MAX_TOKENS: usize = (CONTEXT_WINDOW_TOKENS / 8) as usize; // = 2048
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,6 +227,10 @@ mod tests {
             STATE_TAIL_RESERVE_TOKENS + AGENT_TURN_MAX_OUTPUT_TOKENS <= CONTEXT_WINDOW_TOKENS / 4
         );
         assert!(MIN_OUTPUT_TOKENS < AGENT_TURN_MAX_OUTPUT_TOKENS);
+        assert_eq!(
+            PROJECT_INSTRUCTIONS_MAX_TOKENS,
+            (CONTEXT_WINDOW_TOKENS / 8) as usize
+        );
     }
 
     // --- clamp_output_tokens (restore-output-cap task) ---
