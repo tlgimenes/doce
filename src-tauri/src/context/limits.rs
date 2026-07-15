@@ -204,6 +204,11 @@ pub const STATE_TAIL_RESERVE_TOKENS: u32 = 768;
 /// conversation. ~12.5% of `CONTEXT_WINDOW_TOKENS`.
 pub const PROJECT_INSTRUCTIONS_MAX_TOKENS: usize = (CONTEXT_WINDOW_TOKENS / 8) as usize; // = 2048
 
+/// Recalled workspace memories are capped at this share of the window,
+/// mirroring `PROJECT_INSTRUCTIONS_MAX_TOKENS`. Injected once into
+/// `messages[0]`, structurally outside the compaction window.
+pub const MEMORIES_MAX_TOKENS: usize = (CONTEXT_WINDOW_TOKENS / 8) as usize;
+
 #[cfg(test)]
 mod tests {
     use super::*;

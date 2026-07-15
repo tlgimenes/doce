@@ -1247,10 +1247,14 @@ async fn execute_top_level_tool(
             .display()
             .to_string()
     });
+    // A subagent is isolated delegated work; workspace memory is the
+    // top-level agent's context (FR-015 isolation) — pass `None` rather
+    // than resolving/injecting it here.
     let sub_system_prompt = plan_system_message(
         sub_context.cwd.as_deref(),
         false,
         sub_transcript_path.as_deref(),
+        None,
     );
     // FR-015: a fresh, isolated context — just the system prompt plus the
     // delegated task, no parent conversation history.
@@ -1530,7 +1534,8 @@ async fn emit_context_usage_update(
     )
     .display()
     .to_string();
-    let system_prompt = plan_system_message(cwd, true, Some(&transcript_path));
+    let memories = memories_section(conn, conversation_id).await;
+    let system_prompt = plan_system_message(cwd, true, Some(&transcript_path), memories.as_deref());
     // FR-2: `.cloned()` to drop the lock before `compute_usage` runs.
     let observed = observed_usage
         .0
@@ -1627,6 +1632,55 @@ fn project_instructions_section(cwd: Option<&std::path::Path>) -> Option<String>
     Some(format!("# Project instructions\n{body}"))
 }
 
+/// Renders recalled workspace memories as the `# Memories` block that rides in
+/// `messages[0]`. Bounded by dropping WHOLE trailing facts (never truncating
+/// mid-fact -- half a fact is worse than no fact) until the rendered block fits
+/// `MEMORIES_MAX_TOKENS`. Returns `None` for an empty set so a workspace with
+/// no memories injects literally nothing.
+pub(crate) fn render_memories_section(
+    memories: &[crate::storage::memories::Memory],
+) -> Option<String> {
+    if memories.is_empty() {
+        return None;
+    }
+    let cap = crate::context::limits::MEMORIES_MAX_TOKENS;
+    let render = |take: usize| -> String {
+        let mut s = String::from(
+            "# Memories\n\nDurable facts about this workspace, remembered from earlier conversations:\n",
+        );
+        for m in memories.iter().take(take) {
+            s.push_str(&format!("\n- {}", m.content));
+        }
+        s
+    };
+    let mut take = memories.len();
+    while take > 0 {
+        let candidate = render(take);
+        if (crate::inference::token_estimate(&candidate) as usize) <= cap {
+            return Some(candidate);
+        }
+        take -= 1;
+    }
+    None
+}
+
+/// Resolves the conversation's workspace, loads its memories, renders the
+/// block. Best-effort: any DB error recalls nothing rather than failing the
+/// turn.
+pub(crate) async fn memories_section(
+    conn: &tokio_rusqlite::Connection,
+    conversation_id: &str,
+) -> Option<String> {
+    let workspace_id =
+        crate::storage::memories::workspace_id_for_conversation(conn, conversation_id)
+            .await
+            .ok()?;
+    let memories = crate::storage::memories::load_memories(conn, workspace_id.as_deref())
+        .await
+        .ok()?;
+    render_memories_section(&memories)
+}
+
 /// The plan engine's immutable union prompt plus the cwd line that tells
 /// the model where it's working, plus (2026-07-09 transcript design) a
 /// line naming this host's own materialized transcript — what seeds
@@ -1654,10 +1708,19 @@ fn project_instructions_section(cwd: Option<&std::path::Path>) -> Option<String>
 /// `AGENTS.md` project-instructions section, when `project_instructions_section`
 /// finds one — folded in via the cwd-aware tail only, so the cached
 /// `single_mode_system_prompt` base (and its KV-prefix) stays untouched.
+/// Immediately after that (SP4 Task 2): a `# Memories` section, when
+/// `memories` is `Some` — an already-rendered `render_memories_section`
+/// block, produced by the caller so this function stays synchronous and
+/// state-free. `None` (no workspace, or a workspace with no memories yet)
+/// leaves the message byte-identical to this function's pre-memory
+/// behavior — the property `no_memories_leaves_the_prompt_byte_identical`
+/// locks, since a fresh workspace (e.g. the tier4_planned benchmark) must
+/// stay inert to this feature.
 pub fn plan_system_message(
     cwd: Option<&std::path::Path>,
     allow_task: bool,
     transcript_path: Option<&str>,
+    memories: Option<&str>,
 ) -> String {
     let base = crate::agent::plan::single_mode_system_prompt(allow_task);
     let mut message = match cwd {
@@ -1668,6 +1731,9 @@ pub fn plan_system_message(
         None => base.to_string(),
     };
     if let Some(section) = project_instructions_section(cwd) {
+        message.push_str(&format!("\n\n{section}"));
+    }
+    if let Some(section) = memories {
         message.push_str(&format!("\n\n{section}"));
     }
     if let Some(path) = transcript_path {
@@ -1704,21 +1770,25 @@ pub(crate) async fn conversation_cwd(
 }
 
 /// The exact system prompt a top-level turn in this conversation runs
-/// with: the plan union prompt + cwd line + transcript pointer. The single
-/// construction point for `send_agent_message` AND `commands::context`'s
-/// usage/compaction commands, so token estimates and real turns can never
-/// disagree about the prompt.
+/// with: the plan union prompt + cwd line + transcript pointer + recalled
+/// memories. The single construction point for `send_agent_message` AND
+/// `commands::context`'s usage/compaction commands, so token estimates and
+/// real turns can never disagree about the prompt. `memories`, when
+/// `Some`, must be THIS conversation's own `memories_section(&conn,
+/// &conversation_id).await` result — resolved by the caller (which already
+/// holds the `conn`) so this function stays synchronous.
 pub(crate) fn conversation_system_message(
     cwd: Option<&std::path::Path>,
     transcript_dir: Option<&std::path::Path>,
     conversation_id: &str,
+    memories: Option<&str>,
 ) -> String {
     let transcript_path = transcript_dir.map(|dir| {
         crate::context::transcript::transcript_path(dir, conversation_id)
             .display()
             .to_string()
     });
-    plan_system_message(cwd, true, transcript_path.as_deref())
+    plan_system_message(cwd, true, transcript_path.as_deref(), memories)
 }
 
 /// 009-rich-chat-input/US2 (contracts/rich-chat-input.md): persists this
@@ -2032,8 +2102,13 @@ pub async fn send_agent_message(
     let plan_state = crate::agent::plan::PlanState::default();
     // The top-level agent seed names ITS OWN conversation's transcript
     // (contrast the subagent seed above, which names `subagent_id`'s).
-    let system_prompt =
-        conversation_system_message(cwd.as_deref(), transcript_dir.as_deref(), &conversation_id);
+    let memories = memories_section(&conn, &conversation_id).await;
+    let system_prompt = conversation_system_message(
+        cwd.as_deref(),
+        transcript_dir.as_deref(),
+        &conversation_id,
+        memories.as_deref(),
+    );
     let usage = crate::context::maybe_compact(
         &conn,
         transcript_dir.clone(),
@@ -2261,6 +2336,7 @@ mod tests {
             Some(std::path::Path::new("/Users/tester/code/doce")),
             true,
             None,
+            None,
         );
         assert!(msg.contains("You are currently working in the directory: /Users/tester/code/doce"));
         // Verify the prompt body is the immutable union prompt.
@@ -2270,7 +2346,7 @@ mod tests {
 
     #[test]
     fn plan_system_message_is_unchanged_when_no_cwd_is_known() {
-        let msg = plan_system_message(None, true, None);
+        let msg = plan_system_message(None, true, None, None);
         assert_eq!(msg, crate::agent::plan::single_mode_system_prompt(true));
     }
 
@@ -2283,17 +2359,17 @@ mod tests {
     fn plan_system_message_is_byte_stable_across_renders() {
         let cwd = std::path::Path::new("/Users/tester/code/doce");
         assert_eq!(
-            plan_system_message(Some(cwd), true, None),
-            plan_system_message(Some(cwd), true, None)
+            plan_system_message(Some(cwd), true, None, None),
+            plan_system_message(Some(cwd), true, None, None)
         );
         assert_eq!(
-            plan_system_message(Some(cwd), false, None),
-            plan_system_message(Some(cwd), false, None)
+            plan_system_message(Some(cwd), false, None, None),
+            plan_system_message(Some(cwd), false, None, None)
         );
         // The subagent flavor differs (no Task tool) but is stable too.
         assert_ne!(
-            plan_system_message(Some(cwd), true, None),
-            plan_system_message(Some(cwd), false, None)
+            plan_system_message(Some(cwd), true, None, None),
+            plan_system_message(Some(cwd), false, None, None)
         );
     }
 
@@ -2308,10 +2384,10 @@ mod tests {
     /// already pins.
     #[test]
     fn system_prompt_names_the_transcript_when_given() {
-        let with = plan_system_message(None, true, Some("/t/c1.txt"));
+        let with = plan_system_message(None, true, Some("/t/c1.txt"), None);
         assert!(with.contains("/t/c1.txt"));
         assert!(with.contains("transcript"));
-        let without = plan_system_message(None, true, None);
+        let without = plan_system_message(None, true, None, None);
         assert!(!without.contains("transcript"));
     }
 
@@ -2324,7 +2400,7 @@ mod tests {
     #[test]
     fn plan_system_message_without_agents_md_is_unchanged() {
         let dir = tempfile::tempdir().unwrap();
-        let msg = plan_system_message(Some(dir.path()), true, None);
+        let msg = plan_system_message(Some(dir.path()), true, None, None);
         assert!(!msg.contains("# Project instructions"));
         assert!(msg.contains(&format!(
             "You are currently working in the directory: {}",
@@ -2337,7 +2413,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("AGENTS.md"), "Always use tabs, not spaces.").unwrap();
 
-        let msg = plan_system_message(Some(dir.path()), true, Some("/t/c1.txt"));
+        let msg = plan_system_message(Some(dir.path()), true, Some("/t/c1.txt"), None);
         assert!(msg.contains("# Project instructions"));
         assert!(msg.contains("Always use tabs, not spaces."));
 
@@ -2406,6 +2482,86 @@ mod tests {
         // Whitespace-only AGENTS.md.
         std::fs::write(dir.path().join("AGENTS.md"), "   \n\t  \n").unwrap();
         assert!(project_instructions_section(Some(dir.path())).is_none());
+    }
+
+    // --- SP4 Task 2: workspace memories recall (`# Memories`) ---
+
+    fn mem(content: &str) -> crate::storage::memories::Memory {
+        crate::storage::memories::Memory {
+            id: content.to_string(),
+            content: content.to_string(),
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn no_memories_renders_nothing() {
+        assert!(render_memories_section(&[]).is_none());
+    }
+
+    #[test]
+    fn memories_render_as_a_bulleted_section() {
+        let s = render_memories_section(&[mem("alpha"), mem("beta")]).unwrap();
+        assert!(s.starts_with("# Memories"));
+        assert!(s.contains("- alpha"));
+        assert!(s.contains("- beta"));
+    }
+
+    #[test]
+    fn no_memories_leaves_the_prompt_byte_identical() {
+        // The benchmark-inertness lock: an empty workspace must not shift a byte.
+        let cwd = std::path::Path::new("/Users/tester/code/doce");
+        assert_eq!(
+            plan_system_message(Some(cwd), true, None, None),
+            plan_system_message(Some(cwd), true, None, None)
+        );
+        let with_none = plan_system_message(Some(cwd), true, None, None);
+        assert!(!with_none.contains("# Memories"));
+    }
+
+    #[test]
+    fn memories_section_is_injected_into_the_prompt() {
+        let cwd = std::path::Path::new("/Users/tester/code/doce");
+        let block = render_memories_section(&[mem("prefers oxfmt")]).unwrap();
+        let msg = plan_system_message(Some(cwd), true, None, Some(&block));
+        assert!(msg.contains("# Memories"));
+        assert!(msg.contains("- prefers oxfmt"));
+    }
+
+    #[test]
+    fn over_cap_memories_drop_whole_trailing_facts_never_mid_fact() {
+        // Build enough memories to blow MEMORIES_MAX_TOKENS.
+        let big: Vec<_> = (0..4000)
+            .map(|i| mem(&format!("fact number {i} with some padding text")))
+            .collect();
+        let s = render_memories_section(&big).unwrap();
+        assert!(
+            (crate::inference::token_estimate(&s) as usize)
+                <= crate::context::limits::MEMORIES_MAX_TOKENS
+        );
+        // Never a partial line: every rendered bullet is one of the inputs verbatim.
+        for line in s.lines().filter(|l| l.starts_with("- ")) {
+            let body = line.trim_start_matches("- ");
+            assert!(
+                big.iter().any(|m| m.content == body),
+                "partial fact rendered: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_ascii_memories_respect_the_token_cap() {
+        // token_estimate weights non-ASCII ~1.1 tok/char, so a flat cap*4 char
+        // budget would badly under-truncate CJK. Same trap SP3 (c) hit.
+        let cjk: Vec<_> = (0..4000)
+            .map(|i| mem(&format!("事実{i}についての記録です")))
+            .collect();
+        let s = render_memories_section(&cjk).unwrap();
+        assert!(
+            (crate::inference::token_estimate(&s) as usize)
+                <= crate::context::limits::MEMORIES_MAX_TOKENS
+        );
     }
 
     // --- 004-tool-call-widgets: US3 (AskUserQuestion pause/resume) ---
