@@ -750,7 +750,18 @@ pub async fn summarize_and_persist(
 /// and the write is a compare-and-swap against the set actually read, so a
 /// sibling conversation that compacted during this call's LLM round-trip is
 /// never clobbered.
-pub(crate) async fn extract_and_persist_memories(
+///
+/// The transport and the DB live here; every DECISION about what the model
+/// actually returned lives in [`parse_extraction_output`], which is pure and
+/// directly unit-tested. This function is the glue: resolve the workspace,
+/// read the prior set, call the model, parse, and either log a refusal or
+/// compare-and-swap the new set in.
+///
+/// `pub` (not `pub(crate)`) so `tests/real_model_smoke.rs` can drive this
+/// exact path against a REAL llama-server -- the only thing that can answer
+/// whether the model actually obeys `MEMORY_EXTRACTION_PROMPT`'s contract, as
+/// opposed to whether we parse a response that already assumes it does.
+pub async fn extract_and_persist_memories(
     conn: &tokio_rusqlite::Connection,
     base_url: &str,
     conversation_id: &str,
@@ -842,72 +853,40 @@ pub(crate) async fn extract_and_persist_memories(
     // server never sent one" -- see its own doc comment), not `Option<...>`;
     // normalize the empty-string sentinel to `None` here exactly as
     // `summarize_and_persist` does before comparing to `Some("length")`.
+    // (`parse_extraction_output` is total over `Some("")` too, but the
+    // normalization stays here so the two callers read identically.)
     let finish_reason = if outcome.finish_reason.is_empty() {
         None
     } else {
         Some(outcome.finish_reason.as_str())
     };
-    // TRUNCATION BACKSTOP. The prompt asks for the FULL replacement set every
-    // time, so the expected output grows as memories accumulate -- a
-    // truncated response would silently drop every memory not yet
-    // re-emitted AND persist a half-finished sentence as a durable fact.
-    // `MEMORY_EXTRACTION_PROMPT`'s own self-cap is meant to keep this call
-    // clear of `SUMMARY_MAX_TOKENS`, but this backstop is what actually
-    // refuses to persist if it ever doesn't (mirrors
-    // `evaluate_summary`'s `RejectTruncated`).
-    if finish_reason == Some("length") {
-        eprintln!("[memory-extraction] truncated output, keeping existing memories");
-        return Ok(());
-    }
 
-    // Every non-empty line the model emitted, bullet prefix stripped. This is
-    // the denominator of the majority test below, so it is counted BEFORE
-    // dedup and before the shape check.
-    let candidates: Vec<String> = outcome
-        .text
-        .lines()
-        .map(|l| l.trim().trim_start_matches("- ").trim().to_string())
-        .filter(|l| !l.is_empty())
-        .collect();
-
-    // Shape check, then dedup, first-seen order preserved: `replace_memories`
-    // inserts `contents` verbatim (no dedup of its own), so a model that
-    // repeats a line would otherwise create duplicate rows.
-    let mut seen = std::collections::HashSet::new();
-    let facts: Vec<String> = candidates
-        .iter()
-        .filter(|l| is_plausible_fact(l))
-        .filter(|l| seen.insert((*l).clone()))
-        .cloned()
-        .collect();
-
-    // PARSE FAILURE => NO CHANGE (spec §4 step 4). If MOST of what came back
-    // isn't fact-shaped, the model didn't do the task -- and the task is to
-    // emit a faithful FULL replacement set. Persisting the surviving minority
-    // would swap the workspace's whole set for whatever fragments happened to
-    // pass a syntactic filter, silently dropping every real memory that the
-    // confused model failed to re-emit. A model that mostly emitted garbage has
-    // not earned that trust, so the whole pass is discarded. `candidates` is
-    // never empty here in a way that matters: 0 rejected of 0 is not a
-    // majority, and the empty case falls through to the empty-output guard
-    // below, which is the older and narrower of the two.
-    let unshaped = candidates.iter().filter(|l| !is_plausible_fact(l)).count();
-    if unshaped * 2 > candidates.len() {
-        eprintln!(
-            "[memory-extraction] {unshaped}/{} lines are not fact-shaped; treating as a parse \
-             failure and keeping existing memories",
-            candidates.len()
-        );
-        return Ok(());
-    }
-
-    // THE GUARD: a degenerate extraction must not wipe good memories.
-    if facts.is_empty() {
-        if !existing.is_empty() {
-            eprintln!("[memory-extraction] empty output, keeping existing memories");
+    // Every decision about what came back is made here, purely.
+    let facts = match parse_extraction_output(&outcome.text, finish_reason) {
+        ExtractionOutcome::Facts(facts) => facts,
+        ExtractionOutcome::Rejected(reason) => {
+            match reason {
+                ExtractionRejection::Truncated => {
+                    eprintln!("[memory-extraction] truncated output, keeping existing memories");
+                }
+                ExtractionRejection::MajorityUnshaped { unshaped, total } => {
+                    eprintln!(
+                        "[memory-extraction] {unshaped}/{total} lines are not fact-shaped; \
+                         treating as a parse failure and keeping existing memories"
+                    );
+                }
+                // Only worth a line when there was something to lose --
+                // "the model had nothing to add and there was nothing there"
+                // is the normal, uninteresting case.
+                ExtractionRejection::Empty => {
+                    if !existing.is_empty() {
+                        eprintln!("[memory-extraction] empty output, keeping existing memories");
+                    }
+                }
+            }
+            return Ok(());
         }
-        return Ok(());
-    }
+    };
 
     // COMPARE-AND-SWAP, not a blind write: `existing` was read before a
     // multi-second LLM round-trip, and a sibling conversation in this same
@@ -938,8 +917,104 @@ pub(crate) async fn extract_and_persist_memories(
     Ok(())
 }
 
+/// The facts an extraction earned the right to persist, or the reason the
+/// whole pass is refused. Refusal is always "leave the existing set exactly as
+/// it is" -- never a partial write.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ExtractionOutcome {
+    Facts(Vec<String>),
+    Rejected(ExtractionRejection),
+}
+
+/// Why an extraction was refused. Carried out of [`parse_extraction_output`]
+/// rather than logged inside it, so the decision stays pure and the caller
+/// owns the (context-dependent) logging.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ExtractionRejection {
+    /// The completion hit the output cap (`finish_reason:"length"`).
+    Truncated,
+    /// Nothing fact-shaped survived -- including the model correctly emitting
+    /// nothing at all.
+    Empty,
+    /// Most of what came back wasn't fact-shaped, so the model didn't do the
+    /// task. Counts are for the log line only.
+    MajorityUnshaped { unshaped: usize, total: usize },
+}
+
+/// THE complete extraction-output decision: the model's raw text plus its
+/// `finish_reason` in, either the facts to persist or the reason we refuse to
+/// out. Pure, synchronous, and total -- every guard protecting the memory set
+/// lives here, so each is directly unit-testable without an HTTP round-trip.
+/// [`extract_and_persist_memories`] is the only caller and does nothing with
+/// this beyond logging a rejection or CAS-writing the facts.
+///
+/// `finish_reason` is `Option` because the server may not send one; both
+/// `None` and the `Some("")` sentinel `ChatOutcome` uses mean "never sent" and
+/// must NOT read as truncation. Only an observed `Some("length")` does.
+pub fn parse_extraction_output(text: &str, finish_reason: Option<&str>) -> ExtractionOutcome {
+    // TRUNCATION BACKSTOP, first: a truncated response is not evidence about
+    // anything downstream. The prompt asks for the FULL replacement set every
+    // time, so the expected output grows as memories accumulate -- a truncated
+    // response would silently drop every memory not yet re-emitted AND persist
+    // a half-finished sentence as a durable fact. `MEMORY_EXTRACTION_PROMPT`'s
+    // own self-cap is meant to keep this call clear of `SUMMARY_MAX_TOKENS`,
+    // but this backstop is what actually refuses to persist if it ever doesn't
+    // (mirrors `evaluate_summary`'s `RejectTruncated`).
+    if finish_reason == Some("length") {
+        return ExtractionOutcome::Rejected(ExtractionRejection::Truncated);
+    }
+
+    // Every non-empty line the model emitted, bullet prefix stripped. This is
+    // the denominator of the majority test below, so it is counted BEFORE
+    // dedup and before the shape check.
+    let candidates: Vec<String> = text
+        .lines()
+        .map(|l| l.trim().trim_start_matches("- ").trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+
+    // Shape check, then dedup, first-seen order preserved: `replace_memories`
+    // inserts `contents` verbatim (no dedup of its own), so a model that
+    // repeats a line would otherwise create duplicate rows.
+    let mut seen = std::collections::HashSet::new();
+    let facts: Vec<String> = candidates
+        .iter()
+        .filter(|l| is_plausible_fact(l))
+        .filter(|l| seen.insert((*l).clone()))
+        .cloned()
+        .collect();
+
+    // PARSE FAILURE => NO CHANGE (spec §4 step 4). If MOST of what came back
+    // isn't fact-shaped, the model didn't do the task -- and the task is to
+    // emit a faithful FULL replacement set. Persisting the surviving minority
+    // would swap the workspace's whole set for whatever fragments happened to
+    // pass a syntactic filter, silently dropping every real memory that the
+    // confused model failed to re-emit. A model that mostly emitted garbage has
+    // not earned that trust, so the whole pass is discarded. `candidates` is
+    // never empty here in a way that matters: 0 rejected of 0 is not a
+    // majority, and the empty case falls through to the empty-output guard
+    // below, which is the older and narrower of the two.
+    let unshaped = candidates.iter().filter(|l| !is_plausible_fact(l)).count();
+    if unshaped * 2 > candidates.len() {
+        return ExtractionOutcome::Rejected(ExtractionRejection::MajorityUnshaped {
+            unshaped,
+            total: candidates.len(),
+        });
+    }
+
+    // THE GUARD: a degenerate extraction must not wipe good memories.
+    if facts.is_empty() {
+        return ExtractionOutcome::Rejected(ExtractionRejection::Empty);
+    }
+
+    ExtractionOutcome::Facts(facts)
+}
+
 /// Is this line plausibly a durable fact, rather than the model failing to
 /// follow `MEMORY_EXTRACTION_PROMPT`'s "no commentary, no headers" contract?
+///
+/// `pub` so `tests/real_model_smoke.rs` can assert the REAL model's output
+/// against the very check that was written blind against it.
 ///
 /// Every line that passes becomes a DURABLE row, and a bad row is sticky and
 /// self-reinforcing: the next pass feeds the existing set back in under "keep
@@ -951,7 +1026,7 @@ pub(crate) async fn extract_and_persist_memories(
 ///
 /// The rules are deliberately syntactic and few -- this cannot judge whether a
 /// sentence is TRUE, only whether it is shaped like a fact at all:
-fn is_plausible_fact(line: &str) -> bool {
+pub fn is_plausible_fact(line: &str) -> bool {
     // 1. Trailing ':' -- a preamble or header, never a self-contained fact.
     // This is the observed 4B failure: "Here is the updated set of
     // memories:" as line 1, which then becomes permanent. A real fact is a
@@ -2236,14 +2311,187 @@ mod tests {
         );
     }
 
+    // --- parse_extraction_output (SP4's extraction-output decision) ---
+    //
+    // Every guard standing between the model and the workspace's durable
+    // memory set is a pure function of (text, finish_reason), so these tests
+    // call it directly: no HTTP, no DB, no async.
+    //
+    // An earlier cut of this suite stood up a wiremock llama-server per case
+    // just to shuttle a canned string into this parser. That was the wrong
+    // layer twice over: it mocked an LLM call to test a pure function, and --
+    // worse -- what it actually asserted was "IF the model emits a clean fact
+    // list, we parse it", i.e. it tested an ASSUMPTION about the model, which
+    // is precisely what these guards were written blind against. Whether the
+    // real model OBEYS `MEMORY_EXTRACTION_PROMPT` is now covered where only it
+    // can be: `tests/real_model_smoke.rs`'s real-llama-server extraction
+    // smoke. The wiremock tests kept below are the ones that genuinely test
+    // async wiring (transport failure, read-before-call ordering, the CAS
+    // window) rather than the parser.
+
+    /// A good response passes through untouched -- the shape check is for
+    /// garbage only, and a false rejection silently costs a real fact. Covers
+    /// a long fact and a non-ASCII one (the bounds count CHARS, not bytes).
+    #[test]
+    fn a_well_formed_extraction_passes_intact() {
+        let long = "The agent must never let a bad extraction destroy good memories, because \
+                    a condensed span is gone forever and cannot be re-extracted later on.";
+        let text =
+            format!("The user prefers oxfmt over prettier.\n{long}\nユーザーはoxfmtを好みます。");
+
+        assert_eq!(
+            parse_extraction_output(&text, Some("stop")),
+            ExtractionOutcome::Facts(vec![
+                "The user prefers oxfmt over prettier.".to_string(),
+                long.to_string(),
+                "ユーザーはoxfmtを好みます。".to_string(),
+            ])
+        );
+    }
+
+    /// FINDING A. The prompt asks for the FULL replacement set every time, so
+    /// the expected output grows as memories accumulate -- a truncated
+    /// response would silently drop every memory not yet re-emitted AND
+    /// persist a half-finished sentence as a durable fact. Rejected whole,
+    /// even though the text alone would have parsed fine.
+    #[test]
+    fn a_truncated_extraction_is_rejected_whole() {
+        assert_eq!(
+            parse_extraction_output(
+                "The user prefers oxfmt over prettier.\nBenchmarks are gat",
+                Some("length")
+            ),
+            ExtractionOutcome::Rejected(ExtractionRejection::Truncated)
+        );
+    }
+
+    /// `ChatOutcome::finish_reason` is a plain `String` whose `""` means "the
+    /// server never sent one" -- NOT a truncation. Reading the sentinel as
+    /// truncation would reject every extraction from a server that omits the
+    /// field, silently disabling memory entirely.
+    #[test]
+    fn the_empty_finish_reason_sentinel_is_not_a_truncation() {
+        let text = "The user prefers oxfmt over prettier.";
+        let expected = ExtractionOutcome::Facts(vec![text.to_string()]);
+
+        assert_eq!(parse_extraction_output(text, Some("")), expected);
+        assert_eq!(parse_extraction_output(text, None), expected);
+    }
+
+    /// THE GUARD, at its own layer: nothing fact-shaped came back, so there is
+    /// nothing to persist. `replace_memories` would happily wipe a workspace
+    /// with an empty set, so this rejection is what stands in front of it --
+    /// see `empty_extraction_never_wipes_existing_memories` for the DB-level
+    /// proof that it does.
+    #[test]
+    fn an_empty_extraction_is_rejected() {
+        assert_eq!(
+            parse_extraction_output("", Some("stop")),
+            ExtractionOutcome::Rejected(ExtractionRejection::Empty)
+        );
+    }
+
+    #[test]
+    fn a_whitespace_only_extraction_is_rejected() {
+        assert_eq!(
+            parse_extraction_output("   \n  \n", Some("stop")),
+            ExtractionOutcome::Rejected(ExtractionRejection::Empty)
+        );
+    }
+
+    /// The observed 4B failure mode: the model disobeys "no commentary" and
+    /// opens with a preamble. Persisted, it would be fed back into the next
+    /// pass under "keep the existing ones that are still true", kept, and ride
+    /// in `messages[0]` forever with no UI to remove it. The preamble is
+    /// dropped; the real facts around it survive (one bad line of three is not
+    /// a majority).
+    #[test]
+    fn a_preamble_line_is_dropped_and_the_real_facts_kept() {
+        assert_eq!(
+            parse_extraction_output(
+                "Here is the updated set of memories:\nThe user prefers oxfmt over prettier.\n\
+                 Benchmarks are gated on prompt changes.",
+                Some("stop")
+            ),
+            ExtractionOutcome::Facts(vec![
+                "The user prefers oxfmt over prettier.".to_string(),
+                "Benchmarks are gated on prompt changes.".to_string(),
+            ]),
+            "the trailing-colon preamble must never become a durable fact"
+        );
+    }
+
+    /// A majority of unshaped lines means the model did not do the task -- and
+    /// the task is a FULL replacement set. Persisting the surviving minority
+    /// would swap the whole workspace set for whatever fragments happened to
+    /// pass a syntactic filter. Spec §4 step 4: a parse failure is "no
+    /// change". Note the real fact here is NOT returned.
+    #[test]
+    fn a_majority_unshaped_extraction_is_rejected_whole() {
+        // 4 unshaped (3 headers + 1 too-short) vs 1 real fact.
+        assert_eq!(
+            parse_extraction_output(
+                "Here is the updated set of memories:\nUser preferences:\nok\n\
+                 The user prefers oxfmt over prettier.\nProject constraints:",
+                Some("stop")
+            ),
+            ExtractionOutcome::Rejected(ExtractionRejection::MajorityUnshaped {
+                unshaped: 4,
+                total: 5
+            })
+        );
+    }
+
+    /// All-garbage: nothing survives the shape check at all. Reported as a
+    /// parse failure rather than `Empty` -- the model emitted plenty, it just
+    /// emitted nothing usable.
+    #[test]
+    fn an_all_unshaped_extraction_is_rejected_as_a_parse_failure() {
+        assert_eq!(
+            parse_extraction_output("Memories:\nSure:\nok\n1.", Some("stop")),
+            ExtractionOutcome::Rejected(ExtractionRejection::MajorityUnshaped {
+                unshaped: 4,
+                total: 4
+            })
+        );
+    }
+
+    /// The Task-1 review's carried-over MINOR: `replace_memories` does not
+    /// dedup its `contents`, so a model that repeats a line verbatim would
+    /// otherwise produce duplicate rows.
+    #[test]
+    fn repeated_facts_are_deduped_preserving_first_seen_order() {
+        assert_eq!(
+            parse_extraction_output(
+                "The alpha fact.\nThe beta fact.\nThe alpha fact.",
+                Some("stop")
+            ),
+            ExtractionOutcome::Facts(vec![
+                "The alpha fact.".to_string(),
+                "The beta fact.".to_string(),
+            ])
+        );
+    }
+
+    /// A model that disobeys the "no bullets" instruction must still yield the
+    /// bare fact -- the defensive `trim_start_matches("- ")` strip.
+    #[test]
+    fn a_disobedient_bullet_prefix_is_stripped() {
+        assert_eq!(
+            parse_extraction_output("- The user prefers oxfmt", Some("stop")),
+            ExtractionOutcome::Facts(vec!["The user prefers oxfmt".to_string()]),
+            "a bulleted line should still yield the bare fact"
+        );
+    }
+
     // --- extract_and_persist_memories (SP4's out-of-band extraction pass) ---
     //
-    // Unlike `summarize_and_persist` (whose own testability note above
-    // explains why it is left to manual validation), this pass is testable
-    // end-to-end: it needs only a stubbed llama-server and an in-memory DB.
-    // The stub reuses `inference::http`'s own wiremock SSE harness verbatim
-    // (this module had no llama-server stub of its own before SP4), and the
-    // DB reuses `storage::test_async_connection`, the same fully-migrated
+    // What is left below is the async/DB wiring the pure tests above cannot
+    // reach: a transport failure being swallowed, the read-before-call
+    // ordering, the compare-and-swap window, workspace routing, and the
+    // DB-level proof that an empty extraction cannot wipe a good set. The stub
+    // reuses `inference::http`'s own wiremock SSE harness verbatim, and the DB
+    // reuses `storage::test_async_connection`, the same fully-migrated
     // in-memory connection `storage::memories`' tests use.
 
     /// An SSE body shaped exactly like the ones `inference::http`'s tests
@@ -2257,18 +2505,10 @@ mod tests {
         )
     }
 
-    /// Mounts a 200/SSE stub returning `text` as the completion, mirroring
-    /// `inference::http::tests`' mock setup.
+    /// Mounts a 200/SSE stub returning `text` as a complete (`"stop"`)
+    /// completion, mirroring `inference::http::tests`' mock setup.
     async fn stub_completion(text: &str) -> wiremock::MockServer {
-        stub_completion_with_finish_reason(text, "stop").await
-    }
-
-    /// Like `stub_completion`, but with an explicit `finish_reason` --
-    /// used to simulate a truncated (`"length"`) completion.
-    async fn stub_completion_with_finish_reason(
-        text: &str,
-        finish_reason: &str,
-    ) -> wiremock::MockServer {
+        let finish_reason = "stop";
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("POST"))
             .and(wiremock::matchers::path("/v1/chat/completions"))
@@ -2328,28 +2568,9 @@ mod tests {
             .collect()
     }
 
-    #[tokio::test]
-    async fn extraction_persists_the_emitted_set() {
-        let conn = crate::storage::test_async_connection().await;
-        seed_workspace(&conn, "w1").await;
-        seed_conversation(&conn, "c1", Some("w1")).await;
-        let server = stub_completion("User prefers oxfmt.\nBenchmarks are gated.").await;
-
-        let span = vec![history_message("text", 0, "some work")];
-        let span_refs: Vec<&HistoryMessage> = span.iter().collect();
-        extract_and_persist_memories(&conn, &server.uri(), "c1", &span_refs, 10)
-            .await
-            .unwrap();
-
-        assert_eq!(
-            contents_of(&conn, Some("w1")).await,
-            vec![
-                "User prefers oxfmt.".to_string(),
-                "Benchmarks are gated.".to_string()
-            ]
-        );
-    }
-
+    /// The parsed set replaces the prior one wholesale (the write is a
+    /// `replace_memories_if_unchanged` swap, not an append) -- the pure tests
+    /// above stop at "which facts", this proves what the DB does with them.
     #[tokio::test]
     async fn extraction_replaces_the_prior_set() {
         let conn = crate::storage::test_async_connection().await;
@@ -2373,11 +2594,14 @@ mod tests {
         );
     }
 
-    /// THE GUARD. A degenerate (empty/whitespace) extraction must leave good
-    /// memories exactly as they were -- `replace_memories` with an empty set
-    /// would happily wipe the workspace, so the guard lives in
-    /// `extract_and_persist_memories` before it ever gets there. Deleting the
-    /// `facts.is_empty()` early return must fail this test.
+    /// THE GUARD, proven against the DB. `an_empty_extraction_is_rejected`
+    /// covers the decision purely; this one covers the property that actually
+    /// matters -- that the rejection reaches the database, i.e. the rows are
+    /// still there afterwards. `replace_memories` with an empty set would
+    /// happily wipe the workspace, so nothing but this early return stands
+    /// between a degenerate extraction and permanent data loss; it is worth an
+    /// end-to-end test even though the pure one exists. Deleting the
+    /// `ExtractionRejection::Empty` arm must fail this test.
     #[tokio::test]
     async fn empty_extraction_never_wipes_existing_memories() {
         let conn = crate::storage::test_async_connection().await;
@@ -2451,88 +2675,6 @@ mod tests {
         );
     }
 
-    /// The Task-1 review's carried-over MINOR: `replace_memories` does not
-    /// dedup its `contents`, so a model that repeats a line verbatim would
-    /// otherwise produce duplicate rows. Dedup happens here, first-seen order
-    /// preserved.
-    #[tokio::test]
-    async fn extraction_dedups_repeated_facts_preserving_first_seen_order() {
-        let conn = crate::storage::test_async_connection().await;
-        seed_workspace(&conn, "w1").await;
-        seed_conversation(&conn, "c1", Some("w1")).await;
-        let server = stub_completion("The alpha fact.\nThe beta fact.\nThe alpha fact.").await;
-
-        let span = vec![history_message("text", 0, "some work")];
-        let span_refs: Vec<&HistoryMessage> = span.iter().collect();
-        extract_and_persist_memories(&conn, &server.uri(), "c1", &span_refs, 10)
-            .await
-            .unwrap();
-
-        assert_eq!(
-            contents_of(&conn, Some("w1")).await,
-            vec!["The alpha fact.".to_string(), "The beta fact.".to_string()]
-        );
-    }
-
-    /// A model that disobeys the "no bullets" instruction and emits a
-    /// bulleted line must still yield the bare fact -- the defensive
-    /// `trim_start_matches("- ")` strip.
-    #[tokio::test]
-    async fn extraction_strips_a_disobedient_bullet_prefix() {
-        let conn = crate::storage::test_async_connection().await;
-        seed_workspace(&conn, "w1").await;
-        seed_conversation(&conn, "c1", Some("w1")).await;
-        let server = stub_completion("- The user prefers oxfmt").await;
-
-        let span = vec![history_message("text", 0, "some work")];
-        let span_refs: Vec<&HistoryMessage> = span.iter().collect();
-        extract_and_persist_memories(&conn, &server.uri(), "c1", &span_refs, 10)
-            .await
-            .unwrap();
-
-        assert_eq!(
-            contents_of(&conn, Some("w1")).await,
-            vec!["The user prefers oxfmt".to_string()],
-            "a bulleted line should still yield the bare fact"
-        );
-    }
-
-    /// FINDING A. The prompt asks for the FULL replacement set every time, so
-    /// the expected output grows as memories accumulate -- a truncated
-    /// (`finish_reason:"length"`) response would silently drop every memory
-    /// not yet re-emitted AND persist a half-finished sentence as a durable
-    /// fact. Must persist NOTHING and leave the existing set untouched.
-    ///
-    /// Verified live (not just by inspection): temporarily removing the
-    /// `finish_reason == Some("length")` guard in
-    /// `extract_and_persist_memories` made this test fail (the truncated
-    /// text "User prefers oxfmt. Benchmarks are gat" got persisted in place
-    /// of "precious"), then the guard was restored and this test passes
-    /// again.
-    #[tokio::test]
-    async fn truncated_extraction_never_persists_and_leaves_memories_untouched() {
-        let conn = crate::storage::test_async_connection().await;
-        seed_workspace(&conn, "w1").await;
-        seed_conversation(&conn, "c1", Some("w1")).await;
-        crate::storage::memories::replace_memories(&conn, Some("w1"), &["precious".to_string()], 5)
-            .await
-            .unwrap();
-        let server =
-            stub_completion_with_finish_reason("User prefers oxfmt. Benchmarks are gat", "length")
-                .await;
-
-        let span = vec![history_message("text", 0, "some work")];
-        let span_refs: Vec<&HistoryMessage> = span.iter().collect();
-        let r = extract_and_persist_memories(&conn, &server.uri(), "c1", &span_refs, 10).await;
-
-        assert!(r.is_ok(), "a truncated extraction must never fail the turn");
-        assert_eq!(
-            contents_of(&conn, Some("w1")).await,
-            vec!["precious".to_string()],
-            "a truncated extraction must leave memories exactly as they were"
-        );
-    }
-
     /// FINDING B. A transient failure reading the existing memory set must
     /// NOT be treated as "no existing memories" -- that would let a set built
     /// in ignorance of the real memories wipe them via `replace_memories`.
@@ -2563,130 +2705,6 @@ mod tests {
             server.received_requests().await.unwrap().len(),
             0,
             "a load_memories failure must bail out before ever calling the model"
-        );
-    }
-
-    // --- IMPORTANT 2: the shape check (spec §4 step 4's parse-failure
-    // semantics). The parser used to be incapable of failing: every non-empty
-    // line became a durable, self-reinforcing row.
-
-    /// The observed 4B failure mode: the model disobeys "no commentary" and
-    /// opens with a preamble. Persisted, it would be fed back into the next
-    /// pass under "keep the existing ones that are still true", kept, and ride
-    /// in `messages[0]` forever with no UI to remove it. The preamble is
-    /// dropped; the real facts around it still persist (one bad line out of
-    /// three is not a majority).
-    #[tokio::test]
-    async fn extraction_drops_a_preamble_line_and_keeps_the_real_facts() {
-        let conn = crate::storage::test_async_connection().await;
-        seed_workspace(&conn, "w1").await;
-        seed_conversation(&conn, "c1", Some("w1")).await;
-        let server = stub_completion(
-            "Here is the updated set of memories:\nThe user prefers oxfmt over prettier.\n\
-             Benchmarks are gated on prompt changes.",
-        )
-        .await;
-
-        let span = vec![history_message("text", 0, "some work")];
-        let span_refs: Vec<&HistoryMessage> = span.iter().collect();
-        extract_and_persist_memories(&conn, &server.uri(), "c1", &span_refs, 10)
-            .await
-            .unwrap();
-
-        assert_eq!(
-            contents_of(&conn, Some("w1")).await,
-            vec![
-                "The user prefers oxfmt over prettier.".to_string(),
-                "Benchmarks are gated on prompt changes.".to_string()
-            ],
-            "the trailing-colon preamble must never become a durable fact"
-        );
-    }
-
-    /// A majority of unshaped lines means the model did not do the task -- and
-    /// the task is a FULL replacement set. Persisting the surviving minority
-    /// would swap the whole workspace set for two fragments and silently drop
-    /// "precious". Spec §4 step 4: a parse failure is "no change".
-    #[tokio::test]
-    async fn majority_garbage_extraction_persists_nothing_and_keeps_existing() {
-        let conn = crate::storage::test_async_connection().await;
-        seed_workspace(&conn, "w1").await;
-        seed_conversation(&conn, "c1", Some("w1")).await;
-        crate::storage::memories::replace_memories(&conn, Some("w1"), &["precious".to_string()], 5)
-            .await
-            .unwrap();
-        // 4 unshaped (3 headers + 1 too-short) vs 1 real fact.
-        let server = stub_completion(
-            "Here is the updated set of memories:\nUser preferences:\nok\n\
-             The user prefers oxfmt over prettier.\nProject constraints:",
-        )
-        .await;
-
-        let span = vec![history_message("text", 0, "some work")];
-        let span_refs: Vec<&HistoryMessage> = span.iter().collect();
-        let r = extract_and_persist_memories(&conn, &server.uri(), "c1", &span_refs, 10).await;
-
-        assert!(r.is_ok(), "a parse failure must never fail the turn");
-        assert_eq!(
-            contents_of(&conn, Some("w1")).await,
-            vec!["precious".to_string()],
-            "a majority-garbage extraction must persist NOTHING and leave the set intact"
-        );
-    }
-
-    /// All-garbage: nothing survives the shape check at all.
-    #[tokio::test]
-    async fn all_garbage_extraction_persists_nothing_and_keeps_existing() {
-        let conn = crate::storage::test_async_connection().await;
-        seed_workspace(&conn, "w1").await;
-        seed_conversation(&conn, "c1", Some("w1")).await;
-        crate::storage::memories::replace_memories(&conn, Some("w1"), &["precious".to_string()], 5)
-            .await
-            .unwrap();
-        let server = stub_completion("Memories:\nSure:\nok\n1.").await;
-
-        let span = vec![history_message("text", 0, "some work")];
-        let span_refs: Vec<&HistoryMessage> = span.iter().collect();
-        extract_and_persist_memories(&conn, &server.uri(), "c1", &span_refs, 10)
-            .await
-            .unwrap();
-
-        assert_eq!(
-            contents_of(&conn, Some("w1")).await,
-            vec!["precious".to_string()],
-            "an all-garbage extraction must never wipe good memories"
-        );
-    }
-
-    /// THE FALSE-REJECTION GUARD. The shape check must not cost us real
-    /// extractions: a well-behaved response -- including a long fact and a
-    /// non-ASCII one (the bounds count CHARS, not bytes) -- persists in full.
-    #[tokio::test]
-    async fn a_well_formed_extraction_is_never_rejected() {
-        let conn = crate::storage::test_async_connection().await;
-        seed_workspace(&conn, "w1").await;
-        seed_conversation(&conn, "c1", Some("w1")).await;
-        let long = "The agent must never let a bad extraction destroy good memories, because \
-                    a condensed span is gone forever and cannot be re-extracted later on.";
-        let server = stub_completion(&format!(
-            "The user prefers oxfmt over prettier.\n{long}\nユーザーはoxfmtを好みます。"
-        ))
-        .await;
-
-        let span = vec![history_message("text", 0, "some work")];
-        let span_refs: Vec<&HistoryMessage> = span.iter().collect();
-        extract_and_persist_memories(&conn, &server.uri(), "c1", &span_refs, 10)
-            .await
-            .unwrap();
-
-        assert_eq!(
-            contents_of(&conn, Some("w1")).await,
-            vec![
-                "The user prefers oxfmt over prettier.".to_string(),
-                long.to_string(),
-                "ユーザーはoxfmtを好みます。".to_string()
-            ],
-            "a good response must persist fully -- the shape check is for garbage only"
         );
     }
 

@@ -234,6 +234,233 @@ async fn apply_lightweight_clearing_then_summarize_against_the_server() {
     );
 }
 
+/// Does a line look like the model ignored "no bullets, no numbering"? Only
+/// the `- ` prefix is defensively stripped by the parser, so anything else
+/// leaking through is a real contract violation. A fact that merely STARTS
+/// with a number ("3 retries are allowed") is not a list item -- the marker
+/// has to be a digit run followed by `.` or `)`.
+fn looks_like_a_list_item(line: &str) -> bool {
+    for marker in ["- ", "* ", "+ ", "• ", "– "] {
+        if line.starts_with(marker) {
+            return true;
+        }
+    }
+    let digits: String = line.chars().take_while(|c| c.is_ascii_digit()).collect();
+    !digits.is_empty() && line[digits.len()..].starts_with(['.', ')'])
+}
+
+/// Seeds the one workspace + conversation row `extract_and_persist_memories`
+/// resolves through (`workspace_id_for_conversation` reads `conversations`,
+/// and the FK needs the workspace to exist), mirroring `context::tests`' own
+/// seeding against the same fully-migrated in-memory schema.
+async fn seed_workspace_and_conversation(conn: &tokio_rusqlite::Connection) {
+    conn.call(|conn: &mut rusqlite::Connection| {
+        conn.execute(
+            "INSERT INTO workspaces (id, path, display_name, created_at, last_opened_at) \
+             VALUES ('w1', 'w1', 'Memory smoke workspace', 0, 0)",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO conversations (id, workspace_id, spawned_by_conversation_id, title, \
+             created_at, updated_at) VALUES ('c1', 'w1', NULL, 'Memory smoke', 0, 0)",
+            [],
+        )
+    })
+    .await
+    .expect("seed workspace + conversation");
+}
+
+fn span_message(chat: ChatMessage, content_type: &str, sequence: i64) -> HistoryMessage {
+    HistoryMessage {
+        chat,
+        content_type: content_type.to_string(),
+        sequence,
+        plan: false,
+        payload_ref: None,
+        tool_name: None,
+    }
+}
+
+/// THE POINT OF THIS SUITE, applied to SP4's memory extraction: does the REAL
+/// model actually OBEY `MEMORY_EXTRACTION_PROMPT`'s "one fact per line, no
+/// commentary, no headers" contract?
+///
+/// Every other test of this pass stubs the llama-server and feeds the parser a
+/// canned, already-well-formed fact list -- which asserts that IF the model
+/// behaves, we parse it. That is an assumption about the model, and it is
+/// exactly the assumption `is_plausible_fact`'s guards were written blind
+/// against (the trailing-colon preamble rule exists because a 4B was OBSERVED
+/// emitting "Here is the updated set of memories:"). Only a real model can
+/// settle it, so this drives the REAL `extract_and_persist_memories` against a
+/// REAL `llama-server` over a realistic span.
+///
+/// The assertions are the CONTRACT, never the wording: the model is
+/// stochastic, so "did it remember the oxfmt preference" is not a test, but
+/// "is everything it persisted fact-shaped" is. The `--nocapture` print of
+/// every persisted fact is as much the deliverable as the asserts -- it is the
+/// only way a human sees what the model actually produced, and whether the
+/// facts are any GOOD (as opposed to merely well-formed) is a judgement this
+/// test deliberately leaves to that reader.
+#[tokio::test]
+#[ignore]
+async fn the_real_model_obeys_the_memory_extraction_contract() {
+    let model = installed_model_path();
+    let Some(server) = common::TestServer::spawn(&model).await else {
+        return; // sidecar binary or model GGUF absent -- skip (see TestServer)
+    };
+
+    let conn = doce_lib::storage::test_async_connection().await;
+    seed_workspace_and_conversation(&conn).await;
+
+    // A realistic span about to be condensed: two genuinely durable facts (a
+    // stated user preference, a project constraint) buried in transient
+    // chatter -- a test run's pass count, a tool result, and what the agent is
+    // doing "right now" -- all of which the prompt explicitly says never to
+    // remember. Both kinds are present because a span of pure facts would let
+    // a model that just echoes everything pass.
+    let span: Vec<HistoryMessage> = vec![
+        span_message(
+            ChatMessage::user(
+                "Before we start: always run `cargo fmt` before you commit. Every time, \
+                 without asking me first.",
+            ),
+            "text",
+            0,
+        ),
+        span_message(
+            ChatMessage::assistant("Understood -- I'll run `cargo fmt` before every commit."),
+            "text",
+            1,
+        ),
+        span_message(
+            ChatMessage::user(
+                "One hard constraint for this project: the Rust backend must never take a \
+                 dependency on `tracing`. Use `eprintln!` for logging instead.",
+            ),
+            "text",
+            2,
+        ),
+        span_message(
+            ChatMessage::assistant(
+                "Got it. I'll keep logging on `eprintln!` and won't add `tracing`.",
+            ),
+            "text",
+            3,
+        ),
+        span_message(
+            ChatMessage::user("Can you run the test suite now? I want to see where we are."),
+            "text",
+            4,
+        ),
+        span_message(
+            ChatMessage::assistant("Running the suite now -- one moment."),
+            "text",
+            5,
+        ),
+        HistoryMessage {
+            chat: ChatMessage::tool_result(
+                "call-0".to_string(),
+                "Bash",
+                "test result: ok. 381 passed; 0 failed; 0 ignored; finished in 2.31s".to_string(),
+            ),
+            content_type: "tool_result".to_string(),
+            sequence: 6,
+            plan: false,
+            payload_ref: None,
+            tool_name: Some("Bash".to_string()),
+        },
+        span_message(
+            ChatMessage::assistant("All 381 tests pass. I'm on the memory-extraction task next."),
+            "text",
+            7,
+        ),
+    ];
+    let span_refs: Vec<&HistoryMessage> = span.iter().collect();
+
+    context::extract_and_persist_memories(&conn, &server.base_url, "c1", &span_refs, 1_000)
+        .await
+        .expect("extraction must never fail the turn");
+
+    let memories = doce_lib::storage::memories::load_memories(&conn, Some("w1"))
+        .await
+        .expect("load the persisted set");
+
+    // THE DELIVERABLE: what the model actually emitted, for a human to read.
+    println!(
+        "\n=== real model: persisted memories ({}) ===",
+        memories.len()
+    );
+    for (i, m) in memories.iter().enumerate() {
+        println!("  [{i}] {:?}", m.content);
+    }
+    println!("=== end persisted memories ===\n");
+
+    // An extraction that persisted nothing means the model refused the task,
+    // emitted a preamble-dominated response, or blew the output cap -- all of
+    // which the guards correctly reject, and all of which are contract
+    // failures worth failing on rather than shrugging at.
+    assert!(
+        !memories.is_empty(),
+        "the real model persisted NOTHING from a span containing a stated user preference and \
+         an explicit project constraint -- it did not obey MEMORY_EXTRACTION_PROMPT"
+    );
+
+    for m in &memories {
+        let fact = &m.content;
+        // The real-model contract check: the guard written blind against this
+        // model, finally pointed at it.
+        assert!(
+            context::is_plausible_fact(fact),
+            "persisted fact is not fact-shaped: {fact:?}"
+        );
+        // Redundant with `is_plausible_fact`'s rule 1 by construction, and
+        // asserted separately on purpose: "no preamble leaked through" is the
+        // property, and it must keep being tested even if that rule is ever
+        // loosened.
+        assert!(
+            !fact.ends_with(':'),
+            "a preamble/header leaked through as a durable fact: {fact:?}"
+        );
+        assert!(
+            !looks_like_a_list_item(fact),
+            "the model emitted a list marker despite 'no bullets, no numbering': {fact:?}"
+        );
+    }
+
+    // THE ASSERTION THAT ACTUALLY BITES, and the reason this test exists.
+    //
+    // Every check above passes on a well-formed SENTENCE, and the transcript
+    // is full of well-formed sentences -- so a model that simply echoes a
+    // message back at us satisfies all of them while extracting nothing. That
+    // is not hypothetical: it is what this model does today (see the report at
+    // .superpowers/sdd/sp4-real-model-test-report.md). `to_summarize` ends
+    // with an assistant message, `extract_and_persist_memories` appends
+    // nothing after it, and llama-server's chat template treats a trailing
+    // assistant message as a PREFILL to continue -- so the model closes it out
+    // immediately and the "extraction" comes back as that message, verbatim,
+    // deterministically, which then persists as a durable memory forever.
+    //
+    // Safe for THIS span (nothing in it is a legitimate durable memory
+    // verbatim -- every message is conversational), and robust to
+    // stochasticity: it asserts a relationship to the input, never a wording.
+    let span_texts: Vec<&str> = span
+        .iter()
+        .filter_map(|m| match &m.chat.content {
+            doce_lib::inference::MessageContent::Text(t) => Some(t.as_str()),
+            _ => None,
+        })
+        .collect();
+    for m in &memories {
+        assert!(
+            !span_texts.contains(&m.content.as_str()),
+            "the model ECHOED a transcript message verbatim instead of extracting a durable \
+             fact from it: {:?}\nThis is the trailing-assistant-message prefill bug: the \
+             extraction never actually ran.",
+            m.content
+        );
+    }
+}
+
 /// A minimal `AgentBackend` for the one-tool-call real-server smoke below:
 /// the flat (plan-less) loop with just the `Read` tool on the table,
 /// generating through `LlamaServerClient::chat` (the cutover path).
