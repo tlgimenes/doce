@@ -5,7 +5,7 @@ use crate::agent::{
 };
 use crate::commands::conversations::ActiveGenerations;
 use crate::commands::models::now_ms;
-use crate::inference::{ChatMessage, ToolDialect};
+use crate::inference::ChatMessage;
 use crate::storage::conversations::load_history;
 use crate::storage::DbCell;
 use rusqlite::Connection;
@@ -1251,7 +1251,6 @@ async fn execute_top_level_tool(
         sub_context.cwd.as_deref(),
         false,
         sub_transcript_path.as_deref(),
-        ToolDialect::HermesJson,
     );
     // FR-015: a fresh, isolated context — just the system prompt plus the
     // delegated task, no parent conversation history.
@@ -1531,8 +1530,7 @@ async fn emit_context_usage_update(
     )
     .display()
     .to_string();
-    let system_prompt =
-        plan_system_message(cwd, true, Some(&transcript_path), ToolDialect::HermesJson);
+    let system_prompt = plan_system_message(cwd, true, Some(&transcript_path));
     // FR-2: `.cloned()` to drop the lock before `compute_usage` runs.
     let observed = observed_usage
         .0
@@ -1620,9 +1618,8 @@ pub fn plan_system_message(
     cwd: Option<&std::path::Path>,
     allow_task: bool,
     transcript_path: Option<&str>,
-    dialect: crate::inference::ToolDialect,
 ) -> String {
-    let base = crate::agent::plan::single_mode_system_prompt(allow_task, dialect);
+    let base = crate::agent::plan::single_mode_system_prompt(allow_task);
     let mut message = match cwd {
         Some(path) => format!(
             "{base}\n\nYou are currently working in the directory: {}",
@@ -1672,14 +1669,13 @@ pub(crate) fn conversation_system_message(
     cwd: Option<&std::path::Path>,
     transcript_dir: Option<&std::path::Path>,
     conversation_id: &str,
-    dialect: crate::inference::ToolDialect,
 ) -> String {
     let transcript_path = transcript_dir.map(|dir| {
         crate::context::transcript::transcript_path(dir, conversation_id)
             .display()
             .to_string()
     });
-    plan_system_message(cwd, true, transcript_path.as_deref(), dialect)
+    plan_system_message(cwd, true, transcript_path.as_deref())
 }
 
 /// 009-rich-chat-input/US2 (contracts/rich-chat-input.md): persists this
@@ -1993,12 +1989,8 @@ pub async fn send_agent_message(
     let plan_state = crate::agent::plan::PlanState::default();
     // The top-level agent seed names ITS OWN conversation's transcript
     // (contrast the subagent seed above, which names `subagent_id`'s).
-    let system_prompt = conversation_system_message(
-        cwd.as_deref(),
-        transcript_dir.as_deref(),
-        &conversation_id,
-        ToolDialect::HermesJson,
-    );
+    let system_prompt =
+        conversation_system_message(cwd.as_deref(), transcript_dir.as_deref(), &conversation_id);
     let usage = crate::context::maybe_compact(
         &conn,
         transcript_dir.clone(),
@@ -2226,27 +2218,17 @@ mod tests {
             Some(std::path::Path::new("/Users/tester/code/doce")),
             true,
             None,
-            crate::inference::ToolDialect::HermesJson,
         );
         assert!(msg.contains("You are currently working in the directory: /Users/tester/code/doce"));
         // Verify the prompt body is the immutable union prompt.
-        let base = crate::agent::plan::single_mode_system_prompt(
-            true,
-            crate::inference::ToolDialect::HermesJson,
-        );
+        let base = crate::agent::plan::single_mode_system_prompt(true);
         assert!(msg.starts_with(base));
     }
 
     #[test]
     fn plan_system_message_is_unchanged_when_no_cwd_is_known() {
-        let msg = plan_system_message(None, true, None, crate::inference::ToolDialect::HermesJson);
-        assert_eq!(
-            msg,
-            crate::agent::plan::single_mode_system_prompt(
-                true,
-                crate::inference::ToolDialect::HermesJson
-            )
-        );
+        let msg = plan_system_message(None, true, None);
+        assert_eq!(msg, crate::agent::plan::single_mode_system_prompt(true));
     }
 
     /// The KV-prefix invariant: what seeds `messages[0]` must be
@@ -2258,47 +2240,17 @@ mod tests {
     fn plan_system_message_is_byte_stable_across_renders() {
         let cwd = std::path::Path::new("/Users/tester/code/doce");
         assert_eq!(
-            plan_system_message(
-                Some(cwd),
-                true,
-                None,
-                crate::inference::ToolDialect::HermesJson
-            ),
-            plan_system_message(
-                Some(cwd),
-                true,
-                None,
-                crate::inference::ToolDialect::HermesJson
-            )
+            plan_system_message(Some(cwd), true, None),
+            plan_system_message(Some(cwd), true, None)
         );
         assert_eq!(
-            plan_system_message(
-                Some(cwd),
-                false,
-                None,
-                crate::inference::ToolDialect::HermesJson
-            ),
-            plan_system_message(
-                Some(cwd),
-                false,
-                None,
-                crate::inference::ToolDialect::HermesJson
-            )
+            plan_system_message(Some(cwd), false, None),
+            plan_system_message(Some(cwd), false, None)
         );
         // The subagent flavor differs (no Task tool) but is stable too.
         assert_ne!(
-            plan_system_message(
-                Some(cwd),
-                true,
-                None,
-                crate::inference::ToolDialect::HermesJson
-            ),
-            plan_system_message(
-                Some(cwd),
-                false,
-                None,
-                crate::inference::ToolDialect::HermesJson
-            )
+            plan_system_message(Some(cwd), true, None),
+            plan_system_message(Some(cwd), false, None)
         );
     }
 
@@ -2313,16 +2265,10 @@ mod tests {
     /// already pins.
     #[test]
     fn system_prompt_names_the_transcript_when_given() {
-        let with = plan_system_message(
-            None,
-            true,
-            Some("/t/c1.txt"),
-            crate::inference::ToolDialect::HermesJson,
-        );
+        let with = plan_system_message(None, true, Some("/t/c1.txt"));
         assert!(with.contains("/t/c1.txt"));
         assert!(with.contains("transcript"));
-        let without =
-            plan_system_message(None, true, None, crate::inference::ToolDialect::HermesJson);
+        let without = plan_system_message(None, true, None);
         assert!(!without.contains("transcript"));
     }
 

@@ -44,20 +44,6 @@ pub struct Plan {
     pub steps: Vec<PlanStep>,
 }
 
-/// `Task` gets its own line because it's a union tool a subagent host
-/// must never advertise (FR-016's one-level nesting cap: `run_loop` rejects
-/// any `Task` call from a subagent, so listing it would just spend a
-/// guaranteed-failing turn). `AskUserQuestion` below gets the identical
-/// treatment for its own reason.
-const TASK_TOOL_LINE: &str = r#"{"type": "function", "function": {"name": "Task", "description": "Delegate substantial, self-contained work (extensive exploration, a large search, a bulky sub-investigation) to an isolated subagent instead of doing it inline. This conversation is shared across the WHOLE task, not just this step -- everything you do here stays visible to every later step too, so keep it lean: reach for Task when a piece of work would otherwise flood this shared history with exploration detail nobody later needs, and only the outcome actually matters going forward.", "parameters": {"type": "object", "properties": {"prompt": {"type": "string"}}, "required": ["prompt"]}}}"#;
-
-/// `AskUserQuestion` gets its own line for the same reason `Task` does:
-/// only the top-level host can service it (`SubagentBackend::execute_tool`
-/// has no AskUserQuestion route -- a subagent's questions have no user to
-/// reach), so the subagent flavor must not advertise it, and Planning's
-/// grammar allowed-set must not make it samplable there either.
-const ASK_USER_QUESTION_TOOL_LINE: &str = r#"{"type": "function", "function": {"name": "AskUserQuestion", "description": "Ask the user directly if the request is genuinely ambiguous.", "parameters": {"type": "object", "properties": {"header": {"type": "string"}, "question": {"type": "string"}, "options": {"type": "array", "items": {"type": "object", "properties": {"label": {"type": "string"}, "description": {"type": "string"}}, "required": ["label"]}}, "multiSelect": {"type": "boolean"}}, "required": ["header", "question", "options"]}}}"#;
-
 /// What handling `Todo`/`FinishTask` produced: an ordinary result string
 /// fed back into the loop, or the task's final answer (`FinishTask`) —
 /// hosts map `Finish` onto `agent::ToolExecution::Finish`, ending
@@ -83,35 +69,7 @@ pub struct PlanState {
     finish_bounced: bool,
 }
 
-/// The single-mode `<tools>` lines: 9 tools, down from the union's 15.
-/// `Update` absorbs Write+Edit (argument shape selects create/overwrite
-/// vs surgical replace); `Todo` absorbs the five plan tools.
-const SINGLE_MODE_TOOL_LINES: &[&str] = &[
-    r#"{"type": "function", "function": {"name": "Read", "description": "Read a file from disk.", "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}, "offset": {"type": "number"}, "limit": {"type": "number"}}, "required": ["file_path"]}}}"#,
-    r#"{"type": "function", "function": {"name": "Update", "description": "Create or modify a file. Pass content to create or fully overwrite the file. Pass old_string and new_string (and no content) to replace one exact occurrence in place.", "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}, "content": {"type": "string"}, "old_string": {"type": "string"}, "new_string": {"type": "string"}, "replace_all": {"type": "boolean"}}, "required": ["file_path"]}}}"#,
-    r#"{"type": "function", "function": {"name": "Bash", "description": "Run a shell command.", "parameters": {"type": "object", "properties": {"command": {"type": "string"}, "timeout": {"type": "number"}}, "required": ["command"]}}}"#,
-    r#"{"type": "function", "function": {"name": "Grep", "description": "Search file contents with a regular expression. Omit path to search the current working directory. Results are capped at 100 matches -- for counting or exhaustive listings use a Bash pipeline instead.", "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}, "glob": {"type": "string"}}, "required": ["pattern"]}}}"#,
-    r#"{"type": "function", "function": {"name": "Glob", "description": "Find files by name pattern. The pattern is a single wildcard expression, e.g. "bug_*.txt" or "*.rs" -- never a space-separated list of literal filenames, that matches nothing. Omit path to search the current working directory. Results are capped at the 100 most recently modified matches -- for counting or exhaustive listings use a Bash pipeline instead.", "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}}, "required": ["pattern"]}}}"#,
-    r#"{"type": "function", "function": {"name": "Todo", "description": "Replace your todo list. Keep one for any multi-step task: one item per file or unit of work, done: true as you finish each. Calling this only records progress -- keep working afterwards.", "parameters": {"type": "object", "properties": {"items": {"type": "array", "items": {"type": "object", "properties": {"text": {"type": "string"}, "done": {"type": "boolean"}}, "required": ["text", "done"]}}}, "required": ["items"]}}}"#,
-];
-
-const SINGLE_MODE_FINISH_LINE: &str = r#"{"type": "function", "function": {"name": "FinishTask", "description": "End the task and deliver your final answer to the user. Only call this after you have verified the outcome yourself.", "parameters": {"type": "object", "properties": {"answer": {"type": "string"}}, "required": ["answer"]}}}"#;
-
-fn build_single_mode_system_prompt(
-    allow_task: bool,
-    dialect: crate::inference::ToolDialect,
-) -> String {
-    let mut tools: Vec<&str> = SINGLE_MODE_TOOL_LINES.to_vec();
-    if allow_task {
-        tools.push(TASK_TOOL_LINE);
-        tools.push(ASK_USER_QUESTION_TOOL_LINE);
-    }
-    tools.push(SINGLE_MODE_FINISH_LINE);
-    let tools_block = tools.join(
-        "
-",
-    );
-    let call_instructions = dialect.call_format_instructions();
+fn build_single_mode_system_prompt(allow_task: bool) -> String {
     let unclear_action = if allow_task {
         "call AskUserQuestion, and keep asking until the task is clear"
     } else {
@@ -124,13 +82,6 @@ fn build_single_mode_system_prompt(
 # Tools
 
 You may call one or more functions to assist with the user query.
-
-You are provided with function signatures within <tools></tools> XML tags:
-<tools>
-{tools_block}
-</tools>
-
-{call_instructions}
 
 # Size up the request first
 
@@ -155,25 +106,19 @@ Every response you give must be exactly one tool call."#
     )
 }
 
-/// THE single-mode system prompt — cached per (host flavor, dialect),
-/// byte-stable within a pairing (the KV-prefix invariant, unchanged from
-/// the union prompt this replaces).
-pub fn single_mode_system_prompt(
-    allow_task: bool,
-    dialect: crate::inference::ToolDialect,
-) -> &'static str {
+/// THE single-mode system prompt — cached per host flavor, byte-stable
+/// within a flavor (the KV-prefix invariant, unchanged from the union
+/// prompt this replaces).
+pub fn single_mode_system_prompt(allow_task: bool) -> &'static str {
     use std::sync::OnceLock;
-    static WITH_TASK_HERMES: OnceLock<String> = OnceLock::new();
-    static WITHOUT_TASK_HERMES: OnceLock<String> = OnceLock::new();
-    static WITH_TASK_MINICPM: OnceLock<String> = OnceLock::new();
-    static WITHOUT_TASK_MINICPM: OnceLock<String> = OnceLock::new();
-    let cell = match (allow_task, dialect) {
-        (true, crate::inference::ToolDialect::HermesJson) => &WITH_TASK_HERMES,
-        (false, crate::inference::ToolDialect::HermesJson) => &WITHOUT_TASK_HERMES,
-        (true, crate::inference::ToolDialect::MiniCpmXml) => &WITH_TASK_MINICPM,
-        (false, crate::inference::ToolDialect::MiniCpmXml) => &WITHOUT_TASK_MINICPM,
+    static WITH_TASK: OnceLock<String> = OnceLock::new();
+    static WITHOUT_TASK: OnceLock<String> = OnceLock::new();
+    let cell = if allow_task {
+        &WITH_TASK
+    } else {
+        &WITHOUT_TASK
     };
-    cell.get_or_init(|| build_single_mode_system_prompt(allow_task, dialect))
+    cell.get_or_init(|| build_single_mode_system_prompt(allow_task))
 }
 
 const SINGLE_MODE_TOOLS_TOP: &[&str] = &[
@@ -310,7 +255,6 @@ mod tests {
 #[cfg(test)]
 mod single_mode_tests {
     use super::*;
-    use crate::inference::ToolDialect;
 
     fn call(name: &str, arguments: serde_json::Value) -> crate::agent::ToolCall {
         crate::agent::ToolCall {
@@ -402,22 +346,19 @@ mod single_mode_tests {
 
     #[test]
     fn single_mode_prompt_and_tool_names_carry_the_converged_set() {
-        let prompt = single_mode_system_prompt(true, ToolDialect::HermesJson);
-        for tool in [
-            "Read",
-            "Update",
-            "Bash",
-            "Grep",
-            "Glob",
-            "Todo",
-            "FinishTask",
-            "Task",
-        ] {
-            assert!(
-                prompt.contains(&format!("\"name\": \"{tool}\"")),
-                "prompt must list {tool}"
-            );
-        }
+        let prompt = single_mode_system_prompt(true);
+        // The tool schemas now come from the llama-server chat template (the
+        // `--jinja` tools array), NOT from a hand-listed `<tools>` block, and
+        // the Hermes call format is no longer hand-taught in the prompt --
+        // both were a redundant second copy of what the template injects.
+        assert!(
+            !prompt.contains("<tools>"),
+            "the redundant <tools> block must be gone"
+        );
+        assert!(
+            !prompt.contains("tool_call></tool_call> XML tags"),
+            "the redundant call-format teaching must be gone"
+        );
         // The retired machine's tools and modes are GONE from the prompt.
         for gone in [
             "CreatePlan",

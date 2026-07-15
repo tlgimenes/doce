@@ -46,7 +46,7 @@ mod common;
 
 use doce_lib::agent::{dispatch, run_loop, AgentBackend, AgentContext, AgentError};
 use doce_lib::context;
-use doce_lib::inference::{ChatMessage, ToolDialect};
+use doce_lib::inference::ChatMessage;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
@@ -676,10 +676,6 @@ async fn run_planned_conversation(
             Some(cwd),
             true,
             Some(&transcript_path.display().to_string()),
-            // The EXACT production prompt for the model under test: doce
-            // ships one Hermes model, so the dialect is pinned, same as the
-            // app.
-            ToolDialect::HermesJson,
         ),
     )];
     let mut runs = Vec::new();
