@@ -81,7 +81,7 @@ fn build_single_mode_system_prompt(allow_task: bool) -> String {
 
 # Tools
 
-You may call one or more functions to assist with the user query.
+You have tools to read, search, and change files and to run shell commands. Their signatures are provided to you. Call exactly one tool per response.
 
 # Size up the request first
 

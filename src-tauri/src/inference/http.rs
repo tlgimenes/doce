@@ -80,7 +80,7 @@ pub fn tools_array(names: &[&str]) -> Vec<Value> {
 fn tool_def(name: &str) -> Option<Value> {
     let (description, parameters): (&str, Value) = match name {
         "Read" => (
-            "Read a file from disk.",
+            "Read a file from disk. Read a file before you edit it.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
