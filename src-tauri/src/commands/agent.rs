@@ -1653,13 +1653,22 @@ pub(crate) fn render_memories_section(
         }
         s
     };
+    // Proportional-jump reduction, mirroring `project_instructions_section`'s
+    // truncation loop: re-measure and shrink `take` by the overage ratio
+    // rather than one fact at a time, so an oversized memory set converges
+    // in a few steps instead of O(n). `.min(take - 1)` guarantees strict
+    // decrease (so it always terminates), and every candidate is still a
+    // whole-fact render, so it never emits a partial fact. `take` reaching 0
+    // without a fit means even the single largest-surviving fact overflows
+    // the cap, so it falls through to `None` below.
     let mut take = memories.len();
     while take > 0 {
         let candidate = render(take);
-        if (crate::inference::token_estimate(&candidate) as usize) <= cap {
+        let est = crate::inference::token_estimate(&candidate) as usize;
+        if est <= cap {
             return Some(candidate);
         }
-        take -= 1;
+        take = (take.saturating_mul(cap) / est.max(1)).min(take - 1);
     }
     None
 }
@@ -2510,13 +2519,20 @@ mod tests {
 
     #[test]
     fn no_memories_leaves_the_prompt_byte_identical() {
-        // The benchmark-inertness lock: an empty workspace must not shift a byte.
-        let cwd = std::path::Path::new("/Users/tester/code/doce");
-        assert_eq!(
-            plan_system_message(Some(cwd), true, None, None),
-            plan_system_message(Some(cwd), true, None, None)
+        // The benchmark-inertness lock: an empty workspace must not shift a
+        // byte relative to the pre-SP4 prompt. Asserted against a baseline
+        // built INDEPENDENTLY of `plan_system_message` (mirroring
+        // `plan_system_message_is_unchanged_when_no_cwd_is_known`'s pattern)
+        // -- comparing the function to itself with identical args would pass
+        // even if an unconditional byte were appended to the inert path.
+        let dir = tempfile::tempdir().unwrap(); // no AGENTS.md inside
+        let base = crate::agent::plan::single_mode_system_prompt(true);
+        let expected = format!(
+            "{base}\n\nYou are currently working in the directory: {}",
+            dir.path().display()
         );
-        let with_none = plan_system_message(Some(cwd), true, None, None);
+        let with_none = plan_system_message(Some(dir.path()), true, None, None);
+        assert_eq!(with_none, expected);
         assert!(!with_none.contains("# Memories"));
     }
 

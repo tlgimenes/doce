@@ -676,6 +676,7 @@ async fn run_planned_conversation(
             Some(cwd),
             true,
             Some(&transcript_path.display().to_string()),
+            None,
         ),
     )];
     let mut runs = Vec::new();

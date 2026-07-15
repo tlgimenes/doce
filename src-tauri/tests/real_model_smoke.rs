@@ -32,7 +32,7 @@ use std::path::PathBuf;
 /// the app itself seeds turns with (prompt drift between app and smoke test
 /// is how the 2026-07-12 doom loop shipped green).
 fn system_prompt() -> String {
-    doce_lib::commands::agent::plan_system_message(None, true, None)
+    doce_lib::commands::agent::plan_system_message(None, true, None, None)
 }
 
 fn installed_model_path() -> PathBuf {
