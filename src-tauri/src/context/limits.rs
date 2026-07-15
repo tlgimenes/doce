@@ -20,6 +20,28 @@ pub const TOOL_KEEP_N: usize = 2;
 
 pub const TOOL_CLEARED_PLACEHOLDER: &str = "[Old tool result cleared to save context space]";
 
+/// The opening every tier-1 placeholder below shares —
+/// `TOOL_CLEARED_PLACEHOLDER`, `tool_cleared_placeholder_with_pointer` and
+/// `tool_cleared_placeholder_transcript` all start with it
+/// (`all_three_placeholders_share_the_cleared_prefix` pins that). It is what
+/// makes "has this row already been cleared?" answerable from the row alone
+/// (`is_tool_cleared_placeholder`), WITHOUT having to know which of the
+/// three variants a previous pass chose or which `transcript_path` it was
+/// handed — the check `context::apply_lightweight_clearing` needs to stay
+/// genuinely idempotent now that the clearing is replayed on every load
+/// (`storage::conversations::load_history_annotated`) rather than recomputed
+/// from scratch into a copy that gets dropped.
+pub const TOOL_CLEARED_PREFIX: &str = "[Old tool result cleared";
+
+/// True when `text` is a tier-1 placeholder some earlier pass already
+/// substituted for a tool row's real content — see `TOOL_CLEARED_PREFIX`.
+/// Only meaningful for a `tool_call`/`tool_result` row: a genuine tool row
+/// reconstructs as `MessageContent::ToolUse`/`ToolResult` carrying the
+/// tool's own output, never as prose that opens this way.
+pub fn is_tool_cleared_placeholder(text: &str) -> bool {
+    text.starts_with(TOOL_CLEARED_PREFIX)
+}
+
 /// Beyond this many plan-marked tool rows (`detail.plan == true` — the
 /// five plan-machine tools plus state-gated rejections, see
 /// `commands::agent::persist_plan_tool`), the oldest are cleared by tier 1
@@ -332,6 +354,31 @@ pub const MEMORY_FACT_MAX_CHARS: usize = 300;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `is_tool_cleared_placeholder` is what keeps tier 1 idempotent across
+    /// the load-time replay, and it recognizes a cleared row by
+    /// `TOOL_CLEARED_PREFIX` alone. If any variant below ever stops opening
+    /// with that prefix, a row cleared as that variant stops being
+    /// recognized as cleared, and `maybe_compact` starts re-clearing it (and
+    /// persisting a fresh "N old tool results cleared" notice) on every
+    /// single turn. Hence pinned here rather than left to the eye.
+    #[test]
+    fn all_three_placeholders_share_the_cleared_prefix() {
+        for text in [
+            TOOL_CLEARED_PLACEHOLDER.to_string(),
+            tool_cleared_placeholder_with_pointer("/tmp/payload.txt"),
+            tool_cleared_placeholder_transcript("/tmp/c1.txt", 7),
+        ] {
+            assert!(
+                is_tool_cleared_placeholder(&text),
+                "tier-1 placeholder {text:?} does not start with {TOOL_CLEARED_PREFIX:?}"
+            );
+        }
+        assert!(
+            !is_tool_cleared_placeholder("the real output of a tool that was never cleared"),
+            "ordinary tool output must never read as an already-cleared row"
+        );
+    }
 
     #[test]
     #[allow(clippy::assertions_on_constants)]

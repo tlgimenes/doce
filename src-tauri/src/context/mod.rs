@@ -6,16 +6,27 @@
 //! conversation state (see research.md for why each piece is shaped this
 //! way).
 //!
-//! Note on testability: unlike `apply_lightweight_clearing`/`ContextSettings`/
-//! `exceeds` below (pure, unit-tested), `compute_usage`/`maybe_compact` need a
-//! live DB connection (and, for `maybe_compact`, a running `llama-server` — its
-//! `summarize_and_persist` generates through the HTTP client at a `base_url`),
-//! neither of which is available in `cargo test`.
-//! Their correctness is exercised by `quickstart.md`'s manual validation
-//! pass against the real app instead. Where a real function needs a pure
-//! core unit-tested on its own, that core is split out (`fit_turn_to_budget`
-//! /`fit_to_budget`; `summarize_and_persist`/`messages_to_summarize`), the
-//! same way each time.
+//! Note on testability: `apply_lightweight_clearing`/`ContextSettings`/
+//! `exceeds` below are pure and directly unit-tested. `compute_usage`/
+//! `maybe_compact` need a live DB connection (and, for `maybe_compact`, a
+//! running `llama-server` — its `summarize_and_persist` generates through the
+//! HTTP client at a `base_url`), so they are driven end-to-end by
+//! `tests/real_model_smoke.rs`'s `#[ignore]`d real-model tests instead.
+//!
+//! This comment used to claim those two were untestable and left to
+//! `quickstart.md`'s manual validation pass. They were not, and the first
+//! pass that actually ran them found both halves of the persistence
+//! pipeline broken (2026-07-15): tier 2's splice dropped the entire
+//! conversation, and tier 1's clearing never reached the model at all. What
+//! each tier PERSISTS is now pinned by fast unit tests over the real persist
+//! path (`post_compaction_history_contract` below, and
+//! `storage::conversations`'s splice tests) — a real-model test is the right
+//! place to answer "does the model produce a usable summary", never the only
+//! thing standing between a persistence bug and a shipped release.
+//!
+//! Where a real function needs a pure core unit-tested on its own, that core
+//! is split out (`fit_turn_to_budget`/`fit_to_budget`;
+//! `summarize_and_persist`/`messages_to_summarize`), the same way each time.
 
 pub mod limits;
 pub mod payload;
@@ -292,23 +303,19 @@ pub async fn compute_usage(
     observed: Option<&ObservedUsage>,
 ) -> Result<ContextUsage, String> {
     let settings = ContextSettings::load(conn).await?;
-    let mut history = load_history_via_conn(conn, conversation_id, skills_dir).await?;
-    // Tier 1 is a pure, idempotent, load-time transform (see
-    // apply_lightweight_clearing's own doc comment) -- applying it here too
-    // (not just inside maybe_compact) is what makes this
-    // function actually report "what the effective prompt looks like right
-    // now" instead of a raw, pre-tier-1 count that silently disagrees with
-    // what compaction already achieved. Without this, get_context_usage and
-    // emit_context_usage_update (both built on this function) would report
-    // a persistently-too-high number even after tier 1 had genuinely
-    // cleared old tool results -- found via real use, not speculatively.
-    // `None` here (unlike `maybe_compact`'s own call below): this function
-    // has no `app_data_dir`/transcript path to hand a cleared row, so a
-    // row with no `payload_ref` falls back to the plain
-    // `TOOL_CLEARED_PLACEHOLDER` -- an honest, if less specific, count
-    // (this function already documents itself as "a close, honest
-    // estimate" at its callers, not a byte-exact mirror of the real seed).
-    apply_lightweight_clearing(&mut history, TOOL_KEEP_N, None);
+    // Tier 1's clearing is already IN this history: `load_history_annotated`
+    // replays whatever tier 1 persisted, so what loads here is exactly what
+    // `commands::agent::send_agent_message` seeds the model with, placeholders
+    // and all. This function used to re-run `apply_lightweight_clearing`
+    // itself, on the reasoning that tier 1 was a pure load-time transform and
+    // this was the only way the number could reflect it -- but no load path
+    // applied it, so the clearing existed ONLY in the local copies this
+    // function and `maybe_compact` threw away. That made this the more
+    // dangerous half of the same bug: it reported the cleared estimate (~770
+    // tokens on the real fixture) for a prompt that was really ~5.1k, i.e. it
+    // under-reported by ~6.6x, in the direction that lets an over-budget
+    // prompt through `send_agent_message`'s hard-limit check.
+    let history = load_history_via_conn(conn, conversation_id, skills_dir).await?;
     usage_from_history(
         conversation_id,
         &history,
@@ -345,11 +352,19 @@ pub async fn compute_usage(
 /// an entry there. A row WITH a `payload_ref` still prefers that pointer
 /// regardless — it's the more specific file (the exact staged content, not
 /// the whole conversation).
+///
+/// Returns one [`ClearedRow`] per row it ACTUALLY changed — a row some
+/// earlier pass already cleared (`limits::is_tool_cleared_placeholder`) is
+/// counted by `keep_n`'s populations but never re-cleared and never
+/// reported, which is what makes calling this on an
+/// already-replayed history (every load applies the persisted clearing now
+/// — see `storage::conversations::load_history_annotated`) a true no-op
+/// instead of an endless "N old tool results cleared" notice every turn.
 pub fn apply_lightweight_clearing(
     history: &mut [HistoryMessage],
     keep_n: usize,
     transcript_path: Option<&str>,
-) -> usize {
+) -> Vec<ClearedRow> {
     let tool_rows: Vec<(usize, bool, Option<String>, i64)> = history
         .iter()
         .enumerate()
@@ -379,19 +394,107 @@ pub fn apply_lightweight_clearing(
         &[]
     };
 
-    let mut cleared = 0;
+    let mut cleared = Vec::new();
     for (i, _, payload_ref, sequence) in &tool_rows {
-        if plan_to_clear.contains(i) || regular_to_clear.contains(i) {
-            let placeholder = match (payload_ref, transcript_path) {
-                (Some(path), _) => limits::tool_cleared_placeholder_with_pointer(path),
-                (None, Some(tp)) => limits::tool_cleared_placeholder_transcript(tp, *sequence),
-                (None, None) => TOOL_CLEARED_PLACEHOLDER.to_string(),
-            };
-            history[*i].chat.content = MessageContent::Text(placeholder);
-            cleared += 1;
+        if !(plan_to_clear.contains(i) || regular_to_clear.contains(i)) {
+            continue;
         }
+        // Already a placeholder (this conversation's persisted clearing,
+        // replayed at load) -- leave it exactly as it is and say nothing.
+        if limits::is_tool_cleared_placeholder(&history[*i].chat.text()) {
+            continue;
+        }
+        let placeholder = match (payload_ref, transcript_path) {
+            (Some(path), _) => limits::tool_cleared_placeholder_with_pointer(path),
+            (None, Some(tp)) => limits::tool_cleared_placeholder_transcript(tp, *sequence),
+            (None, None) => TOOL_CLEARED_PLACEHOLDER.to_string(),
+        };
+        history[*i].chat.content = MessageContent::Text(placeholder.clone());
+        cleared.push(ClearedRow {
+            sequence: *sequence,
+            placeholder,
+        });
     }
     cleared
+}
+
+/// One row tier 1 actually cleared: the row's `sequence` and the EXACT
+/// placeholder text substituted for its content. Persisted verbatim into the
+/// `cleared` context_notice (`cleared_notice_json`) and replayed verbatim on
+/// every subsequent load (`storage::conversations::load_history_annotated`).
+///
+/// Why the substituted text is recorded rather than recomputed at load: it is
+/// not a function of the row alone. `tool_cleared_placeholder_transcript`
+/// embeds this app install's transcript directory — an ENVIRONMENT fact the
+/// load path has no access to (`load_history_annotated` takes a `Connection`,
+/// not an `AppHandle`), and the reason tier 1's clearing was recomputed into a
+/// dropped local copy instead of being applied to what the model actually
+/// receives. Recording it makes the notice a complete record of what tier 1
+/// did, and guarantees the next turn's prompt carries byte-exactly the text
+/// `maybe_compact` measured when it reported the usage drop.
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClearedRow {
+    pub sequence: i64,
+    pub placeholder: String,
+}
+
+/// The `cleared` context_notice's full JSON `content` (data-model.md), built
+/// in one place so `maybe_compact` (which writes it) and
+/// `storage::conversations::load_history_annotated` (which replays it) can
+/// never drift, and so a test can build the row production builds without
+/// hand-typing the shape.
+pub fn cleared_notice_json(cleared: &[ClearedRow]) -> String {
+    let plural = if cleared.len() == 1 { "" } else { "s" };
+    let count = cleared.len();
+    serde_json::json!({
+        "kind": "cleared",
+        "clearedCount": count,
+        // The durable half: WHICH rows were cleared, and to what. Without
+        // this the notice was pure narration -- it claimed a clearing no
+        // load path ever applied, so the model kept receiving every byte
+        // the notice said had been freed.
+        "cleared": cleared,
+        "notice": format!("{count} old tool result{plural} cleared to save space"),
+    })
+    .to_string()
+}
+
+/// The `summarized` context_notice's full JSON `content` (data-model.md) —
+/// same single-source-of-truth reasoning as `cleared_notice_json`.
+///
+/// `through_sequence` is the sequence of the LAST message the summary
+/// covers (`messages_to_summarize`'s span end), and is the splice point
+/// `load_history_annotated` cuts at. It CANNOT be derived from the notice
+/// row's own sequence: `storage::messages::insert` always allocates
+/// `MAX(sequence) + 1`, so this row always lands last, and splicing at its
+/// own sequence dropped every message in the conversation — including the
+/// keep-first task statement and the protected recent turns, the exact two
+/// things `messages_to_summarize` refuses to summarize and which therefore
+/// have nothing standing in for them once dropped.
+pub fn summarized_notice_json(summary: &str, through_sequence: i64) -> String {
+    serde_json::json!({
+        "kind": "summarized",
+        "summary": summary,
+        "throughSequence": through_sequence,
+        "notice": "Conversation condensed to save space",
+    })
+    .to_string()
+}
+
+/// The `restoredFile` context_notice's full JSON `content` (FR-3) — same
+/// single-source-of-truth reasoning as `cleared_notice_json`. Carries no
+/// sequence of its own: `load_history_annotated` dates it by its ROW's
+/// sequence, which is always the one right after the `summarized` notice it
+/// belongs to.
+pub fn restored_file_notice_json(path: &str, restored: &str) -> String {
+    serde_json::json!({
+        "kind": "restoredFile",
+        "path": path,
+        "restored": restored,
+        "notice": "Restored the most-recent file after condensing",
+    })
+    .to_string()
 }
 
 /// True for a `HistoryMessage` that is a genuine user-authored turn (a
@@ -399,9 +502,15 @@ pub fn apply_lightweight_clearing(
 /// a `tool_result` row, which also reconstructs with `chat.role == "user"`
 /// (see `ChatMessage::tool_result`'s own doc comment) but is never "the
 /// task statement".
+///
+/// Delegates to `storage::conversations::is_genuine_user_row` rather than
+/// spelling the rule out again: `load_history_annotated` has to apply the
+/// SAME rule to the raw `messages` row (to know which row survives a
+/// summary's splice), and two copies of "what counts as the task
+/// statement" that disagree would mean tier 2 summarizing away the one
+/// message keep-first exists to protect.
 fn is_genuine_user_message(message: &HistoryMessage) -> bool {
-    message.chat.role == "user"
-        && (message.content_type == "text" || message.content_type == "rich_text")
+    crate::storage::conversations::is_genuine_user_row(&message.chat.role, &message.content_type)
 }
 
 /// The pure span-selection logic behind tier 2: everything in `history`
@@ -687,12 +796,15 @@ pub async fn summarize_and_persist(
 
     match evaluate_summary(&summary, finish_reason, pre_tokens, post_tokens) {
         SummaryDecision::Accept => {
-            let notice_json = serde_json::json!({
-                "kind": "summarized",
-                "summary": summary,
-                "notice": "Conversation condensed to save space",
-            })
-            .to_string();
+            // The span's END is what the summary stands in for, so that is
+            // what the notice records and what `load_history_annotated`
+            // splices at -- NOT this notice row's own sequence, which
+            // `messages::insert` always allocates past the end of the
+            // conversation (see `summarized_notice_json`). `to_summarize` is
+            // non-empty (checked at the top), so the `unwrap_or` is
+            // unreachable; -1 would splice nothing, the safe direction.
+            let through_sequence = to_summarize.last().map(|m| m.sequence).unwrap_or(-1);
+            let notice_json = summarized_notice_json(&summary, through_sequence);
             // Cloned (not moved) -- the restored-file notice below still
             // needs `transcript_dir` for its own `persist_notice` call.
             persist_notice(conn, transcript_dir.clone(), conversation_id, notice_json).await?;
@@ -716,13 +828,7 @@ pub async fn summarize_and_persist(
                         limits::DEFAULT_TOOL_OUTPUT_OFFLOAD_TOKENS,
                         token_estimate,
                     );
-                    let restore_notice_json = serde_json::json!({
-                        "kind": "restoredFile",
-                        "path": path,
-                        "restored": restored,
-                        "notice": "Restored the most-recent file after condensing",
-                    })
-                    .to_string();
+                    let restore_notice_json = restored_file_notice_json(&path, &restored);
                     persist_notice(conn, transcript_dir, conversation_id, restore_notice_json)
                         .await?;
                 }
@@ -1144,26 +1250,37 @@ pub async fn maybe_compact(
             .display()
             .to_string()
     });
-    let cleared_count =
-        apply_lightweight_clearing(&mut history, TOOL_KEEP_N, transcript_path.as_deref());
-    if cleared_count > 0 {
+    let cleared = apply_lightweight_clearing(&mut history, TOOL_KEEP_N, transcript_path.as_deref());
+    if !cleared.is_empty() {
         changed = true;
-        let plural = if cleared_count == 1 { "" } else { "s" };
-        let notice_json = serde_json::json!({
-            "kind": "cleared",
-            "clearedCount": cleared_count,
-            "notice": format!("{cleared_count} old tool result{plural} cleared to save space"),
-        })
-        .to_string();
-        persist_notice(conn, transcript_dir.clone(), conversation_id, notice_json).await?;
-        usage = usage_from_history(
+        // The notice carries the clearing itself (which rows, replaced by
+        // what text), not just a sentence about it -- `load_history_annotated`
+        // replays it on every subsequent load, which is what makes the
+        // mutation above reach the model at all. Without the replay this
+        // whole arm mutated a local `history` that was dropped on return:
+        // the notice, and the usage drop recomputed from it, were both
+        // fiction.
+        persist_notice(
+            conn,
+            transcript_dir.clone(),
             conversation_id,
-            &history,
-            system_prompt,
-            &settings,
-            observed.as_ref(),
+            cleared_notice_json(&cleared),
         )
         .await?;
+        // Same invalidation, and for the same reason, as the tier-2 arm
+        // below: `authoritative_prompt_tokens` uses the server's last
+        // observed `prompt_tokens` as a base and only estimates messages
+        // APPENDED since. A clearing changes message CONTENT without
+        // changing the message COUNT, so every cleared row sits inside that
+        // observed prefix -- the base would still price the full, uncleared
+        // tool results and this recompute would return a byte-identical
+        // number, i.e. tier 1 could never lower usage on any turn after the
+        // first. Harmless only while the clearing never reached the prompt;
+        // now that it does, the observation genuinely describes a prompt
+        // that no longer exists.
+        observed_usage.0.lock().unwrap().remove(conversation_id);
+        usage =
+            usage_from_history(conversation_id, &history, system_prompt, &settings, None).await?;
     }
 
     if over_compact_threshold(&usage) {
@@ -1467,10 +1584,7 @@ mod tests {
             history_message("text", 0, "hi"),
             history_message("text", 1, "hello"),
         ];
-        assert_eq!(
-            apply_lightweight_clearing(&mut history, TOOL_KEEP_N, None),
-            0
-        );
+        assert!(apply_lightweight_clearing(&mut history, TOOL_KEEP_N, None).is_empty());
         assert_eq!(history[0].chat.text(), "hi");
         assert_eq!(history[1].chat.text(), "hello");
     }
@@ -1480,10 +1594,7 @@ mod tests {
         let mut history: Vec<HistoryMessage> = (0..TOOL_KEEP_N as i64)
             .map(|i| history_message("tool_result", i, "result"))
             .collect();
-        assert_eq!(
-            apply_lightweight_clearing(&mut history, TOOL_KEEP_N, None),
-            0
-        );
+        assert!(apply_lightweight_clearing(&mut history, TOOL_KEEP_N, None).is_empty());
         assert!(history.iter().all(|m| m.chat.text() == "result"));
     }
 
@@ -1493,7 +1604,7 @@ mod tests {
             .map(|i| history_message("tool_result", i, &format!("result {i}")))
             .collect();
 
-        let cleared = apply_lightweight_clearing(&mut history, TOOL_KEEP_N, None);
+        let cleared = apply_lightweight_clearing(&mut history, TOOL_KEEP_N, None).len();
         assert_eq!(cleared, 3);
 
         for message in &history[0..3] {
@@ -1512,7 +1623,7 @@ mod tests {
         let mut history = vec![history_message("text", 0, "old text stays")];
         history.extend((1..=5).map(|i| history_message("tool_result", i, &format!("r{}", i - 1))));
 
-        let cleared = apply_lightweight_clearing(&mut history, TOOL_KEEP_N, None);
+        let cleared = apply_lightweight_clearing(&mut history, TOOL_KEEP_N, None).len();
         assert_eq!(cleared, 5 - TOOL_KEEP_N);
         assert_eq!(history[0].chat.text(), "old text stays");
         for message in &history[1..=cleared] {
@@ -1537,7 +1648,7 @@ mod tests {
         history[0] =
             history_message_with_flags("tool_result", 0, "result 0", false, Some("/tmp/x.txt"));
 
-        let cleared = apply_lightweight_clearing(&mut history, TOOL_KEEP_N, None);
+        let cleared = apply_lightweight_clearing(&mut history, TOOL_KEEP_N, None).len();
         assert_eq!(cleared, 1);
         assert_eq!(
             history[0].chat.text(),
@@ -1555,7 +1666,7 @@ mod tests {
             .map(|i| history_message("tool_result", i, &format!("result {i}")))
             .collect();
 
-        let cleared = apply_lightweight_clearing(&mut history, TOOL_KEEP_N, None);
+        let cleared = apply_lightweight_clearing(&mut history, TOOL_KEEP_N, None).len();
         assert_eq!(cleared, 1);
         assert_eq!(history[0].chat.text(), TOOL_CLEARED_PLACEHOLDER);
     }
@@ -1570,7 +1681,7 @@ mod tests {
             .map(|i| history_message("tool_result", i, &format!("result {i}")))
             .collect();
 
-        let cleared = apply_lightweight_clearing(&mut history, 2, Some("/t/c1.txt"));
+        let cleared = apply_lightweight_clearing(&mut history, 2, Some("/t/c1.txt")).len();
         assert_eq!(cleared, 2);
         assert_eq!(
             history[0].chat.text(),
@@ -1602,7 +1713,7 @@ mod tests {
             })
             .collect();
 
-        let cleared = apply_lightweight_clearing(&mut history, 2, Some("/t/c1.txt"));
+        let cleared = apply_lightweight_clearing(&mut history, 2, Some("/t/c1.txt")).len();
         assert_eq!(cleared, 2);
         assert_eq!(
             history[0].chat.text(),
@@ -1631,7 +1742,7 @@ mod tests {
         // keep_n is large enough that the ordinary TOOL_KEEP_N-style rule
         // would keep every one of these -- proving plan rows are cleared
         // by their own, stricter PLAN_KEEP_N cutoff instead.
-        let cleared = apply_lightweight_clearing(&mut history, 10, None);
+        let cleared = apply_lightweight_clearing(&mut history, 10, None).len();
         assert_eq!(cleared, 5 - limits::PLAN_KEEP_N);
         for message in &history[0..cleared] {
             assert_eq!(message.chat.text(), TOOL_CLEARED_PLACEHOLDER);
@@ -1654,7 +1765,7 @@ mod tests {
         // TOOL_KEEP_N (2) regular rows exist -- none of them should clear.
         // Of the 3 plan rows, only the oldest (beyond PLAN_KEEP_N=2)
         // should clear.
-        let cleared = apply_lightweight_clearing(&mut history, TOOL_KEEP_N, None);
+        let cleared = apply_lightweight_clearing(&mut history, TOOL_KEEP_N, None).len();
         assert_eq!(cleared, 1);
         assert_eq!(history[0].chat.text(), TOOL_CLEARED_PLACEHOLDER);
         assert_eq!(history[1].chat.text(), "plan 1");
@@ -1687,7 +1798,7 @@ mod tests {
             history_message("tool_result", 6, "genuine result 2"),
         ];
 
-        let cleared = apply_lightweight_clearing(&mut history, TOOL_KEEP_N, None);
+        let cleared = apply_lightweight_clearing(&mut history, TOOL_KEEP_N, None).len();
 
         // Regular population is exactly the 3 genuine results (TOOL_KEEP_N
         // = 2 survive, the oldest clears) -- the two plan call rows never
@@ -2037,6 +2148,251 @@ mod tests {
             texts,
             vec!["tool output", "m1"],
             "only a genuine text/rich_text user row can be the pinned first user message"
+        );
+    }
+
+    // --- the post-compaction history contract ---
+    //
+    // What each tier PERSISTS, and what the next turn is therefore seeded
+    // with, driven through the real functions end to end: production's own
+    // span selection (`messages_to_summarize`), its own notice payloads
+    // (`summarized_notice_json`/`cleared_notice_json`), its own insert path
+    // (`storage::conversations::persist_context_notice` ->
+    // `storage::messages::insert`, which allocates the sequence), and its
+    // own load (`load_history_annotated`, what `commands::agent`'s seed goes
+    // through). Nothing here hand-builds a row shape or a JSON payload, so
+    // no fixture can drift from what production writes.
+    //
+    // These exist because BOTH of the bugs the 2026-07-15 real-model pass
+    // found lived exactly here, in the seam between deciding and persisting,
+    // and neither was reachable by any of the pure unit tests above: tier 2
+    // chose the right span and then spliced at the wrong point, and tier 1
+    // computed the right clearing and then dropped it on the floor. A
+    // ten-minute `#[ignore]`d real-model test is the wrong and only place to
+    // have caught that.
+
+    /// A real, migrated DB with conversation `c1` already in it — the
+    /// `messages.conversation_id` foreign key is real, so these fixtures
+    /// cannot cut the corner of inserting messages into a conversation that
+    /// does not exist.
+    fn conversation_conn() -> Connection {
+        let conn = crate::storage::test_connection();
+        conn.execute(
+            "INSERT INTO conversations (id, workspace_id, title, created_at, updated_at) \
+             VALUES ('c1', NULL, 'T', 0, 0)",
+            [],
+        )
+        .unwrap();
+        conn
+    }
+
+    /// Seeds a row through production's only insert path, which allocates
+    /// `MAX(sequence) + 1`. Returns the allocated sequence.
+    fn seed_row(conn: &Connection, role: &str, content_type: &str, content: &str) -> i64 {
+        crate::storage::messages::insert(
+            conn,
+            None,
+            &crate::storage::messages::NewMessage {
+                conversation_id: "c1",
+                role,
+                content_type,
+                content,
+                tool_name: None,
+                tool_call_id: Some("tc"),
+                model_text: Some(content),
+                created_at: 0,
+                duration_ms: None,
+                token_count: None,
+            },
+        )
+        .unwrap()
+    }
+
+    fn load(conn: &Connection) -> Vec<HistoryMessage> {
+        load_history_annotated(conn, "c1", Path::new("/nonexistent-skills")).unwrap()
+    }
+
+    /// The whole of tier 2's persistence contract, minus only the model:
+    /// span in, notice persisted, history reloaded. Pins the shape the
+    /// `#[ignore]`d `the_real_maybe_compact_condenses_an_over_threshold_conversation`
+    /// spends ten minutes and a real Qwen3.5-4B to reach.
+    #[test]
+    fn a_persisted_summary_replaces_exactly_the_span_messages_to_summarize_chose() {
+        let conn = conversation_conn();
+        seed_row(&conn, "user", "text", "the task statement");
+        seed_row(&conn, "assistant", "text", "summarized 1");
+        seed_row(&conn, "tool", "tool_result", "summarized tool output");
+        seed_row(&conn, "assistant", "text", "summarized 2");
+        for i in 0..3 {
+            seed_row(&conn, "user", "text", &format!("protected {i}"));
+        }
+
+        // Production's own span selection over production's own load, then
+        // production's own notice, persisted through production's own path.
+        let history = load(&conn);
+        let to_summarize = messages_to_summarize(&history, 3);
+        let summarized: Vec<String> = to_summarize.iter().map(|m| m.chat.text()).collect();
+        assert_eq!(
+            summarized,
+            vec![
+                "summarized 1",
+                "<tool_response>summarized tool output</tool_response>",
+                "summarized 2"
+            ],
+            "fixture guard: the span must exclude the task statement and the protected recent \
+             turns, or this test proves nothing about what happens to them"
+        );
+        let through = to_summarize.last().unwrap().sequence;
+        persist_context_notice(
+            &conn,
+            None,
+            "c1",
+            0,
+            &summarized_notice_json("<state_snapshot>the gist</state_snapshot>", through),
+        )
+        .unwrap();
+
+        let after: Vec<String> = load(&conn).iter().map(|m| m.chat.text()).collect();
+        assert_eq!(
+            after,
+            vec![
+                "the task statement",
+                "<state_snapshot>the gist</state_snapshot>",
+                "protected 0",
+                "protected 1",
+                "protected 2",
+            ],
+            "the summary must replace exactly the span and nothing else. Every message \
+             `messages_to_summarize` refused to summarize is one the summary does not describe, \
+             so dropping it destroys it outright: the task statement (keep-first) and every \
+             protected recent turn have to survive verbatim."
+        );
+    }
+
+    /// Tier 1's clearing has to reach the MODEL, which means surviving a
+    /// reload -- `maybe_compact` mutates a local copy of the history and
+    /// then drops it, so the notice is the only thing that carries the
+    /// clearing forward to the next turn's prompt.
+    #[test]
+    fn a_persisted_clearing_reaches_the_next_load() {
+        let conn = conversation_conn();
+        seed_row(&conn, "user", "text", "the task statement");
+        for i in 0..(TOOL_KEEP_N + 2) {
+            seed_row(
+                &conn,
+                "tool",
+                "tool_result",
+                &format!("big tool output {i}"),
+            );
+        }
+
+        let mut history = load(&conn);
+        let cleared = apply_lightweight_clearing(&mut history, TOOL_KEEP_N, None);
+        assert_eq!(cleared.len(), 2, "the two oldest of four tool rows clear");
+        persist_context_notice(&conn, None, "c1", 0, &cleared_notice_json(&cleared)).unwrap();
+
+        let reloaded = load(&conn);
+        let tool_texts: Vec<String> = reloaded
+            .iter()
+            .filter(|m| m.content_type == "tool_result")
+            .map(|m| m.chat.text())
+            .collect();
+        assert_eq!(
+            tool_texts,
+            vec![
+                TOOL_CLEARED_PLACEHOLDER,
+                TOOL_CLEARED_PLACEHOLDER,
+                "<tool_response>big tool output 2</tool_response>",
+                "<tool_response>big tool output 3</tool_response>",
+            ],
+            "the rows tier 1 cleared must come back cleared. If they come back whole, the \
+             `cleared` notice and the usage drop maybe_compact reports for it are both fiction, \
+             and usage is UNDER-reported -- the direction that lets an over-budget prompt reach \
+             the server."
+        );
+    }
+
+    /// Tier 1 runs on every over-threshold turn, over a history that already
+    /// has the previous clearing replayed into it. If it re-cleared those
+    /// rows it would report a fresh clearing, persist a fresh notice, and
+    /// claim `state:"justCompacted"` every single turn, forever.
+    #[test]
+    fn re_clearing_an_already_cleared_history_is_a_no_op() {
+        let conn = conversation_conn();
+        for i in 0..(TOOL_KEEP_N + 2) {
+            seed_row(
+                &conn,
+                "tool",
+                "tool_result",
+                &format!("big tool output {i}"),
+            );
+        }
+
+        let mut history = load(&conn);
+        let first = apply_lightweight_clearing(&mut history, TOOL_KEEP_N, None);
+        persist_context_notice(&conn, None, "c1", 0, &cleared_notice_json(&first)).unwrap();
+
+        // Exactly what the next turn does: load (replaying the notice above)
+        // and run tier 1 again.
+        let mut reloaded = load(&conn);
+        let second = apply_lightweight_clearing(&mut reloaded, TOOL_KEEP_N, None);
+        assert!(
+            second.is_empty(),
+            "tier 1 re-cleared rows a previous pass had already cleared: {second:?}"
+        );
+    }
+
+    /// A conversation compacted twice: the second summary supersedes the
+    /// first, and must still cover everything the first one did -- a row the
+    /// user has been told is condensed must never come back.
+    #[test]
+    fn a_second_compaction_still_excludes_the_first_summarys_span() {
+        let conn = conversation_conn();
+        seed_row(&conn, "user", "text", "the task statement");
+        seed_row(&conn, "assistant", "text", "ancient 1");
+        seed_row(&conn, "assistant", "text", "ancient 2");
+        for i in 0..3 {
+            seed_row(&conn, "user", "text", &format!("first protected {i}"));
+        }
+
+        let history = load(&conn);
+        let first_through = messages_to_summarize(&history, 3).last().unwrap().sequence;
+        persist_context_notice(
+            &conn,
+            None,
+            "c1",
+            0,
+            &summarized_notice_json("first summary", first_through),
+        )
+        .unwrap();
+
+        // More turns, then compact again over the ALREADY-SPLICED history --
+        // whose first rows are now the synthesized summary itself.
+        seed_row(&conn, "assistant", "text", "newer 1");
+        let history = load(&conn);
+        let second_through = messages_to_summarize(&history, 3).last().unwrap().sequence;
+        persist_context_notice(
+            &conn,
+            None,
+            "c1",
+            0,
+            &summarized_notice_json("second summary", second_through),
+        )
+        .unwrap();
+
+        let after: Vec<String> = load(&conn).iter().map(|m| m.chat.text()).collect();
+        assert_eq!(
+            after,
+            vec![
+                "the task statement",
+                "second summary",
+                "first protected 1",
+                "first protected 2",
+                "newer 1",
+            ],
+            "the second summary must cover the first summary's own span too -- including the \
+             first summary itself, which is what keeps a twice-compacted conversation condensed \
+             instead of resurrecting rows the user was told were gone"
         );
     }
 

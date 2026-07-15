@@ -1,9 +1,25 @@
 use crate::agent::rich_content::{expand_segments, RichMessageContent};
-use crate::inference::ChatMessage;
+use crate::inference::{ChatMessage, MessageContent};
 use rusqlite::Connection;
 use std::path::Path;
 
 const MAX_TITLE_LEN: usize = 60;
+
+/// The most recent `summarized` context_notice, as `load_history_annotated`
+/// reads it back. The two sequences are different numbers with different
+/// jobs and the whole of BUG 1 (2026-07-15) was conflating them — see that
+/// function's own comments.
+struct SummarySplice {
+    /// The notice ROW's own sequence. Always the last sequence in the
+    /// conversation at the moment it was written (`messages::insert`
+    /// allocates `MAX(sequence) + 1`). Only used to date the restored-file
+    /// notice that belongs to this same compaction pass.
+    notice_sequence: i64,
+    /// The sequence of the LAST message the summary actually covers
+    /// (`context::messages_to_summarize`'s span end). THE SPLICE POINT.
+    through_sequence: i64,
+    summary: String,
+}
 
 /// One row of conversation history, still tagged with its `content_type`
 /// and `sequence` (010-context-window-management) — `load_history`'s plain
@@ -97,14 +113,40 @@ fn parse_tool_row_flags(content: &str) -> (bool, Option<String>) {
 ///
 /// 010-context-window-management: a `content_type = 'context_notice'` row
 /// is never itself returned as an ordinary history entry (like `error`, it
-/// isn't real turn content) — *except* that the most recent such row whose
-/// JSON `content` has `"kind":"summarized"` marks a splice point: every row
-/// at or before its `sequence` is dropped from the result and replaced by a
-/// single synthesized system-role message carrying that row's `summary`
-/// field. This is what makes a persisted compaction pass correctly
-/// reflected on every subsequent load (data-model.md), not just for the
-/// turn it happened on. A second, later `summarized` notice supersedes the
-/// first — only the most recent one is spliced.
+/// isn't real turn content) — *except* that it is how BOTH compaction tiers
+/// reach the model, since this function is the only thing that stands
+/// between the persisted `messages` rows and the prompt
+/// (`commands::agent::send_agent_message` seeds from `load_history`, a thin
+/// wrapper over this):
+///
+/// * **Tier 2 (`"kind":"summarized"`)** marks a splice point. Every row at
+///   or before the notice's `throughSequence` — the sequence of the last
+///   message the summary actually covers (`context::summarized_notice_json`)
+///   — is dropped and replaced by a synthesized system-role message
+///   carrying the `summary` field, EXCEPT the keep-first genuine user
+///   message (see `keep_first_sequence` below). A second, later
+///   `summarized` notice supersedes the first — only the most recent one is
+///   spliced.
+/// * **Tier 1 (`"kind":"cleared"`)** replays a persisted clearing: every
+///   `ClearedRow` in every `cleared` notice names a tool row's `sequence`
+///   and the placeholder text tier 1 substituted for its content
+///   (`context::cleared_notice_json`). Splices nothing.
+///
+/// The resulting shape after a tier-2 compaction is exactly:
+/// `[keep-first user message] + [summary] + [restored file, if any] +
+/// [the messages after the summarized span]`
+/// — i.e. the summary replaces exactly the span `context::
+/// messages_to_summarize` selected, no more and no less. That function is
+/// the authority on what the summary covers: it deliberately excludes the
+/// first genuine user message and the most recent
+/// `PROTECTED_RECENT_MESSAGES`, so those are precisely the messages the
+/// summary does NOT describe and which therefore have to survive verbatim
+/// or be lost outright.
+///
+/// The user's own view of the conversation is never affected by any of
+/// this: `commands::conversations::list_messages` reads the `messages`
+/// table directly, so the transcript UI keeps showing every message and
+/// every tool result in full, whatever the model is being seeded with.
 pub fn load_history_annotated(
     conn: &Connection,
     conversation_id: &str,
@@ -135,36 +177,79 @@ pub fn load_history_annotated(
         .collect::<Result<Vec<_>, _>>()?;
 
     // Find the most recent `context_notice` row of kind "summarized" (if
-    // any) — its sequence is the splice point, its embedded `summary` is
-    // what replaces everything at-or-before it.
-    let splice: Option<(i64, String)> = rows
+    // any): its embedded `summary` replaces the span it covers, and that
+    // span ENDS at `throughSequence`.
+    //
+    // `notice_sequence` (the row's own) and `through_sequence` (the span's
+    // end) are emphatically NOT the same number and must not be conflated:
+    // `storage::messages::insert` allocates `COALESCE(MAX(sequence), -1) + 1`,
+    // so a notice ALWAYS lands last, past every real message. Splicing at
+    // the notice's own sequence -- which this did until 2026-07-15 -- meant
+    // `sequence <= splice_sequence` was true for every row that existed, so
+    // every tier-2 compaction silently deleted the whole conversation (18
+    // messages reloaded as 1) while reporting `state:"justCompacted"` and a
+    // usage drop. `notice_sequence` still has one job, below: dating the
+    // restored-file notice that belongs to THIS compaction pass.
+    //
+    // BACKWARD COMPATIBILITY: a notice persisted by that buggy code has no
+    // `throughSequence`, and falls back to the notice row's own sequence --
+    // today's (wrong) behavior, deliberately. Those conversations are
+    // already destroyed: the rows are unreachable, the user has long since
+    // been shown a condensed conversation, and resurrecting them now would
+    // hand the model an unbounded history it was never sized for. The one
+    // thing the fallback DOES recover is the keep-first task statement,
+    // which is exempted below regardless of which splice point applies --
+    // the summary never described it under either code path.
+    let splice: Option<SummarySplice> = rows
         .iter()
         .filter(|(_, content_type, ..)| content_type == "context_notice")
         .filter_map(|(_, _, content, sequence, ..)| {
             let parsed: serde_json::Value = serde_json::from_str(content).ok()?;
-            if parsed.get("kind")?.as_str()? == "summarized" {
-                let summary = parsed.get("summary")?.as_str()?.to_string();
-                Some((*sequence, summary))
-            } else {
-                None
+            if parsed.get("kind")?.as_str()? != "summarized" {
+                return None;
             }
+            Some(SummarySplice {
+                notice_sequence: *sequence,
+                through_sequence: parsed
+                    .get("throughSequence")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(*sequence),
+                summary: parsed.get("summary")?.as_str()?.to_string(),
+            })
         })
-        .max_by_key(|(sequence, _)| *sequence);
+        .max_by_key(|s| s.notice_sequence);
+
+    // The one row at-or-before the splice point that SURVIVES it: the first
+    // genuine user message -- the task statement. `context::
+    // messages_to_summarize` excludes it from every span it hands the model
+    // (its own doc comment: a summarization pass "must never be the thing
+    // that makes the model forget what it was asked to do"), so the summary
+    // does not describe it, and dropping it here would leave nothing at all
+    // standing in for what the user asked. Matched with the same predicate
+    // `messages_to_summarize` itself uses, against the raw row.
+    let keep_first_sequence: Option<i64> = splice.as_ref().and_then(|splice| {
+        rows.iter()
+            .find(|(role, content_type, ..)| is_genuine_user_row(role, content_type))
+            .map(|(_, _, _, sequence, _, _, _)| *sequence)
+            .filter(|sequence| *sequence <= splice.through_sequence)
+    });
 
     // FR-3 (restore-recent-file): the restored-file notice `context::
     // summarize_and_persist` persists right after a `summarized` notice, if
     // any -- its `restored` field is the most-recently-`Read` file's
     // ACTUAL content, re-read fresh at compaction time. Only one is ever
-    // relevant: the one persisted for THIS splice's own compaction pass
-    // (`sequence > splice_sequence` -- a restored-file row left over from
-    // an earlier, now-superseded `summarized` notice has a sequence at or
-    // before the new splice point, same as the stale summary it belongs
-    // to, so it's excluded the same way).
-    let restored_file: Option<(i64, String)> = splice.as_ref().and_then(|(splice_sequence, _)| {
+    // relevant: the one persisted for THIS splice's own compaction pass.
+    // That is `sequence > notice_sequence` -- the NOTICE ROW's own sequence,
+    // NOT `through_sequence`: a restored-file row is persisted immediately
+    // after its summary, so it is the next row after the notice, while
+    // `through_sequence` points far back into the conversation and would
+    // match every restored-file row ever written for it, including the
+    // superseded ones this rule exists to exclude.
+    let restored_file: Option<(i64, String)> = splice.as_ref().and_then(|splice| {
         rows.iter()
             .filter(|(_, content_type, ..)| content_type == "context_notice")
             .filter_map(|(_, _, content, sequence, ..)| {
-                if *sequence <= *splice_sequence {
+                if *sequence <= splice.notice_sequence {
                     return None;
                 }
                 let parsed: serde_json::Value = serde_json::from_str(content).ok()?;
@@ -178,39 +263,23 @@ pub fn load_history_annotated(
             .max_by_key(|(sequence, _)| *sequence)
     });
 
-    let mut result = Vec::new();
-    if let Some((splice_sequence, summary)) = &splice {
-        result.push(HistoryMessage {
-            chat: ChatMessage::system(summary.clone()),
-            content_type: "context_notice".to_string(),
-            sequence: *splice_sequence,
-            plan: false,
-            payload_ref: None,
-            tool_name: None,
-        });
-    }
-    // Spliced right after the summary, so the model (and the transcript)
-    // sees the restored file's real content immediately following the
-    // condensed summary that dropped it -- not buried among the ordinary
-    // turns that follow.
-    if let Some((restored_sequence, restored)) = &restored_file {
-        result.push(HistoryMessage {
-            chat: ChatMessage::system(restored.clone()),
-            content_type: "context_notice".to_string(),
-            sequence: *restored_sequence,
-            plan: false,
-            payload_ref: None,
-            tool_name: None,
-        });
-    }
+    // Collected before `rows` is consumed below; applied after, once every
+    // surviving row has been rebuilt.
+    let cleared = cleared_rows(
+        rows.iter()
+            .filter(|(_, content_type, ..)| content_type == "context_notice")
+            .map(|(_, _, content, ..)| content.as_str()),
+    );
 
-    let splice_sequence = splice.as_ref().map(|(s, _)| *s);
+    let mut result = Vec::new();
     for (role, content_type, content, sequence, tool_name, tool_call_id, model_text) in rows {
         if content_type == "context_notice" {
             continue;
         }
-        if let Some(splice_sequence) = splice_sequence {
-            if sequence <= splice_sequence {
+        // The summarized span, replaced below by the summary itself -- minus
+        // the keep-first task statement, which no summary ever covered.
+        if let Some(splice) = &splice {
+            if sequence <= splice.through_sequence && Some(sequence) != keep_first_sequence {
                 continue;
             }
         }
@@ -281,7 +350,124 @@ pub fn load_history_annotated(
         });
     }
 
+    if let Some(splice) = &splice {
+        // The summary, then the restored file if there is one -- the model
+        // sees the restored file's real content immediately following the
+        // condensed summary that dropped it, not buried among the ordinary
+        // turns that follow.
+        let mut synthesized: Vec<String> = vec![splice.summary.clone()];
+        synthesized.extend(restored_file.iter().map(|(_, restored)| restored.clone()));
+
+        // These rows stand in for the span they replaced, so they take that
+        // span's own trailing sequences -- free by construction (every row
+        // at-or-before `through_sequence` was just dropped, bar keep-first)
+        // and strictly between the keep-first row and the first surviving
+        // turn, which is what keeps the reloaded history ordered by
+        // `sequence` the way every caller reads it. Their own rows'
+        // sequences would be useless here: `messages::insert` allocated
+        // those past the end of the conversation.
+        //
+        // The clamp is belt-and-braces: a restored-file note only exists
+        // when the span contained a `Read` tool_result (`context::
+        // most_recent_read_path`), which is always preceded by its own
+        // tool_call row in that same span, so a two-row block always has two
+        // sequences of span to land in above keep-first. If that ever stops
+        // holding, the summary must still never be given the task
+        // statement's own sequence, or worse a lower one -- the reloaded
+        // history would then read as though the summary preceded the request
+        // it summarizes.
+        let first_sequence = (splice.through_sequence - (synthesized.len() as i64 - 1))
+            .max(keep_first_sequence.map_or(i64::MIN, |k| k + 1));
+        let at = result
+            .iter()
+            .position(|m| m.sequence > splice.through_sequence)
+            .unwrap_or(result.len());
+        let rows = synthesized
+            .into_iter()
+            .enumerate()
+            .map(|(i, text)| HistoryMessage {
+                chat: ChatMessage::system(text),
+                content_type: "context_notice".to_string(),
+                sequence: first_sequence + i as i64,
+                plan: false,
+                payload_ref: None,
+                tool_name: None,
+            })
+            .collect::<Vec<_>>();
+        result.splice(at..at, rows);
+    }
+
+    // Tier 1's clearing, replayed: a tool row named by any `cleared` notice
+    // carries the placeholder that notice recorded, not its real content.
+    // This is the ONLY thing that applies tier 1 to what the model receives
+    // -- `context::maybe_compact` clears a local copy of the history and
+    // then drops it, so before this replay existed the notice ("3 old tool
+    // results cleared to save space") and the usage drop it reported were
+    // both fiction: every byte was still seeded on the next turn. A notice
+    // written before this field existed carries no `cleared` array and
+    // replays nothing, which is exactly right -- that clearing never
+    // happened.
+    if !cleared.is_empty() {
+        for message in &mut result {
+            if message.content_type != "tool_call" && message.content_type != "tool_result" {
+                continue;
+            }
+            if let Some(placeholder) = cleared.get(&message.sequence) {
+                message.chat.content = MessageContent::Text(placeholder.clone());
+            }
+        }
+    }
+
     Ok(result)
+}
+
+/// Every `(sequence, placeholder)` tier 1 has ever cleared in this
+/// conversation, unioned across all its `cleared` notices
+/// (`context::cleared_notice_json`). A row is only ever cleared once, so
+/// later notices never contradict earlier ones; a notice whose JSON doesn't
+/// parse, or predates the `cleared` array, simply contributes nothing.
+fn cleared_rows<'a>(
+    notice_contents: impl Iterator<Item = &'a str>,
+) -> std::collections::HashMap<i64, String> {
+    let mut cleared = std::collections::HashMap::new();
+    for content in notice_contents {
+        let Ok(parsed) = serde_json::from_str::<serde_json::Value>(content) else {
+            continue;
+        };
+        if parsed.get("kind").and_then(|k| k.as_str()) != Some("cleared") {
+            continue;
+        }
+        let Some(rows) = parsed.get("cleared") else {
+            continue;
+        };
+        let Ok(rows) = serde_json::from_value::<Vec<crate::context::ClearedRow>>(rows.clone())
+        else {
+            continue;
+        };
+        for row in rows {
+            cleared.insert(row.sequence, row.placeholder);
+        }
+    }
+    cleared
+}
+
+/// True for a `messages` row that reconstructs into a genuine user-authored
+/// turn — the "task statement" sense of user message. Deliberately distinct
+/// from a `tool_result` row, which this function rebuilds with
+/// `chat.role == "user"` too (see `ChatMessage::tool_result`) but which is
+/// never something the user said.
+///
+/// Takes the raw `role`/`content_type` so the splice above can apply it to a
+/// row it has not rebuilt yet, and `context::is_genuine_user_message` (which
+/// applies it to the rebuilt `HistoryMessage`, where `chat.role` is already
+/// `"user"`/`"assistant"`) delegates here rather than restating it: tier 2
+/// picks the span with that one, the splice keeps the survivor with this
+/// one, and if the two ever disagreed the message keep-first exists to
+/// protect would be summarized away or dropped.
+pub fn is_genuine_user_row(role: &str, content_type: &str) -> bool {
+    // Mirrors this function's own role mapping above, where every
+    // non-assistant `text`/`rich_text` row becomes a `ChatMessage::user`.
+    (content_type == "text" || content_type == "rich_text") && role != "assistant"
 }
 
 /// Thin wrapper over `load_history_annotated` for callers that only need
@@ -1141,30 +1327,203 @@ mod tests {
         assert_eq!(annotated[3].chat.text(), "hello");
     }
 
+    /// Seeds one row through production's ONLY insert path
+    /// (`storage::messages::insert`), which allocates `MAX(sequence) + 1`.
+    /// Returns the sequence it allocated.
+    ///
+    /// Every fixture below builds on this rather than `insert_message`'s
+    /// hand-picked sequence, because the sequences are the whole subject
+    /// here: the tests these replaced hand-placed a `summarized` notice
+    /// mid-conversation with a message AFTER it -- a row shape production
+    /// cannot produce -- and so asserted about a survivor that could not
+    /// exist, staying green for the entire life of a splice that deleted
+    /// every real message in the conversation.
+    fn seed_row(conn: &Connection, role: &str, content_type: &str, content: &str) -> i64 {
+        crate::storage::messages::insert(
+            conn,
+            None,
+            &crate::storage::messages::NewMessage {
+                conversation_id: "c1",
+                role,
+                content_type,
+                content,
+                tool_name: None,
+                tool_call_id: None,
+                model_text: None,
+                created_at: 0,
+                duration_ms: None,
+                token_count: None,
+            },
+        )
+        .unwrap()
+    }
+
+    /// Persists a context_notice the way `context::persist_notice` does --
+    /// through `persist_context_notice`, this module's own production path --
+    /// and returns the sequence it landed at.
+    fn seed_notice(conn: &Connection, notice_json: &str) -> i64 {
+        persist_context_notice(conn, None, "c1", 0, notice_json).unwrap();
+        conn.query_row(
+            "SELECT MAX(sequence) FROM messages WHERE conversation_id = 'c1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    /// THE INVARIANT THAT MAKES `throughSequence` NECESSARY, pinned rather
+    /// than described. A `summarized` notice can only ever be written by
+    /// `persist_context_notice` -> `messages::insert`, which allocates
+    /// `COALESCE(MAX(sequence), -1) + 1`, so it ALWAYS lands after every
+    /// message in the conversation. That is why the splice point has to be
+    /// recorded in the notice's payload and can never be read off the notice
+    /// row itself: "drop everything at or before this row" and "drop
+    /// everything the summary covers" are the same sentence only if the row
+    /// sits at the end of the span, and it never does -- it sits at the end
+    /// of the CONVERSATION.
     #[test]
-    fn a_summarized_notice_splices_out_everything_at_or_before_it() {
+    fn a_summarized_notice_is_always_allocated_the_last_sequence() {
         let conn = setup_conn();
-        insert_message(&conn, "c1", "user", "text", "old message 1", 0);
-        insert_message(&conn, "c1", "assistant", "text", "old message 2", 1);
-        insert_message(
-            &conn,
-            "c1",
-            "assistant",
-            "context_notice",
-            r#"{"kind":"summarized","summary":"the gist of it","notice":"Conversation condensed to save space"}"#,
-            2,
+        seed_row(&conn, "user", "text", "the task statement");
+        seed_row(&conn, "assistant", "text", "a reply");
+        seed_row(&conn, "user", "text", "the most recent turn");
+
+        let notice_sequence = seed_notice(&conn, &crate::context::summarized_notice_json("s", 1));
+
+        assert_eq!(
+            notice_sequence, 3,
+            "the notice landed at MAX(sequence)+1, past every message it summarizes"
         );
-        insert_message(&conn, "c1", "user", "text", "new message", 3);
+        let last_real: i64 = conn
+            .query_row(
+                "SELECT MAX(sequence) FROM messages WHERE conversation_id = 'c1' AND content_type != 'context_notice'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            notice_sequence > last_real,
+            "no message can ever follow a context_notice, so a splice at the notice's own \
+             sequence ({notice_sequence}) drops the entire conversation (last real message: \
+             {last_real})"
+        );
+    }
+
+    #[test]
+    fn a_summarized_notice_splices_out_exactly_the_span_it_covers() {
+        let conn = setup_conn();
+        let task = seed_row(&conn, "user", "text", "the task statement");
+        seed_row(&conn, "assistant", "text", "summarized message 1");
+        let span_end = seed_row(&conn, "assistant", "text", "summarized message 2");
+        seed_row(&conn, "user", "text", "protected recent turn");
+        // Production's own notice payload, at the span's end -- exactly what
+        // `context::summarize_and_persist`'s Accept arm writes.
+        seed_notice(
+            &conn,
+            &crate::context::summarized_notice_json("the gist of it", span_end),
+        );
 
         let skills_dir = empty_skills_dir();
         let history = load_history_annotated(&conn, "c1", skills_dir.path()).unwrap();
 
-        assert_eq!(history.len(), 2);
-        assert_eq!(history[0].chat.role, "system");
-        assert_eq!(history[0].chat.text(), "the gist of it");
-        assert_eq!(history[0].sequence, 2);
-        assert_eq!(history[1].chat.text(), "new message");
-        assert_eq!(history[1].sequence, 3);
+        // [keep-first] + [summary] + [what came after the span]
+        let texts: Vec<String> = history.iter().map(|m| m.chat.text()).collect();
+        assert_eq!(
+            texts,
+            vec![
+                "the task statement",
+                "the gist of it",
+                "protected recent turn"
+            ],
+            "the summary must replace exactly the span it covers -- no more (the task statement \
+             and the recent turn are not in it, so nothing stands in for them) and no less"
+        );
+        assert_eq!(history[1].chat.role, "system");
+        assert_eq!(history[1].content_type, "context_notice");
+        assert_eq!(history[0].sequence, task);
+        assert_eq!(
+            history[1].sequence, span_end,
+            "the summary stands where the span it replaced ended"
+        );
+        let sequences: Vec<i64> = history.iter().map(|m| m.sequence).collect();
+        assert!(
+            sequences.windows(2).all(|w| w[0] < w[1]),
+            "the reloaded history must stay strictly ordered by sequence, got {sequences:?}"
+        );
+    }
+
+    /// The task statement is the one message at-or-before the splice point
+    /// that survives. `context::messages_to_summarize` excludes it from
+    /// every span, so the summary does not describe it: dropping it here
+    /// would erase what the user asked for with nothing standing in for it,
+    /// which is exactly what shipped until 2026-07-15.
+    #[test]
+    fn the_keep_first_user_message_survives_the_splice_but_later_user_turns_in_the_span_do_not() {
+        let conn = setup_conn();
+        seed_row(&conn, "user", "text", "the task statement");
+        seed_row(&conn, "assistant", "text", "a reply");
+        let span_end = seed_row(&conn, "user", "text", "a later user turn, inside the span");
+        seed_notice(
+            &conn,
+            &crate::context::summarized_notice_json("the gist", span_end),
+        );
+
+        let skills_dir = empty_skills_dir();
+        let history = load_history_annotated(&conn, "c1", skills_dir.path()).unwrap();
+
+        let texts: Vec<String> = history.iter().map(|m| m.chat.text()).collect();
+        assert_eq!(
+            texts,
+            vec!["the task statement", "the gist"],
+            "only the FIRST genuine user message is exempt -- a later user turn inside the span \
+             is summarized like anything else"
+        );
+    }
+
+    /// A `tool_result` row reconstructs with `chat.role == "user"` but is
+    /// never the task statement -- if the exemption matched it, the real
+    /// keep-first message would be dropped and a tool result kept in its
+    /// place.
+    #[test]
+    fn a_leading_tool_result_is_never_mistaken_for_the_keep_first_message() {
+        let conn = setup_conn();
+        seed_row(&conn, "tool", "tool_result", "{}");
+        seed_row(&conn, "user", "text", "the task statement");
+        let span_end = seed_row(&conn, "assistant", "text", "a reply");
+        seed_notice(
+            &conn,
+            &crate::context::summarized_notice_json("the gist", span_end),
+        );
+
+        let skills_dir = empty_skills_dir();
+        let history = load_history_annotated(&conn, "c1", skills_dir.path()).unwrap();
+
+        let texts: Vec<String> = history.iter().map(|m| m.chat.text()).collect();
+        assert_eq!(texts, vec!["the task statement", "the gist"]);
+    }
+
+    /// BACKWARD COMPATIBILITY: a notice written before `throughSequence`
+    /// existed falls back to the notice row's own sequence -- the old
+    /// behavior, deliberately. Those conversations are already condensed as
+    /// far as the user has been told; resurrecting their rows now would hand
+    /// the model a history it was never sized for. The keep-first message is
+    /// exempt regardless of which splice point applies, because no summary
+    /// ever covered it under either code path.
+    #[test]
+    fn a_legacy_summarized_notice_without_a_through_sequence_splices_at_its_own_row() {
+        let conn = setup_conn();
+        seed_row(&conn, "user", "text", "the task statement");
+        seed_row(&conn, "assistant", "text", "old message");
+        seed_notice(
+            &conn,
+            r#"{"kind":"summarized","summary":"legacy summary","notice":"n"}"#,
+        );
+
+        let skills_dir = empty_skills_dir();
+        let history = load_history_annotated(&conn, "c1", skills_dir.path()).unwrap();
+
+        let texts: Vec<String> = history.iter().map(|m| m.chat.text()).collect();
+        assert_eq!(texts, vec!["the task statement", "legacy summary"]);
     }
 
     // --- FR-3 (restore-recent-file): a `restoredFile` notice, persisted by
@@ -1175,42 +1534,48 @@ mod tests {
     #[test]
     fn a_restored_file_notice_renders_right_after_the_summary() {
         let conn = setup_conn();
-        insert_message(&conn, "c1", "user", "text", "old message 1", 0);
-        insert_message(
+        seed_row(&conn, "user", "text", "the task statement");
+        // A restored-file notice is only ever written for a span that
+        // contained a `Read` tool_result (`context::most_recent_read_path`),
+        // and a result row is always preceded by its own call row -- so the
+        // span this fixture summarizes is shaped the way the only span that
+        // can produce this notice really is.
+        seed_row(&conn, "assistant", "tool_call", "{}");
+        let span_end = seed_row(&conn, "tool", "tool_result", "{}");
+        seed_row(&conn, "user", "text", "protected recent turn");
+        seed_notice(
             &conn,
-            "c1",
-            "assistant",
-            "context_notice",
-            r#"{"kind":"summarized","summary":"the gist of it","notice":"Conversation condensed to save space"}"#,
-            1,
+            &crate::context::summarized_notice_json("the gist of it", span_end),
         );
-        insert_message(
+        seed_notice(
             &conn,
-            "c1",
-            "assistant",
-            "context_notice",
-            r#"{"kind":"restoredFile","path":"/tmp/a.rs","restored":"Current contents of `/tmp/a.rs`:\nfn main() {}","notice":"Restored the most-recent file after condensing"}"#,
-            2,
+            &crate::context::restored_file_notice_json(
+                "/tmp/a.rs",
+                "Current contents of `/tmp/a.rs`:\nfn main() {}",
+            ),
         );
-        insert_message(&conn, "c1", "user", "text", "new message", 3);
 
         let skills_dir = empty_skills_dir();
         let history = load_history_annotated(&conn, "c1", skills_dir.path()).unwrap();
 
-        assert_eq!(history.len(), 3);
-        assert_eq!(history[0].chat.text(), "the gist of it");
-        assert_eq!(history[0].sequence, 1);
-        assert_eq!(history[1].chat.role, "system");
+        let texts: Vec<String> = history.iter().map(|m| m.chat.text()).collect();
         assert_eq!(
-            history[1].chat.text(),
-            "Current contents of `/tmp/a.rs`:\nfn main() {}"
+            texts,
+            vec![
+                "the task statement",
+                "the gist of it",
+                "Current contents of `/tmp/a.rs`:\nfn main() {}",
+                "protected recent turn",
+            ],
+            "the restored file's real content belongs immediately after the summary that dropped \
+             it, not buried among the turns that follow"
         );
-        assert_eq!(
-            history[1].sequence, 2,
-            "the restored-file notice must be spliced right after the summary"
+        assert_eq!(history[2].chat.role, "system");
+        let sequences: Vec<i64> = history.iter().map(|m| m.sequence).collect();
+        assert!(
+            sequences.windows(2).all(|w| w[0] < w[1]),
+            "the reloaded history must stay strictly ordered by sequence, got {sequences:?}"
         );
-        assert_eq!(history[2].chat.text(), "new message");
-        assert_eq!(history[2].sequence, 3);
     }
 
     #[test]
@@ -1218,134 +1583,183 @@ mod tests {
         // The restored-file notice paired with the FIRST (now-superseded)
         // summary must not leak into a load spliced against the SECOND,
         // later summary -- same "only the most recent one" rule the
-        // `summarized` notice itself already follows.
+        // `summarized` notice itself already follows. This is what dates a
+        // restored-file notice by the NOTICE row's sequence rather than by
+        // `throughSequence`, which points far enough back to match every
+        // restored-file row the conversation ever had.
         let conn = setup_conn();
-        insert_message(&conn, "c1", "user", "text", "ancient message", 0);
-        insert_message(
+        seed_row(&conn, "user", "text", "the task statement");
+        let first_span_end = seed_row(&conn, "assistant", "text", "ancient message");
+        seed_notice(
             &conn,
-            "c1",
-            "assistant",
-            "context_notice",
-            r#"{"kind":"summarized","summary":"first summary","notice":"n"}"#,
-            1,
+            &crate::context::summarized_notice_json("first summary", first_span_end),
         );
-        insert_message(
+        seed_notice(
             &conn,
-            "c1",
-            "assistant",
-            "context_notice",
-            r#"{"kind":"restoredFile","path":"/tmp/old.rs","restored":"stale restored content","notice":"n"}"#,
-            2,
+            &crate::context::restored_file_notice_json("/tmp/old.rs", "stale restored content"),
         );
-        insert_message(&conn, "c1", "user", "text", "middle message", 3);
-        insert_message(
+        let second_span_end = seed_row(&conn, "assistant", "text", "middle message");
+        seed_notice(
             &conn,
-            "c1",
-            "assistant",
-            "context_notice",
-            r#"{"kind":"summarized","summary":"second summary covers the first too","notice":"n"}"#,
-            4,
+            &crate::context::summarized_notice_json(
+                "second summary covers the first too",
+                second_span_end,
+            ),
         );
-        insert_message(&conn, "c1", "user", "text", "recent message", 5);
+        seed_row(&conn, "user", "text", "recent message");
 
         let skills_dir = empty_skills_dir();
         let history = load_history_annotated(&conn, "c1", skills_dir.path()).unwrap();
 
-        assert_eq!(history.len(), 2);
+        let texts: Vec<String> = history.iter().map(|m| m.chat.text()).collect();
         assert_eq!(
-            history[0].chat.text(),
-            "second summary covers the first too"
+            texts,
+            vec![
+                "the task statement",
+                "second summary covers the first too",
+                "recent message"
+            ],
         );
         assert!(
-            !history
-                .iter()
-                .any(|m| m.chat.text() == "stale restored content"),
+            !texts.iter().any(|t| t == "stale restored content"),
             "a restored-file notice tied to a superseded summary must not render"
         );
-        assert_eq!(history[1].chat.text(), "recent message");
     }
 
     #[test]
     fn no_restored_file_notice_means_the_summary_renders_alone() {
         let conn = setup_conn();
-        insert_message(&conn, "c1", "user", "text", "old message", 0);
-        insert_message(
+        seed_row(&conn, "user", "text", "the task statement");
+        let span_end = seed_row(&conn, "assistant", "text", "old message");
+        seed_row(&conn, "user", "text", "new message");
+        seed_notice(
             &conn,
-            "c1",
-            "assistant",
-            "context_notice",
-            r#"{"kind":"summarized","summary":"the gist of it","notice":"n"}"#,
-            1,
+            &crate::context::summarized_notice_json("the gist of it", span_end),
         );
-        insert_message(&conn, "c1", "user", "text", "new message", 2);
 
         let skills_dir = empty_skills_dir();
         let history = load_history_annotated(&conn, "c1", skills_dir.path()).unwrap();
 
+        let texts: Vec<String> = history.iter().map(|m| m.chat.text()).collect();
         assert_eq!(
-            history.len(),
-            2,
-            "no restored-file notice was persisted -- only the summary and the new message"
+            texts,
+            vec!["the task statement", "the gist of it", "new message"],
+            "no restored-file notice was persisted -- only the summary stands in for the span"
         );
-        assert_eq!(history[0].chat.text(), "the gist of it");
-        assert_eq!(history[1].chat.text(), "new message");
     }
 
     #[test]
     fn a_cleared_notice_is_excluded_but_does_not_splice_anything() {
         let conn = setup_conn();
-        insert_message(&conn, "c1", "user", "text", "message 1", 0);
-        insert_message(
-            &conn,
-            "c1",
-            "assistant",
-            "context_notice",
-            r#"{"kind":"cleared","clearedCount":2,"notice":"2 old tool results cleared to save space"}"#,
-            1,
-        );
-        insert_message(&conn, "c1", "user", "text", "message 2", 2);
+        seed_row(&conn, "user", "text", "message 1");
+        seed_notice(&conn, &crate::context::cleared_notice_json(&[]));
+        seed_row(&conn, "user", "text", "message 2");
 
         let skills_dir = empty_skills_dir();
         let history = load_history_annotated(&conn, "c1", skills_dir.path()).unwrap();
 
-        assert_eq!(history.len(), 2);
-        assert_eq!(history[0].chat.text(), "message 1");
-        assert_eq!(history[1].chat.text(), "message 2");
+        let texts: Vec<String> = history.iter().map(|m| m.chat.text()).collect();
+        assert_eq!(texts, vec!["message 1", "message 2"]);
+    }
+
+    // --- 010-context-window-management tier 1: a `cleared` notice replays
+    // the clearing onto the rows it names. This replay is the ONLY thing
+    // that applies tier 1 to what the model receives. ---
+
+    #[test]
+    fn a_cleared_notice_replays_its_placeholders_onto_the_tool_rows_it_names() {
+        let conn = setup_conn();
+        seed_row(&conn, "user", "text", "the task statement");
+        let cleared_seq = seed_row(&conn, "tool", "tool_result", "{}");
+        let kept_seq = seed_row(&conn, "tool", "tool_result", "{}");
+        seed_notice(
+            &conn,
+            &crate::context::cleared_notice_json(&[crate::context::ClearedRow {
+                sequence: cleared_seq,
+                placeholder: crate::context::limits::TOOL_CLEARED_PLACEHOLDER.to_string(),
+            }]),
+        );
+
+        let skills_dir = empty_skills_dir();
+        let history = load_history_annotated(&conn, "c1", skills_dir.path()).unwrap();
+
+        let cleared = history
+            .iter()
+            .find(|m| m.sequence == cleared_seq)
+            .expect("a cleared row is still a row -- tier 1 replaces its content, never drops it");
+        assert_eq!(
+            cleared.chat.text(),
+            crate::context::limits::TOOL_CLEARED_PLACEHOLDER,
+            "the row the notice named must carry the placeholder the notice recorded -- without \
+             this the model is seeded with every byte the notice claimed to free"
+        );
+        assert_eq!(
+            cleared.content_type, "tool_result",
+            "a cleared row keeps its own content_type, so tier 1's own keep_n populations still \
+             count it"
+        );
+        let kept = history.iter().find(|m| m.sequence == kept_seq).unwrap();
+        assert!(
+            !crate::context::limits::is_tool_cleared_placeholder(&kept.chat.text()),
+            "a row no notice names must be untouched"
+        );
+    }
+
+    /// BACKWARD COMPATIBILITY: a `cleared` notice written before the rows
+    /// were recorded replays nothing -- correctly, since that clearing never
+    /// actually happened to anything the model saw.
+    #[test]
+    fn a_legacy_cleared_notice_without_recorded_rows_replays_nothing() {
+        let conn = setup_conn();
+        seed_row(&conn, "tool", "tool_result", "{}");
+        seed_notice(
+            &conn,
+            r#"{"kind":"cleared","clearedCount":1,"notice":"1 old tool result cleared to save space"}"#,
+        );
+
+        let skills_dir = empty_skills_dir();
+        let history = load_history_annotated(&conn, "c1", skills_dir.path()).unwrap();
+
+        assert_eq!(history.len(), 1);
+        assert!(!crate::context::limits::is_tool_cleared_placeholder(
+            &history[0].chat.text()
+        ));
     }
 
     #[test]
     fn only_the_most_recent_summarized_notice_is_spliced() {
         let conn = setup_conn();
-        insert_message(&conn, "c1", "user", "text", "ancient message", 0);
-        insert_message(
+        seed_row(&conn, "user", "text", "the task statement");
+        let first_span_end = seed_row(&conn, "assistant", "text", "ancient message");
+        seed_notice(
             &conn,
-            "c1",
-            "assistant",
-            "context_notice",
-            r#"{"kind":"summarized","summary":"first summary","notice":"n"}"#,
-            1,
+            &crate::context::summarized_notice_json("first summary", first_span_end),
         );
-        insert_message(&conn, "c1", "user", "text", "middle message", 2);
-        insert_message(
+        let second_span_end = seed_row(&conn, "assistant", "text", "middle message");
+        seed_notice(
             &conn,
-            "c1",
-            "assistant",
-            "context_notice",
-            r#"{"kind":"summarized","summary":"second summary covers the first too","notice":"n"}"#,
-            3,
+            &crate::context::summarized_notice_json(
+                "second summary covers the first too",
+                second_span_end,
+            ),
         );
-        insert_message(&conn, "c1", "user", "text", "recent message", 4);
+        seed_row(&conn, "user", "text", "recent message");
 
         let skills_dir = empty_skills_dir();
         let history = load_history_annotated(&conn, "c1", skills_dir.path()).unwrap();
 
-        assert_eq!(history.len(), 2);
+        let texts: Vec<String> = history.iter().map(|m| m.chat.text()).collect();
         assert_eq!(
-            history[0].chat.text(),
-            "second summary covers the first too"
+            texts,
+            vec![
+                "the task statement",
+                "second summary covers the first too",
+                "recent message"
+            ],
+            "a superseded summary must not render, and the newer splice must still cover \
+             everything the older one did"
         );
-        assert_eq!(history[0].sequence, 3);
-        assert_eq!(history[1].chat.text(), "recent message");
+        assert_eq!(history[1].sequence, second_span_end);
     }
 
     #[test]
