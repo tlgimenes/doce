@@ -68,3 +68,39 @@ the prompt rework.)
   of the hand-written call-format teaching, though the `--jinja` template should supply it).
 - Seeds are stochastic; a 1-point median difference is noise. Look for a consistent, multi-point gap before calling a
   regression.
+
+---
+
+## ⚠️ 2026-07-15 — THIS RUNBOOK'S NUMBERS ARE VOID AS A BASELINE
+
+The gate PASSED and SP3 merged (`2285471`) on these numbers:
+`BASE 20/20, 0/20, 20/20` vs `NEW 20/20, 20/20, 20/20` (medians 20 vs 20).
+
+**But an audit then found the benchmark was not measuring production.** It sent no
+`max_tokens`, so the model got a server-unbounded ~6,900 output tokens, while
+production clamps every agent turn via
+`clamp_output_tokens(AGENT_TURN_OUTPUT_CEILING, CONTEXT_WINDOW_TOKENS, prompt_est)`
+— ~1,792 at the loop threshold, floor 512. Near-4×, exactly where tier4 lives. It
+also re-implemented `measure` (chars/4 forever, discarding the server's
+authoritative `usage`), so its compaction trigger diverged from production at turn 2.
+
+Consequence: the gate was structurally blind to prompt-INFLATING regressions — and
+`AGENTS.md` ingestion (SP3 c) and SP4's `# Memories` block are exactly that. In
+production they shrink the output budget; the old gate could not see it.
+
+Fixed in `16f206f` (benchmark now calls production's own helpers). **Any score taken
+before `16f206f` is not comparable to one taken after. Do not use the table above as
+a baseline.**
+
+### The current, honest baseline — tier4_planned @ `a108dbf`
+Production Qwen3.5-4B (sha256 `00fe7986...ef11a4`), real output clamp:
+
+| seed | score | turns |
+|---|---|---|
+| 11 | 20/20 | 42 |
+| 22 | 20/20 | 80 |
+| 33 | 20/20 | 71 |
+| **median** | **20/20** | 3/3 perfect, no truncation |
+
+Compare future prompt work against THIS. Note tier4 is at its 20/20 ceiling, so it
+can only detect regressions, not improvements — use turn counts, or a harder tier.
