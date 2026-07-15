@@ -739,14 +739,17 @@ pub async fn summarize_and_persist(
 /// full replacement set.
 ///
 /// Best-effort by construction: every failure path -- server error, a failed
-/// read of the existing set, a truncated completion, or empty/degenerate
-/// output -- logs and returns `Ok(())` leaving memories exactly as they were.
-/// Compaction must never fail an agent turn, and a bad extraction must never
-/// destroy good memories (the unsafe direction), so both the truncation
-/// backstop and the empty-output guard mirror `evaluate_summary`'s posture,
-/// and a failed read of the existing set is treated as "bail out", never as
-/// "existing == empty" (that would let a set built in ignorance of the real
-/// memories wipe them via `replace_memories`).
+/// read of the existing set, a truncated completion, a parse failure, a
+/// concurrent writer, or empty/degenerate output -- logs and returns `Ok(())`
+/// leaving memories exactly as they were. Compaction must never fail an agent
+/// turn, and a bad extraction must never destroy good memories (the unsafe
+/// direction), so the truncation backstop, the shape check, and the
+/// empty-output guard all mirror `evaluate_summary`'s posture; a failed read of
+/// the existing set is treated as "bail out", never as "existing == empty"
+/// (that would let a set built in ignorance of the real memories wipe them);
+/// and the write is a compare-and-swap against the set actually read, so a
+/// sibling conversation that compacted during this call's LLM round-trip is
+/// never clobbered.
 pub(crate) async fn extract_and_persist_memories(
     conn: &tokio_rusqlite::Connection,
     base_url: &str,
@@ -754,6 +757,20 @@ pub(crate) async fn extract_and_persist_memories(
     to_summarize: &[&HistoryMessage],
     now: i64,
 ) -> Result<(), String> {
+    // LATENT HAZARD -- subagent conversations and the NULL bucket. A subagent
+    // is created with `workspace_id` NULL (`agent::subagent::spawn`), so this
+    // resolution yields `None` and every write below lands in the SHARED,
+    // GLOBAL NULL bucket -- the same bucket every other workspace-less
+    // conversation writes to and recalls from. That is harmless only because
+    // the subagent path never reaches `maybe_compact` today, so it never gets
+    // here. The recall side is already explicitly guarded (agent.rs passes
+    // `plan_system_message(..., None)` for subagents, with a comment); the
+    // write side is guarded only by that reachability accident. If subagents
+    // ever gain compaction, decide FIRST what an isolated subagent's memories
+    // mean -- most likely: skip extraction entirely when `workspace_id` is
+    // `None` and the conversation has a `spawned_by_conversation_id`, or
+    // inherit the parent's workspace -- because an isolated subagent silently
+    // cross-contaminating the global NULL bucket is the failure mode here.
     let workspace_id = match crate::storage::memories::workspace_id_for_conversation(
         conn,
         conversation_id,
@@ -843,17 +860,46 @@ pub(crate) async fn extract_and_persist_memories(
         return Ok(());
     }
 
-    // Dedup, first-seen order preserved: `replace_memories` inserts `contents`
-    // verbatim (no dedup of its own), so a model that repeats a line would
-    // otherwise create duplicate rows.
-    let mut seen = std::collections::HashSet::new();
-    let facts: Vec<String> = outcome
+    // Every non-empty line the model emitted, bullet prefix stripped. This is
+    // the denominator of the majority test below, so it is counted BEFORE
+    // dedup and before the shape check.
+    let candidates: Vec<String> = outcome
         .text
         .lines()
         .map(|l| l.trim().trim_start_matches("- ").trim().to_string())
         .filter(|l| !l.is_empty())
-        .filter(|l| seen.insert(l.clone()))
         .collect();
+
+    // Shape check, then dedup, first-seen order preserved: `replace_memories`
+    // inserts `contents` verbatim (no dedup of its own), so a model that
+    // repeats a line would otherwise create duplicate rows.
+    let mut seen = std::collections::HashSet::new();
+    let facts: Vec<String> = candidates
+        .iter()
+        .filter(|l| is_plausible_fact(l))
+        .filter(|l| seen.insert((*l).clone()))
+        .cloned()
+        .collect();
+
+    // PARSE FAILURE => NO CHANGE (spec §4 step 4). If MOST of what came back
+    // isn't fact-shaped, the model didn't do the task -- and the task is to
+    // emit a faithful FULL replacement set. Persisting the surviving minority
+    // would swap the workspace's whole set for whatever fragments happened to
+    // pass a syntactic filter, silently dropping every real memory that the
+    // confused model failed to re-emit. A model that mostly emitted garbage has
+    // not earned that trust, so the whole pass is discarded. `candidates` is
+    // never empty here in a way that matters: 0 rejected of 0 is not a
+    // majority, and the empty case falls through to the empty-output guard
+    // below, which is the older and narrower of the two.
+    let unshaped = candidates.iter().filter(|l| !is_plausible_fact(l)).count();
+    if unshaped * 2 > candidates.len() {
+        eprintln!(
+            "[memory-extraction] {unshaped}/{} lines are not fact-shaped; treating as a parse \
+             failure and keeping existing memories",
+            candidates.len()
+        );
+        return Ok(());
+    }
 
     // THE GUARD: a degenerate extraction must not wipe good memories.
     if facts.is_empty() {
@@ -863,12 +909,69 @@ pub(crate) async fn extract_and_persist_memories(
         return Ok(());
     }
 
-    if let Err(e) =
-        crate::storage::memories::replace_memories(conn, workspace_id.as_deref(), &facts, now).await
+    // COMPARE-AND-SWAP, not a blind write: `existing` was read before a
+    // multi-second LLM round-trip, and a sibling conversation in this same
+    // workspace can compact and commit its own full replacement set during it
+    // (manual "Compact now" and `maybe_compact` share no lock). `facts` was
+    // authored in ignorance of any such set, so writing it unconditionally
+    // would destroy the sibling's facts permanently -- its span is already
+    // condensed and will never be re-extracted. See
+    // `storage::memories::replace_memories_if_unchanged`.
+    let expected: Vec<String> = existing.iter().map(|m| m.content.clone()).collect();
+    match crate::storage::memories::replace_memories_if_unchanged(
+        conn,
+        workspace_id.as_deref(),
+        &expected,
+        &facts,
+        now,
+    )
+    .await
     {
-        eprintln!("[memory-extraction] persist failed: {e}");
+        Ok(true) => {}
+        Ok(false) => {
+            eprintln!("[memory-extraction] memory set changed under us; skipping write");
+        }
+        Err(e) => {
+            eprintln!("[memory-extraction] persist failed: {e}");
+        }
     }
     Ok(())
+}
+
+/// Is this line plausibly a durable fact, rather than the model failing to
+/// follow `MEMORY_EXTRACTION_PROMPT`'s "no commentary, no headers" contract?
+///
+/// Every line that passes becomes a DURABLE row, and a bad row is sticky and
+/// self-reinforcing: the next pass feeds the existing set back in under "keep
+/// the existing ones that are still true", so the model keeps it, and it rides
+/// in `messages[0]` of every turn in the workspace forever. There is no UI and
+/// no clear command -- the only recovery is manual sqlite surgery. So the bias
+/// is: when in doubt, DROP. A dropped real fact costs one fact until the next
+/// compaction re-learns it; a persisted preamble costs forever.
+///
+/// The rules are deliberately syntactic and few -- this cannot judge whether a
+/// sentence is TRUE, only whether it is shaped like a fact at all:
+fn is_plausible_fact(line: &str) -> bool {
+    // 1. Trailing ':' -- a preamble or header, never a self-contained fact.
+    // This is the observed 4B failure: "Here is the updated set of
+    // memories:" as line 1, which then becomes permanent. A real fact is a
+    // sentence; sentences don't end in a colon.
+    if line.ends_with(':') {
+        return false;
+    }
+    // 2. Length bounds, in CHARS (not bytes -- a CJK fact is short in chars
+    // and long in bytes, and truncating on bytes could also split a
+    // codepoint). Below the floor there is no room for a self-contained
+    // sentence, so it's a fragment, a list marker, or a stray word ("Yes",
+    // "Memories", "1."). Above the ceiling it's prose, a pasted code block,
+    // or a run-on -- the prompt asks for <=20 words, so ~300 chars is
+    // already far past disobedient. Both bounds are loose on purpose: they
+    // are backstops against garbage, not enforcement of the prompt.
+    let len = line.chars().count();
+    if !(limits::MEMORY_FACT_MIN_CHARS..=limits::MEMORY_FACT_MAX_CHARS).contains(&len) {
+        return false;
+    }
+    true
 }
 
 /// Orchestrates the tiered compaction pipeline: computes usage, and — if
@@ -2255,7 +2358,7 @@ mod tests {
         crate::storage::memories::replace_memories(&conn, Some("w1"), &["old fact".to_string()], 5)
             .await
             .unwrap();
-        let server = stub_completion("new fact.").await;
+        let server = stub_completion("The new fact replaces it.").await;
 
         let span = vec![history_message("text", 0, "some work")];
         let span_refs: Vec<&HistoryMessage> = span.iter().collect();
@@ -2265,7 +2368,7 @@ mod tests {
 
         assert_eq!(
             contents_of(&conn, Some("w1")).await,
-            vec!["new fact.".to_string()],
+            vec!["The new fact replaces it.".to_string()],
             "the emitted set replaces the prior one wholesale"
         );
     }
@@ -2330,7 +2433,7 @@ mod tests {
         let conn = crate::storage::test_async_connection().await;
         seed_workspace(&conn, "w1").await;
         seed_conversation(&conn, "c1", Some("w1")).await;
-        let server = stub_completion("fact.").await;
+        let server = stub_completion("A durable fact.").await;
 
         let span = vec![history_message("text", 0, "some work")];
         let span_refs: Vec<&HistoryMessage> = span.iter().collect();
@@ -2340,7 +2443,7 @@ mod tests {
 
         assert_eq!(
             contents_of(&conn, Some("w1")).await,
-            vec!["fact.".to_string()]
+            vec!["A durable fact.".to_string()]
         );
         assert!(
             contents_of(&conn, None).await.is_empty(),
@@ -2357,7 +2460,7 @@ mod tests {
         let conn = crate::storage::test_async_connection().await;
         seed_workspace(&conn, "w1").await;
         seed_conversation(&conn, "c1", Some("w1")).await;
-        let server = stub_completion("alpha.\nbeta.\nalpha.").await;
+        let server = stub_completion("The alpha fact.\nThe beta fact.\nThe alpha fact.").await;
 
         let span = vec![history_message("text", 0, "some work")];
         let span_refs: Vec<&HistoryMessage> = span.iter().collect();
@@ -2367,7 +2470,7 @@ mod tests {
 
         assert_eq!(
             contents_of(&conn, Some("w1")).await,
-            vec!["alpha.".to_string(), "beta.".to_string()]
+            vec!["The alpha fact.".to_string(), "The beta fact.".to_string()]
         );
     }
 
@@ -2379,7 +2482,7 @@ mod tests {
         let conn = crate::storage::test_async_connection().await;
         seed_workspace(&conn, "w1").await;
         seed_conversation(&conn, "c1", Some("w1")).await;
-        let server = stub_completion("- fact").await;
+        let server = stub_completion("- The user prefers oxfmt").await;
 
         let span = vec![history_message("text", 0, "some work")];
         let span_refs: Vec<&HistoryMessage> = span.iter().collect();
@@ -2389,7 +2492,7 @@ mod tests {
 
         assert_eq!(
             contents_of(&conn, Some("w1")).await,
-            vec!["fact".to_string()],
+            vec!["The user prefers oxfmt".to_string()],
             "a bulleted line should still yield the bare fact"
         );
     }
@@ -2460,6 +2563,200 @@ mod tests {
             server.received_requests().await.unwrap().len(),
             0,
             "a load_memories failure must bail out before ever calling the model"
+        );
+    }
+
+    // --- IMPORTANT 2: the shape check (spec §4 step 4's parse-failure
+    // semantics). The parser used to be incapable of failing: every non-empty
+    // line became a durable, self-reinforcing row.
+
+    /// The observed 4B failure mode: the model disobeys "no commentary" and
+    /// opens with a preamble. Persisted, it would be fed back into the next
+    /// pass under "keep the existing ones that are still true", kept, and ride
+    /// in `messages[0]` forever with no UI to remove it. The preamble is
+    /// dropped; the real facts around it still persist (one bad line out of
+    /// three is not a majority).
+    #[tokio::test]
+    async fn extraction_drops_a_preamble_line_and_keeps_the_real_facts() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_workspace(&conn, "w1").await;
+        seed_conversation(&conn, "c1", Some("w1")).await;
+        let server = stub_completion(
+            "Here is the updated set of memories:\nThe user prefers oxfmt over prettier.\n\
+             Benchmarks are gated on prompt changes.",
+        )
+        .await;
+
+        let span = vec![history_message("text", 0, "some work")];
+        let span_refs: Vec<&HistoryMessage> = span.iter().collect();
+        extract_and_persist_memories(&conn, &server.uri(), "c1", &span_refs, 10)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            contents_of(&conn, Some("w1")).await,
+            vec![
+                "The user prefers oxfmt over prettier.".to_string(),
+                "Benchmarks are gated on prompt changes.".to_string()
+            ],
+            "the trailing-colon preamble must never become a durable fact"
+        );
+    }
+
+    /// A majority of unshaped lines means the model did not do the task -- and
+    /// the task is a FULL replacement set. Persisting the surviving minority
+    /// would swap the whole workspace set for two fragments and silently drop
+    /// "precious". Spec §4 step 4: a parse failure is "no change".
+    #[tokio::test]
+    async fn majority_garbage_extraction_persists_nothing_and_keeps_existing() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_workspace(&conn, "w1").await;
+        seed_conversation(&conn, "c1", Some("w1")).await;
+        crate::storage::memories::replace_memories(&conn, Some("w1"), &["precious".to_string()], 5)
+            .await
+            .unwrap();
+        // 4 unshaped (3 headers + 1 too-short) vs 1 real fact.
+        let server = stub_completion(
+            "Here is the updated set of memories:\nUser preferences:\nok\n\
+             The user prefers oxfmt over prettier.\nProject constraints:",
+        )
+        .await;
+
+        let span = vec![history_message("text", 0, "some work")];
+        let span_refs: Vec<&HistoryMessage> = span.iter().collect();
+        let r = extract_and_persist_memories(&conn, &server.uri(), "c1", &span_refs, 10).await;
+
+        assert!(r.is_ok(), "a parse failure must never fail the turn");
+        assert_eq!(
+            contents_of(&conn, Some("w1")).await,
+            vec!["precious".to_string()],
+            "a majority-garbage extraction must persist NOTHING and leave the set intact"
+        );
+    }
+
+    /// All-garbage: nothing survives the shape check at all.
+    #[tokio::test]
+    async fn all_garbage_extraction_persists_nothing_and_keeps_existing() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_workspace(&conn, "w1").await;
+        seed_conversation(&conn, "c1", Some("w1")).await;
+        crate::storage::memories::replace_memories(&conn, Some("w1"), &["precious".to_string()], 5)
+            .await
+            .unwrap();
+        let server = stub_completion("Memories:\nSure:\nok\n1.").await;
+
+        let span = vec![history_message("text", 0, "some work")];
+        let span_refs: Vec<&HistoryMessage> = span.iter().collect();
+        extract_and_persist_memories(&conn, &server.uri(), "c1", &span_refs, 10)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            contents_of(&conn, Some("w1")).await,
+            vec!["precious".to_string()],
+            "an all-garbage extraction must never wipe good memories"
+        );
+    }
+
+    /// THE FALSE-REJECTION GUARD. The shape check must not cost us real
+    /// extractions: a well-behaved response -- including a long fact and a
+    /// non-ASCII one (the bounds count CHARS, not bytes) -- persists in full.
+    #[tokio::test]
+    async fn a_well_formed_extraction_is_never_rejected() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_workspace(&conn, "w1").await;
+        seed_conversation(&conn, "c1", Some("w1")).await;
+        let long = "The agent must never let a bad extraction destroy good memories, because \
+                    a condensed span is gone forever and cannot be re-extracted later on.";
+        let server = stub_completion(&format!(
+            "The user prefers oxfmt over prettier.\n{long}\nユーザーはoxfmtを好みます。"
+        ))
+        .await;
+
+        let span = vec![history_message("text", 0, "some work")];
+        let span_refs: Vec<&HistoryMessage> = span.iter().collect();
+        extract_and_persist_memories(&conn, &server.uri(), "c1", &span_refs, 10)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            contents_of(&conn, Some("w1")).await,
+            vec![
+                "The user prefers oxfmt over prettier.".to_string(),
+                long.to_string(),
+                "ユーザーはoxfmtを好みます。".to_string()
+            ],
+            "a good response must persist fully -- the shape check is for garbage only"
+        );
+    }
+
+    /// IMPORTANT 1, end to end: proves `extract_and_persist_memories` actually
+    /// routes through the CAS with the set IT read as the expectation --
+    /// `storage::memories`' own tests cover the CAS semantics, this covers the
+    /// wiring.
+    ///
+    /// The real lost-update window is "read, spend seconds in the LLM
+    /// round-trip, write", so the window is reproduced literally: the stub
+    /// server delays its response, the extraction runs as a concurrent task,
+    /// and a sibling conversation commits `[X, gated]` while that task is
+    /// parked in the HTTP call -- provably after its `load_memories` (which
+    /// precedes the request) and before its write (which follows the
+    /// response). The 500ms/50ms margin is what makes the interleaving
+    /// deterministic rather than lucky; without the CAS this pass would write
+    /// `[X, oxfmt]` and "gated" would be gone forever.
+    #[tokio::test]
+    async fn extraction_skips_the_write_when_a_sibling_changed_the_set_mid_flight() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_workspace(&conn, "w1").await;
+        seed_conversation(&conn, "c1", Some("w1")).await;
+        crate::storage::memories::replace_memories(&conn, Some("w1"), &["X".to_string()], 5)
+            .await
+            .unwrap();
+
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/v1/chat/completions"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_raw(
+                        sse_text_body_with_finish("X\nThe user prefers oxfmt.", "stop"),
+                        "text/event-stream",
+                    )
+                    .set_delay(std::time::Duration::from_millis(500)),
+            )
+            .mount(&server)
+            .await;
+
+        let uri = server.uri();
+        let extraction_conn = conn.clone();
+        let extraction = tokio::spawn(async move {
+            let span = vec![history_message("text", 0, "some work")];
+            let span_refs: Vec<&HistoryMessage> = span.iter().collect();
+            extract_and_persist_memories(&extraction_conn, &uri, "c1", &span_refs, 20).await
+        });
+
+        // The sibling compacts and commits while the extraction above is parked
+        // in its (delayed) round-trip.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        crate::storage::memories::replace_memories(
+            &conn,
+            Some("w1"),
+            &["X".to_string(), "gated".to_string()],
+            10,
+        )
+        .await
+        .unwrap();
+
+        let r = extraction.await.unwrap();
+        assert!(r.is_ok(), "a skipped write must never fail the turn");
+
+        let mut got = contents_of(&conn, Some("w1")).await;
+        got.sort();
+        assert_eq!(
+            got,
+            vec!["X".to_string(), "gated".to_string()],
+            "the sibling's 'gated' must survive; the stale pass must not have written 'oxfmt'"
         );
     }
 }

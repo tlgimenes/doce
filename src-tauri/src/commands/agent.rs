@@ -1694,11 +1694,27 @@ pub(crate) async fn memories_section(
 /// the model where it's working, plus (2026-07-09 transcript design) a
 /// line naming this host's own materialized transcript — what seeds
 /// `initial_messages[0]` (and the pre-loop compaction budget / usage
-/// measurement). Deliberately state-free: all three inputs are turn-stable
-/// (the union prompt is a cached static; a conversation's workspace and
-/// transcript path can't change mid-turn), so the message this returns is
-/// byte-identical every time a given host renders it — the invariant
-/// `PromptSession`'s KV-prefix reuse depends on. `allow_task` picks the
+/// measurement). Deliberately state-free: it renders only what it is handed,
+/// and the union prompt is a cached static while a conversation's workspace
+/// and transcript path can't change mid-turn — so for a given set of
+/// arguments this is a pure function, and a host that renders it once per
+/// turn gets the byte-identical `messages[0]` that `PromptSession`'s
+/// KV-prefix reuse depends on.
+///
+/// That stability is per-CALL, and the `memories` argument is the one input
+/// that can legitimately differ between calls: the workspace's memory set is
+/// rewritten wholesale by `context::extract_and_persist_memories`, and since
+/// `replace_memories` re-inserts every row with a fresh UUID and one shared
+/// `updated_at`, recall order is the extraction model's emission order for
+/// the last pass. The same logical facts re-emitted in a different order
+/// render different bytes. So: the prefix holds across the inner turns of one
+/// `send_agent_message` (memories are fetched once and cloned into
+/// `messages[0]` for every turn), but a compaction — this conversation's own,
+/// or a SIBLING conversation's in the same workspace — can change the block
+/// between calls and invalidate the prefix from the memories section onward.
+/// Self-compaction costs nothing (the history was just replaced anyway); the
+/// sibling case is a real, accepted cost. Do not restate this as
+/// "byte-stable per conversation" — it isn't. `allow_task` picks the
 /// host flavor: `false` for the subagent path (FR-016's one-level nesting
 /// cap means `run_loop` rejects any `Task` call from a subagent, so its
 /// prompt must not advertise the tool at all), `true` everywhere

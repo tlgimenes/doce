@@ -242,10 +242,32 @@ pub const STATE_TAIL_RESERVE_TOKENS: u32 = 768;
 /// conversation. ~12.5% of `CONTEXT_WINDOW_TOKENS`.
 pub const PROJECT_INSTRUCTIONS_MAX_TOKENS: usize = (CONTEXT_WINDOW_TOKENS / 8) as usize; // = 2048
 
-/// Recalled workspace memories are capped at this share of the window,
-/// mirroring `PROJECT_INSTRUCTIONS_MAX_TOKENS`. Injected once into
+/// Defence-in-depth cap on the recalled `# Memories` block, sized at the same
+/// 1/8-of-window share as `PROJECT_INSTRUCTIONS_MAX_TOKENS`. Injected once into
 /// `messages[0]`, structurally outside the compaction window.
+///
+/// THIS CAP DOES NOT BIND IN PRODUCTION TODAY, and the "share of the window"
+/// framing overstates its role. The real bound on a persisted memory set comes
+/// from the WRITE side: `extract_and_persist_memories` caps its request at
+/// `SUMMARY_MAX_TOKENS` (1024) and refuses to persist anything at all when the
+/// completion comes back `finish_reason:"length"`. So every set that reaches
+/// the DB is at most ~1024 tokens of model text -- half of this 2048 cap --
+/// and `render_memories_section`'s shrink loop never iterates on a
+/// production-written set. It is kept because it is the only thing standing
+/// between recall and an over-large set that arrived by some other route
+/// (hand-edited sqlite, an imported set, a future writer with a different cap),
+/// and because it becomes silently LOAD-BEARING the moment `SUMMARY_MAX_TOKENS`
+/// is raised past it -- at which point the shrink loop starts dropping trailing
+/// facts for real. Raise both together, or not at all.
 pub const MEMORIES_MAX_TOKENS: usize = (CONTEXT_WINDOW_TOKENS / 8) as usize;
+
+/// Shape bounds for a single extracted memory line (see
+/// `context::is_plausible_fact`). Not a share of anything -- these are "is this
+/// sentence-shaped at all" bounds on model output, deliberately far looser than
+/// `MEMORY_EXTRACTION_PROMPT`'s own ~20-words-per-fact instruction so that only
+/// clear garbage trips them.
+pub const MEMORY_FACT_MIN_CHARS: usize = 10;
+pub const MEMORY_FACT_MAX_CHARS: usize = 300;
 
 #[cfg(test)]
 mod tests {
