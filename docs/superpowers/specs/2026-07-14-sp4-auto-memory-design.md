@@ -7,7 +7,7 @@
 **Relationship to prior sub-projects:**
 - SP1 (harness cleanup/budgeting) — landed on `main`.
 - SP2 (SOTA context management) — landed on `main`. SP4 piggybacks on its tier-2 compaction pass (`summarize_and_persist`).
-- SP3 (prompt engineering) — on branch `sp3-prompt-engineering`, **benchmark-gated, not yet merged**. SP3 added the `AGENTS.md` project-instructions section to `plan_system_message`. SP4's recall injection sits in the *same slot*. **See "Sequencing & branch coordination" below — this is the one hard cross-project dependency.**
+- SP3 (prompt engineering) — **benchmark gate PASSED, merged to `main` (`2285471`) on 2026-07-15.** SP3 added the `AGENTS.md` project-instructions section to `plan_system_message`; SP4's recall injection sits in the *same slot*, which now exists on `main`. See §7 for the gate evidence.
 
 ---
 
@@ -124,13 +124,20 @@ SP4 touches prompt bytes in two prompt-adjacent places — but both are **inert 
 
 ## 7. Sequencing & branch coordination
 
-**The one hard cross-project dependency:** SP4's recall injection lives in the *same `plan_system_message` slot* as SP3's `AGENTS.md` `project_instructions_section`. That slot exists **only on the `sp3-prompt-engineering` branch**, not on `main`.
+**RESOLVED (2026-07-15) — dependency discharged.** The SP3 benchmark gate was run and **PASSED**; `sp3-prompt-engineering` is merged to `main` (`2285471`).
 
-Options:
-- **(Recommended) Build SP4 on top of `sp3-prompt-engineering`.** SP4 inherits the AGENTS.md slot, memories nestle in beside it, and both merge to `main` together once the SP3 benchmark passes. Cost: SP4 rides SP3's benchmark gate even though SP4 itself is inert — but SP4 *needs* SP3's slot anyway, so this is the natural order.
-- **Build SP4 on `main` now.** Requires re-creating the injection slot independently; guarantees a `plan_system_message` merge conflict when SP3 later merges (both add a section to the same function). Resolvable but avoidable.
+Gate evidence (tier4_planned, production Qwen3.5-4B-Q4_K_M sha256 `00fe7986...ef11a4`, seeds 11/22/33, same model both sides):
 
-**Recommendation:** treat SP3-benchmark → merge as the prerequisite. Either (a) run the SP3 benchmark first, merge on pass, then build SP4 on the now-updated `main`; or (b) build SP4 on the `sp3-prompt-engineering` branch and let the single benchmark cover the merged stack. The user's call — but SP4 implementation should **not** start on `main` ahead of SP3 without accepting the merge conflict.
+| seed | BASE (pre-merge main) | NEW (sp3 branch) |
+|---|---|---|
+| 11 | 20/20, 99 turns | 20/20, 66 turns |
+| 22 | **0/20 FAILED** (gutter trap) | 20/20, 52 turns |
+| 33 | 20/20, 58 turns | 20/20, 72 turns |
+| **median** | **20/20** | **20/20** |
+
+`NEW >= BASE` → PASS. The branch was also strictly better on reliability (3/3 perfect vs 2/3) and turn efficiency (66/52/72 vs 99/-/58).
+
+**Consequence for SP4:** `plan_system_message` on `main` now carries the `AGENTS.md` `project_instructions_section` slot that SP4's `# Memories` block sits beside. SP4 therefore builds **directly on `main`, in place** — no branch stacking, no merge conflict.
 
 ---
 
