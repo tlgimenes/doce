@@ -296,6 +296,34 @@ impl ChatRequest {
             max_tokens: None,
         }
     }
+
+    /// Turns OFF the model's reasoning block for this request, flipping the
+    /// `enable_thinking` chat-template kwarg `build` defaults to `true`. The
+    /// sidecar runs with `--jinja`, so llama-server renders Qwen3.5's own chat
+    /// template and honors this kwarg -- it is the model's supported switch, not
+    /// a prompt hack like an injected `/no_think` token.
+    ///
+    /// For the out-of-band `Forbid`-mode compaction calls ONLY
+    /// (`context::summarize_and_persist`, `context::extract_and_persist_memories`),
+    /// never for agent turns: an agent turn's reasoning is the point, whereas
+    /// these two calls are mechanical reformatting jobs whose contract
+    /// ("one fact per line", "output ONLY the <state_snapshot> block") the
+    /// reasoning block only ever spends budget against.
+    ///
+    /// Measured on Qwen3.5-4B (2026-07-15 real-model pass), the reason this
+    /// exists: reasoning runs BEFORE any content and is large and variable
+    /// (688 chars on a summarization span, 3789 on an extraction span, ~8180
+    /// observed elsewhere). At the old 1024-token cap it consumed the entire
+    /// extraction budget -- empty content, `finish_reason:"length"`, every fact
+    /// rejected by the truncation guard. Suppressing it is strictly better than
+    /// out-budgeting it: `reasoning_len` drops to 0 (6/6 trials), output lands
+    /// at ~45-93 tokens, and the summary/fact quality is unchanged or better
+    /// (with thinking ON the model was observed emitting transient state --
+    /// "Current task is memory extraction." -- that
+    /// `MEMORY_EXTRACTION_PROMPT` explicitly forbids).
+    pub fn disable_thinking(&mut self) {
+        self.chat_template_kwargs = serde_json::json!({"enable_thinking": false});
+    }
 }
 
 /// Reads an optional reproducibility seed from `DOCE_GEN_SEED`. Returns `None`
@@ -794,6 +822,25 @@ mod tests {
         for (def, name) in t.iter().zip(names.iter()) {
             assert_eq!(def["function"]["name"], *name);
         }
+    }
+
+    /// The out-of-band compaction calls flip thinking OFF (see
+    /// `disable_thinking`); an agent turn must keep it ON. Pin both the flip and
+    /// the fact that it reaches the wire, since a kwarg the server never sees is
+    /// exactly the silent-no-op this switch cannot afford to be.
+    #[test]
+    fn disable_thinking_turns_the_template_kwarg_off_on_the_wire() {
+        let mut req = ChatRequest::build("qwen", vec![], None, None);
+        assert_eq!(
+            serde_json::to_value(&req).unwrap()["chat_template_kwargs"]["enable_thinking"],
+            true,
+            "thinking must stay on by default -- an agent turn's reasoning is the point"
+        );
+        req.disable_thinking();
+        assert_eq!(
+            serde_json::to_value(&req).unwrap()["chat_template_kwargs"]["enable_thinking"],
+            false
+        );
     }
 
     #[test]

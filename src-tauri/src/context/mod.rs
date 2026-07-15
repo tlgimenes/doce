@@ -624,6 +624,13 @@ pub async fn summarize_and_persist(
 
     let mut messages = vec![ChatMessage::system(SUMMARIZATION_PROMPT)];
     messages.extend(to_summarize.iter().map(|m| m.chat.clone()));
+    // The request must NEVER end on an assistant message: `to_summarize` is an
+    // arbitrary slice of history and routinely ends with one, which the chat
+    // template treats as a prefill to CONTINUE rather than context to act on --
+    // the model then closes out that sentence and `evaluate_summary` happily
+    // accepts the echo as a summary. Ending on a user turn is what makes the
+    // system prompt the thing being answered. See `SUMMARIZATION_FINAL_TURN`.
+    messages.push(ChatMessage::user(limits::SUMMARIZATION_FINAL_TURN));
 
     // `Forbid`: tools and tool_choice both `None` (a summary must never be
     // able to emit a tool call). Compaction is best-effort, so a fresh,
@@ -640,6 +647,10 @@ pub async fn summarize_and_persist(
     // live window (restore-output-cap task; see `SUMMARY_MAX_TOKENS`'s doc
     // comment).
     req.max_tokens = Some(SUMMARY_MAX_TOKENS as u32);
+    // Reasoning is pure overhead on a reformatting job like this one, and
+    // spends the output budget before any content is emitted (see
+    // `disable_thinking`).
+    req.disable_thinking();
     let cancel = tokio_util::sync::CancellationToken::new();
     let outcome = crate::inference::http::LlamaServerClient::new(base_url)
         .chat(req, |_piece| {}, &cancel)
@@ -825,6 +836,10 @@ pub async fn extract_and_persist_memories(
         "Existing memories:\n{existing_block}"
     )));
     messages.extend(to_summarize.iter().map(|m| m.chat.clone()));
+    // Never end on an assistant message -- the trailing-assistant prefill that
+    // had this call echoing the span's last message back as a durable "memory".
+    // See `EXTRACTION_FINAL_TURN`, and `summarize_and_persist`'s twin of this.
+    messages.push(ChatMessage::user(limits::EXTRACTION_FINAL_TURN));
 
     // `Forbid`: tools and tool_choice both `None` -- an extraction must never
     // emit a tool call. Fresh never-cancelled token, exactly as
@@ -837,6 +852,10 @@ pub async fn extract_and_persist_memories(
         None,
     );
     req.max_tokens = Some(SUMMARY_MAX_TOKENS as u32);
+    // The reasoning block was measured consuming this call's ENTIRE 1024-token
+    // budget (empty content, `finish_reason:"length"`, nothing persisted). See
+    // `disable_thinking`.
+    req.disable_thinking();
     let cancel = tokio_util::sync::CancellationToken::new();
     let outcome = match crate::inference::http::LlamaServerClient::new(base_url)
         .chat(req, |_piece| {}, &cancel)

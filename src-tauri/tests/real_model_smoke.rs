@@ -197,23 +197,50 @@ async fn apply_lightweight_clearing_then_summarize_against_the_server() {
     let cleared = context::apply_lightweight_clearing(&mut history, 4, None);
     assert!(cleared > 0, "expected some tool messages to be cleared");
 
-    // Real summarization call against the real SERVER -- the summarize path
-    // (`context/mod.rs`) is the LAST in-process `engine.generate` caller and
-    // flips to this same client in Task 5.1; this smoke proves the
-    // prompt/generate path works end-to-end over HTTP. `Forbid` (no tools):
-    // a summary must never be able to emit a tool call.
+    // Real summarization call against the real SERVER, proving the
+    // prompt/generate path works end-to-end over HTTP. `Forbid` (no tools): a
+    // summary must never be able to emit a tool call.
+    //
+    // This smoke HAND-ROLLS its request rather than calling
+    // `summarize_and_persist` (which needs a seeded DB;
+    // `the_real_model_summarizes_a_span_that_ends_with_an_assistant_message`
+    // covers the real function). That hand-rolling is precisely how it spent
+    // months passing green while DEMONSTRATING the trailing-assistant prefill
+    // bug: its span ends on "Assistant reply 19", the request appended nothing
+    // after it, and the model dutifully echoed that message back as the
+    // "summary" -- which a bare non-emptiness assert waves through. So the two
+    // production-shape fixes are mirrored here deliberately (a final user turn
+    // + thinking off), and the echo is now asserted against rather than
+    // ignored. A smoke that reimplements a request shape must reimplement the
+    // CURRENT one, or it silently pins the bug.
     let protected_recent = 4;
     let to_summarize = &history[..history.len() - protected_recent];
+    // Derived, never hardcoded: the span's trailing message is what a prefill
+    // continuation would echo, and it must stay in step with the fixture above.
+    let last_summarized = match &to_summarize.last().unwrap().chat.content {
+        doce_lib::inference::MessageContent::Text(t) => t.clone(),
+        other => panic!("expected a text message at the end of the span, got {other:?}"),
+    };
+    assert_eq!(
+        to_summarize.last().unwrap().chat.role,
+        "assistant",
+        "this smoke only exercises the prefill hazard while its span ends on an assistant \
+         message"
+    );
     let mut messages = vec![ChatMessage::system(
         "Summarize the conversation so far concisely, preserving key facts, decisions, and unresolved tasks. Respond with only the summary text, nothing else.",
     )];
     messages.extend(to_summarize.iter().map(|m| m.chat.clone()));
-    let req = ChatRequest::build(
+    messages.push(ChatMessage::user(
+        doce_lib::context::limits::SUMMARIZATION_FINAL_TURN,
+    ));
+    let mut req = ChatRequest::build(
         "doce",
         to_openai_messages(&messages),
         None,
         tool_choice_for(ToolCallMode::Forbid).map(|s| s.to_string()),
     );
+    req.disable_thinking();
     let cancel = tokio_util::sync::CancellationToken::new();
     let summary = LlamaServerClient::new(server.base_url.clone())
         .chat(req, |_piece| {}, &cancel)
@@ -223,6 +250,13 @@ async fn apply_lightweight_clearing_then_summarize_against_the_server() {
 
     println!("real model summary: {summary:?}");
     assert!(!summary.trim().is_empty(), "expected a non-empty summary");
+    // A summary of a 16-message span is never just a continuation of its final
+    // line. Before the fix this came back as exactly "Assistant reply 15".
+    assert!(
+        !summary.starts_with(last_summarized.trim()),
+        "the model continued the span's trailing assistant message ({last_summarized:?}) \
+         instead of summarizing: {summary:?}"
+    );
 
     // Sanity-check the settings defaults load correctly too (pure logic,
     // but exercised here alongside the real-model assertions for a single
@@ -459,6 +493,210 @@ async fn the_real_model_obeys_the_memory_extraction_contract() {
             m.content
         );
     }
+}
+
+/// THE SAME QUESTION AS THE MEMORY TEST ABOVE, pointed at tier-2 compaction --
+/// the project's core context-management feature, and until 2026-07-15 the
+/// single largest untested surface in it (`context/mod.rs`'s own doc comment
+/// admits `compute_usage`/`maybe_compact` are not unit-tested because they need
+/// a live server, so `summarize_and_persist` had only ever been run against
+/// HTTP stubs that fed it a canned, already-well-formed summary).
+///
+/// It was broken. `summarize_and_persist` built `[system(SUMMARIZATION_PROMPT)]
+/// + span` and appended nothing, and `messages_to_summarize` returns an
+/// arbitrary slice of history that routinely ENDS WITH AN ASSISTANT MESSAGE --
+/// which llama-server's chat template treats as a prefill to CONTINUE. The
+/// model closed out that sentence instead of answering the system prompt, and
+/// because the echo is non-empty, un-truncated, and smaller than the span it
+/// replaces, `evaluate_summary` ACCEPTED it. Compaction did not fail loudly; it
+/// silently replaced the conversation's state with a continuation of its own
+/// last sentence. This test pins the fix (`SUMMARIZATION_FINAL_TURN` +
+/// `disable_thinking`) against the real model.
+///
+/// The span here deliberately ends on an assistant message, because that is the
+/// production hazard. As with the memory smoke, the assertions are the CONTRACT
+/// and never the wording -- the model is stochastic -- and the `--nocapture`
+/// print of the real summary is as much the deliverable as the asserts.
+#[tokio::test]
+#[ignore]
+async fn the_real_model_summarizes_a_span_that_ends_with_an_assistant_message() {
+    let model = installed_model_path();
+    let Some(server) = common::TestServer::spawn(&model).await else {
+        return; // sidecar binary or model GGUF absent -- skip (see TestServer)
+    };
+
+    let conn = doce_lib::storage::test_async_connection().await;
+    seed_workspace_and_conversation(&conn).await;
+
+    // A realistic debugging conversation: a task statement, tool work, a stated
+    // user preference, and a resolution -- the kind of span a real compaction
+    // eats. The last message of the SUMMARIZABLE part (everything but the four
+    // protected recent) is an assistant turn, on purpose.
+    let history: Vec<HistoryMessage> = vec![
+        span_message(
+            ChatMessage::user("The login page throws a 500 on submit. Find the bug and fix it."),
+            "text",
+            0,
+        ),
+        span_message(
+            ChatMessage::assistant("I'll start by finding the login handler."),
+            "text",
+            1,
+        ),
+        HistoryMessage {
+            chat: ChatMessage::tool_result(
+                "call-0".to_string(),
+                "Read",
+                "pub async fn login(form: LoginForm) -> Result<Session> {\n    let user = \
+                 db.find_user(&form.email).await.unwrap();\n    verify(&form.password, \
+                 &user.hash)?;\n    Ok(Session::new(user.id))\n}"
+                    .to_string(),
+            ),
+            content_type: "tool_result".to_string(),
+            sequence: 2,
+            plan: false,
+            payload_ref: None,
+            tool_name: Some("Read".to_string()),
+        },
+        span_message(
+            ChatMessage::assistant(
+                "The bug is the `.unwrap()` on `db.find_user` in src/api/auth.rs -- an \
+                 unknown email panics the handler, which axum turns into a 500. It should \
+                 be a 401 instead.",
+            ),
+            "text",
+            3,
+        ),
+        span_message(
+            ChatMessage::user(
+                "Right. Fix it, and never use unwrap() in request handlers in this \
+                 codebase -- always propagate with ?.",
+            ),
+            "text",
+            4,
+        ),
+        span_message(
+            ChatMessage::assistant("Understood -- no unwrap() in handlers. Applying the fix now."),
+            "text",
+            5,
+        ),
+        HistoryMessage {
+            chat: ChatMessage::tool_result(
+                "call-1".to_string(),
+                "Edit",
+                "Edited src/api/auth.rs: replaced unwrap() with ok_or(AuthError::Unknown)?"
+                    .to_string(),
+            ),
+            content_type: "tool_result".to_string(),
+            sequence: 6,
+            plan: false,
+            payload_ref: None,
+            tool_name: Some("Edit".to_string()),
+        },
+        HistoryMessage {
+            chat: ChatMessage::tool_result(
+                "call-2".to_string(),
+                "Bash",
+                "test result: ok. 128 passed; 0 failed; finished in 3.02s".to_string(),
+            ),
+            content_type: "tool_result".to_string(),
+            sequence: 7,
+            plan: false,
+            payload_ref: None,
+            tool_name: Some("Bash".to_string()),
+        },
+        // *** The summarizable span's LAST message: an assistant turn -- the
+        // exact shape that produced the prefill echo. ***
+        span_message(
+            ChatMessage::assistant(
+                "All 128 tests pass. The login handler now returns 401 for unknown emails.",
+            ),
+            "text",
+            8,
+        ),
+        // --- the four protected-recent messages below are never summarized ---
+        span_message(
+            ChatMessage::user("Great. Now add a rate limiter."),
+            "text",
+            9,
+        ),
+        span_message(
+            ChatMessage::assistant("Adding a rate limiter to the login route."),
+            "text",
+            10,
+        ),
+        span_message(ChatMessage::user("Use a token bucket."), "text", 11),
+        span_message(
+            ChatMessage::assistant("Token bucket it is -- starting now."),
+            "text",
+            12,
+        ),
+    ];
+    let protected_recent = 4;
+
+    // Guard the FIXTURE itself: if a future edit to `history` stops the span
+    // ending on an assistant message, this test would still pass while no
+    // longer testing the bug it exists for.
+    let last_summarized = &history[history.len() - protected_recent - 1];
+    assert_eq!(
+        last_summarized.chat.role, "assistant",
+        "fixture is wrong: this test only tests the prefill bug if the summarized span \
+         ENDS on an assistant message"
+    );
+    let echoed_text = match &last_summarized.chat.content {
+        doce_lib::inference::MessageContent::Text(t) => t.clone(),
+        other => panic!("fixture's last summarized message must be text, got {other:?}"),
+    };
+
+    let result = context::summarize_and_persist(
+        &conn,
+        None,
+        &server.base_url,
+        "c1",
+        &history,
+        protected_recent,
+    )
+    .await
+    .expect("summarization must not error against a healthy server");
+
+    let summary = match result {
+        context::SummaryResult::Persisted(s) => s,
+        context::SummaryResult::NothingToSummarize => {
+            panic!("the span was non-empty -- summarization must not no-op here")
+        }
+        context::SummaryResult::Rejected(decision) => panic!(
+            "the real model's summary was REJECTED by evaluate_summary ({decision:?}). \
+             Tier-2 compaction cannot condense a real span."
+        ),
+    };
+
+    // THE DELIVERABLE: the real summary, for a human to judge.
+    println!("\n=== real model: tier-2 summary ===\n{summary}\n=== end summary ===\n");
+
+    // THE ASSERTION THAT BITES: the summary must not be a continuation of the
+    // span's last assistant message. A relationship to the input, never a
+    // wording -- robust to stochasticity, and the exact bug this test exists
+    // for. `starts_with` rather than `contains`: prefill continuation echoes the
+    // message and then keeps going, whereas a legitimate snapshot may well
+    // quote a fact from it in passing.
+    assert!(
+        !summary.starts_with(echoed_text.trim()),
+        "the model CONTINUED the span's trailing assistant message instead of summarizing: \
+         {summary:?}\nThis is the trailing-assistant prefill bug -- the summarization never ran."
+    );
+
+    // The prompt's own contract: output ONLY the <state_snapshot> block. Asserted
+    // because the echo bug is invisible to a mere non-emptiness check -- an
+    // echoed sentence is perfectly well-formed prose.
+    assert!(
+        summary.contains("<state_snapshot>") && summary.contains("</state_snapshot>"),
+        "the summary does not carry the <state_snapshot> block SUMMARIZATION_PROMPT \
+         demands: {summary:?}"
+    );
+    assert!(
+        summary.contains("GOAL:"),
+        "the snapshot is missing the GOAL section the prompt's structure requires: {summary:?}"
+    );
 }
 
 /// A minimal `AgentBackend` for the one-tool-call real-server smoke below:

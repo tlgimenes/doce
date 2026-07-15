@@ -65,20 +65,73 @@ pub fn tool_cleared_placeholder_transcript(transcript_path: &str, seq: i64) -> S
 /// would otherwise reach (research.md).
 pub const PROTECTED_RECENT_MESSAGES: usize = 10;
 
-/// Max output tokens for the tier-2 summarization completion itself --
-/// 1/16 of `CONTEXT_WINDOW_TOKENS`. Live again (restore-output-cap task):
-/// `context::summarize_and_persist` sets this as the summarization request's
-/// literal `max_tokens` -- a flat cap, not `clamp_output_tokens`, since the
-/// summarization prompt is a `Forbid`-mode call sized well under the window
-/// on its own (a future truncation-rejection task, not this one, is what
-/// would police that prompt-side).
-pub const SUMMARY_MAX_TOKENS: i32 = (CONTEXT_WINDOW_TOKENS / 16) as i32;
+/// Max output tokens for the two `Forbid`-mode compaction calls --
+/// `context::summarize_and_persist` and `context::extract_and_persist_memories`
+/// -- both of which set this as their request's literal `max_tokens`. A flat
+/// cap, not `clamp_output_tokens`: these are `Forbid`-mode calls over prompts
+/// that carry their own explicit self-caps (~800 tokens each), not agent turns
+/// sized against the live window.
+///
+/// RAISED 1024 -> 2048 (1/16 -> 1/8 of `CONTEXT_WINDOW_TOKENS`) by the
+/// 2026-07-15 real-model pass, the first time either call was ever run against
+/// a real Qwen3.5-4B rather than an HTTP stub. Qwen3.5 is a thinking model:
+/// with `enable_thinking` on it emits a reasoning block BEFORE any content, and
+/// the block is both large and highly variable (688 chars on a summarization
+/// span, 3789 on an extraction span, ~8180 observed on another). At 1024 that
+/// reasoning consumed the ENTIRE budget on extraction -- measured: empty
+/// content, `finish_reason:"length"` -- so the truncation guard correctly
+/// rejected everything and nothing ever persisted.
+///
+/// The real fix for that is `ChatRequest::disable_thinking` (these two calls
+/// suppress reasoning outright rather than trying to out-budget it -- see its
+/// doc comment), which drops `reasoning_len` to 0 and leaves the whole budget
+/// for content. This cap is therefore sized for CONTENT ALONE: both prompts
+/// self-cap at ~800 tokens, and the observed no-think outputs are ~45-93
+/// tokens, so 2048 is ~2.5x the prompts' own ceiling -- generous headroom
+/// without ever letting one of these calls crowd the window.
+///
+/// Bounded against the server, not just the window: `CONTEXT_WINDOW_TOKENS`
+/// (16384, the largest prompt either call can present) + 2048 = 18432, which
+/// still fits `server::SERVER_CTX_SIZE` (20480) with 2048 to spare. The
+/// `compaction_output_budget_fits_the_server_context` test below pins that.
+/// Note this is now EQUAL to `MEMORIES_MAX_TOKENS` -- see that constant's doc
+/// comment, which this raise makes newly relevant.
+pub const SUMMARY_MAX_TOKENS: i32 = (CONTEXT_WINDOW_TOKENS / 8) as i32;
+
+/// The final USER turn `context::summarize_and_persist` appends after the span
+/// it is condensing, and the reason it must: llama-server's chat template
+/// treats a TRAILING ASSISTANT MESSAGE as a prefill to continue, not as
+/// context to act on. `messages_to_summarize` returns an arbitrary slice of
+/// history that routinely ENDS WITH an assistant message, so before the
+/// 2026-07-15 real-model pass the request was `[system(SUMMARIZATION_PROMPT)]
+/// + span` and nothing else -- and the model simply closed out the span's last
+/// assistant sentence (measured: `reasoning_len=0`, and the "summary" came back
+/// as that message echoed verbatim plus a tacked-on clause). That echo is
+/// non-empty, not truncated, and smaller than the span it replaces, so
+/// `evaluate_summary` ACCEPTED it: tier-2 compaction did not fail loudly, it
+/// silently replaced the conversation's state with a continuation of its last
+/// sentence. Ending the request on a user turn is what makes the model answer
+/// the system prompt instead of autocompleting the transcript.
+///
+/// Deliberately a SEPARATE const rather than an edit to `SUMMARIZATION_PROMPT`:
+/// this is a request-shape fix, and the prompt's bytes are benchmark-gated.
+/// The wording restates that prompt's existing contract ("produce the
+/// snapshot") and must not introduce new requirements of its own.
+pub const SUMMARIZATION_FINAL_TURN: &str = "Now produce the summary as specified.";
+
+/// The extraction-side twin of `SUMMARIZATION_FINAL_TURN` -- same
+/// trailing-assistant prefill hazard, same fix, same measured echo failure
+/// (`extract_and_persist_memories` persisted the span's last assistant message
+/// verbatim as a durable memory, deterministically). Restates
+/// `MEMORY_EXTRACTION_PROMPT`'s existing "output the COMPLETE updated set"
+/// contract without adding to it.
+pub const EXTRACTION_FINAL_TURN: &str = "Now output the updated memory set as specified.";
 
 /// A structured `<state_snapshot>` compaction prompt (SP3 component b):
 /// replaces the old one-sentence summary with named sections so a resumed
 /// turn recovers goal/task/files/decisions/pending/next-step, not just prose.
 /// Kept LEANER than claude-code's 9-section format — tuned for the local 4B
-/// model and the `SUMMARY_MAX_TOKENS` (~1024) budget: terse fragments, an
+/// model and the `SUMMARY_MAX_TOKENS` budget: terse fragments, an
 /// explicit ~800-token cap (headroom below `SUMMARY_MAX_TOKENS` so the call
 /// never hits `finish_reason:"length"` and gets rejected by `evaluate_summary`),
 /// and omit-empty-sections so a short conversation yields a short snapshot
@@ -105,7 +158,7 @@ Keep the whole snapshot under about 800 tokens. Output ONLY the <state_snapshot>
 /// is exactly why this prompt carries its own explicit self-cap (30 facts,
 /// ~20 words each), the same way `SUMMARIZATION_PROMPT`'s ~800-token cap
 /// exists: the replacement set grows every time memories accumulate, so
-/// without a cap the call eventually outgrows `SUMMARY_MAX_TOKENS` (1024) and
+/// without a cap the call eventually outgrows `SUMMARY_MAX_TOKENS` and
 /// hits `finish_reason:"length"` -- which `extract_and_persist_memories`
 /// rejects outright, since a truncated "full replacement set" would silently
 /// drop every memory not yet re-emitted while persisting a half-finished
@@ -246,19 +299,26 @@ pub const PROJECT_INSTRUCTIONS_MAX_TOKENS: usize = (CONTEXT_WINDOW_TOKENS / 8) a
 /// 1/8-of-window share as `PROJECT_INSTRUCTIONS_MAX_TOKENS`. Injected once into
 /// `messages[0]`, structurally outside the compaction window.
 ///
-/// THIS CAP DOES NOT BIND IN PRODUCTION TODAY, and the "share of the window"
-/// framing overstates its role. The real bound on a persisted memory set comes
-/// from the WRITE side: `extract_and_persist_memories` caps its request at
-/// `SUMMARY_MAX_TOKENS` (1024) and refuses to persist anything at all when the
-/// completion comes back `finish_reason:"length"`. So every set that reaches
-/// the DB is at most ~1024 tokens of model text -- half of this 2048 cap --
-/// and `render_memories_section`'s shrink loop never iterates on a
-/// production-written set. It is kept because it is the only thing standing
+/// This cap STILL does not bind in production, but the margin that kept it
+/// slack is gone and the old "half of this cap" framing no longer holds. The
+/// real bound on a persisted memory set comes from the WRITE side:
+/// `extract_and_persist_memories` caps its request at `SUMMARY_MAX_TOKENS` and
+/// refuses to persist anything at all when the completion comes back
+/// `finish_reason:"length"`. That write cap was 1024 -- comfortably half of
+/// this one -- until the 2026-07-15 real-model pass raised it to 2048, which is
+/// now EXACTLY this value. The predicted-here consequence has therefore
+/// arrived: a maximal write (2048 tokens) now exactly meets this cap rather
+/// than sitting far below it, so `render_memories_section`'s shrink loop is one
+/// token of drift away from iterating on a production-written set for the first
+/// time. It does not fire today (the check is `<=`, and real no-think
+/// extractions measure ~45-93 tokens against a prompt that self-caps at ~800),
+/// but the two constants are now COUPLED: raise `SUMMARY_MAX_TOKENS` again
+/// without raising this one and the shrink loop starts silently dropping
+/// trailing facts off recalled sets. Raise both together, or not at all.
+///
+/// It is kept for the reason it always was: it is the only thing standing
 /// between recall and an over-large set that arrived by some other route
-/// (hand-edited sqlite, an imported set, a future writer with a different cap),
-/// and because it becomes silently LOAD-BEARING the moment `SUMMARY_MAX_TOKENS`
-/// is raised past it -- at which point the shrink loop starts dropping trailing
-/// facts for real. Raise both together, or not at all.
+/// (hand-edited sqlite, an imported set, a future writer with a different cap).
 pub const MEMORIES_MAX_TOKENS: usize = (CONTEXT_WINDOW_TOKENS / 8) as usize;
 
 /// Shape bounds for a single extracted memory line (see
@@ -276,7 +336,7 @@ mod tests {
     #[test]
     #[allow(clippy::assertions_on_constants)]
     fn budget_constants_stay_proportional_to_the_window() {
-        assert_eq!(SUMMARY_MAX_TOKENS, (CONTEXT_WINDOW_TOKENS / 16) as i32);
+        assert_eq!(SUMMARY_MAX_TOKENS, (CONTEXT_WINDOW_TOKENS / 8) as i32);
         assert_eq!(
             DEFAULT_TOOL_OUTPUT_OFFLOAD_TOKENS,
             (CONTEXT_WINDOW_TOKENS / 16) as usize
@@ -295,6 +355,39 @@ mod tests {
         assert_eq!(
             PROJECT_INSTRUCTIONS_MAX_TOKENS,
             (CONTEXT_WINDOW_TOKENS / 8) as usize
+        );
+    }
+
+    /// The raise to `SUMMARY_MAX_TOKENS` must not let a compaction call ask the
+    /// server for more than it can hold. The largest prompt either `Forbid`-mode
+    /// call can present is a full window's worth of history, so
+    /// `CONTEXT_WINDOW_TOKENS + SUMMARY_MAX_TOKENS` is the worst case and it has
+    /// to fit the sidecar's actual `--ctx-size`, not merely the in-process input
+    /// budget derived from it.
+    #[test]
+    #[allow(clippy::assertions_on_constants)]
+    fn compaction_output_budget_fits_the_server_context() {
+        let worst_case = CONTEXT_WINDOW_TOKENS + SUMMARY_MAX_TOKENS as u32;
+        assert!(
+            worst_case <= crate::inference::server::SERVER_CTX_SIZE,
+            "a compaction call's prompt+output ({worst_case}) must fit the server's ctx-size ({})",
+            crate::inference::server::SERVER_CTX_SIZE
+        );
+    }
+
+    /// `MEMORIES_MAX_TOKENS`'s doc comment: the write cap and the recall cap are
+    /// coupled, and a write cap ABOVE the recall cap silently starts dropping
+    /// trailing facts off recalled sets in `render_memories_section`'s shrink
+    /// loop. Pin the direction of that inequality so the next raise of either
+    /// constant has to confront it.
+    #[test]
+    #[allow(clippy::assertions_on_constants)]
+    fn the_memory_write_cap_never_exceeds_the_recall_cap() {
+        assert!(
+            SUMMARY_MAX_TOKENS as usize <= MEMORIES_MAX_TOKENS,
+            "extraction can write up to {SUMMARY_MAX_TOKENS} tokens but recall only renders \
+             {MEMORIES_MAX_TOKENS} -- raise MEMORIES_MAX_TOKENS too, or recall silently \
+             truncates persisted facts"
         );
     }
 
