@@ -20,7 +20,7 @@
 mod common;
 
 use doce_lib::agent::{dispatch, run_loop, AgentBackend, AgentContext, ToolCall, ToolExecution};
-use doce_lib::context::{self, ContextSettings};
+use doce_lib::context;
 use doce_lib::inference::http::{
     to_openai_messages, tool_choice_for, tools_array, ChatRequest, LlamaServerClient,
 };
@@ -153,120 +153,36 @@ async fn grammar_constrained_tool_call_produces_a_well_formed_tool_call_against_
 // equivalent rendering is covered by `inference::http::to_openai_messages`'s
 // own unit tests plus the real-server smokes below.)
 
-#[tokio::test]
-#[ignore]
-async fn apply_lightweight_clearing_then_summarize_against_the_server() {
-    let model = installed_model_path();
-    let Some(server) = common::TestServer::spawn(&model).await else {
-        return;
-    };
-
-    // A synthetic history with more tool messages than TOOL_KEEP_N, plus
-    // enough real turns that summarize_and_persist has non-protected
-    // content to work with.
-    let mut history: Vec<HistoryMessage> = Vec::new();
-    for i in 0..12 {
-        history.push(HistoryMessage {
-            chat: ChatMessage::tool_result(
-                format!("call-{i}"),
-                "Bash",
-                format!("output number {i}"),
-            ),
-            content_type: "tool_result".to_string(),
-            sequence: i,
-            plan: false,
-            payload_ref: None,
-            tool_name: Some("Bash".to_string()),
-        });
-    }
-    for i in 12..20 {
-        history.push(HistoryMessage {
-            chat: if i % 2 == 0 {
-                ChatMessage::user(format!("User turn {i}"))
-            } else {
-                ChatMessage::assistant(format!("Assistant reply {i}"))
-            },
-            content_type: "text".to_string(),
-            sequence: i,
-            plan: false,
-            payload_ref: None,
-            tool_name: None,
-        });
-    }
-
-    let cleared = context::apply_lightweight_clearing(&mut history, 4, None);
-    assert!(cleared > 0, "expected some tool messages to be cleared");
-
-    // Real summarization call against the real SERVER, proving the
-    // prompt/generate path works end-to-end over HTTP. `Forbid` (no tools): a
-    // summary must never be able to emit a tool call.
-    //
-    // This smoke HAND-ROLLS its request rather than calling
-    // `summarize_and_persist` (which needs a seeded DB;
-    // `the_real_model_summarizes_a_span_that_ends_with_an_assistant_message`
-    // covers the real function). That hand-rolling is precisely how it spent
-    // months passing green while DEMONSTRATING the trailing-assistant prefill
-    // bug: its span ends on "Assistant reply 19", the request appended nothing
-    // after it, and the model dutifully echoed that message back as the
-    // "summary" -- which a bare non-emptiness assert waves through. So the two
-    // production-shape fixes are mirrored here deliberately (a final user turn
-    // + thinking off), and the echo is now asserted against rather than
-    // ignored. A smoke that reimplements a request shape must reimplement the
-    // CURRENT one, or it silently pins the bug.
-    let protected_recent = 4;
-    let to_summarize = &history[..history.len() - protected_recent];
-    // Derived, never hardcoded: the span's trailing message is what a prefill
-    // continuation would echo, and it must stay in step with the fixture above.
-    let last_summarized = match &to_summarize.last().unwrap().chat.content {
-        doce_lib::inference::MessageContent::Text(t) => t.clone(),
-        other => panic!("expected a text message at the end of the span, got {other:?}"),
-    };
-    assert_eq!(
-        to_summarize.last().unwrap().chat.role,
-        "assistant",
-        "this smoke only exercises the prefill hazard while its span ends on an assistant \
-         message"
-    );
-    let mut messages = vec![ChatMessage::system(
-        "Summarize the conversation so far concisely, preserving key facts, decisions, and unresolved tasks. Respond with only the summary text, nothing else.",
-    )];
-    messages.extend(to_summarize.iter().map(|m| m.chat.clone()));
-    messages.push(ChatMessage::user(
-        doce_lib::context::limits::SUMMARIZATION_FINAL_TURN,
-    ));
-    let mut req = ChatRequest::build(
-        "doce",
-        to_openai_messages(&messages),
-        None,
-        tool_choice_for(ToolCallMode::Forbid).map(|s| s.to_string()),
-    );
-    req.disable_thinking();
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let summary = LlamaServerClient::new(server.base_url.clone())
-        .chat(req, |_piece| {}, &cancel)
-        .await
-        .expect("summarization generate should succeed")
-        .text;
-
-    println!("real model summary: {summary:?}");
-    assert!(!summary.trim().is_empty(), "expected a non-empty summary");
-    // A summary of a 16-message span is never just a continuation of its final
-    // line. Before the fix this came back as exactly "Assistant reply 15".
-    assert!(
-        !summary.starts_with(last_summarized.trim()),
-        "the model continued the span's trailing assistant message ({last_summarized:?}) \
-         instead of summarizing: {summary:?}"
-    );
-
-    // Sanity-check the settings defaults load correctly too (pure logic,
-    // but exercised here alongside the real-model assertions for a single
-    // combined smoke-test run).
-    let settings = ContextSettings::from_raw(&Default::default());
-    assert_eq!(
-        settings.warn_threshold_pct,
-        ContextSettings::DEFAULT_WARN_THRESHOLD_PCT
-    );
-}
+// (Removed `apply_lightweight_clearing_then_summarize_against_the_server`:
+// it hand-rolled a summarization request instead of calling
+// `summarize_and_persist`, and every byte of that copy had drifted from
+// production. It sent a one-sentence system prompt retired at SP3 (`grep`
+// found that string nowhere but in the test itself) rather than
+// `limits::SUMMARIZATION_PROMPT`'s structured `<state_snapshot>` prompt; it
+// summarized `&history[..len-4]` rather than `messages_to_summarize`'s span
+// (which also drops the first genuine user message, keep-first); and it left
+// `max_tokens` unset where production caps at `SUMMARY_MAX_TOKENS`. It never
+// called `evaluate_summary` either, so it could not observe the screen that
+// decides whether production persists anything at all. It asserted a
+// non-empty string came back from a request production does not send -- which
+// is how it passed green through the entire life of the trailing-assistant
+// prefill bug it was supposedly demonstrating.
+//
+// It is deleted rather than rewritten because
+// `the_real_model_summarizes_a_span_that_ends_with_an_assistant_message`
+// below already drives the real `summarize_and_persist` over a realistic span
+// that ends on an assistant message, and already asserts the echo guard plus
+// the `<state_snapshot>`/`GOAL:` contract. A rewrite would have been that
+// test again with a worse fixture: 12 rows of synthetic "output number {i}"
+// filler, whose span is small enough that a structured snapshot could plausibly
+// trip `evaluate_summary`'s RejectInflated guard -- a flaky duplicate costing a
+// second real-model round-trip for no marginal signal.
+//
+// Its two non-summarization assertions needed no model and are already covered,
+// model-free: `apply_lightweight_clearing` by `context`'s six inline clearing
+// tests (which assert the exact placeholder text, and use the production
+// `TOOL_KEEP_N` rather than this test's hardcoded 4), and
+// `ContextSettings::from_raw`'s defaults by `context`'s own `from_raw` tests.)
 
 /// Does a line look like the model ignored "no bullets, no numbering"? Only
 /// the `- ` prefix is defensively stripped by the parser, so anything else

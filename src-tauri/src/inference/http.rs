@@ -804,24 +804,63 @@ mod tests {
         assert!(t.is_empty());
     }
 
+    /// Every tool name the prompt ADVERTISES must yield a `tool_def`, for both
+    /// host flavors.
+    ///
+    /// `tools_array` is a `filter_map` -- "unknown names are skipped, not a
+    /// panic" (see its doc comment). That graceful degradation is a silent
+    /// capability hole in exactly one direction: a name added to
+    /// `SINGLE_MODE_TOOLS_TOP`/`_SUB` with no matching `tool_def` arm is dropped
+    /// on the floor, so under `--jinja` the server renders a `tools` array that
+    /// omits a tool the system prompt tells the model to call. The model then
+    /// cannot emit it, and nothing fails loudly.
+    ///
+    /// This test used to hand-list the nine top-level names, which made
+    /// `t.len() == names.len()` tautological -- `tools_array` of a list the test
+    /// itself chose to be complete. Adding a bogus name to production's set left
+    /// it green. So the names come from production's own
+    /// `single_mode_tool_names` (the same reachable builder `RealBackend` and
+    /// `SubagentBackend` call), never a copy. The subagent flavor (`false`) had
+    /// no coverage at all.
     #[test]
-    fn tools_array_covers_all_nine_single_mode_tools() {
-        let names = [
-            "Read",
-            "Update",
-            "Bash",
-            "Grep",
-            "Glob",
-            "Todo",
-            "Task",
-            "AskUserQuestion",
-            "FinishTask",
-        ];
-        let t = tools_array(&names);
-        assert_eq!(t.len(), names.len());
-        for (def, name) in t.iter().zip(names.iter()) {
-            assert_eq!(def["function"]["name"], *name);
+    fn tools_array_covers_every_advertised_single_mode_tool_in_both_flavors() {
+        let plan_state = crate::agent::plan::PlanState::default();
+        for allow_task in [true, false] {
+            let names = plan_state.single_mode_tool_names(allow_task);
+            assert!(
+                !names.is_empty(),
+                "the production tool set must not be empty (allow_task={allow_task})"
+            );
+            let t = tools_array(names);
+            let emitted: Vec<&str> = t
+                .iter()
+                .map(|def| def["function"]["name"].as_str().unwrap())
+                .collect();
+            assert_eq!(
+                emitted, *names,
+                "every name production advertises must yield a tool_def, in order \
+                 (allow_task={allow_task}). Missing names are SILENTLY dropped by \
+                 tools_array's filter_map, so the model never sees a tool the prompt \
+                 tells it to call."
+            );
         }
+    }
+
+    /// The subagent set is the top-level set minus `Task` (FR-016's one-level
+    /// nesting cap) and minus `AskUserQuestion` (a subagent has no user to ask).
+    /// Asserted against production's two sets directly -- a name added to one
+    /// flavor but not the other is the drift this catches.
+    #[test]
+    fn the_subagent_tool_set_is_the_top_level_set_without_task_or_ask_user_question() {
+        let plan_state = crate::agent::plan::PlanState::default();
+        let top = plan_state.single_mode_tool_names(true);
+        let sub = plan_state.single_mode_tool_names(false);
+        let expected: Vec<&str> = top
+            .iter()
+            .copied()
+            .filter(|n| !matches!(*n, "Task" | "AskUserQuestion"))
+            .collect();
+        assert_eq!(sub.to_vec(), expected);
     }
 
     /// The out-of-band compaction calls flip thinking OFF (see

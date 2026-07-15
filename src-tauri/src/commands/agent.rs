@@ -2381,25 +2381,100 @@ mod tests {
     }
 
     /// The KV-prefix invariant: what seeds `messages[0]` must be
-    /// byte-identical on every render for a given host flavor — there is
-    /// no state input left to vary it beyond the (turn-stable, per-host)
-    /// cwd and transcript path, so consecutive turns and plan-state
-    /// transitions can never swap the prompt out from under the session.
+    /// byte-identical on every render for a given host flavor and a given
+    /// `memories` block, so consecutive turns and plan-state transitions can
+    /// never swap the prompt out from under the session.
+    ///
+    /// Asserted against a baseline built INDEPENDENTLY of
+    /// `plan_system_message` (the pattern
+    /// `plan_system_message_is_unchanged_when_no_cwd_is_known` and
+    /// `no_memories_leaves_the_prompt_byte_identical` already use). This test
+    /// previously compared `plan_system_message(cwd, true, None, None)` to
+    /// ITSELF with identical args -- true by construction for a deterministic
+    /// pure function, and proven vacuous: appending unconditional garbage inside
+    /// `plan_system_message` left it green while both independently-baselined
+    /// siblings caught it. It also passed `memories: None`, so it never touched
+    /// the one hazard its own docstring documents.
+    ///
+    /// A tempdir (rather than a fixed fake path) so `project_instructions_section`
+    /// deterministically finds no `AGENTS.md`, and the baseline is the whole
+    /// expected string rather than a `contains` probe.
     #[test]
-    fn plan_system_message_is_byte_stable_across_renders() {
-        let cwd = std::path::Path::new("/Users/tester/code/doce");
-        assert_eq!(
-            plan_system_message(Some(cwd), true, None, None),
-            plan_system_message(Some(cwd), true, None, None)
-        );
-        assert_eq!(
-            plan_system_message(Some(cwd), false, None, None),
-            plan_system_message(Some(cwd), false, None, None)
-        );
-        // The subagent flavor differs (no Task tool) but is stable too.
+    fn plan_system_message_renders_a_byte_exact_prompt_for_both_flavors() {
+        let dir = tempfile::tempdir().unwrap(); // no AGENTS.md inside
+        let block = render_memories_section(&[mem("prefers oxfmt"), mem("uses tabs")]).unwrap();
+
+        for allow_task in [true, false] {
+            let base = crate::agent::plan::single_mode_system_prompt(allow_task);
+            let expected = format!(
+                "{base}\n\nYou are currently working in the directory: {}\n\n{block}",
+                dir.path().display()
+            );
+            assert_eq!(
+                plan_system_message(Some(dir.path()), allow_task, None, Some(&block)),
+                expected,
+                "the rendered prompt must be exactly base + cwd line + memories block \
+                 (allow_task={allow_task})"
+            );
+        }
+
+        // The subagent flavor differs (no Task tool), so the two are not
+        // interchangeable -- a host that renders the wrong one advertises a tool
+        // `run_loop` will reject.
         assert_ne!(
-            plan_system_message(Some(cwd), true, None, None),
-            plan_system_message(Some(cwd), false, None, None)
+            plan_system_message(Some(dir.path()), true, None, Some(&block)),
+            plan_system_message(Some(dir.path()), false, None, Some(&block))
+        );
+    }
+
+    /// The memories hazard `plan_system_message`'s doc comment documents at
+    /// length, actually exercised.
+    ///
+    /// `replace_memories` re-inserts every row with a fresh UUID and one shared
+    /// `updated_at`, so recall order is the extraction model's emission order for
+    /// the last pass: the SAME logical facts re-emitted in a different order
+    /// render different bytes. The prompt is therefore NOT byte-stable per
+    /// conversation across a compaction, and this test refuses to claim it is.
+    ///
+    /// What it pins is the part that IS true and that the KV cache actually
+    /// depends on: the prefix UP TO the memories section survives a reorder.
+    /// The block is appended after the base and the cwd line, so a compaction --
+    /// this conversation's own, or a sibling's in the same workspace --
+    /// invalidates the prefix only from the memories section onward. Moving the
+    /// block ahead of the cwd line (or into the cached base) would throw away the
+    /// whole prefix on every reorder, and must fail here.
+    #[test]
+    fn reordered_memories_only_invalidate_the_prompt_from_the_memories_block_onward() {
+        let dir = tempfile::tempdir().unwrap(); // no AGENTS.md inside
+        let one = render_memories_section(&[mem("prefers oxfmt"), mem("uses tabs")]).unwrap();
+        let other = render_memories_section(&[mem("uses tabs"), mem("prefers oxfmt")]).unwrap();
+        assert_ne!(
+            one, other,
+            "fixture is wrong: the two blocks must actually differ for this test to \
+             exercise a reorder"
+        );
+
+        let first = plan_system_message(Some(dir.path()), true, None, Some(&one));
+        let second = plan_system_message(Some(dir.path()), true, None, Some(&other));
+
+        // The shared KV prefix: everything up to (and not including) the block.
+        let base = crate::agent::plan::single_mode_system_prompt(true);
+        let prefix = format!(
+            "{base}\n\nYou are currently working in the directory: {}\n\n",
+            dir.path().display()
+        );
+        assert!(
+            first.starts_with(&prefix) && second.starts_with(&prefix),
+            "a memories reorder must leave the base prompt and the cwd line untouched -- \
+             they are the prefix every turn's KV cache reuses"
+        );
+        // And the documented, accepted cost: the bytes from the block onward do
+        // change. If a future change makes recall order stable (e.g. sorting the
+        // block), this assertion is the one to revisit -- along with
+        // `plan_system_message`'s doc comment, which promises the opposite.
+        assert_ne!(
+            first, second,
+            "same facts in a different order currently render different bytes"
         );
     }
 
@@ -3268,7 +3343,21 @@ mod tests {
 
         let (_, _, _, content) = latest_message(&conn, "sub").await;
         let detail: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert!(detail["tokenCount"].as_u64().is_some());
+        // The REAL count, not merely `is_some()` -- `0` satisfied the old
+        // assertion, which is the one value a test named "carries a REAL token
+        // count" exists to reject.
+        //
+        // A hand-computed golden, derived rather than copied off a run:
+        // `annotate_with_token_count` counts `outcome.model_text`, and `Read`'s
+        // model_text is `agent::tools::fs::read`'s `cat -n` rendering -- NOT the
+        // raw file bytes -- so "hello world" becomes "     1\thello world\n":
+        // 6-wide right-aligned line number + tab + 11 chars + newline = 19 ASCII.
+        // `token_estimate` is `ceil(ascii / 4)` = ceil(19/4) = 5.
+        assert_eq!(
+            detail["tokenCount"], 5,
+            "the annotated count must be token_estimate of Read's line-numbered \
+             model_text (19 ASCII chars -> 5)"
+        );
     }
 
     // --- Task 4: subagent path staged through context::payload ---

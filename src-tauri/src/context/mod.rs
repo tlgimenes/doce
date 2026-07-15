@@ -1400,6 +1400,21 @@ mod tests {
         }
     }
 
+    /// A `text` row authored by the ASSISTANT. `history_message` above always
+    /// builds a user turn, and the trailing-assistant prefill hazard the
+    /// request-shape tests at the bottom of this module pin only exists when a
+    /// span ENDS on an assistant message -- so those fixtures need this.
+    fn assistant_history_message(sequence: i64, content: &str) -> HistoryMessage {
+        HistoryMessage {
+            chat: ChatMessage::assistant(content),
+            content_type: "text".to_string(),
+            sequence,
+            plan: false,
+            payload_ref: None,
+            tool_name: None,
+        }
+    }
+
     /// A tool row with an explicit `plan`/`payload_ref` — the two fields
     /// `storage::conversations::load_history_annotated` parses once at load
     /// time from a real row's `content` JSON (see that module's own tests
@@ -2795,5 +2810,228 @@ mod tests {
             vec!["X".to_string(), "gated".to_string()],
             "the sibling's 'gated' must survive; the stale pass must not have written 'oxfmt'"
         );
+    }
+
+    // --- The anti-prefill invariant, pinned on the REQUEST BODY ---
+    //
+    // Both compaction calls once built `[system(PROMPT)] + span` and appended
+    // nothing. A span is an arbitrary slice of history and routinely ENDS ON AN
+    // ASSISTANT MESSAGE, which llama-server's chat template treats as a prefill
+    // to CONTINUE -- so the model closed out that sentence instead of
+    // summarizing/extracting, and the echo (non-empty, un-truncated, and smaller
+    // than the span it replaced) passed every guard `evaluate_summary` /
+    // `parse_extraction_output` apply. Tier-2 compaction ACCEPTED garbage and
+    // silently corrupted conversation state while reporting success.
+    //
+    // The fix is one line at each site (`messages.push(ChatMessage::user(
+    // limits::SUMMARIZATION_FINAL_TURN))` and its `EXTRACTION_FINAL_TURN` twin),
+    // and deleting BOTH left the whole lib suite green. The DB-outcome tests
+    // above cannot see it: a stub's canned reply is independent of the request
+    // that asked for it, so no assertion about which facts landed can observe
+    // the shape that was sent. The REQUEST is the only place the hazard is
+    // visible, so these two tests read it back off the wire (`received_requests`,
+    // the same idiom `load_failure_leaves_memories_untouched_and_never_calls_the_model`
+    // already uses) and assert the shape production actually builds.
+    //
+    // Every expected value is REFERENCED from the production const it pins,
+    // never copied: a test carrying its own transcription of a prompt keeps
+    // passing after production's prompt moves on, which is exactly how
+    // `tests/real_model_smoke.rs` came to pin a prompt retired months earlier.
+
+    /// Every request body the stub server received, in order.
+    async fn request_bodies(server: &wiremock::MockServer) -> Vec<serde_json::Value> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| serde_json::from_slice(&r.body).unwrap())
+            .collect()
+    }
+
+    /// The invariants BOTH `Forbid`-mode compaction calls share, asserted
+    /// against the serialized wire body rather than the `ChatRequest` struct --
+    /// a field that never reaches the server is the silent no-op these switches
+    /// cannot afford to be.
+    fn assert_forbid_mode_compaction_shape(body: &serde_json::Value, what: &str) {
+        assert_eq!(
+            body["max_tokens"], SUMMARY_MAX_TOKENS,
+            "{what} must cap output at the flat SUMMARY_MAX_TOKENS production sets"
+        );
+        assert_eq!(
+            body["chat_template_kwargs"]["enable_thinking"], false,
+            "{what} must disable thinking: the reasoning block was measured consuming \
+             this call's ENTIRE budget, leaving empty content and finish_reason:\"length\""
+        );
+        assert!(
+            body.get("tools").is_none(),
+            "{what} is a Forbid-mode call: `tools` must be absent so a compaction \
+             can never emit a tool call"
+        );
+        assert!(
+            body.get("tool_choice").is_none(),
+            "{what} is a Forbid-mode call: `tool_choice` must be absent"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_summarization_request_ends_on_a_user_turn_and_carries_the_production_prompt() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_workspace(&conn, "w1").await;
+        seed_conversation(&conn, "c1", Some("w1")).await;
+        let server = stub_completion("<state_snapshot>\nGOAL: fix login\n</state_snapshot>").await;
+
+        // The hazard's exact shape. `messages_to_summarize` drops the first
+        // genuine user message (index 0, keep-first) and the `protected_recent`
+        // tail (index 3), leaving [assistant(1), assistant(2)].
+        let history = vec![
+            history_message("text", 0, "The login page throws a 500. Fix it."),
+            assistant_history_message(1, "Found it: an unwrap() in the handler."),
+            assistant_history_message(2, "Fixed -- all 128 tests pass."),
+            history_message("text", 3, "Great. Now add a rate limiter."),
+        ];
+        let protected_recent = 1;
+        // Guard the FIXTURE: without a span that ends on an assistant message
+        // this test would still pass while no longer testing the bug it exists
+        // for.
+        assert_eq!(
+            messages_to_summarize(&history, protected_recent)
+                .last()
+                .unwrap()
+                .chat
+                .role,
+            "assistant",
+            "fixture is wrong: this only pins the prefill hazard while the span \
+             ENDS on an assistant message"
+        );
+
+        summarize_and_persist(&conn, None, &server.uri(), "c1", &history, protected_recent)
+            .await
+            .unwrap();
+
+        // An ACCEPTED summary chains straight into the out-of-band memory
+        // extraction (`summarize_and_persist`'s `Accept` arm awaits
+        // `extract_and_persist_memories`), so the same stub sees two calls. The
+        // summarization is the first; its twin below covers the second.
+        let bodies = request_bodies(&server).await;
+        assert_eq!(
+            bodies.len(),
+            2,
+            "an accepted summary must make exactly two calls: the summarization, then \
+             the chained extraction"
+        );
+        let body = &bodies[0];
+        let messages = body["messages"].as_array().unwrap();
+
+        // THE ANTI-PREFILL INVARIANT. Deleting `summarize_and_persist`'s
+        // `messages.push(ChatMessage::user(limits::SUMMARIZATION_FINAL_TURN))`
+        // must fail HERE -- the span's own last message is an assistant turn, so
+        // without that push the request ends on one and the model continues it.
+        let last = messages.last().unwrap();
+        assert_eq!(
+            last["role"], "user",
+            "the summarization request must NEVER end on an assistant message -- the \
+             chat template reads a trailing assistant turn as a prefill to CONTINUE, and \
+             the resulting echo is accepted as a summary. Got: {last}"
+        );
+        assert_eq!(
+            last["content"],
+            limits::SUMMARIZATION_FINAL_TURN,
+            "the closing user turn must be SUMMARIZATION_FINAL_TURN -- what makes the \
+             system prompt the thing being answered"
+        );
+
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(
+            messages[0]["content"], SUMMARIZATION_PROMPT,
+            "the system message must be the production const itself, not a copy"
+        );
+
+        // The span sits between the system prompt and the closing user turn,
+        // exactly as `messages_to_summarize` selected it.
+        let span: Vec<&str> = messages[1..messages.len() - 1]
+            .iter()
+            .map(|m| m["content"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            span,
+            vec![
+                "Found it: an unwrap() in the handler.",
+                "Fixed -- all 128 tests pass."
+            ],
+            "the request must carry `messages_to_summarize`'s span: the first genuine \
+             user message and the protected-recent tail are both excluded"
+        );
+
+        assert_forbid_mode_compaction_shape(body, "the summarization call");
+    }
+
+    #[tokio::test]
+    async fn the_extraction_request_ends_on_a_user_turn_and_carries_the_production_prompt() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_workspace(&conn, "w1").await;
+        seed_conversation(&conn, "c1", Some("w1")).await;
+        let server = stub_completion("The user prefers oxfmt.").await;
+
+        // The hazard's exact shape: the span handed to the extraction ends on an
+        // assistant message.
+        let span = vec![
+            history_message("text", 0, "Format the project."),
+            assistant_history_message(1, "Done -- the repo formats with oxfmt, not prettier."),
+        ];
+        let span_refs: Vec<&HistoryMessage> = span.iter().collect();
+        // Guard the FIXTURE, as the summarization twin above does.
+        assert_eq!(
+            span_refs.last().unwrap().chat.role,
+            "assistant",
+            "fixture is wrong: this only pins the prefill hazard while the span \
+             ENDS on an assistant message"
+        );
+
+        extract_and_persist_memories(&conn, &server.uri(), "c1", &span_refs, 10)
+            .await
+            .unwrap();
+
+        let bodies = request_bodies(&server).await;
+        assert_eq!(
+            bodies.len(),
+            1,
+            "the extraction is exactly one round-trip, never a retry loop"
+        );
+        let body = &bodies[0];
+        let messages = body["messages"].as_array().unwrap();
+
+        // THE ANTI-PREFILL INVARIANT, extraction side. Deleting
+        // `extract_and_persist_memories`'s
+        // `messages.push(ChatMessage::user(limits::EXTRACTION_FINAL_TURN))`
+        // must fail HERE.
+        let last = messages.last().unwrap();
+        assert_eq!(
+            last["role"], "user",
+            "the extraction request must NEVER end on an assistant message -- that \
+             trailing-assistant prefill had this call echoing the span's last message \
+             back as a durable \"memory\". Got: {last}"
+        );
+        assert_eq!(
+            last["content"],
+            limits::EXTRACTION_FINAL_TURN,
+            "the closing user turn must be EXTRACTION_FINAL_TURN"
+        );
+
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(
+            messages[0]["content"],
+            limits::MEMORY_EXTRACTION_PROMPT,
+            "the system message must be the production const itself, not a copy"
+        );
+        // The existing-memory block is a user turn immediately after the system
+        // prompt -- the model cannot update a set it was never shown.
+        assert_eq!(messages[1]["role"], "user");
+        assert_eq!(
+            messages[1]["content"],
+            "Existing memories:\n(no existing memories)"
+        );
+
+        assert_forbid_mode_compaction_shape(body, "the extraction call");
     }
 }
