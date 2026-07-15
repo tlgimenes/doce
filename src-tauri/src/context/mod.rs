@@ -717,10 +717,120 @@ pub async fn summarize_and_persist(
                 }
             }
 
+            // SP4: out-of-band memory extraction. Deliberately ignores its
+            // result -- compaction's success does not depend on it.
+            let _ = extract_and_persist_memories(
+                conn,
+                base_url,
+                conversation_id,
+                &to_summarize,
+                crate::commands::models::now_ms(),
+            )
+            .await;
+
             Ok(SummaryResult::Persisted(summary))
         }
         rejected => Ok(SummaryResult::Rejected(rejected)),
     }
+}
+
+/// SP4: the out-of-band memory-extraction pass. Reviews the span being
+/// condensed plus the workspace's existing memories and swaps in the model's
+/// full replacement set.
+///
+/// Best-effort by construction: every failure path -- server error, empty or
+/// degenerate output, DB error -- logs and returns `Ok(())` leaving memories
+/// exactly as they were. Compaction must never fail an agent turn, and a bad
+/// extraction must never destroy good memories (the unsafe direction), so the
+/// empty-output guard mirrors `evaluate_summary`'s posture.
+pub(crate) async fn extract_and_persist_memories(
+    conn: &tokio_rusqlite::Connection,
+    base_url: &str,
+    conversation_id: &str,
+    to_summarize: &[&HistoryMessage],
+    now: i64,
+) -> Result<(), String> {
+    let workspace_id = match crate::storage::memories::workspace_id_for_conversation(
+        conn,
+        conversation_id,
+    )
+    .await
+    {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("[memory-extraction] workspace lookup failed: {e}");
+            return Ok(());
+        }
+    };
+    let existing = crate::storage::memories::load_memories(conn, workspace_id.as_deref())
+        .await
+        .unwrap_or_default();
+
+    let existing_block = if existing.is_empty() {
+        "(no existing memories)".to_string()
+    } else {
+        existing
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let mut messages = vec![ChatMessage::system(limits::MEMORY_EXTRACTION_PROMPT)];
+    messages.push(ChatMessage::user(format!(
+        "Existing memories:\n{existing_block}"
+    )));
+    messages.extend(to_summarize.iter().map(|m| m.chat.clone()));
+
+    // `Forbid`: tools and tool_choice both `None` -- an extraction must never
+    // emit a tool call. Fresh never-cancelled token, exactly as
+    // `summarize_and_persist` does: this is best-effort background work with no
+    // per-turn cancel handle to thread.
+    let mut req = crate::inference::http::ChatRequest::build(
+        "doce",
+        crate::inference::http::to_openai_messages(&messages),
+        None,
+        None,
+    );
+    req.max_tokens = Some(SUMMARY_MAX_TOKENS as u32);
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let outcome = match crate::inference::http::LlamaServerClient::new(base_url)
+        .chat(req, |_piece| {}, &cancel)
+        .await
+    {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("[memory-extraction] inference failed: {e}");
+            return Ok(());
+        }
+    };
+
+    // Dedup, first-seen order preserved: `replace_memories` inserts `contents`
+    // verbatim (no dedup of its own), so a model that repeats a line would
+    // otherwise create duplicate rows.
+    let mut seen = std::collections::HashSet::new();
+    let facts: Vec<String> = outcome
+        .text
+        .lines()
+        .map(|l| l.trim().trim_start_matches("- ").trim().to_string())
+        .filter(|l| !l.is_empty())
+        .filter(|l| seen.insert(l.clone()))
+        .collect();
+
+    // THE GUARD: a degenerate extraction must not wipe good memories.
+    if facts.is_empty() {
+        if !existing.is_empty() {
+            eprintln!("[memory-extraction] empty output, keeping existing memories");
+        }
+        return Ok(());
+    }
+
+    if let Err(e) =
+        crate::storage::memories::replace_memories(conn, workspace_id.as_deref(), &facts, now).await
+    {
+        eprintln!("[memory-extraction] persist failed: {e}");
+    }
+    Ok(())
 }
 
 /// Orchestrates the tiered compaction pipeline: computes usage, and — if
@@ -1982,6 +2092,232 @@ mod tests {
             body_tokens <= cap_tokens as u32 + 50,
             "expected the windowed body to stay roughly within cap ({cap_tokens}) plus small \
              header/note slack, got {body_tokens} estimated tokens"
+        );
+    }
+
+    // --- extract_and_persist_memories (SP4's out-of-band extraction pass) ---
+    //
+    // Unlike `summarize_and_persist` (whose own testability note above
+    // explains why it is left to manual validation), this pass is testable
+    // end-to-end: it needs only a stubbed llama-server and an in-memory DB.
+    // The stub reuses `inference::http`'s own wiremock SSE harness verbatim
+    // (this module had no llama-server stub of its own before SP4), and the
+    // DB reuses `storage::test_async_connection`, the same fully-migrated
+    // in-memory connection `storage::memories`' tests use.
+
+    /// An SSE body shaped exactly like the ones `inference::http`'s tests
+    /// feed `LlamaServerClient::chat`: one content delta, a `stop` finish,
+    /// then `[DONE]`.
+    fn sse_text_body(text: &str) -> String {
+        format!(
+            "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+            serde_json::json!({"choices": [{"delta": {"content": text}, "index": 0}]}),
+            serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop", "index": 0}]}),
+        )
+    }
+
+    /// Mounts a 200/SSE stub returning `text` as the completion, mirroring
+    /// `inference::http::tests`' mock setup.
+    async fn stub_completion(text: &str) -> wiremock::MockServer {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/v1/chat/completions"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_raw(sse_text_body(text), "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+        server
+    }
+
+    async fn seed_workspace(conn: &tokio_rusqlite::Connection, id: &str) {
+        let id = id.to_string();
+        conn.call(move |conn: &mut Connection| {
+            conn.execute(
+                "INSERT INTO workspaces (id, path, display_name, created_at, last_opened_at) \
+                 VALUES (?1, ?1, 'Test workspace', 0, 0)",
+                [&id],
+            )
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn seed_conversation(
+        conn: &tokio_rusqlite::Connection,
+        id: &str,
+        workspace_id: Option<&str>,
+    ) {
+        let id = id.to_string();
+        let workspace_id = workspace_id.map(|s| s.to_string());
+        conn.call(move |conn: &mut Connection| {
+            conn.execute(
+                "INSERT INTO conversations (id, workspace_id, spawned_by_conversation_id, title, created_at, updated_at) \
+                 VALUES (?1, ?2, NULL, 'Test', 0, 0)",
+                rusqlite::params![&id, &workspace_id],
+            )
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn contents_of(
+        conn: &tokio_rusqlite::Connection,
+        workspace_id: Option<&str>,
+    ) -> Vec<String> {
+        crate::storage::memories::load_memories(conn, workspace_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|m| m.content)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn extraction_persists_the_emitted_set() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_workspace(&conn, "w1").await;
+        seed_conversation(&conn, "c1", Some("w1")).await;
+        let server = stub_completion("User prefers oxfmt.\nBenchmarks are gated.").await;
+
+        let span = vec![history_message("text", 0, "some work")];
+        let span_refs: Vec<&HistoryMessage> = span.iter().collect();
+        extract_and_persist_memories(&conn, &server.uri(), "c1", &span_refs, 10)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            contents_of(&conn, Some("w1")).await,
+            vec![
+                "User prefers oxfmt.".to_string(),
+                "Benchmarks are gated.".to_string()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn extraction_replaces_the_prior_set() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_workspace(&conn, "w1").await;
+        seed_conversation(&conn, "c1", Some("w1")).await;
+        crate::storage::memories::replace_memories(&conn, Some("w1"), &["old fact".to_string()], 5)
+            .await
+            .unwrap();
+        let server = stub_completion("new fact.").await;
+
+        let span = vec![history_message("text", 0, "some work")];
+        let span_refs: Vec<&HistoryMessage> = span.iter().collect();
+        extract_and_persist_memories(&conn, &server.uri(), "c1", &span_refs, 10)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            contents_of(&conn, Some("w1")).await,
+            vec!["new fact.".to_string()],
+            "the emitted set replaces the prior one wholesale"
+        );
+    }
+
+    /// THE GUARD. A degenerate (empty/whitespace) extraction must leave good
+    /// memories exactly as they were -- `replace_memories` with an empty set
+    /// would happily wipe the workspace, so the guard lives in
+    /// `extract_and_persist_memories` before it ever gets there. Deleting the
+    /// `facts.is_empty()` early return must fail this test.
+    #[tokio::test]
+    async fn empty_extraction_never_wipes_existing_memories() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_workspace(&conn, "w1").await;
+        seed_conversation(&conn, "c1", Some("w1")).await;
+        crate::storage::memories::replace_memories(&conn, Some("w1"), &["precious".to_string()], 5)
+            .await
+            .unwrap();
+        let server = stub_completion("   \n  \n").await;
+
+        let span = vec![history_message("text", 0, "some work")];
+        let span_refs: Vec<&HistoryMessage> = span.iter().collect();
+        extract_and_persist_memories(&conn, &server.uri(), "c1", &span_refs, 10)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            contents_of(&conn, Some("w1")).await,
+            vec!["precious".to_string()],
+            "an empty extraction must never destroy existing memories"
+        );
+    }
+
+    #[tokio::test]
+    async fn extraction_error_is_swallowed_and_changes_nothing() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_workspace(&conn, "w1").await;
+        seed_conversation(&conn, "c1", Some("w1")).await;
+        crate::storage::memories::replace_memories(&conn, Some("w1"), &["precious".to_string()], 5)
+            .await
+            .unwrap();
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/v1/chat/completions"))
+            .respond_with(wiremock::ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let span = vec![history_message("text", 0, "some work")];
+        let span_refs: Vec<&HistoryMessage> = span.iter().collect();
+        let r = extract_and_persist_memories(&conn, &server.uri(), "c1", &span_refs, 10).await;
+
+        assert!(r.is_ok(), "a server error must never fail the turn");
+        assert_eq!(
+            contents_of(&conn, Some("w1")).await,
+            vec!["precious".to_string()],
+            "a failed extraction must leave memories untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn extraction_writes_under_the_conversations_workspace() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_workspace(&conn, "w1").await;
+        seed_conversation(&conn, "c1", Some("w1")).await;
+        let server = stub_completion("fact.").await;
+
+        let span = vec![history_message("text", 0, "some work")];
+        let span_refs: Vec<&HistoryMessage> = span.iter().collect();
+        extract_and_persist_memories(&conn, &server.uri(), "c1", &span_refs, 10)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            contents_of(&conn, Some("w1")).await,
+            vec!["fact.".to_string()]
+        );
+        assert!(
+            contents_of(&conn, None).await.is_empty(),
+            "the NULL bucket must stay isolated from a workspace's memories"
+        );
+    }
+
+    /// The Task-1 review's carried-over MINOR: `replace_memories` does not
+    /// dedup its `contents`, so a model that repeats a line verbatim would
+    /// otherwise produce duplicate rows. Dedup happens here, first-seen order
+    /// preserved.
+    #[tokio::test]
+    async fn extraction_dedups_repeated_facts_preserving_first_seen_order() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_workspace(&conn, "w1").await;
+        seed_conversation(&conn, "c1", Some("w1")).await;
+        let server = stub_completion("alpha.\nbeta.\nalpha.").await;
+
+        let span = vec![history_message("text", 0, "some work")];
+        let span_refs: Vec<&HistoryMessage> = span.iter().collect();
+        extract_and_persist_memories(&conn, &server.uri(), "c1", &span_refs, 10)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            contents_of(&conn, Some("w1")).await,
+            vec!["alpha.".to_string(), "beta.".to_string()]
         );
     }
 }

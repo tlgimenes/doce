@@ -98,6 +98,31 @@ NEXT ACTION: the single immediate next step
 
 Keep the whole snapshot under about 800 tokens. Output ONLY the <state_snapshot> block — nothing before or after it.";
 
+/// SP4: the out-of-band memory-extraction prompt. A separate `Forbid`-mode
+/// call (never part of an agent turn), so this text cannot affect the
+/// tier4_planned benchmark. Asks for the FULL replacement set, one fact per
+/// line, because `replace_memories` swaps the workspace's whole set.
+pub const MEMORY_EXTRACTION_PROMPT: &str = "\
+You maintain a durable memory of a software project workspace.
+
+You will be given the existing memories (possibly empty) and a transcript of \
+work that is about to be condensed away. Output the COMPLETE updated set of \
+memories: keep the existing ones that are still true, update ones that changed, \
+drop ones that are now wrong or obsolete, and add anything newly learned that \
+will still matter weeks from now.
+
+Remember only durable facts: the user's stated preferences and working style, \
+project constraints and conventions, architectural decisions and the reasoning \
+behind them, and hard-won gotchas that cost real time to discover.
+
+Never remember: transient task state, what you are doing right now, file \
+contents, anything trivially re-derivable by reading the code, or anything you \
+are not confident is true.
+
+Output one fact per line, each a single self-contained sentence. No bullets, no \
+numbering, no commentary, no headers. If there is nothing worth remembering, \
+output nothing at all.";
+
 /// Auto-compaction gives up retrying a summarization that keeps getting
 /// rejected by `context::evaluate_summary` (empty/truncated/inflated) after
 /// this many CONSECUTIVE failures for the same conversation --
