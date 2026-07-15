@@ -198,6 +198,12 @@ pub fn clamp_output_tokens(ceiling: u32, window: u32, prompt_estimate: u32) -> u
 /// `fit_turn_to_budget`'s reserve.
 pub const STATE_TAIL_RESERVE_TOKENS: u32 = 768;
 
+/// Max tokens of an `AGENTS.md` project-instructions file folded into the
+/// cwd-aware system message (SP3). A file over this is truncated (tail
+/// dropped) with a marker, so a huge instructions file can't crowd out the
+/// conversation. ~12.5% of `CONTEXT_WINDOW_TOKENS`.
+pub const PROJECT_INSTRUCTIONS_MAX_TOKENS: usize = (CONTEXT_WINDOW_TOKENS / 8) as usize; // = 2048
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,6 +227,10 @@ mod tests {
             STATE_TAIL_RESERVE_TOKENS + AGENT_TURN_MAX_OUTPUT_TOKENS <= CONTEXT_WINDOW_TOKENS / 4
         );
         assert!(MIN_OUTPUT_TOKENS < AGENT_TURN_MAX_OUTPUT_TOKENS);
+        assert_eq!(
+            PROJECT_INSTRUCTIONS_MAX_TOKENS,
+            (CONTEXT_WINDOW_TOKENS / 8) as usize
+        );
     }
 
     // --- clamp_output_tokens (restore-output-cap task) ---
