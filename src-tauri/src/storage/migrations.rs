@@ -28,6 +28,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
         9,
         include_str!("migrations/0009_conversation_archived_at.sql"),
     ),
+    (10, include_str!("migrations/0010_memories.sql")),
 ];
 
 pub fn apply_pending(conn: &mut Connection) -> rusqlite::Result<()> {
