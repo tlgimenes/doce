@@ -1608,9 +1608,21 @@ fn project_instructions_section(cwd: Option<&std::path::Path>) -> Option<String>
     let body = if (crate::inference::token_estimate(trimmed) as usize) <= cap {
         trimmed.to_string()
     } else {
-        // char-granular (never a byte-slice panic), ~cap tokens of head + a marker
-        let head: String = trimmed.chars().take(cap.saturating_mul(4)).collect();
-        format!("{head}\n\n[project instructions truncated to fit context]")
+        // Truncate the head to ~cap tokens. `token_estimate` weights
+        // non-ASCII at ~1.1 tok/char (not the ASCII ~4 chars/tok), so a flat
+        // `cap * 4` char budget under-truncates a CJK-heavy file -- re-measure
+        // and shrink (char-granular, never a byte-slice panic) until the head
+        // actually fits the cap. `.min(take - 1)` guarantees strict decrease,
+        // so it converges in a few steps and always terminates.
+        let mut take = cap.saturating_mul(4);
+        loop {
+            let head: String = trimmed.chars().take(take).collect();
+            let est = crate::inference::token_estimate(&head) as usize;
+            if est <= cap || take == 0 {
+                break format!("{head}\n\n[project instructions truncated to fit context]");
+            }
+            take = (take.saturating_mul(cap) / est.max(1)).min(take - 1);
+        }
     };
     Some(format!("# Project instructions\n{body}"))
 }
@@ -2360,6 +2372,26 @@ mod tests {
         assert!(
             estimate <= cap + 64,
             "truncated section should be close to the cap, got {estimate} tokens (cap {cap})"
+        );
+    }
+
+    #[test]
+    fn project_instructions_section_truncates_a_non_ascii_file_within_the_cap() {
+        // token_estimate weights non-ASCII at ~1.1 tok/char, so a flat
+        // `cap * 4` char budget would leave a CJK head at ~4.4x the cap. The
+        // re-measure loop must still bring it within the cap.
+        let dir = tempfile::tempdir().unwrap();
+        let huge: String = "文字".repeat(20_000);
+        std::fs::write(dir.path().join("AGENTS.md"), &huge).unwrap();
+
+        let section = project_instructions_section(Some(dir.path())).unwrap();
+        assert!(section.contains("[project instructions truncated to fit context]"));
+
+        let cap = crate::context::limits::PROJECT_INSTRUCTIONS_MAX_TOKENS;
+        let estimate = crate::inference::token_estimate(&section) as usize;
+        assert!(
+            estimate <= cap + 64,
+            "non-ASCII truncated section should be within the cap, got {estimate} tokens (cap {cap})"
         );
     }
 
