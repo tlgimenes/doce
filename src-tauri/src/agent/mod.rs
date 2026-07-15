@@ -146,6 +146,18 @@ impl AgentContext {
     }
 }
 
+/// What executing one tool call produced — `run_loop`'s per-turn
+/// tool-dispatch result. `Result` feeds the text back as an ordinary tool
+/// result and the loop continues; `Finish` ends the whole `run_loop` call
+/// with the given final answer, reached via an ordinary structured tool
+/// call (the plan engine's `FinishTask`) rather than a free-text reply —
+/// the server enforces exactly one tool call per turn via `tool_choice`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ToolExecution {
+    Result(String),
+    Finish(String),
+}
+
 /// The caller-specific behavior `run_loop`'s control flow depends on,
 /// bundled into one trait rather than four separate closure parameters —
 /// production implements this once per call site (a `RealBackend` for the
@@ -179,18 +191,6 @@ impl AgentContext {
 /// crosses a `tokio::spawn` boundary, so the `Send`-bound limitation this
 /// lint warns about (relevant for trait objects / spawned futures) doesn't
 /// apply.
-/// What executing one tool call produced — `run_loop`'s per-turn
-/// tool-dispatch result. `Result` feeds the text back as an ordinary tool
-/// result and the loop continues; `Finish` ends the whole `run_loop` call
-/// with the given final answer, reached via an ordinary structured tool
-/// call (the plan engine's `FinishTask`) rather than a free-text reply —
-/// the server enforces exactly one tool call per turn via `tool_choice`.
-#[derive(Debug, Clone, PartialEq)]
-pub enum ToolExecution {
-    Result(String),
-    Finish(String),
-}
-
 #[allow(async_fn_in_trait)]
 pub trait AgentBackend {
     fn measure(&mut self, messages: &[ChatMessage]) -> u32;

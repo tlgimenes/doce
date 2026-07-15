@@ -283,8 +283,8 @@ impl AgentBackend for FlatBackend<'_> {
     }
 
     // Flat baseline runs under `ToolCallMode::Allow`, so a no-tool-call turn
-    // is an ordinary plain-text final answer (`LoopStep::Done`), not a
-    // Require-mode invariant violation to retry.
+    // is an ordinary plain-text final answer, not a Require-mode invariant
+    // violation to retry.
     fn requires_tool_call(&self) -> bool {
         false
     }

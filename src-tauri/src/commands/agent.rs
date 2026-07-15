@@ -3247,12 +3247,10 @@ mod tests {
                 PlanStep {
                     description: "a".to_string(),
                     done: true,
-                    refused: false,
                 },
                 PlanStep {
                     description: "b".to_string(),
                     done: false,
-                    refused: false,
                 },
             ],
         };
@@ -3283,7 +3281,6 @@ mod tests {
             steps: vec![PlanStep {
                 description: "a".to_string(),
                 done: false,
-                refused: false,
             }],
         };
         publish_plan_update(None, &active_plans, "c1", &state);
@@ -3306,7 +3303,6 @@ mod tests {
             steps: vec![PlanStep {
                 description: "a".to_string(),
                 done: false,
-                refused: false,
             }],
         };
         publish_plan_update(None, &active_plans, "c1", &state);

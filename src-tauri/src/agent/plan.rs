@@ -36,13 +36,6 @@ use serde::{Deserialize, Serialize};
 pub struct PlanStep {
     pub description: String,
     pub done: bool,
-    /// Set by `RefuseStep`: the step is retired -- `next_undone_step`
-    /// skips it, so `ResumeExecution` can never re-enter a step already
-    /// refused as written (the 2026-07-12 doom loop: an impossible step 0
-    /// was resumed verbatim for 200 turns). A revision arrives as a NEW
-    /// step via `AddStep`, informed by the refusal reason.
-    #[serde(default)]
-    pub refused: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -264,7 +257,6 @@ Work the first undone item; update with Todo as you finish each.",
                     steps.push(PlanStep {
                         description: text.to_string(),
                         done,
-                        refused: false,
                     });
                 }
                 let done = steps.iter().filter(|s| s.done).count();
@@ -295,7 +287,7 @@ Work the first undone item; update with Todo as you finish each.",
     }
 
     pub fn next_undone_step(&self) -> Option<usize> {
-        self.plan.steps.iter().position(|s| !s.done && !s.refused)
+        self.plan.steps.iter().position(|s| !s.done)
     }
 
     pub fn has_plan(&self) -> bool {
