@@ -55,14 +55,21 @@ use tempfile::tempdir;
 /// every `FlatBackend::generate` (Allow / `tool_choice:"auto"`). These are
 /// the dispatchable file+shell tools the `FLAT_BASELINE_SYSTEM_PROMPT`
 /// advertises, mapped onto the cutover's schema authority
-/// (`inference::http::tools_array`/`tool_def`): the prompt's separate
-/// `Write`/`Edit` collapse into the unified `Update` the server actually
-/// offers -- exactly the set `dispatch::execute` handles. Pre-cutover the
-/// flat backend passed `None` tool names to `session.generate` (an
-/// unconstrained tool NAME under a structure-only grammar); the client path
-/// needs an explicit `tools` array for the server to parse tool calls into
-/// `ChatOutcome::tool_call` AT ALL, so this is the faithful post-cutover
-/// equivalent of "the flat prompt's tools are on the table."
+/// (`inference::http::tools_array`/`tool_def`) -- exactly the set
+/// `dispatch::execute` handles. Pre-cutover the flat backend passed `None`
+/// tool names to `session.generate` (an unconstrained tool NAME under a
+/// structure-only grammar); the client path needs an explicit `tools` array
+/// for the server to parse tool calls into `ChatOutcome::tool_call` AT ALL,
+/// so this is the faithful post-cutover equivalent of "the flat prompt's
+/// tools are on the table."
+///
+/// This list and the `<tools>` block of `FLAT_BASELINE_SYSTEM_PROMPT` MUST
+/// name the same tools. The sidecar runs `--jinja`, so llama-server renders
+/// THIS array into the chat template alongside the hand-written block: a
+/// name in one and not the other means the model reads two contradictory
+/// tool lists in one prompt, and any name `tool_def` has no arm for is
+/// silently dropped by `tools_array` -- the grammar then cannot emit it, so
+/// the prompt is instructing a call that is structurally impossible.
 const FLAT_BASELINE_TOOLS: &[&str] = &["Read", "Update", "Bash", "Grep", "Glob", "AskUserQuestion"];
 
 /// The flat ReAct prompt for the `run_flat_*` BASELINE harness below --
@@ -73,6 +80,21 @@ const FLAT_BASELINE_TOOLS: &[&str] = &["Read", "Update", "Bash", "Grep", "Glob",
 /// behavior -- that mismatch is how the "ola" doom loop shipped green
 /// (flat tier-0 answered greetings directly while the production prompt
 /// confabulated a plan).
+///
+/// Deliberately STATIC: this is a CONTROL, held fixed so a planned tier's
+/// score can be read against a stable flat baseline across prompt-
+/// engineering changes. Frozen text is not the same as stale text, though:
+/// the `<tools>` block below must keep naming exactly `FLAT_BASELINE_TOOLS`
+/// (see that const's doc comment), because those names are what the server
+/// is actually handed and what the grammar can actually emit. The block
+/// advertised the pre-cutover `Write`/`Edit` pair until 2026-07-15 while
+/// the request passed the unified `Update` -- so under `--jinja` the model
+/// saw both lists and was told to call two tools that could never be
+/// emitted. Corrected to `Update` (`inference::http::tool_def`'s own
+/// description + schema, verbatim): the control's INTENT is "the flat
+/// prompt's dispatchable tools are on the table", and only `Update` is
+/// dispatchable -- pinning the dead names would have frozen a baseline that
+/// cannot edit a file, which is what tiers 3/4/5 grade.
 const FLAT_BASELINE_SYSTEM_PROMPT: &str = r#"You are a coding and system agent with access to tools.
 
 # Tools
@@ -82,8 +104,7 @@ You may call one or more functions to assist with the user query.
 You are provided with function signatures within <tools></tools> XML tags:
 <tools>
 {"type": "function", "function": {"name": "Read", "description": "Read a file from disk.", "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}, "offset": {"type": "number"}, "limit": {"type": "number"}}, "required": ["file_path"]}}}
-{"type": "function", "function": {"name": "Write", "description": "Create or overwrite a file.", "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}, "content": {"type": "string"}}, "required": ["file_path", "content"]}}}
-{"type": "function", "function": {"name": "Edit", "description": "Targeted in-place edit: replace old_string with new_string inside the file.", "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}, "old_string": {"type": "string"}, "new_string": {"type": "string"}, "replace_all": {"type": "boolean"}}, "required": ["file_path", "old_string", "new_string"]}}}
+{"type": "function", "function": {"name": "Update", "description": "Create or modify a file. Pass content to create or fully overwrite the file. Pass old_string and new_string (and no content) to replace one exact occurrence in place.", "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}, "content": {"type": "string"}, "old_string": {"type": "string"}, "new_string": {"type": "string"}, "replace_all": {"type": "boolean"}}, "required": ["file_path"]}}}
 {"type": "function", "function": {"name": "Bash", "description": "Run a shell command.", "parameters": {"type": "object", "properties": {"command": {"type": "string"}, "timeout": {"type": "number"}}, "required": ["command"]}}}
 {"type": "function", "function": {"name": "Glob", "description": "Find files by name pattern using wildcards, e.g. \"bug_*.txt\" or \"*.rs\". The pattern is a single wildcard expression, never a space-separated list of literal filenames -- that matches nothing. Omit path to search the current working directory.", "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}}, "required": ["pattern"]}}}
 {"type": "function", "function": {"name": "Grep", "description": "Search file contents with a regular expression. Omit path to search the current working directory.", "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}, "glob": {"type": "string"}}, "required": ["pattern"]}}}
@@ -134,29 +155,39 @@ fn report(name: &str, run: &TaskRun) {
     }
 }
 
-/// Mirrors the payload-staging block `commands::agent::handle_general_tool_call`
-/// (~line 1150-1195) and `SubagentBackend::execute_tool` (~line 797-842) each
-/// duplicate verbatim (2026-07-09 payload-files design) -- production moved
-/// every general tool result through `context::payload::stage_tool_result`
-/// before it enters message history (payload file written first, then an
-/// over-threshold result replaced by a status reference line), and this
-/// suite predates that move: it used to feed `dispatch::execute(...).
-/// model_text` straight into history, unstaged, so a run here never
-/// exercised the production context economy at all. This is the one place
-/// both backends (`FlatBackend`, `PlanExecBackend`) route a general
-/// tool result through, so the two call sites can't independently drift from
-/// what production actually does.
+/// The unconfigured install's `ContextSettings` -- what production's
+/// `ContextSettings::load` yields against a settings table with no rows,
+/// obtained by calling production's own pure parser on an empty map rather
+/// than by hand-writing the default field values here. Every benchmark
+/// backend carries one, and drives exactly the production functions
+/// (`usage_from_fitted_messages`, `stage_tool_result_for_persist`) that take
+/// settings, so a change to any default reaches this suite automatically.
+fn default_context_settings() -> context::ContextSettings {
+    context::ContextSettings::from_raw(&std::collections::HashMap::new())
+}
+
+/// Calls PRODUCTION's `commands::agent::stage_tool_result_for_persist` --
+/// the single function `handle_general_tool_call` and `SubagentBackend::
+/// execute_tool` both stage through (they were byte-identical duplicates
+/// until production unified them; this suite's own copy of that shape was
+/// still describing the two-call-site world it unified away). It is `pub`
+/// for exactly this reason: reimplementing the staging shape here meant a
+/// change to it -- widening or dropping the `Read` carve-out, reshaping the
+/// `-> Read "..."` reference line, moving the threshold source -- would keep
+/// feeding the OLD shape into this benchmark's history while production fed
+/// the new one, and nothing would go red.
 ///
-/// `threshold_tokens` is `limits::DEFAULT_TOOL_OUTPUT_OFFLOAD_TOKENS`
-/// directly, not `ContextSettings::tool_output_offload_tokens` -- this
-/// suite has no DB/settings store to load one from, and that constant is
-/// exactly what an unconfigured install defaults to.
+/// This wrapper adds nothing but the argument shape the two backends below
+/// share: `Some(payload_dir)` (production's `app_data_dir`; the `None`
+/// pass-through arm is unreachable from here because both backends always
+/// have a payload root), and `.0` -- only `model_text` enters message
+/// history, and neither backend persists `detail` anywhere.
 ///
-/// Takes a `count_tokens` closure, matching production's own token-estimate
-/// call sites: production also calls `context::annotate_with_token_count(outcome)`
-/// right before this block (detail-only, `model_text`-irrelevant token-count
-/// metadata), which the real call sites below apply themselves before calling
-/// in here -- keeping the estimate a plain closure is what lets
+/// Takes a `count_tokens` closure, matching production's own call site:
+/// production also calls `context::annotate_with_token_count(outcome)`
+/// right before staging (detail-only, `model_text`-irrelevant token-count
+/// metadata), which the real call sites below apply themselves before
+/// calling in here -- keeping the estimate a plain closure is what lets
 /// `staging_wiring_replaces_oversized_result_with_reference_line` exercise
 /// this exact wiring without a loaded model.
 fn stage_general_tool_result(
@@ -165,32 +196,26 @@ fn stage_general_tool_result(
     tool_call_id: &str,
     call_name: &str,
     outcome: doce_lib::agent::dispatch::ToolOutcome,
+    offload_tokens: usize,
     count_tokens: impl Fn(&str) -> usize,
 ) -> String {
-    if call_name == "Read" {
-        // Carve-out: never write a copy of a file we just read -- the
-        // payload reference IS the source. Production additionally stamps
-        // `detail.payloadRef` from `detail.resolvedPath` here, but neither
-        // backend here persists `detail` anywhere, so only `model_text`
-        // (what actually enters message history) matters.
-        outcome.model_text
-    } else {
-        let staged = context::payload::stage_tool_result(
-            payload_dir,
-            conversation_id,
-            tool_call_id,
-            &outcome,
-            context::limits::DEFAULT_TOOL_OUTPUT_OFFLOAD_TOKENS,
-            count_tokens,
-        );
-        staged.model_text
-    }
+    doce_lib::commands::agent::stage_tool_result_for_persist(
+        Some(payload_dir),
+        conversation_id,
+        tool_call_id,
+        call_name,
+        &outcome,
+        offload_tokens,
+        count_tokens,
+    )
+    .0
 }
 
 /// Sanity assertion (no real model, not `#[ignore]`d): proves this suite's
-/// own wiring above -- not just `stage_tool_result` in isolation, which
-/// already has its own unit tests in `context/payload.rs` -- replaces an
-/// oversized synthetic result with a status reference line pointing at a
+/// own wiring above -- the argument shape it hands production's
+/// `stage_tool_result_for_persist`, not `stage_tool_result` in isolation,
+/// which already has its own unit tests in `context/payload.rs` -- replaces
+/// an oversized synthetic result with a status reference line pointing at a
 /// payload file that holds the full text.
 #[test]
 fn staging_wiring_replaces_oversized_result_with_reference_line() {
@@ -210,6 +235,7 @@ fn staging_wiring_replaces_oversized_result_with_reference_line() {
         "call-1",
         "Grep",
         outcome,
+        default_context_settings().tool_output_offload_tokens,
         |text| text.chars().count(),
     );
 
@@ -234,11 +260,14 @@ fn staging_wiring_replaces_oversized_result_with_reference_line() {
 }
 
 /// `AgentBackend` for the flat (plan-less) `run_loop` path -- the exact
-/// same shape `commands::agent`'s `SubagentBackend` uses (measure/compact
-/// call `context::fit_turn_to_budget` directly, not a test-only
-/// reimplementation), plus a turn counter
-/// `run_loop` itself has no reason to expose (it only reports turn count
-/// on the `TurnCapExceeded` error path, not on success).
+/// same shape `commands::agent`'s `SubagentBackend` uses (`measure` calls
+/// `context::authoritative_prompt_tokens`, `compact` calls
+/// `context::fit_turn_to_budget`, and `generate` clamps `max_tokens`
+/// through `context::limits::clamp_output_tokens` then records the
+/// trailer's usage -- production functions, not test-only
+/// reimplementations), plus a turn counter `run_loop` itself has no reason
+/// to expose (it only reports turn count on the `TurnCapExceeded` error
+/// path, not on success).
 struct FlatBackend<'a> {
     /// The supervised `llama-server`'s base URL (`http://127.0.0.1:PORT`) --
     /// generation goes through `inference::http::LlamaServerClient::chat`
@@ -262,15 +291,51 @@ struct FlatBackend<'a> {
     /// contaminate every fixture-scanning tier.
     payload_dir: PathBuf,
     /// Mirrors production's `parent_conversation_id`/`subagent_id` -- just a
-    /// namespace for this run's payload subdirectory, not a real conversation.
+    /// namespace for this run's payload subdirectory and this backend's key
+    /// into `observed_usage`, not a real conversation.
     conversation_id: String,
+    /// The unconfigured install's settings (`default_context_settings`) --
+    /// production's `SubagentBackend` has none to route through and calls
+    /// `authoritative_prompt_tokens` directly, but its staging call site
+    /// still sources the offload threshold from `ContextSettings`, so this
+    /// suite carries one rather than reaching for the raw default const.
+    settings: context::ContextSettings,
+    /// FR-2: the server's last authoritative `prompt_tokens` per
+    /// conversation -- RECORDED at the end of `generate` from the SSE
+    /// trailer's `usage`, CONSULTED at the start of `measure`, exactly like
+    /// production's backends. Borrowed (not owned) so a `Task`-spawned
+    /// subagent shares the parent's map, mirroring production's single
+    /// `.manage()`d `LastObservedUsage` shared across `RealBackend` and
+    /// every `SubagentBackend` it spawns; the `conversation_id` key keeps
+    /// each loop's observation its own.
+    observed_usage: &'a context::LastObservedUsage,
 }
 
 impl AgentBackend for FlatBackend<'_> {
+    /// IDENTICAL to production's `SubagentBackend::measure` (the flat
+    /// baseline's production analogue: no `AppHandle`, no event emission):
+    /// FR-2 prefers the server's last authoritative `prompt_tokens` as the
+    /// base and estimates only the delta since, over the OpenAI shape the
+    /// server actually decodes. A chars/4 re-estimate of the WHOLE prompt
+    /// (what this used to do) agrees with production on turn 1 only --
+    /// `authoritative_prompt_tokens` falls back to the full estimate when
+    /// unobserved -- and drifts from turn 2 onward, moving the point where
+    /// `fit_turn_to_budget` fires away from where production fires it.
     fn measure(&mut self, messages: &[ChatMessage]) -> u32 {
-        doce_lib::inference::token_estimate(
-            &serde_json::to_string(&doce_lib::inference::http::to_openai_messages(messages))
-                .unwrap_or_default(),
+        // `.cloned()` to drop the lock before the measurement call, as
+        // production does.
+        let observed = self
+            .observed_usage
+            .0
+            .lock()
+            .unwrap()
+            .get(&self.conversation_id)
+            .cloned();
+        let openai_messages = doce_lib::inference::http::to_openai_messages(messages);
+        context::authoritative_prompt_tokens(
+            observed.as_ref(),
+            &openai_messages,
+            doce_lib::inference::token_estimate,
         )
     }
 
@@ -299,20 +364,59 @@ impl AgentBackend for FlatBackend<'_> {
         // llama-server cutover (Task 8.1 re-points this off `session.generate`
         // + `parse_response` onto the same `LlamaServerClient::chat` path
         // production's `RealBackend`/`SubagentBackend` use).
-        let req = doce_lib::inference::http::ChatRequest::build(
+        //
+        // FR-2: the OpenAI-shaped count of the canonical messages, recorded
+        // with this turn's observation below. The flat backend pushes no
+        // state tail, so this is simply the whole list -- but it is computed
+        // the same way production computes it, before any push.
+        let at_len = doce_lib::inference::http::to_openai_messages(&messages).len();
+        let mut req = doce_lib::inference::http::ChatRequest::build(
             "doce",
             doce_lib::inference::http::to_openai_messages(&messages),
             Some(doce_lib::inference::http::tools_array(FLAT_BASELINE_TOOLS)),
             doce_lib::inference::http::tool_choice_for(doce_lib::inference::ToolCallMode::Allow)
                 .map(|s| s.to_string()),
         );
+        // Always-max-output (FR-1), byte-for-byte production's
+        // `SubagentBackend::generate`: `ChatRequest::build` leaves
+        // `max_tokens: None`, which `skip_serializing_if` omits entirely --
+        // the server then generates unbounded to its own ctx, a budget
+        // production NEVER hands the model. Near the loop threshold the
+        // clamp yields ~1,792 output tokens against the ~6,900 an uncapped
+        // request got, so an uncapped benchmark cannot see the mid-JSON
+        // truncation `AGENT_TURN_MAX_OUTPUT_TOKENS`'s doc records from real
+        // runs. Same ceiling, same window, same `prompt_est` shape as
+        // production -- no arithmetic of its own.
+        let prompt_est = doce_lib::inference::token_estimate(
+            &serde_json::to_string(&doce_lib::inference::http::to_openai_messages(&messages))
+                .unwrap_or_default(),
+        );
+        req.max_tokens = Some(doce_lib::context::limits::clamp_output_tokens(
+            doce_lib::context::limits::AGENT_TURN_OUTPUT_CEILING,
+            doce_lib::inference::CONTEXT_WINDOW_TOKENS,
+            prompt_est,
+        ));
         // Benchmarks never cancel; a fresh, never-fired token satisfies the
         // `chat` signature.
         let cancel = tokio_util::sync::CancellationToken::new();
         let result = doce_lib::inference::http::LlamaServerClient::new(self.base_url.clone())
             .chat(req, |_piece| {}, &cancel)
             .await;
-        common::chat_outcome_to_turn_outcome(result)
+        let outcome = common::chat_outcome_to_turn_outcome(result);
+        // FR-2: record the server's authoritative `prompt_tokens` for the
+        // next `measure` to prefer over a full chars/4 re-estimate, exactly
+        // as production does. `usage` is `None` on an errored turn (no
+        // trailer arrived), correctly leaving any prior observation intact.
+        if let Some((prompt_tokens, _completion_tokens)) = outcome.usage {
+            self.observed_usage.0.lock().unwrap().insert(
+                self.conversation_id.clone(),
+                context::ObservedUsage {
+                    prompt_tokens,
+                    at_len,
+                },
+            );
+        }
+        outcome
     }
 
     async fn execute_tool(
@@ -328,6 +432,7 @@ impl AgentBackend for FlatBackend<'_> {
             &tool_call_id,
             &call.name,
             outcome,
+            self.settings.tool_output_offload_tokens,
             |text| doce_lib::inference::token_estimate(text) as usize,
         );
         // Printed for interactive runs, and recorded in `self.trace` as
@@ -369,10 +474,14 @@ async fn run_flat_conversation(
         cwd: Some(cwd.to_path_buf()),
     };
 
-    // Same measure/threshold/compact commands::agent's real generate
-    // closure uses -- run_loop itself now makes the fit-to-budget decision
-    // on every turn, so this suite calls exactly what ships rather than
-    // reimplementing its own version of the pre-generate step.
+    // Same measure/threshold/compact commands::agent's real backends use --
+    // run_loop itself now makes the fit-to-budget decision on every turn, so
+    // this suite calls exactly what ships rather than reimplementing its own
+    // version of the pre-generate step. `measure` was the one of the three
+    // that did NOT hold up (it re-estimated the whole prompt at chars/4
+    // forever and dropped `ChatOutcome::usage` on the floor, agreeing with
+    // production on turn 1 only); it now drives the same FR-2 authoritative
+    // path -- see `FlatBackend::measure`.
     let threshold = doce_lib::inference::CONTEXT_WINDOW_TOKENS
         .saturating_sub(doce_lib::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS);
     // 2026-07-09 payload-files design: a fresh tempdir SIBLING to `cwd`
@@ -380,6 +489,10 @@ async fn run_flat_conversation(
     // comment), kept alive for this whole conversation by staying a local
     // here.
     let payload_root = tempdir().expect("payload tempdir should create");
+    // FR-2: one map for the whole conversation (and every subagent it
+    // spawns), mirroring production's single `.manage()`d `LastObservedUsage`
+    // -- kept alive by staying a local here, as the backend only borrows it.
+    let observed_usage = context::LastObservedUsage::default();
     let mut backend = FlatBackend {
         base_url: base_url.to_string(),
         cwd,
@@ -388,6 +501,8 @@ async fn run_flat_conversation(
         trace: Vec::new(),
         payload_dir: payload_root.path().to_path_buf(),
         conversation_id: "flat-top".to_string(),
+        settings: default_context_settings(),
+        observed_usage: &observed_usage,
     };
 
     let mut history = vec![ChatMessage::system(FLAT_BASELINE_SYSTEM_PROMPT)];
@@ -450,14 +565,44 @@ struct PlanExecBackend<'a> {
     /// every `SubagentBackend` it spawns).
     payload_dir: PathBuf,
     conversation_id: String,
+    /// See `FlatBackend::settings` -- production's `RealBackend` loads these
+    /// from the DB and routes `measure` through them
+    /// (`usage_from_fitted_messages`); this suite has no settings store, so
+    /// it uses what an unconfigured install parses to.
+    settings: context::ContextSettings,
+    /// See `FlatBackend::observed_usage` -- the same map, shared with any
+    /// `Task`-spawned subagent backend below, exactly as production shares
+    /// one across `RealBackend` and every `SubagentBackend`.
+    observed_usage: &'a context::LastObservedUsage,
 }
 
 impl AgentBackend for PlanExecBackend<'_> {
+    /// IDENTICAL to production's `RealBackend::measure`, minus the
+    /// `context-usage-update` emit (no `AppHandle` here, and no UI to feed):
+    /// FR-2 prefers the server's last authoritative `prompt_tokens` as the
+    /// base via `usage_from_fitted_messages` ->
+    /// `authoritative_prompt_tokens`, and keeps production's fail-safe --
+    /// a measurement failure reports `u32::MAX` so `compact` runs
+    /// defensively rather than letting a too-large prompt through.
     fn measure(&mut self, messages: &[ChatMessage]) -> u32 {
-        doce_lib::inference::token_estimate(
-            &serde_json::to_string(&doce_lib::inference::http::to_openai_messages(messages))
-                .unwrap_or_default(),
-        )
+        // `.cloned()` to drop the lock before `usage_from_fitted_messages`
+        // runs, as production does.
+        let observed = self
+            .observed_usage
+            .0
+            .lock()
+            .unwrap()
+            .get(&self.conversation_id)
+            .cloned();
+        match context::usage_from_fitted_messages(
+            &self.conversation_id,
+            messages,
+            &self.settings,
+            observed.as_ref(),
+        ) {
+            Ok(usage) => usage.tokens_used,
+            Err(_) => u32::MAX,
+        }
     }
 
     fn threshold(&self) -> u32 {
@@ -480,6 +625,15 @@ impl AgentBackend for PlanExecBackend<'_> {
         // not by prompt swaps.
         // Single-mode harness: the tail is the todo recitation, and only
         // exists once todos do — mirroring RealBackend exactly.
+        //
+        // FR-2: the OpenAI-shaped count of the CANONICAL messages, taken
+        // BEFORE the ephemeral tail push (which never reaches run_loop's
+        // list nor `measure`) -- a later `authoritative_prompt_tokens`
+        // measures its delta as `all_openai_msgs[at_len..]` over the
+        // canonical list, so `at_len` must be the pre-tail canonical count.
+        // Exactly production's `RealBackend::generate`; see that impl for
+        // why the resulting base slightly over-covers in the safe direction.
+        let at_len = doce_lib::inference::http::to_openai_messages(&messages).len();
         let tail = self.plan_state.todo_tail();
         if !tail.is_empty() {
             messages.push(ChatMessage::user(tail));
@@ -493,7 +647,7 @@ impl AgentBackend for PlanExecBackend<'_> {
         // off `session.generate` + `parse_response` onto the same
         // `LlamaServerClient::chat` path production uses, so the plan machine
         // is driven exactly as the app drives it.
-        let req = doce_lib::inference::http::ChatRequest::build(
+        let mut req = doce_lib::inference::http::ChatRequest::build(
             "doce",
             doce_lib::inference::http::to_openai_messages(&messages),
             Some(doce_lib::inference::http::tools_array(
@@ -502,11 +656,45 @@ impl AgentBackend for PlanExecBackend<'_> {
             doce_lib::inference::http::tool_choice_for(doce_lib::inference::ToolCallMode::Require)
                 .map(|s| s.to_string()),
         );
+        // Always-max-output (FR-1), byte-for-byte production's
+        // `RealBackend::generate`: the ceiling is the window itself, so the
+        // clamp yields `window - prompt_est - margin` -- the max output that
+        // structurally fits. `prompt_est` is measured over the exact
+        // `messages` this turn sends (tail INCLUDED), in the server-decoded
+        // OpenAI shape (FR-4). This is the shape tier 4 lives at: near the
+        // loop threshold production hands the model ~1,792 output tokens,
+        // where an unset `max_tokens` (build's default, omitted from the
+        // wire by `skip_serializing_if`) let the server generate ~6,900 --
+        // nearly 4x the real budget, which is why a prompt growth that
+        // starves production's output toward the `MIN_OUTPUT_TOKENS` floor
+        // could not turn this gate red.
+        let prompt_est = doce_lib::inference::token_estimate(
+            &serde_json::to_string(&doce_lib::inference::http::to_openai_messages(&messages))
+                .unwrap_or_default(),
+        );
+        req.max_tokens = Some(doce_lib::context::limits::clamp_output_tokens(
+            doce_lib::context::limits::AGENT_TURN_OUTPUT_CEILING,
+            doce_lib::inference::CONTEXT_WINDOW_TOKENS,
+            prompt_est,
+        ));
         let cancel = tokio_util::sync::CancellationToken::new();
         let result = doce_lib::inference::http::LlamaServerClient::new(self.base_url.clone())
             .chat(req, |_piece| {}, &cancel)
             .await;
-        common::chat_outcome_to_turn_outcome(result)
+        let outcome = common::chat_outcome_to_turn_outcome(result);
+        // FR-2: record the server's authoritative `prompt_tokens` for the
+        // next `measure`, exactly as production's `RealBackend::generate`
+        // does -- `at_len` is the pre-tail canonical count taken above.
+        if let Some((prompt_tokens, _completion_tokens)) = outcome.usage {
+            self.observed_usage.0.lock().unwrap().insert(
+                self.conversation_id.clone(),
+                context::ObservedUsage {
+                    prompt_tokens,
+                    at_len,
+                },
+            );
+        }
+        outcome
     }
 
     async fn execute_tool(
@@ -573,6 +761,12 @@ impl AgentBackend for PlanExecBackend<'_> {
                 // files land in their own subdirectory.
                 payload_dir: self.payload_dir.clone(),
                 conversation_id: format!("task-{tool_call_id}"),
+                settings: self.settings.clone(),
+                // Same shared usage map as the parent, keyed by this
+                // subagent's own conversation id -- exactly how production
+                // hands its single `LastObservedUsage` down from
+                // `RealBackend` to each `SubagentBackend` it spawns.
+                observed_usage: self.observed_usage,
             };
             let sub_result = run_loop(&sub_context, sub_messages, &mut sub_backend).await;
             self.turns += sub_backend.turns;
@@ -590,6 +784,7 @@ impl AgentBackend for PlanExecBackend<'_> {
                 &tool_call_id,
                 &call.name,
                 outcome,
+                self.settings.tool_output_offload_tokens,
                 |text| doce_lib::inference::token_estimate(text) as usize,
             )
         };
@@ -660,6 +855,9 @@ async fn run_planned_conversation(
     let payload_root = tempdir().expect("payload tempdir should create");
     let transcript_path = payload_root.path().join("transcript.txt");
     std::fs::write(&transcript_path, "").expect("transcript file should create");
+    // FR-2: one map for this whole conversation and every `Task` subagent it
+    // spawns -- see `FlatBackend::observed_usage`.
+    let observed_usage = context::LastObservedUsage::default();
     let mut backend = PlanExecBackend {
         base_url: base_url.to_string(),
         cwd,
@@ -669,6 +867,8 @@ async fn run_planned_conversation(
         plan_state: doce_lib::agent::plan::PlanState::default(),
         payload_dir: payload_root.path().to_path_buf(),
         conversation_id: "planned-top".to_string(),
+        settings: default_context_settings(),
+        observed_usage: &observed_usage,
     };
 
     let mut history = vec![ChatMessage::system(

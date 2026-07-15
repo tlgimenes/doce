@@ -1393,7 +1393,12 @@ async fn execute_top_level_tool(
 /// have a resolved app data dir). Unifies the top-level
 /// (`handle_general_tool_call`) and subagent (`SubagentBackend`) staging
 /// paths, which were otherwise byte-identical.
-fn stage_tool_result_for_persist(
+///
+/// `pub` (visibility only — no behaviour change) so the real-model
+/// benchmark (`tests/agent_tasks.rs`) stages its tool results through THIS
+/// function rather than keeping a private copy of the staging shape that
+/// can silently drift from what production feeds into message history.
+pub fn stage_tool_result_for_persist(
     app_data_dir: Option<&std::path::Path>,
     conversation_id: &str,
     tool_call_id: &str,
