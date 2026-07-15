@@ -738,11 +738,15 @@ pub async fn summarize_and_persist(
 /// condensed plus the workspace's existing memories and swaps in the model's
 /// full replacement set.
 ///
-/// Best-effort by construction: every failure path -- server error, empty or
-/// degenerate output, DB error -- logs and returns `Ok(())` leaving memories
-/// exactly as they were. Compaction must never fail an agent turn, and a bad
-/// extraction must never destroy good memories (the unsafe direction), so the
-/// empty-output guard mirrors `evaluate_summary`'s posture.
+/// Best-effort by construction: every failure path -- server error, a failed
+/// read of the existing set, a truncated completion, or empty/degenerate
+/// output -- logs and returns `Ok(())` leaving memories exactly as they were.
+/// Compaction must never fail an agent turn, and a bad extraction must never
+/// destroy good memories (the unsafe direction), so both the truncation
+/// backstop and the empty-output guard mirror `evaluate_summary`'s posture,
+/// and a failed read of the existing set is treated as "bail out", never as
+/// "existing == empty" (that would let a set built in ignorance of the real
+/// memories wipe them via `replace_memories`).
 pub(crate) async fn extract_and_persist_memories(
     conn: &tokio_rusqlite::Connection,
     base_url: &str,
@@ -762,9 +766,21 @@ pub(crate) async fn extract_and_persist_memories(
             return Ok(());
         }
     };
-    let existing = crate::storage::memories::load_memories(conn, workspace_id.as_deref())
-        .await
-        .unwrap_or_default();
+    // A transient read failure here must NOT be treated as "no existing
+    // memories" (that was the original, wrong, `.unwrap_or_default()`
+    // mandate): the multi-second LLM round-trip below sits between this read
+    // and the eventual `replace_memories` write, so a real DB error here
+    // would otherwise have the model build a replacement set in ignorance of
+    // the true prior set, which `replace_memories` would then use to WIPE
+    // it. Never extract from ignorance of the prior set -- bail out instead.
+    let existing =
+        match crate::storage::memories::load_memories(conn, workspace_id.as_deref()).await {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("[memory-extraction] loading existing memories failed: {e}");
+                return Ok(());
+            }
+        };
 
     let existing_block = if existing.is_empty() {
         "(no existing memories)".to_string()
@@ -804,6 +820,28 @@ pub(crate) async fn extract_and_persist_memories(
             return Ok(());
         }
     };
+
+    // `ChatOutcome::finish_reason` is a plain `String` ("" sentinel for "the
+    // server never sent one" -- see its own doc comment), not `Option<...>`;
+    // normalize the empty-string sentinel to `None` here exactly as
+    // `summarize_and_persist` does before comparing to `Some("length")`.
+    let finish_reason = if outcome.finish_reason.is_empty() {
+        None
+    } else {
+        Some(outcome.finish_reason.as_str())
+    };
+    // TRUNCATION BACKSTOP. The prompt asks for the FULL replacement set every
+    // time, so the expected output grows as memories accumulate -- a
+    // truncated response would silently drop every memory not yet
+    // re-emitted AND persist a half-finished sentence as a durable fact.
+    // `MEMORY_EXTRACTION_PROMPT`'s own self-cap is meant to keep this call
+    // clear of `SUMMARY_MAX_TOKENS`, but this backstop is what actually
+    // refuses to persist if it ever doesn't (mirrors
+    // `evaluate_summary`'s `RejectTruncated`).
+    if finish_reason == Some("length") {
+        eprintln!("[memory-extraction] truncated output, keeping existing memories");
+        return Ok(());
+    }
 
     // Dedup, first-seen order preserved: `replace_memories` inserts `contents`
     // verbatim (no dedup of its own), so a model that repeats a line would
@@ -2106,26 +2144,38 @@ mod tests {
     // in-memory connection `storage::memories`' tests use.
 
     /// An SSE body shaped exactly like the ones `inference::http`'s tests
-    /// feed `LlamaServerClient::chat`: one content delta, a `stop` finish,
+    /// feed `LlamaServerClient::chat`: one content delta, a finish reason,
     /// then `[DONE]`.
-    fn sse_text_body(text: &str) -> String {
+    fn sse_text_body_with_finish(text: &str, finish_reason: &str) -> String {
         format!(
             "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
             serde_json::json!({"choices": [{"delta": {"content": text}, "index": 0}]}),
-            serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop", "index": 0}]}),
+            serde_json::json!({"choices": [{"delta": {}, "finish_reason": finish_reason, "index": 0}]}),
         )
     }
 
     /// Mounts a 200/SSE stub returning `text` as the completion, mirroring
     /// `inference::http::tests`' mock setup.
     async fn stub_completion(text: &str) -> wiremock::MockServer {
+        stub_completion_with_finish_reason(text, "stop").await
+    }
+
+    /// Like `stub_completion`, but with an explicit `finish_reason` --
+    /// used to simulate a truncated (`"length"`) completion.
+    async fn stub_completion_with_finish_reason(
+        text: &str,
+        finish_reason: &str,
+    ) -> wiremock::MockServer {
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("POST"))
             .and(wiremock::matchers::path("/v1/chat/completions"))
             .respond_with(
                 wiremock::ResponseTemplate::new(200)
                     .insert_header("content-type", "text/event-stream")
-                    .set_body_raw(sse_text_body(text), "text/event-stream"),
+                    .set_body_raw(
+                        sse_text_body_with_finish(text, finish_reason),
+                        "text/event-stream",
+                    ),
             )
             .mount(&server)
             .await;
@@ -2318,6 +2368,98 @@ mod tests {
         assert_eq!(
             contents_of(&conn, Some("w1")).await,
             vec!["alpha.".to_string(), "beta.".to_string()]
+        );
+    }
+
+    /// A model that disobeys the "no bullets" instruction and emits a
+    /// bulleted line must still yield the bare fact -- the defensive
+    /// `trim_start_matches("- ")` strip.
+    #[tokio::test]
+    async fn extraction_strips_a_disobedient_bullet_prefix() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_workspace(&conn, "w1").await;
+        seed_conversation(&conn, "c1", Some("w1")).await;
+        let server = stub_completion("- fact").await;
+
+        let span = vec![history_message("text", 0, "some work")];
+        let span_refs: Vec<&HistoryMessage> = span.iter().collect();
+        extract_and_persist_memories(&conn, &server.uri(), "c1", &span_refs, 10)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            contents_of(&conn, Some("w1")).await,
+            vec!["fact".to_string()],
+            "a bulleted line should still yield the bare fact"
+        );
+    }
+
+    /// FINDING A. The prompt asks for the FULL replacement set every time, so
+    /// the expected output grows as memories accumulate -- a truncated
+    /// (`finish_reason:"length"`) response would silently drop every memory
+    /// not yet re-emitted AND persist a half-finished sentence as a durable
+    /// fact. Must persist NOTHING and leave the existing set untouched.
+    ///
+    /// Verified live (not just by inspection): temporarily removing the
+    /// `finish_reason == Some("length")` guard in
+    /// `extract_and_persist_memories` made this test fail (the truncated
+    /// text "User prefers oxfmt. Benchmarks are gat" got persisted in place
+    /// of "precious"), then the guard was restored and this test passes
+    /// again.
+    #[tokio::test]
+    async fn truncated_extraction_never_persists_and_leaves_memories_untouched() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_workspace(&conn, "w1").await;
+        seed_conversation(&conn, "c1", Some("w1")).await;
+        crate::storage::memories::replace_memories(&conn, Some("w1"), &["precious".to_string()], 5)
+            .await
+            .unwrap();
+        let server =
+            stub_completion_with_finish_reason("User prefers oxfmt. Benchmarks are gat", "length")
+                .await;
+
+        let span = vec![history_message("text", 0, "some work")];
+        let span_refs: Vec<&HistoryMessage> = span.iter().collect();
+        let r = extract_and_persist_memories(&conn, &server.uri(), "c1", &span_refs, 10).await;
+
+        assert!(r.is_ok(), "a truncated extraction must never fail the turn");
+        assert_eq!(
+            contents_of(&conn, Some("w1")).await,
+            vec!["precious".to_string()],
+            "a truncated extraction must leave memories exactly as they were"
+        );
+    }
+
+    /// FINDING B. A transient failure reading the existing memory set must
+    /// NOT be treated as "no existing memories" -- that would let a set built
+    /// in ignorance of the real memories wipe them via `replace_memories`.
+    /// Induced deterministically by dropping the `memories` table out from
+    /// under an otherwise-healthy connection: `workspace_id_for_conversation`
+    /// (reads `conversations`) still succeeds, but `load_memories` itself now
+    /// returns `Err`. The assertion that the mock server received zero
+    /// requests proves the function bailed out BEFORE ever calling the
+    /// model -- it never got the chance to extract from ignorance of the
+    /// real set.
+    #[tokio::test]
+    async fn load_failure_leaves_memories_untouched_and_never_calls_the_model() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_workspace(&conn, "w1").await;
+        seed_conversation(&conn, "c1", Some("w1")).await;
+        let server = stub_completion("should never be requested.").await;
+
+        conn.call(|conn: &mut Connection| conn.execute("DROP TABLE memories", []))
+            .await
+            .unwrap();
+
+        let span = vec![history_message("text", 0, "some work")];
+        let span_refs: Vec<&HistoryMessage> = span.iter().collect();
+        let r = extract_and_persist_memories(&conn, &server.uri(), "c1", &span_refs, 10).await;
+
+        assert!(r.is_ok(), "a read failure must never fail the turn");
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            0,
+            "a load_memories failure must bail out before ever calling the model"
         );
     }
 }

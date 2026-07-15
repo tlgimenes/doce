@@ -101,7 +101,17 @@ Keep the whole snapshot under about 800 tokens. Output ONLY the <state_snapshot>
 /// SP4: the out-of-band memory-extraction prompt. A separate `Forbid`-mode
 /// call (never part of an agent turn), so this text cannot affect the
 /// tier4_planned benchmark. Asks for the FULL replacement set, one fact per
-/// line, because `replace_memories` swaps the workspace's whole set.
+/// line, because `replace_memories` swaps the workspace's whole set -- which
+/// is exactly why this prompt carries its own explicit self-cap (30 facts,
+/// ~20 words each), the same way `SUMMARIZATION_PROMPT`'s ~800-token cap
+/// exists: the replacement set grows every time memories accumulate, so
+/// without a cap the call eventually outgrows `SUMMARY_MAX_TOKENS` (1024) and
+/// hits `finish_reason:"length"` -- which `extract_and_persist_memories`
+/// rejects outright, since a truncated "full replacement set" would silently
+/// drop every memory not yet re-emitted while persisting a half-finished
+/// sentence as a durable fact. 30 facts * ~20 words (~26 tokens) stays
+/// comfortably under 800 tokens, the same headroom below `SUMMARY_MAX_TOKENS`
+/// that `SUMMARIZATION_PROMPT` keeps.
 pub const MEMORY_EXTRACTION_PROMPT: &str = "\
 You maintain a durable memory of a software project workspace.
 
@@ -119,7 +129,10 @@ Never remember: transient task state, what you are doing right now, file \
 contents, anything trivially re-derivable by reading the code, or anything you \
 are not confident is true.
 
-Output one fact per line, each a single self-contained sentence. No bullets, no \
+Output AT MOST 30 facts, one per line, each a single self-contained sentence of \
+no more than 20 words. Keep the whole output under about 800 tokens. If more \
+than 30 facts are worth keeping, keep only the most important and durable ones \
+-- staying under the cap matters more than completeness. No bullets, no \
 numbering, no commentary, no headers. If there is nothing worth remembering, \
 output nothing at all.";
 
