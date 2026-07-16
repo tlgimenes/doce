@@ -15,6 +15,7 @@
 //! `tool_choice`, not by a hand-rolled grammar.
 
 pub mod dispatch;
+pub mod observer;
 pub mod plan;
 pub mod rich_content;
 pub mod subagent;

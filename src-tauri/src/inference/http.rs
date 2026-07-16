@@ -212,6 +212,17 @@ fn tool_def(name: &str) -> Option<Value> {
                 "required": ["answer"]
             }),
         ),
+        "Verdict" => (
+            "Report whether the agent's completion claim is supported by the evidence.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "complete": {"type": "boolean"},
+                    "missing": {"type": "string"}
+                },
+                "required": ["complete", "missing"]
+            }),
+        ),
         _ => return None,
     };
     Some(serde_json::json!({
