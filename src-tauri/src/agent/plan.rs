@@ -221,8 +221,32 @@ Work the first undone item; update with Todo as you finish each.",
                 let undone = self.plan.steps.iter().filter(|s| !s.done).count();
                 if undone > 0 && !self.finish_bounced {
                     self.finish_bounced = true;
+                    // NAME the specific undone items, don't just count them: after a
+                    // long, compacted run the model loses track of WHICH item is the
+                    // gap (tier6 diagnosis 2026-07-16 -- the model re-read an
+                    // already-done file, then marked everything done without doing the
+                    // remaining one). A bare count also invited the escape the model
+                    // took: the old "remove them with Todo if they no longer apply"
+                    // clause let it resolve the bounce by marking work done it never
+                    // did. List the actual work and forbid that. Cap the list so a
+                    // large plan can't blow the reply size.
+                    let listed: Vec<String> = self
+                        .plan
+                        .steps
+                        .iter()
+                        .filter(|s| !s.done)
+                        .take(5)
+                        .map(|s| format!("- {}", s.description))
+                        .collect();
+                    let more = undone.saturating_sub(listed.len());
+                    let more_line = if more > 0 {
+                        format!("\n- ...and {more} more")
+                    } else {
+                        String::new()
+                    };
                     return Some(PlanToolReply::Reply(format!(
-                        "{undone} todo(s) remain undone. Finish them, or remove them with Todo if they no longer apply -- then FinishTask."
+                        "{undone} todo(s) still undone:\n{}{more_line}\nComplete the actual work for each with your tools -- do NOT mark an item done unless you have really done it -- then FinishTask.",
+                        listed.join("\n")
                     )));
                 }
                 Some(PlanToolReply::Finish(answer))
@@ -323,12 +347,45 @@ mod single_mode_tests {
         let first = state
             .handle_todo_tool(&call("FinishTask", serde_json::json!({"answer": "done!"})))
             .unwrap();
-        assert!(matches!(&first, PlanToolReply::Reply(t) if t.contains("remain undone")));
+        // The bounce NAMES the specific undone item (not just a count) so a model
+        // that has lost track of which item is the gap is pointed straight at it,
+        // and does NOT offer "remove it if it no longer applies" (which a model
+        // exploited by marking undone work done -- tier6 diagnosis 2026-07-16).
+        let PlanToolReply::Reply(text) = &first else {
+            panic!("expected a bounce reply")
+        };
+        assert!(text.contains("fix a"), "bounce must name the undone item: {text}");
+        assert!(text.contains("still undone"), "{text}");
+        assert!(
+            !text.contains("no longer apply"),
+            "the escape-hatch clause must be gone: {text}"
+        );
         // Second attempt is honored — a stuck task can still end.
         let second = state
             .handle_todo_tool(&call("FinishTask", serde_json::json!({"answer": "done!"})))
             .unwrap();
         assert_eq!(second, PlanToolReply::Finish("done!".to_string()));
+    }
+
+    #[test]
+    fn finish_bounce_lists_up_to_five_undone_items_then_summarizes_the_rest() {
+        let mut state = PlanState::default();
+        let items: Vec<_> = (0..8)
+            .map(|i| serde_json::json!({"text": format!("task {i}"), "done": false}))
+            .collect();
+        state
+            .handle_todo_tool(&call("Todo", serde_json::json!({"items": items})))
+            .unwrap();
+        let PlanToolReply::Reply(text) = state
+            .handle_todo_tool(&call("FinishTask", serde_json::json!({"answer": "x"})))
+            .unwrap()
+        else {
+            panic!("expected a bounce reply")
+        };
+        // First five named, the remaining three summarized -- bounded reply size.
+        assert!(text.contains("task 0") && text.contains("task 4"), "{text}");
+        assert!(!text.contains("task 5"), "should cap at 5 named: {text}");
+        assert!(text.contains("and 3 more"), "{text}");
     }
 
     #[test]

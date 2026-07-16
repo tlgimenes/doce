@@ -1349,16 +1349,27 @@ async fn tier6_planned_retains_an_early_global_rule_across_context_pressure() {
          raise TIER6_FILE_COUNT/TIER6_FILLER_LINES to build more context pressure"
     );
 
-    // OBSERVED BASELINE on `main` (qwen3.5-4b-q4_k_m), 2026-07-16, seed=42,
-    // reproduced byte-identically twice: score=13/14, compactions=12,
-    // turns=57. The single miss is data_13 (the LAST file): the model
-    // retained the `RS-` rule on all 13 files it touched -- the plan machine's
-    // regenerated todo-tail carries it across all 12 compactions -- then
-    // declared the task done after data_12 and never processed data_13. So
-    // the headroom this tier exposes is NOT rule-forgetting (the plan machine
-    // defeats that) but end-of-list completion tracking under context
-    // pressure: a strictly harder target than tier4's 20/20 ceiling, and one
-    // an improvement to the harness could push to 14/14.
+    // OBSERVED BASELINE on `main` (qwen3.5-4b-q4_k_m), 2026-07-16, seed=42:
+    // score=13/14, compactions=12, turns~55. The single miss is data_13 (the
+    // LAST file): the model retained the `RS-` rule on all 13 files it touched
+    // -- the plan machine's regenerated todo-tail carries it across all 12
+    // compactions -- then declared the task done and never processed data_13.
+    // So the headroom this tier exposes is NOT rule-forgetting (the plan
+    // machine defeats that) but end-of-list completion tracking under context
+    // pressure: a strictly harder target than tier4's 20/20 ceiling.
+    //
+    // DEEPER DIAGNOSIS (2026-07-16, full-trajectory capture): the dominant
+    // cause is TODO-LIST DRIFT, not a weak finish bounce. After 12 compactions
+    // the model's own Todo list mislabels which file is the gap -- at the
+    // premature FinishTask it named `data_12` (already done, `RS-mike`) as
+    // undone while `data_13` was the real gap. The `FinishTask` bounce was
+    // hardened (it now NAMES undone items and no longer offers "remove them if
+    // they no longer apply", an escape the model had exploited to mark undone
+    // work done -- see agent::plan) -- a genuine quality fix, inert for tier4
+    // (which never bounces at the gate seeds), but it does NOT move this score:
+    // a correctly-worded bounce pointing at a drifted todo can't recover the
+    // right file. Pushing 13->14 needs the todo bookkeeping itself to stay
+    // grounded across compaction (a deeper, partly small-model-bound problem).
     //
     // Bar set to the observed floor (13) so the tier is GREEN now and a
     // REGRESSION -- the rule surviving fewer files, or more files dropped --
