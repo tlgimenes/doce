@@ -82,6 +82,46 @@ pub fn build_observer_messages(
     vec![system, ChatMessage::user(user)]
 }
 
+/// The observer's output is a single Verdict tool call — tiny. Cap output so a
+/// runaway can't stall the loop.
+pub const OBSERVER_MAX_TOKENS: u32 = 256;
+
+/// Adjudicate a completion claim against the evidence via one observer LLM call.
+/// Returns Err on any transport/parse failure — callers FAIL OPEN (treat Err as
+/// approve) so the observer can never trap the loop. Deterministic under
+/// DOCE_GEN_SEED because `ChatRequest::build` seeds from `seed_from_env()`.
+pub async fn request_verdict(
+    base_url: &str,
+    kind: &CompletionKind,
+    plan: &Plan,
+    mutation_log: &[MutationRecord],
+    answer: Option<&str>,
+    goal: Option<&str>,
+) -> Result<Verdict, String> {
+    let msgs = build_observer_messages(kind, plan, mutation_log, answer, goal);
+    let mut req = crate::inference::http::ChatRequest::build(
+        "doce",
+        crate::inference::http::to_openai_messages(&msgs),
+        Some(crate::inference::http::tools_array(&["Verdict"])),
+        crate::inference::http::tool_choice_for(crate::inference::ToolCallMode::Require)
+            .map(|s| s.to_string()),
+    );
+    req.max_tokens = Some(OBSERVER_MAX_TOKENS);
+    req.disable_thinking(); // no reasoning block — mirrors summarize_and_persist
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let outcome = crate::inference::http::LlamaServerClient::new(base_url.to_string())
+        .chat(req, |_piece| {}, &cancel)
+        .await
+        .map_err(|e| format!("observer request failed: {e:?}"))?;
+    match outcome.tool_call {
+        Some((name, args)) if name == "Verdict" => Ok(parse_verdict(&args)),
+        other => Err(format!(
+            "observer returned no Verdict tool call (got {other:?}, finish={})",
+            outcome.finish_reason
+        )),
+    }
+}
+
 /// PURE. Parse the observer's forced `Verdict` tool-call arguments.
 pub fn parse_verdict(tool_args: &serde_json::Value) -> Verdict {
     Verdict {

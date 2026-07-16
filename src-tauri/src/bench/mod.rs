@@ -790,13 +790,34 @@ impl AgentBackend for PlanExecBackend<'_> {
                     answer
                 }
                 crate::agent::plan::PlanToolReply::ProposeComplete { kind, answer } => {
-                    // Task 2 STUB: always approve. Task 4 replaces this with
-                    // request_verdict(...) against an observer LLM.
-                    let approved = true;
-                    let missing = "";
-                    let (reply, finish) = self
-                        .plan_state
-                        .apply_completion_verdict(kind, answer, approved, missing);
+                    // Observer-verified completion: adjudicate the claim
+                    // against the evidence log before committing it.
+                    let goal = {
+                        let g = &self.plan_state.plan.goal;
+                        (!g.is_empty()).then(|| g.clone())
+                    };
+                    let verdict = crate::agent::observer::request_verdict(
+                        &self.base_url,
+                        &kind,
+                        &self.plan_state.plan,
+                        &self.plan_state.mutation_log,
+                        answer.as_deref(),
+                        goal.as_deref(),
+                    )
+                    .await
+                    .unwrap_or_else(|e| {
+                        eprintln!("observer failed, approving: {e}");
+                        crate::agent::observer::Verdict {
+                            complete: true,
+                            missing: String::new(),
+                        }
+                    });
+                    let (reply, finish) = self.plan_state.apply_completion_verdict(
+                        kind,
+                        answer,
+                        verdict.complete,
+                        &verdict.missing,
+                    );
                     plan_finish = finish;
                     reply
                 }
