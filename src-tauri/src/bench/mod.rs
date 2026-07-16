@@ -423,6 +423,14 @@ pub struct FlatBackend<'a> {
     /// subagent runs its own `run_loop` and therefore mints its own ids, so
     /// it gets a fresh map rather than sharing the parent's).
     pub stable_ids: StableToolCallIds,
+    /// How many times `compact()` actually DROPPED at least one message this
+    /// run -- `run_loop` only calls `compact` when `measure() > threshold()`,
+    /// and this counts only the calls where `fit_turn_to_budget` returned a
+    /// SHORTER list (a real trim of the history middle), not the no-op calls
+    /// where everything still fit. A benchmark tier that means to test
+    /// cross-compaction retention is only doing its job when this is > 0; see
+    /// the tier6 comment for why it is printed alongside the score.
+    pub compactions: u32,
 }
 
 impl AgentBackend for FlatBackend<'_> {
@@ -458,7 +466,11 @@ impl AgentBackend for FlatBackend<'_> {
     }
 
     fn compact(&mut self, messages: &[ChatMessage]) -> Vec<ChatMessage> {
-        context::fit_turn_to_budget(messages).unwrap_or_else(|_| messages.to_vec())
+        let fitted = context::fit_turn_to_budget(messages).unwrap_or_else(|_| messages.to_vec());
+        if fitted.len() < messages.len() {
+            self.compactions += 1;
+        }
+        fitted
     }
 
     // Flat baseline runs under `ToolCallMode::Allow`, so a no-tool-call turn
@@ -619,6 +631,11 @@ pub struct PlanExecBackend<'a> {
     pub observed_usage: &'a context::LastObservedUsage,
     /// See `FlatBackend::stable_ids`.
     pub stable_ids: StableToolCallIds,
+    /// See `FlatBackend::compactions` -- how many times `compact()` actually
+    /// dropped at least one message this run. tier6 asserts this is > 0, since
+    /// its whole reason to exist is testing what survives the middle-of-history
+    /// trim `fit_turn_to_budget` performs once the conversation crosses budget.
+    pub compactions: u32,
 }
 
 impl AgentBackend for PlanExecBackend<'_> {
@@ -655,7 +672,11 @@ impl AgentBackend for PlanExecBackend<'_> {
     }
 
     fn compact(&mut self, messages: &[ChatMessage]) -> Vec<ChatMessage> {
-        context::fit_turn_to_budget(messages).unwrap_or_else(|_| messages.to_vec())
+        let fitted = context::fit_turn_to_budget(messages).unwrap_or_else(|_| messages.to_vec());
+        if fitted.len() < messages.len() {
+            self.compactions += 1;
+        }
+        fitted
     }
 
     async fn generate(&mut self, mut messages: Vec<ChatMessage>) -> crate::agent::TurnOutcome {
@@ -825,6 +846,7 @@ impl AgentBackend for PlanExecBackend<'_> {
                 // NOT shared with the parent: this subagent's `run_loop`
                 // mints its own ids, and its own map keeps them stable.
                 stable_ids: StableToolCallIds::default(),
+                compactions: 0,
             };
             let sub_result = run_loop(&sub_context, sub_messages, &mut sub_backend).await;
             self.turns += sub_backend.turns;

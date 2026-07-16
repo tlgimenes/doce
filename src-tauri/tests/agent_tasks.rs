@@ -209,6 +209,11 @@ struct TaskRun {
     /// from the backend's trace -- empty when the model answered directly
     /// without a single tool call, which tier 0 asserts on.
     trace: Vec<String>,
+    /// How many times `compact()` actually trimmed the history middle during
+    /// this user turn (a per-turn delta of the backend's cumulative counter,
+    /// same accounting as `turns_taken`). tier6 reads this to prove the
+    /// conversation genuinely crossed the trim budget; other tiers ignore it.
+    compactions: u32,
 }
 
 fn report(name: &str, run: &TaskRun) {
@@ -337,6 +342,7 @@ async fn run_flat_conversation(
         settings: default_context_settings(),
         observed_usage: &observed_usage,
         stable_ids: StableToolCallIds::default(),
+        compactions: 0,
     };
 
     let mut history = vec![ChatMessage::system(FLAT_BASELINE_SYSTEM_PROMPT)];
@@ -345,6 +351,7 @@ async fn run_flat_conversation(
         history.push(ChatMessage::user(*turn));
         let turns_before = backend.turns;
         let trace_before = backend.trace.len();
+        let compactions_before = backend.compactions;
         let start = Instant::now();
 
         let result = run_loop(&context, history.clone(), &mut backend).await;
@@ -357,6 +364,7 @@ async fn run_flat_conversation(
             turns_taken: backend.turns - turns_before,
             elapsed: start.elapsed(),
             trace: backend.trace[trace_before..].to_vec(),
+            compactions: backend.compactions - compactions_before,
         });
     }
     runs
@@ -439,6 +447,7 @@ async fn run_planned_conversation(
         settings: default_context_settings(),
         observed_usage: &observed_usage,
         stable_ids: StableToolCallIds::default(),
+        compactions: 0,
     };
 
     let mut history = vec![ChatMessage::system(
@@ -455,6 +464,7 @@ async fn run_planned_conversation(
         history.push(ChatMessage::user(*turn));
         let turns_before = backend.turns;
         let trace_before = backend.trace.len();
+        let compactions_before = backend.compactions;
         let start = Instant::now();
 
         let result = run_loop(&context, history.clone(), &mut backend).await;
@@ -468,6 +478,7 @@ async fn run_planned_conversation(
             turns_taken: backend.turns - turns_before,
             elapsed: start.elapsed(),
             trace: backend.trace[trace_before..].to_vec(),
+            compactions: backend.compactions - compactions_before,
         });
     }
     runs
@@ -1082,4 +1093,281 @@ async fn tier5_surgical_edit_in_one_huge_file() {
     if let Err(e) = tier5_check(dir.path(), &original) {
         panic!("[tier5] target must be fixed with the rest of the file untouched: {e}");
     }
+}
+
+// --- Tier 6: cross-context constraint retention (the ceiling-breaker) ---
+//
+// tier4 sits at a 20/20 ceiling: it detects regressions but has no headroom
+// to guide prompt-engineering or context-management work, and -- like every
+// other tier -- fits comfortably in the window. tier6 is the first tier
+// whose task DELIBERATELY grows past the trim budget: it plants ONE global
+// formatting rule ("prefix every written word with `RS-`") in the opening
+// task prompt, then walks the agent through N files it must Read one at a
+// time. Each Read result is carved out of payload-offloading
+// (`stage_tool_result_for_persist`'s Read arm) and so accumulates inline,
+// bounded only by Read's own ~8 KB cap -- so a handful of files is enough to
+// push the conversation past `fit_turn_to_budget`'s budget, at which point
+// `compact()` drops the MIDDLE of the history (it pins only `messages[0]`,
+// the system prompt, and keeps the most-recent-that-fit). The original task
+// prompt -- and with it the `RS-` rule -- is `messages[1]`, NOT pinned, so
+// it scrolls out. Late files therefore test whether the early rule survived
+// via the ONLY carriers left: the plan machine's regenerated todo-tail (if
+// the model encoded the rule into a Todo item) or nothing at all.
+//
+// The scored failure is constraint-forgetting and NOTHING else: no
+// arithmetic, no search, no cross-file reasoning, and -- deliberately -- no
+// "delete the padding" sub-task. The only place any file's word appears is
+// its `write here: <word>` line, so `tier6_score` reduces "did the rule
+// survive for this file?" to a whole-file test for `RS-<word>` vs a bare
+// `<word>` -- INTENTIONALLY tolerant of exactly how the model rewrote the
+// line, so the score moves only with retention, never with task-following.
+//
+// 2026-07-16 EMPIRICAL NOTES (seed=42, qwen3.5-4b-q4_k_m), two confounders
+// found and removed by real runs before the scorer measured retention
+// cleanly:
+//   1. An "replace the file's ENTIRE contents with `RS-<word>`" task while
+//      padding the file scored 0/14 because the model rewrote only line 1
+//      with `Update`'s old/new-string mode and left the padding -- the 0 was
+//      "didn't delete padding", not "forgot the rule". (It wrote `RS-<word>`
+//      on all 14 target lines.)
+//   2. An exact-line matcher then still failed those same files because the
+//      model kept the framing, producing `write here: RS-bravo` rather than
+//      `RS-bravo`. Again the rule WAS honored; the exact match was measuring
+//      task-following.
+// Both times the model retained the rule on all 14 files across ~25
+// compactions, because it spontaneously encoded "word -> RS-word" into its
+// per-file Todo items, which the plan machine recites in the regenerated
+// todo-tail EVERY turn -- so the rule rode the pinned-adjacent tail and
+// never depended on the (long-since-trimmed) task prompt. That is the "plan
+// machine already carries it" outcome the brief anticipated; see the
+// pass-bar comment on the test for what that means for headroom.
+
+/// A fixed, deterministic list of distinct target words -- one per file, in
+/// order (`data_00` -> `alpha`, `data_01` -> `bravo`, ...). No randomness:
+/// the same seed reproduces the same fixture byte-for-byte. Length caps
+/// `TIER6_FILE_COUNT`.
+const TIER6_WORDS: &[&str] = &[
+    "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india", "juliet",
+    "kilo", "lima", "mike", "november", "oscar", "papa", "quebec", "romeo", "sierra", "tango",
+    "uniform", "victor", "whiskey", "xray", "yankee", "zulu",
+];
+
+/// How many files the agent must process. The pressure knob PAIR with
+/// `TIER6_FILLER_LINES`: enough files that the conversation crosses the trim
+/// budget WELL before the last few, so late files are genuinely written
+/// after the early `RS-` rule could have been trimmed out of the
+/// non-pinned window. Empirically tuned -- see the test's `[metrics]`/
+/// compaction output. Must be <= `TIER6_WORDS.len()`.
+const TIER6_FILE_COUNT: usize = 14;
+
+/// Deterministic filler lines appended after each file's `write here:` line,
+/// purely to enlarge that file's (inline, non-offloaded) Read result and so
+/// speed the conversation toward the trim budget. Sized to keep each Read
+/// output comfortably under `fs::READ_MAX_BYTES` (~8 KB) so no continue-from
+/// marker is emitted and the whole file is seen in one Read. The target word
+/// stays on line 1, so filler never obscures which word to write.
+const TIER6_FILLER_LINES: usize = 60;
+
+/// Writes `data_00.txt` .. `data_(n-1).txt`. Line 1 of each is
+/// `write here: <word>`; the rest is fixed filler. Entirely deterministic.
+fn tier6_fixture(dir: &Path, n: usize) {
+    assert!(
+        n <= TIER6_WORDS.len(),
+        "tier6 needs a distinct word per file; {n} > {}",
+        TIER6_WORDS.len()
+    );
+    for (i, word) in TIER6_WORDS.iter().take(n).enumerate() {
+        let mut content = format!("write here: {word}\n");
+        for line in 0..TIER6_FILLER_LINES {
+            content.push_str(&format!(
+                "# note {line:03}: deterministic padding, not part of what you write\n"
+            ));
+        }
+        std::fs::write(dir.join(format!("data_{i:02}.txt")), content).unwrap();
+    }
+}
+
+/// Per-file grading, mirroring `tier4_score`'s shape (returns
+/// `(correct, total, failures)` with a diagnosable failure string per file).
+///
+/// Scores PURELY for rule retention, nothing else. The only place any
+/// file's target word appears is its `write here: <word>` line, so the
+/// question "did the `RS-` rule survive for this file?" reduces to a
+/// whole-file substring test -- INTENTIONALLY tolerant of exactly HOW the
+/// model rewrote the line, because that is task-following, not retention.
+/// A run that scored 0/14 on an exact-line matcher while writing
+/// `RS-<word>` on every target line (seen 2026-07-16: the model kept the
+/// `write here:` prefix, producing `write here: RS-bravo`) was measuring the
+/// confounder, not the constraint. Categories:
+///   - CORRECT       : the file contains `RS-<word>` -- rule honored
+///                     (whether as `RS-<word>` alone or `write here: RS-<word>`)
+///   - `bare`        : no `RS-<word>`, but the file was edited to drop the
+///                     `write here:` framing and contains `<word>` -- the
+///                     rule was FORGOTTEN (the interesting late-file failure)
+///   - `unprocessed` : no `RS-<word>`; the original `write here: <word>`
+///                     line is still intact -- the file was never touched
+///   - `empty`       : missing or blank
+///   - `other`       : the word is gone entirely (wrong word / clobbered)
+fn tier6_score(dir: &Path, n: usize) -> (usize, usize, Vec<String>) {
+    let mut correct = 0;
+    let mut failures = Vec::new();
+    for (i, word) in TIER6_WORDS.iter().take(n).enumerate() {
+        let path = dir.join(format!("data_{i:02}.txt"));
+        let raw = std::fs::read_to_string(&path).unwrap_or_default();
+        if raw.contains(&format!("RS-{word}")) {
+            correct += 1;
+        } else if raw.contains(&format!("write here: {word}")) {
+            failures.push(format!(
+                "data_{i:02}: unprocessed (still `write here: {word}`)"
+            ));
+        } else if raw.contains(word) {
+            failures.push(format!(
+                "data_{i:02}: bare (`{word}` present, RS- rule forgotten)"
+            ));
+        } else if raw.trim().is_empty() {
+            failures.push(format!("data_{i:02}: empty (missing or blank)"));
+        } else {
+            failures.push(format!("data_{i:02}: other (`{word}` gone entirely)"));
+        }
+    }
+    (correct, n, failures)
+}
+
+/// Pure-logic guard on `tier6_score` (no model): a run scoring a partial
+/// must be diagnosable from the failure strings alone -- correct vs bare
+/// (rule forgotten) vs empty vs other must each be recognized and
+/// categorized. Runs under `cargo test --features bench --test agent_tasks`
+/// without `--ignored`, so it does not need the real model.
+#[test]
+fn tier6_score_categorizes_each_failure_mode() {
+    let dir = tempdir().unwrap();
+    // Padding lines are irrelevant; scoring is a whole-file retention test:
+    //   data_00 alpha   -> correct (`RS-alpha`, padding ignored)
+    //   data_01 bravo   -> correct (`write here: RS-bravo`: rule honored,
+    //                      `write here:` framing kept -- the real 2026-07-16
+    //                      behavior the exact-line matcher wrongly failed)
+    //   data_02 charlie -> bare (edited to `charlie`, RS- rule forgotten)
+    //   data_03 delta   -> unprocessed (line still `write here: delta`)
+    //   data_04 echo    -> empty (blank)
+    //   data_05 foxtrot -> other (word clobbered entirely)
+    std::fs::write(
+        dir.path().join("data_00.txt"),
+        "RS-alpha\n# note 000: padding\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("data_01.txt"),
+        "write here: RS-bravo\n# note 000: padding\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("data_02.txt"), "charlie\n# pad\n").unwrap();
+    std::fs::write(dir.path().join("data_03.txt"), "write here: delta\n# pad\n").unwrap();
+    std::fs::write(dir.path().join("data_04.txt"), "   \n").unwrap();
+    std::fs::write(dir.path().join("data_05.txt"), "clobbered\n").unwrap();
+
+    let (correct, total, failures) = tier6_score(dir.path(), 6);
+    assert_eq!(correct, 2, "data_00 and data_01 both honor the RS- rule");
+    assert_eq!(total, 6);
+    assert_eq!(failures.len(), 4);
+    assert!(failures[0].contains("data_02") && failures[0].contains("bare"));
+    assert!(failures[1].contains("data_03") && failures[1].contains("unprocessed"));
+    assert!(failures[2].contains("data_04") && failures[2].contains("empty"));
+    assert!(failures[3].contains("data_05") && failures[3].contains("other"));
+
+    // A missing file is empty, not a panic.
+    let (correct2, _, failures2) = tier6_score(dir.path(), 7);
+    assert_eq!(correct2, 2);
+    assert!(failures2
+        .iter()
+        .any(|f| f.contains("data_06") && f.contains("empty")));
+}
+
+/// The ceiling-breaker. Plants the `RS-` rule ONCE in the opening prompt,
+/// then walks the model through `TIER6_FILE_COUNT` files whose accumulated
+/// (inline, non-offloaded) Read results push the conversation past the trim
+/// budget, so `compact()` drops the middle -- including the rule-bearing
+/// task prompt -- and late files test retention. Runs on the PRODUCTION plan
+/// path (`run_planned_task`), the same backend tier4_planned drives.
+///
+/// PASS BAR -- see the assertion at the bottom for the honest observed
+/// baseline on `main` and the date it was measured. The bar is set to what
+/// the model ACTUALLY achieves today, not N/N: a regression drops below it
+/// and turns the tier red; an improvement (better context management or
+/// prompt engineering carrying the rule further) rises above it, which is
+/// the headroom tier4's 20/20 ceiling cannot provide.
+#[tokio::test]
+#[ignore]
+async fn tier6_planned_retains_an_early_global_rule_across_context_pressure() {
+    let model = installed_model_path();
+    // Spawn the real server FIRST -- it gates on the sidecar binary + model
+    // GGUF being present and SKIPS (returns None) with a printed reason when
+    // either is absent, so a bare `--ignored` run without the onboarding
+    // model no-ops instead of panicking.
+    let Some(server) = TestServer::spawn(&model).await else {
+        return;
+    };
+    let dir = ScratchDir::new("T6RETN");
+    let n = TIER6_FILE_COUNT;
+    tier6_fixture(dir.path(), n);
+
+    let task = format!(
+        "This directory contains {n} files named data_00.txt through data_{:02}.txt. \
+         Process them IN ORDER, one at a time. Each file has a line `write here: <word>` \
+         naming a single word; the remaining lines are padding you should leave \
+         untouched. For each file, rewrite ONLY that `write here:` line so it becomes \
+         the word by itself -- i.e. replace `write here: <word>` with just `<word>`. \
+         GLOBAL RULE that applies to EVERY file: the word you write MUST be prefixed \
+         with `RS-`. So the line `write here: alpha` must become exactly `RS-alpha`. \
+         Do all {n} files before you finish.",
+        n - 1
+    );
+
+    // Generous, shared across the whole task (one budget, not per-file):
+    // a plan + N x (Read + Update + bookkeeping) + occasional re-checks,
+    // matching tier4_planned's cap shape.
+    let run = run_planned_task(&server.base_url, &task, dir.path(), 150).await;
+    report("tier6_planned", &run);
+
+    let (correct, total, failures) = tier6_score(dir.path(), n);
+    for f in &failures {
+        println!("  [tier6_planned] {f}");
+    }
+    println!(
+        "[metrics] score={correct}/{total} compactions={} turns={} elapsed_s={:.1} seed={}",
+        run.compactions,
+        run.turns_taken,
+        run.elapsed.as_secs_f32(),
+        std::env::var("DOCE_GEN_SEED").unwrap_or_else(|_| "entropy".into())
+    );
+
+    // Load-bearing: the tier only measures cross-compaction retention if the
+    // conversation ACTUALLY crossed the trim budget. If this is 0, the tier
+    // tested nothing -- raise TIER6_FILE_COUNT / TIER6_FILLER_LINES.
+    assert!(
+        run.compactions > 0,
+        "[tier6] compact() must fire for this tier to test anything; it fired 0 times -- \
+         raise TIER6_FILE_COUNT/TIER6_FILLER_LINES to build more context pressure"
+    );
+
+    // OBSERVED BASELINE on `main` (qwen3.5-4b-q4_k_m), 2026-07-16, seed=42,
+    // reproduced byte-identically twice: score=13/14, compactions=12,
+    // turns=57. The single miss is data_13 (the LAST file): the model
+    // retained the `RS-` rule on all 13 files it touched -- the plan machine's
+    // regenerated todo-tail carries it across all 12 compactions -- then
+    // declared the task done after data_12 and never processed data_13. So
+    // the headroom this tier exposes is NOT rule-forgetting (the plan machine
+    // defeats that) but end-of-list completion tracking under context
+    // pressure: a strictly harder target than tier4's 20/20 ceiling, and one
+    // an improvement to the harness could push to 14/14.
+    //
+    // Bar set to the observed floor (13) so the tier is GREEN now and a
+    // REGRESSION -- the rule surviving fewer files, or more files dropped --
+    // turns it red, while an improvement to 14/14 has room to show. See the
+    // report for the full per-file breakdown and the determinism proof.
+    const TIER6_PASS_BAR: usize = 13;
+    assert!(
+        correct >= TIER6_PASS_BAR,
+        "[tier6] score {correct}/{total} regressed below the observed baseline \
+         {TIER6_PASS_BAR}; failures: {failures:?}"
+    );
 }
