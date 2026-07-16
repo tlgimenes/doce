@@ -789,6 +789,17 @@ impl AgentBackend for PlanExecBackend<'_> {
                     plan_finish = Some(answer.clone());
                     answer
                 }
+                crate::agent::plan::PlanToolReply::ProposeComplete { kind, answer } => {
+                    // Task 2 STUB: always approve. Task 4 replaces this with
+                    // request_verdict(...) against an observer LLM.
+                    let approved = true;
+                    let missing = "";
+                    let (reply, finish) = self
+                        .plan_state
+                        .apply_completion_verdict(kind, answer, approved, missing);
+                    plan_finish = finish;
+                    reply
+                }
             }
         } else if call.name == "AskUserQuestion" {
             plan_finish = None;

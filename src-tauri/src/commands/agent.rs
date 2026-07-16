@@ -836,6 +836,19 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
                     let execution = ToolExecution::Finish(answer.clone());
                     (answer, execution)
                 }
+                crate::agent::plan::PlanToolReply::ProposeComplete { kind, answer } => {
+                    // Task 2 STUB: always approve. Task 4 replaces this with
+                    // request_verdict(...) against an observer LLM.
+                    let approved = true;
+                    let missing = "";
+                    let (reply, finish) = self
+                        .plan_state
+                        .apply_completion_verdict(kind, answer, approved, missing);
+                    let execution = finish
+                        .map(ToolExecution::Finish)
+                        .unwrap_or_else(|| ToolExecution::Result(reply.clone()));
+                    (reply, execution)
+                }
             };
             persist_plan_tool(
                 Some(self.app),
@@ -1063,6 +1076,19 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
                 crate::agent::plan::PlanToolReply::Finish(answer) => {
                     let execution = ToolExecution::Finish(answer.clone());
                     (answer, execution)
+                }
+                crate::agent::plan::PlanToolReply::ProposeComplete { kind, answer } => {
+                    // Task 2 STUB: always approve. Task 4 replaces this with
+                    // request_verdict(...) against an observer LLM.
+                    let approved = true;
+                    let missing = "";
+                    let (reply, finish) = self
+                        .plan_state
+                        .apply_completion_verdict(kind, answer, approved, missing);
+                    let execution = finish
+                        .map(ToolExecution::Finish)
+                        .unwrap_or_else(|| ToolExecution::Result(reply.clone()));
+                    (reply, execution)
                 }
             };
             persist_plan_tool(

@@ -44,16 +44,39 @@ pub struct Plan {
     pub steps: Vec<PlanStep>,
 }
 
+/// Which completion a model just claimed: one `TodoItem` (0-based index) or
+/// the whole `FinishTask`. The key an observer's (Task 4) or the always-
+/// approve stub's (this task) verdict is filed under in `reject_counts`, so
+/// a rejected `TodoItem(3)` and a rejected `FinishTask` accrue separately.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum CompletionKind {
+    TodoItem(usize),
+    FinishTask,
+}
+
 /// What handling `Todo`/`FinishTask` produced: an ordinary result string
-/// fed back into the loop, or the task's final answer (`FinishTask`) —
-/// hosts map `Finish` onto `agent::ToolExecution::Finish`, ending
-/// `run_loop`. Putting "done" behind a tool call is what lets `run_loop`
-/// run with grammar-required tool calls: free-text replies (which a small
-/// model degrades into after repetitive stretches) become unsamplable.
+/// fed back into the loop, the task's final answer (`Finish`, now
+/// unproduced by `handle_todo_tool` -- kept so no caller needs a partial
+/// match, and harmless since nothing constructs it anymore), or a
+/// completion the model claimed but that has not yet been committed
+/// (`ProposeComplete`). Hosts map `Finish` onto `agent::ToolExecution::
+/// Finish`, ending `run_loop`; `ProposeComplete` instead routes through
+/// `PlanState::apply_completion_verdict` before the host decides that.
+/// Putting "done" behind a tool call is what lets `run_loop` run with
+/// grammar-required tool calls: free-text replies (which a small model
+/// degrades into after repetitive stretches) become unsamplable.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlanToolReply {
     Reply(String),
     Finish(String),
+    /// A completion claim awaiting a verdict: `kind` identifies what was
+    /// claimed done, `answer` carries `FinishTask`'s answer text (`None`
+    /// for `TodoItem`, which has none). Every host runs this straight
+    /// through `apply_completion_verdict` before it reaches the model.
+    ProposeComplete {
+        kind: CompletionKind,
+        answer: Option<String>,
+    },
 }
 
 /// One real (file-mutating) tool call's outcome, recorded as it happens —
@@ -66,6 +89,13 @@ pub struct MutationRecord {
     pub target: Option<String>, // file path for Update/Write; None for Bash
     pub ok: bool,               // did the call succeed
 }
+
+/// How many times a single `CompletionKind` may be rejected before the
+/// model wins by default and the commit happens anyway (with an
+/// unresolved-concern note appended). Unreached while nothing ever rejects
+/// (this task's always-approve stub); becomes live once an observer (Task
+/// 4) can return `approved: false`.
+pub const OBSERVER_REJECT_CAP: u32 = 2;
 
 /// The single-mode harness's live state: the todo list, and whether
 /// `FinishTask` has already been bounced once this task. Owns the plan;
@@ -84,6 +114,11 @@ pub struct PlanState {
     /// this to verify a `FinishTask` completion claim against what
     /// actually happened, instead of trusting the claim on its own.
     pub mutation_log: Vec<MutationRecord>,
+    /// How many times each `CompletionKind` has been rejected so far this
+    /// task, keyed independently per kind (a rejected `TodoItem(3)` does
+    /// not count against `FinishTask`'s cap). Read by `reject_cap_reached`
+    /// to let the model win after `OBSERVER_REJECT_CAP` rejects.
+    reject_counts: std::collections::HashMap<CompletionKind, u32>,
 }
 
 fn build_single_mode_system_prompt(allow_task: bool) -> String {
@@ -172,6 +207,96 @@ impl PlanState {
             target,
             ok,
         });
+    }
+
+    /// The old `TodoDone` commit, extracted verbatim: flip `index`'s done
+    /// flag and return the exact reply string `TodoDone` used to return
+    /// directly. `index` must already be validated (`handle_todo_tool`'s
+    /// `TodoDone` arm checks it before ever proposing this kind) --
+    /// panics on an out-of-range index rather than silently doing nothing.
+    pub fn commit_todo_done(&mut self, index: usize) -> String {
+        let step = self
+            .plan
+            .steps
+            .get_mut(index)
+            .expect("commit_todo_done: index must be validated by the caller");
+        let already = step.done;
+        let desc = step.description.clone();
+        step.done = true;
+        let done = self.plan.steps.iter().filter(|s| s.done).count();
+        let total = self.plan.steps.len();
+        let note = if already { " (was already done)" } else { "" };
+        format!("Marked done{note}: {desc}. {done}/{total} done.")
+    }
+
+    /// Records one rejection of `kind` and returns the new count. Filed
+    /// independently per `CompletionKind`, so a rejected `TodoItem(3)`
+    /// never counts against `FinishTask`'s own cap.
+    pub fn note_reject(&mut self, kind: &CompletionKind) -> u32 {
+        let c = self.reject_counts.entry(kind.clone()).or_insert(0);
+        *c += 1;
+        *c
+    }
+
+    /// Whether `kind` has already been rejected `OBSERVER_REJECT_CAP`
+    /// times -- past this, the model wins by default rather than being
+    /// rejected forever.
+    pub fn reject_cap_reached(&self, kind: &CompletionKind) -> bool {
+        self.reject_counts.get(kind).copied().unwrap_or(0) >= OBSERVER_REJECT_CAP
+    }
+
+    /// Apply an adjudicated completion. `approved`/`missing` come from the
+    /// observer (Task 4) or the always-approve stub (Task 2). Returns
+    /// `(reply_text, finish)`: `finish = Some(answer)` ends the task,
+    /// `None` continues. This is the SINGLE place both backends apply a
+    /// verdict, so they cannot drift.
+    pub fn apply_completion_verdict(
+        &mut self,
+        kind: CompletionKind,
+        answer: Option<String>,
+        approved: bool,
+        missing: &str,
+    ) -> (String, Option<String>) {
+        if approved {
+            match kind {
+                CompletionKind::TodoItem(i) => (self.commit_todo_done(i), None),
+                CompletionKind::FinishTask => {
+                    let a = answer.unwrap_or_default();
+                    (a.clone(), Some(a))
+                }
+            }
+        } else {
+            let _n = self.note_reject(&kind);
+            if self.reject_cap_reached(&kind) {
+                // Model wins after the cap: commit anyway, note the unresolved concern.
+                match kind {
+                    CompletionKind::TodoItem(i) => {
+                        let base = self.commit_todo_done(i);
+                        (
+                            format!("{base} (closed despite unresolved concern: {missing})"),
+                            None,
+                        )
+                    }
+                    CompletionKind::FinishTask => {
+                        let a = answer.unwrap_or_default();
+                        (a.clone(), Some(a))
+                    }
+                }
+            } else {
+                // Reject: do NOT commit. (These strings are UNREACHED in Task 2 because
+                // the stub always approves; they become live in Task 4.)
+                match kind {
+                    CompletionKind::TodoItem(_) => (
+                        format!("Not done: {missing}. Do the work, then mark it done again."),
+                        None,
+                    ),
+                    CompletionKind::FinishTask => (
+                        format!("Not finished: {missing}. Keep working, then FinishTask again."),
+                        None,
+                    ),
+                }
+            }
+        }
     }
 
     /// The single-mode grammar enum: the full set, no per-state swapping —
@@ -268,9 +393,13 @@ Work the first undone item; add new items with Todo, mark one done with TodoDone
                 )))
             }
             "TodoDone" => {
-                // The ONLY path to completion: flip exactly ONE item's done
-                // flag by 0-based index. A bad/absent index names the valid
-                // undone items so the model can self-correct.
+                // The ONLY path to completion: propose flipping exactly ONE
+                // item's done flag by 0-based index. A bad/absent index
+                // names the valid undone items so the model can
+                // self-correct. A valid index does NOT commit here anymore
+                // -- it proposes; `apply_completion_verdict` (via the
+                // always-approve stub in this task, an observer from Task
+                // 4 on) decides whether `commit_todo_done` actually runs.
                 let Some(index) = call
                     .arguments
                     .get("index")
@@ -281,20 +410,15 @@ Work the first undone item; add new items with Todo, mark one done with TodoDone
                         self.todo_done_error("TodoDone needs an integer index (0-based)."),
                     ));
                 };
-                let Some(step) = self.plan.steps.get_mut(index) else {
+                if self.plan.steps.get(index).is_none() {
                     return Some(PlanToolReply::Reply(
                         self.todo_done_error(&format!("No todo at index {index}.")),
                     ));
-                };
-                let already = step.done;
-                let desc = step.description.clone();
-                step.done = true;
-                let done = self.plan.steps.iter().filter(|s| s.done).count();
-                let total = self.plan.steps.len();
-                let note = if already { " (was already done)" } else { "" };
-                Some(PlanToolReply::Reply(format!(
-                    "Marked done{note}: {desc}. {done}/{total} done."
-                )))
+                }
+                Some(PlanToolReply::ProposeComplete {
+                    kind: CompletionKind::TodoItem(index),
+                    answer: None,
+                })
             }
             "FinishTask" => {
                 let answer = call
@@ -334,7 +458,13 @@ Work the first undone item; add new items with Todo, mark one done with TodoDone
                         listed.join("\n")
                     )));
                 }
-                Some(PlanToolReply::Finish(answer))
+                // Clean list (or the honored second attempt): propose
+                // rather than commit -- `apply_completion_verdict` decides
+                // whether this actually ends the task.
+                Some(PlanToolReply::ProposeComplete {
+                    kind: CompletionKind::FinishTask,
+                    answer: Some(answer),
+                })
             }
             _ => None,
         }
@@ -477,10 +607,15 @@ mod single_mode_tests {
     fn append_merge_never_removes_reorders_relabels_or_undones_existing_items() {
         let mut state = PlanState::default();
         todo(&mut state, &["fix a", "fix b", "fix c"]);
-        // Complete the middle item via the only completion path.
-        state
+        // Complete the middle item via the only completion path: propose,
+        // then commit (the always-approve stub in this task).
+        let PlanToolReply::ProposeComplete { kind, answer } = state
             .handle_todo_tool(&call("TodoDone", serde_json::json!({"index": 1})))
-            .unwrap();
+            .unwrap()
+        else {
+            panic!("valid TodoDone index must propose")
+        };
+        state.apply_completion_verdict(kind, answer, true, "");
         let before = state.plan.steps.clone();
 
         // A second Todo call that tries to (a) drop items, (b) reorder them,
@@ -534,16 +669,136 @@ mod single_mode_tests {
         );
     }
 
+    /// Convenience: propose `TodoDone {index}` and immediately commit it via
+    /// `apply_completion_verdict` with an approving verdict -- the
+    /// always-approve stub's shape, used throughout these tests wherever
+    /// the old direct-flip `TodoDone` call used to sit.
+    fn todo_done_committed(state: &mut PlanState, index: usize) -> String {
+        let PlanToolReply::ProposeComplete { kind, answer } = state
+            .handle_todo_tool(&call("TodoDone", serde_json::json!({"index": index})))
+            .unwrap()
+        else {
+            panic!("a valid TodoDone index must propose, not reply directly")
+        };
+        let (text, finish) = state.apply_completion_verdict(kind, answer, true, "");
+        assert!(
+            finish.is_none(),
+            "a TodoItem verdict never finishes the task"
+        );
+        text
+    }
+
+    #[test]
+    fn todo_done_now_proposes_instead_of_committing() {
+        let mut state = PlanState::default();
+        todo(&mut state, &["a", "b"]);
+        let reply = state
+            .handle_todo_tool(&call("TodoDone", serde_json::json!({"index": 0})))
+            .unwrap();
+        assert_eq!(
+            reply,
+            PlanToolReply::ProposeComplete {
+                kind: CompletionKind::TodoItem(0),
+                answer: None,
+            }
+        );
+        // A valid index only proposes -- the done flag is NOT yet set.
+        assert_eq!(state.plan.steps[0].done, false);
+    }
+
+    #[test]
+    fn commit_todo_done_flips_and_returns_exact_reply() {
+        let mut state = PlanState::default();
+        todo(&mut state, &["a", "b"]);
+        let text = state.commit_todo_done(0);
+        assert!(text.contains("Marked done"), "{text}");
+        assert!(text.contains("1/2 done"), "{text}");
+        assert!(state.plan.steps[0].done);
+    }
+
+    #[test]
+    fn apply_verdict_approved_todo_is_byte_identical_to_old_commit() {
+        let mut direct = PlanState::default();
+        todo(&mut direct, &["x", "y"]);
+        let direct_reply = direct.commit_todo_done(0);
+
+        let mut via_verdict = PlanState::default();
+        todo(&mut via_verdict, &["x", "y"]);
+        let (verdict_reply, finish) =
+            via_verdict.apply_completion_verdict(CompletionKind::TodoItem(0), None, true, "");
+        assert!(finish.is_none());
+        assert_eq!(
+            verdict_reply, direct_reply,
+            "the approved path must be byte-identical to the old direct commit"
+        );
+    }
+
+    #[test]
+    fn apply_verdict_rejected_todo_does_not_commit_under_cap() {
+        let mut state = PlanState::default();
+        todo(&mut state, &["a"]);
+        let (text, finish) = state.apply_completion_verdict(
+            CompletionKind::TodoItem(0),
+            None,
+            false,
+            "tests still fail",
+        );
+        assert!(finish.is_none());
+        assert!(text.starts_with("Not done"), "{text}");
+        assert_eq!(state.plan.steps[0].done, false, "a reject must not commit");
+    }
+
+    #[test]
+    fn reject_cap_lets_the_model_win_after_two_rejects() {
+        let mut state = PlanState::default();
+        todo(&mut state, &["a"]);
+        let kind = CompletionKind::TodoItem(0);
+        state.note_reject(&kind);
+        state.note_reject(&kind);
+        assert!(state.reject_cap_reached(&kind));
+        let (text, finish) =
+            state.apply_completion_verdict(kind, None, false, "still missing something");
+        assert!(finish.is_none());
+        assert!(text.contains("closed despite unresolved concern"), "{text}");
+        assert!(
+            state.plan.steps[0].done,
+            "past the cap the model wins and the item commits"
+        );
+    }
+
+    #[test]
+    fn finish_task_still_bounces_undone_before_proposing() {
+        let mut state = PlanState::default();
+        todo(&mut state, &["fix a"]);
+        let reply = state
+            .handle_todo_tool(&call("FinishTask", serde_json::json!({"answer": "done!"})))
+            .unwrap();
+        let PlanToolReply::Reply(text) = reply else {
+            panic!("undone todos must still bounce, not propose")
+        };
+        assert!(text.contains("still undone"), "{text}");
+    }
+
+    #[test]
+    fn finish_task_clean_proposes_finish() {
+        let mut state = PlanState::default();
+        let reply = state
+            .handle_todo_tool(&call("FinishTask", serde_json::json!({"answer": "42"})))
+            .unwrap();
+        assert_eq!(
+            reply,
+            PlanToolReply::ProposeComplete {
+                kind: CompletionKind::FinishTask,
+                answer: Some("42".to_string()),
+            }
+        );
+    }
+
     #[test]
     fn todo_done_flips_exactly_one_item() {
         let mut state = PlanState::default();
         todo(&mut state, &["a", "b", "c"]);
-        let PlanToolReply::Reply(text) = state
-            .handle_todo_tool(&call("TodoDone", serde_json::json!({"index": 1})))
-            .unwrap()
-        else {
-            panic!()
-        };
+        let text = todo_done_committed(&mut state, 1);
         assert!(text.contains("Marked done"), "{text}");
         assert_eq!(
             state.plan.steps.iter().map(|s| s.done).collect::<Vec<_>>(),
@@ -551,12 +806,7 @@ mod single_mode_tests {
             "exactly the addressed item flips"
         );
         // Marking an already-done item is a harmless no-op that stays done.
-        let PlanToolReply::Reply(text) = state
-            .handle_todo_tool(&call("TodoDone", serde_json::json!({"index": 1})))
-            .unwrap()
-        else {
-            panic!()
-        };
+        let text = todo_done_committed(&mut state, 1);
         assert!(text.contains("already done"), "{text}");
         assert!(state.plan.steps[1].done);
     }
@@ -565,9 +815,7 @@ mod single_mode_tests {
     fn todo_done_with_a_bad_index_names_the_valid_undone_items() {
         let mut state = PlanState::default();
         todo(&mut state, &["write data_1", "write data_2"]);
-        state
-            .handle_todo_tool(&call("TodoDone", serde_json::json!({"index": 0})))
-            .unwrap();
+        todo_done_committed(&mut state, 0);
         // Out-of-range index: helpful error naming the remaining undone item
         // with its index, and NO completion happens.
         let PlanToolReply::Reply(text) = state
@@ -617,9 +865,7 @@ mod single_mode_tests {
             if i == 13 {
                 continue;
             }
-            state
-                .handle_todo_tool(&call("TodoDone", serde_json::json!({"index": i})))
-                .unwrap();
+            todo_done_committed(&mut state, i);
         }
         // Trick 1: re-Todo the whole list with done flags -> ignored.
         let all_done: Vec<_> = texts
@@ -679,11 +925,17 @@ mod single_mode_tests {
             !text.contains("no longer apply"),
             "the escape-hatch clause must be gone: {text}"
         );
-        // Second attempt is honored — a stuck task can still end.
+        // Second attempt is honored — a stuck task can still propose finishing.
         let second = state
             .handle_todo_tool(&call("FinishTask", serde_json::json!({"answer": "done!"})))
             .unwrap();
-        assert_eq!(second, PlanToolReply::Finish("done!".to_string()));
+        assert_eq!(
+            second,
+            PlanToolReply::ProposeComplete {
+                kind: CompletionKind::FinishTask,
+                answer: Some("done!".to_string()),
+            }
+        );
     }
 
     #[test]
@@ -710,7 +962,21 @@ mod single_mode_tests {
         let reply = state
             .handle_todo_tool(&call("FinishTask", serde_json::json!({"answer": "42"})))
             .unwrap();
-        assert_eq!(reply, PlanToolReply::Finish("42".to_string()));
+        assert_eq!(
+            reply,
+            PlanToolReply::ProposeComplete {
+                kind: CompletionKind::FinishTask,
+                answer: Some("42".to_string()),
+            }
+        );
+        // Approving the proposal ends the task exactly as the old direct
+        // `Finish` reply did.
+        let PlanToolReply::ProposeComplete { kind, answer } = reply else {
+            unreachable!()
+        };
+        let (text, finish) = state.apply_completion_verdict(kind, answer, true, "");
+        assert_eq!(finish, Some("42".to_string()));
+        assert_eq!(text, "42");
         // Ordinary tools pass through to dispatch untouched.
         assert!(state
             .handle_todo_tool(&call("Read", serde_json::json!({"file_path": "a"})))
