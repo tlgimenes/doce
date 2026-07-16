@@ -56,6 +56,17 @@ pub enum PlanToolReply {
     Finish(String),
 }
 
+/// One real (file-mutating) tool call's outcome, recorded as it happens —
+/// the raw evidence a later observer LLM checks a `FinishTask` claim
+/// against, rather than trusting the model's own account of what it did.
+/// Append-only: nothing in this task ever clears or rewrites an entry.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MutationRecord {
+    pub tool: String,           // "Update", "Write", "Bash"
+    pub target: Option<String>, // file path for Update/Write; None for Bash
+    pub ok: bool,               // did the call succeed
+}
+
 /// The single-mode harness's live state: the todo list, and whether
 /// `FinishTask` has already been bounced once this task. Owns the plan;
 /// hosts own everything else (inference, persistence, events, real tool
@@ -67,6 +78,12 @@ pub struct PlanState {
     /// bounced once this task (`handle_todo_tool`) — the second attempt
     /// is honored.
     finish_bounced: bool,
+    /// Append-only evidence log of every file-mutating real tool call
+    /// (`Update`/`Write`/`Bash`) this task's backend has executed —
+    /// `Read`/`Grep`/`Glob` never touch it. A later task's observer reads
+    /// this to verify a `FinishTask` completion claim against what
+    /// actually happened, instead of trusting the claim on its own.
+    pub mutation_log: Vec<MutationRecord>,
 }
 
 fn build_single_mode_system_prompt(allow_task: bool) -> String {
@@ -145,6 +162,18 @@ const SINGLE_MODE_TOOLS_SUB: &[&str] = &[
 ];
 
 impl PlanState {
+    /// Appends one entry to the evidence log — never clears, never
+    /// rewrites. Hosts call this right after a real (non-harness) tool has
+    /// executed and its result string is known; see `mutation_log`'s doc
+    /// comment for what belongs here.
+    pub fn record_mutation(&mut self, tool: &str, target: Option<String>, ok: bool) {
+        self.mutation_log.push(MutationRecord {
+            tool: tool.to_string(),
+            target,
+            ok,
+        });
+    }
+
     /// The single-mode grammar enum: the full set, no per-state swapping —
     /// state legality was the two-mode machine's concern.
     pub fn single_mode_tool_names(&self, allow_task: bool) -> &'static [&'static str] {
@@ -724,5 +753,23 @@ mod single_mode_tests {
         // host flavors (no state gating of the tool SET).
         assert!(state.single_mode_tool_names(true).contains(&"TodoDone"));
         assert!(state.single_mode_tool_names(false).contains(&"TodoDone"));
+    }
+
+    #[test]
+    fn record_mutation_appends_evidence_and_never_clears() {
+        let mut st = PlanState::default();
+        st.record_mutation("Update", Some("/x/bug_04.txt".into()), false);
+        st.record_mutation("Update", Some("/x/bug_04.txt".into()), true);
+        st.record_mutation("Bash", None, true);
+        assert_eq!(st.mutation_log.len(), 3);
+        assert_eq!(
+            st.mutation_log[0],
+            MutationRecord {
+                tool: "Update".into(),
+                target: Some("/x/bug_04.txt".into()),
+                ok: false
+            }
+        );
+        assert!(st.mutation_log[2].target.is_none());
     }
 }

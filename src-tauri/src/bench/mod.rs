@@ -858,7 +858,7 @@ impl AgentBackend for PlanExecBackend<'_> {
             plan_finish = None;
             let outcome = dispatch::execute(&call, Some(self.cwd));
             let outcome = context::annotate_with_token_count(outcome);
-            stage_general_tool_result(
+            let result = stage_general_tool_result(
                 &self.payload_dir,
                 &self.conversation_id,
                 &tool_call_id,
@@ -866,7 +866,17 @@ impl AgentBackend for PlanExecBackend<'_> {
                 outcome,
                 self.settings.tool_output_offload_tokens,
                 |text| crate::inference::token_estimate(text) as usize,
-            )
+            );
+            // Evidence log (observer-verified completion): mirrors
+            // production's `RealBackend::execute_tool` exactly, through the
+            // same shared classifier -- see `mutation_log_entry`'s doc
+            // comment for why `Update`/`Bash` are the only tools logged.
+            if let Some((target, ok)) =
+                crate::commands::agent::mutation_log_entry(&call.name, &call.arguments, &result)
+            {
+                self.plan_state.record_mutation(&call.name, target, ok);
+            }
+            result
         };
 
         let args_preview: String = call.arguments.to_string().chars().take(200).collect();

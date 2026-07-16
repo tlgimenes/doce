@@ -855,22 +855,63 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
             );
             return execution;
         }
-        ToolExecution::Result(
-            execute_top_level_tool(
-                tool_call_id,
-                call,
-                self.conn,
-                self.conversation_id,
-                self.cwd,
-                self.app,
-                self.pending,
-                &self.base_url,
-                &self.cancel,
-                self.observed_usage,
-            )
-            .await,
+        // Evidence log (observer-verified completion): `call` is about to
+        // move into `execute_top_level_tool`, so the name/arguments a
+        // mutating call needs for the log entry are captured first. `Task`
+        // and `AskUserQuestion` also flow through here but aren't real
+        // tools -- `mutation_log_entry` returns `None` for both, same as
+        // for `Read`/`Grep`/`Glob`.
+        let tool_name = call.name.clone();
+        let arguments = call.arguments.clone();
+        let result = execute_top_level_tool(
+            tool_call_id,
+            call,
+            self.conn,
+            self.conversation_id,
+            self.cwd,
+            self.app,
+            self.pending,
+            &self.base_url,
+            &self.cancel,
+            self.observed_usage,
         )
+        .await;
+        if let Some((target, ok)) = mutation_log_entry(&tool_name, &arguments, &result) {
+            self.plan_state.record_mutation(&tool_name, target, ok);
+        }
+        ToolExecution::Result(result)
     }
+}
+
+/// Shared evidence-log classification for `PlanState::record_mutation`,
+/// used by BOTH the production backend (`RealBackend::execute_tool` above)
+/// and the benchmark backend (`bench::PlanExecBackend::execute_tool`) so
+/// the two can't quietly drift on what counts as a mutation or a success.
+/// Only `Update` (the single-mode harness's create/overwrite/edit tool)
+/// and `Bash` mutate anything an observer would need to verify --
+/// `Read`/`Grep`/`Glob`/`Task`/`AskUserQuestion` return `None` and are
+/// never logged. `target` is the `file_path` argument (`Update` only;
+/// `Bash` has no file target). `ok` mirrors this file's existing
+/// success/error convention (`persist_plan_tool`, line ~498): a
+/// `"Error"`-prefixed result string is a failure, everything else is a
+/// success.
+pub(crate) fn mutation_log_entry(
+    tool_name: &str,
+    arguments: &serde_json::Value,
+    result: &str,
+) -> Option<(Option<String>, bool)> {
+    if tool_name != "Update" && tool_name != "Bash" {
+        return None;
+    }
+    let target = if tool_name == "Bash" {
+        None
+    } else {
+        arguments
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    };
+    Some((target, !result.starts_with("Error")))
 }
 
 /// `AgentBackend` for the `Task`-tool's delegated subagent loop
