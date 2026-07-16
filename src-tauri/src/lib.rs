@@ -1,4 +1,6 @@
 pub mod agent;
+#[cfg(feature = "bench")]
+pub mod bench;
 pub mod commands;
 pub mod context;
 pub mod downloader;

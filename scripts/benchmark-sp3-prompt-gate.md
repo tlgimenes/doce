@@ -69,7 +69,7 @@ git checkout sp3-prompt-engineering
 cd src-tauri
 QWEN35="$HOME/Library/Application Support/app.doce.desktop/models/qwen3.5-4b-q4_k_m.gguf"
 for s in 11 22 33; do
-  DOCE_GEN_SEED=$s DOCE_BENCH_MODEL="$QWEN35" cargo test --release --test agent_tasks -- \
+  DOCE_GEN_SEED=$s DOCE_BENCH_MODEL="$QWEN35" cargo test --release --features bench --test agent_tasks -- \
     --ignored --test-threads=1 --nocapture tier4_planned 2>&1 | grep '\[metrics\]'
 done
 ```
@@ -83,7 +83,7 @@ git checkout main
 cd src-tauri
 QWEN35="$HOME/Library/Application Support/app.doce.desktop/models/qwen3.5-4b-q4_k_m.gguf"
 for s in 11 22 33; do
-  DOCE_GEN_SEED=$s DOCE_BENCH_MODEL="$QWEN35" cargo test --release --test agent_tasks -- \
+  DOCE_GEN_SEED=$s DOCE_BENCH_MODEL="$QWEN35" cargo test --release --features bench --test agent_tasks -- \
     --ignored --test-threads=1 --nocapture tier4_planned 2>&1 | grep '\[metrics\]'
 done
 ```

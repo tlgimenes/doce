@@ -35,7 +35,7 @@ From repo root, on the current branch:
 cd src-tauri
 QWEN35="$HOME/Library/Application Support/app.doce.desktop/models/qwen3.5-4b-q4_k_m.gguf"
 # Warm, scored run of the whole ladder. --release matters (speed). Capture the log.
-DOCE_BENCH_MODEL="$QWEN35" cargo test --release --test agent_tasks -- \
+DOCE_BENCH_MODEL="$QWEN35" cargo test --release --features bench --test agent_tasks -- \
   --ignored --test-threads=1 --nocapture 2>&1 | tee /tmp/cutover-qwen35.log
 ```
 Sampling is stochastic (temp=0.6), so run the **3-seed protocol**: pin the sampler via `DOCE_GEN_SEED` (now wired
@@ -43,7 +43,7 @@ into every request — the `[metrics] ... seed=` line is truthful) and take the 
 old gate's protocol, restored:
 ```bash
 for s in 11 22 33; do
-  DOCE_GEN_SEED=$s DOCE_BENCH_MODEL="$QWEN35" cargo test --release --test agent_tasks -- \
+  DOCE_GEN_SEED=$s DOCE_BENCH_MODEL="$QWEN35" cargo test --release --features bench --test agent_tasks -- \
     --ignored --test-threads=1 --nocapture tier4_planned 2>&1 | grep '\[metrics\]'
 done
 ```
@@ -60,7 +60,7 @@ git worktree add /tmp/doce-precutover 14392af
 cd /tmp/doce-precutover/src-tauri
 QWEN34="$HOME/Library/Application Support/app.doce.desktop/models/qwen3-4b-thinking-2507-q4_k_m.gguf"
 for s in 11 22 33; do
-  DOCE_GEN_SEED=$s DOCE_BENCH_MODEL="$QWEN34" cargo test --release --test agent_tasks -- \
+  DOCE_GEN_SEED=$s DOCE_BENCH_MODEL="$QWEN34" cargo test --release --features bench --test agent_tasks -- \
     --ignored --test-threads=1 --nocapture tier4_planned 2>&1 | grep '\[metrics\]'
 done
 # cleanup when done:
