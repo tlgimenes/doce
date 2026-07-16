@@ -68,8 +68,9 @@ pub fn tool_choice_for(mode: ToolCallMode) -> Option<&'static str> {
 /// structured `serde_json::json!` schemas (never parsed from the prompt
 /// text at runtime) — the authority for Read/Update/Bash/Grep/Glob's
 /// argument names and required-ness is `agent::dispatch`'s
-/// `REQUIRED_STRING_ARGS`/`LEGAL_TOOL_ARGS`; Todo/Task/AskUserQuestion/
-/// FinishTask mirror the schemas embedded in `agent::plan`'s tool lines.
+/// `REQUIRED_STRING_ARGS`/`LEGAL_TOOL_ARGS`; Todo/TodoDone/Task/
+/// AskUserQuestion/FinishTask mirror the shapes `agent::plan::handle_todo_tool`
+/// parses.
 /// Unknown names are skipped, not a panic — a future tool-set drift should
 /// degrade gracefully here, the same way `dispatch::execute` already
 /// tolerates unrecognized names.
@@ -140,7 +141,7 @@ fn tool_def(name: &str) -> Option<Value> {
             }),
         ),
         "Todo" => (
-            "Replace your todo list. Keep one for any multi-step task: one item per file or unit of work, done: true as you finish each. Calling this only records progress -- keep working afterwards.",
+            "Create or grow your todo list: one item per file or unit of work. Items are added undone; this tool only ADDS, it never removes, reorders, relabels, or completes an item. Re-listing existing items is a no-op. To mark work finished, call TodoDone. Calling this only records the plan -- keep working afterwards.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -149,14 +150,23 @@ fn tool_def(name: &str) -> Option<Value> {
                         "items": {
                             "type": "object",
                             "properties": {
-                                "text": {"type": "string"},
-                                "done": {"type": "boolean"}
+                                "text": {"type": "string"}
                             },
-                            "required": ["text", "done"]
+                            "required": ["text"]
                         }
                     }
                 },
                 "required": ["items"]
+            }),
+        ),
+        "TodoDone" => (
+            "Mark ONE todo item done, by its 0-based index as shown in your current todos. This is the only way to complete an item. Only mark an item done after you have actually done its work.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "index": {"type": "integer"}
+                },
+                "required": ["index"]
             }),
         ),
         "Task" => (
