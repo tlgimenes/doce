@@ -46,10 +46,256 @@ mod common;
 
 use doce_lib::agent::{dispatch, run_loop, AgentBackend, AgentContext, AgentError};
 use doce_lib::context;
-use doce_lib::inference::ChatMessage;
+use doce_lib::inference::{ChatMessage, MessageContent};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
+
+// --- Reproducibility: keeping the PROMPT BYTES fixed across runs ---
+//
+// `DOCE_GEN_SEED` pins the SAMPLER, not the prompt. Identical code at the
+// same seed still swung 0/20 <-> 10/20 <-> 20/20 on tier 4, because two
+// run-to-run-random values were reaching the wire and changing the token
+// sequence the model conditioned on:
+//
+//   1. `tempfile::tempdir()` names its directory randomly (`.tmp6NgFCe`,
+//      `.tmp7Bl64C`, ...). That absolute path is in `messages[0]` ("You are
+//      currently working in the directory: ..." + the transcript pointer)
+//      and in every Read/Grep/Glob result and payload reference line.
+//      `ScratchDir` below replaces it with a name derived from the test.
+//   2. `run_loop` stamps each tool call with `uuid::Uuid::now_v7()`
+//      (timestamp + 74 random bits). It is serialized onto the wire TWICE
+//      per call -- `tool_calls[0].id` on the assistant message and
+//      `tool_call_id` on the tool message (`inference::http::
+//      to_openai_message`) -- and it also names the payload file whose path
+//      rides in a `-> Read "..."` reference line. `StableToolCallIds` below
+//      maps it to a deterministic stand-in.
+//
+// Both stand-ins are deliberately the SAME LENGTH and SHAPE as what they
+// replace (a 10-char `.tmpXXXXXX` sibling under `env::temp_dir()`; a 36-char
+// v7-shaped UUID), so the benchmark's token counts -- and therefore its
+// DIFFICULTY, where the whole point of tier 4 is context pressure -- are
+// unchanged. This removes noise; it does not make the task easier.
+
+/// A deterministic stand-in for `tempfile::tempdir()`: same parent
+/// (`env::temp_dir()`) and same `.tmp` + 6 chars leaf shape, but the six
+/// chars are a fixed per-test TAG instead of six random ones, so the
+/// absolute path that ends up in the prompt is byte-identical run to run.
+///
+/// WIPED AND RECREATED on construction, never reused in place: every tier
+/// asserts on file CONTENT (tier 4 grades all 20 files, tier 5 demands the
+/// rest of the file be byte-identical), so a leftover from a previous run
+/// inheriting into this one would silently corrupt the score -- a fixed path
+/// is only safe BECAUSE of this wipe. Also removed on `Drop`, matching
+/// `TempDir`'s own cleanup so nothing else about a run's footprint changes.
+///
+/// Tags must be unique per directory (see the call sites); they are what
+/// keeps tiers from colliding. Uniqueness -- not `--test-threads=1` -- is
+/// what makes that safe, so this does not depend on the real-model suite's
+/// single-threading. Two CONCURRENT `cargo test` invocations of the same
+/// tier on one machine would collide; don't do that.
+struct ScratchDir {
+    path: PathBuf,
+}
+
+impl ScratchDir {
+    fn new(tag: &str) -> ScratchDir {
+        assert_eq!(
+            tag.len(),
+            6,
+            "scratch tags must be exactly 6 chars so the path length matches tempfile's own \
+             `.tmp` + 6 -- a shorter or longer path would change the benchmark's token counts"
+        );
+        ScratchDir::wiped(std::env::temp_dir().join(format!(".tmp{tag}")))
+    }
+
+    /// The wipe every scratch dir gets, and the single reason a FIXED path is
+    /// safe here at all. A failure to remove is fatal, not ignored: silently
+    /// running a content-graded tier against last run's files is exactly the
+    /// corruption this whole change exists to prevent.
+    fn wiped(path: PathBuf) -> ScratchDir {
+        // Unconditional -- an `if exists()` guard is a wipe that can be skipped.
+        if let Err(e) = std::fs::remove_dir_all(&path) {
+            assert!(
+                e.kind() == std::io::ErrorKind::NotFound,
+                "scratch dir {} must be wiped before a run, but could not be removed: {e}",
+                path.display()
+            );
+        }
+        std::fs::create_dir_all(&path).unwrap_or_else(|e| {
+            panic!("scratch dir {} should create: {e}", path.display());
+        });
+        ScratchDir { path }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+/// The payload/transcript root for a run rooted at `cwd`: the same
+/// `.tmpTAG` -> `.payTAG` rename under `env::temp_dir()`, so it is a
+/// deterministic SIBLING of `cwd` (never nested inside it -- see
+/// `FlatBackend::payload_dir`'s doc comment), unique per tier because `cwd`
+/// is, and the same 10-char leaf length `tempdir()` produced.
+fn payload_scratch(cwd: &Path) -> ScratchDir {
+    let leaf = cwd
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default()
+        .to_string();
+    let tag = leaf.strip_prefix(".tmp").unwrap_or_else(|| {
+        panic!("a benchmark cwd must be a `ScratchDir` (`.tmpTAG`), got {leaf:?}")
+    });
+    // `.pay` + the same 6-char tag: same length as `.tmp` + 6.
+    ScratchDir::wiped(std::env::temp_dir().join(format!(".pay{tag}")))
+}
+
+/// FNV-1a. Hand-rolled rather than `DefaultHasher`, whose output std
+/// explicitly does not guarantee across releases -- a toolchain bump must not
+/// silently change this benchmark's prompt bytes.
+fn fnv1a_64(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in bytes {
+        hash ^= *b as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// A fixed 48-bit value standing in for the millisecond timestamp a real
+/// `Uuid::now_v7()` puts in its high bits. Real v7 ids minted within one
+/// benchmark run share that timestamp's leading digits and differ only in the
+/// tail; keeping the same shared-prefix/random-tail profile is what makes
+/// `stable_tool_call_id` tokenize like the id it replaces.
+const STABLE_ID_PSEUDO_TIMESTAMP_MS: u64 = 0x0198_f3a2_7b31;
+
+/// The `n`-th deterministic stand-in for `run_loop`'s
+/// `uuid::Uuid::now_v7().to_string()` -- a pure function of `n`, rendered in
+/// exactly the v7 layout (48-bit timestamp | version 7 | 12 random bits |
+/// variant | 62 random bits) and therefore exactly 36 chars, so the prompt
+/// carries the same number of bytes it always did.
+fn stable_tool_call_id(n: u64) -> String {
+    let rand_a = fnv1a_64(&n.to_le_bytes());
+    let rand_b = fnv1a_64(&(!n).to_le_bytes());
+    let mut v: u128 = (STABLE_ID_PSEUDO_TIMESTAMP_MS as u128) << 80;
+    v |= 0x7_u128 << 76; // version
+    v |= ((rand_a >> 52) as u128) << 64; // rand_a (12 bits)
+    v |= 0b10_u128 << 62; // variant
+    v |= (rand_b as u128) & ((1u128 << 62) - 1); // rand_b (62 bits)
+    let b = v.to_be_bytes();
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13],
+        b[14], b[15]
+    )
+}
+
+/// Prints a digest of the EXACT bytes a turn is about to send. Diff two
+/// runs' digest streams and the first differing line is the turn where they
+/// diverged -- which is the whole diagnosis in one step: if turn 1 already
+/// differs, some input is still run-to-run random (the failure this suite
+/// spent its life mistaking for sampler noise); if the digests agree up to
+/// turn N and the OUTPUTS diverge there, the prompt is reproducible and the
+/// remaining variance is llama.cpp's (batching/threading/float
+/// non-associativity), which no amount of harness work can remove.
+///
+/// Deliberately unconditional: it is one short line per turn on a suite that
+/// already prints every tool call, and a reproducibility claim nobody can
+/// re-check from the log is worth very little.
+fn print_prompt_digest(label: &str, turn: u32, wire_json: &str) {
+    println!(
+        "  [prompt] {label} turn={turn} bytes={} fnv1a={:016x}",
+        wire_json.len(),
+        fnv1a_64(wire_json.as_bytes())
+    );
+}
+
+/// Maps `run_loop`'s random per-call tool-call ids onto `stable_tool_call_id`
+/// stand-ins, assigned in first-seen order and remembered for the rest of the
+/// run so a call and its result keep agreeing.
+///
+/// `run_loop` mints the id itself (`src/agent/mod.rs`) and this suite does not
+/// touch that file, so the substitution happens at the two places a backend
+/// owns: `execute_tool` (which names the payload file after the id, putting it
+/// in the reference line) and `generate` (which serializes the id onto the
+/// wire). `run_loop` pushes the `ToolUse` message and THEN calls
+/// `execute_tool`, so by the time any `generate` sees an id it is already
+/// mapped; `rewrite` assigns on demand anyway, in message order, so the
+/// mapping stays deterministic even for an id no `execute_tool` ever saw.
+///
+/// The ids are semantically opaque (they only pair a call with its result),
+/// so this changes nothing the model can act on -- it just stops 36 random
+/// characters per tool call from re-rolling the token stream every run.
+#[derive(Default)]
+struct StableToolCallIds {
+    assigned: std::collections::HashMap<String, String>,
+}
+
+impl StableToolCallIds {
+    fn stabilize(&mut self, real_id: &str) -> String {
+        if let Some(stable) = self.assigned.get(real_id) {
+            return stable.clone();
+        }
+        let stable = stable_tool_call_id(self.assigned.len() as u64);
+        self.assigned.insert(real_id.to_string(), stable.clone());
+        stable
+    }
+
+    /// Rewrites every tool-call id in `messages` in place, right before the
+    /// list is serialized for the server.
+    fn rewrite(&mut self, messages: &mut [ChatMessage]) {
+        for message in messages {
+            match &mut message.content {
+                MessageContent::ToolUse { id, .. } => {
+                    let real = std::mem::take(id);
+                    *id = self.stabilize(&real);
+                }
+                MessageContent::ToolResult { tool_use_id, .. } => {
+                    let real = std::mem::take(tool_use_id);
+                    *tool_use_id = self.stabilize(&real);
+                }
+                MessageContent::Text(_) => {}
+            }
+        }
+    }
+}
+
+/// Non-ignored guard on the id stand-in's two load-bearing properties: it is
+/// a pure function of its index (reproducibility), and it is exactly as long
+/// as the `Uuid::now_v7().to_string()` it replaces (unchanged difficulty).
+#[test]
+fn stable_tool_call_ids_are_deterministic_and_uuid_shaped() {
+    assert_eq!(stable_tool_call_id(0), stable_tool_call_id(0));
+    assert_ne!(stable_tool_call_id(0), stable_tool_call_id(1));
+    let id = stable_tool_call_id(7);
+    assert_eq!(id.len(), uuid::Uuid::now_v7().to_string().len());
+    assert_eq!(
+        id.split('-').map(str::len).collect::<Vec<_>>(),
+        vec![8, 4, 4, 4, 12]
+    );
+    assert!(id.starts_with("0198f3a2-7b31-7"), "v7-shaped: {id}");
+
+    let mut ids = StableToolCallIds::default();
+    let mut messages = vec![
+        ChatMessage::tool_use("real-a", "Read", serde_json::json!({})),
+        ChatMessage::tool_result("real-a", "Read", "ok"),
+    ];
+    ids.rewrite(&mut messages);
+    let (MessageContent::ToolUse { id, .. }, MessageContent::ToolResult { tool_use_id, .. }) =
+        (&messages[0].content, &messages[1].content)
+    else {
+        panic!("shapes preserved");
+    };
+    assert_eq!(id, tool_use_id, "a call and its result must stay paired");
+    assert_eq!(id, &stable_tool_call_id(0));
+}
 
 /// The flat baseline's available tool set, passed to `ChatRequest::build` on
 /// every `FlatBackend::generate` (Allow / `tool_choice:"auto"`). These are
@@ -309,6 +555,10 @@ struct FlatBackend<'a> {
     /// every `SubagentBackend` it spawns; the `conversation_id` key keeps
     /// each loop's observation its own.
     observed_usage: &'a context::LastObservedUsage,
+    /// See `StableToolCallIds` -- this backend's own map (a `Task`-spawned
+    /// subagent runs its own `run_loop` and therefore mints its own ids, so
+    /// it gets a fresh map rather than sharing the parent's).
+    stable_ids: StableToolCallIds,
 }
 
 impl AgentBackend for FlatBackend<'_> {
@@ -354,8 +604,16 @@ impl AgentBackend for FlatBackend<'_> {
         false
     }
 
-    async fn generate(&mut self, messages: Vec<ChatMessage>) -> doce_lib::agent::TurnOutcome {
+    async fn generate(&mut self, mut messages: Vec<ChatMessage>) -> doce_lib::agent::TurnOutcome {
         self.turns += 1;
+        // Reproducibility, not fidelity: swap `run_loop`'s random per-call
+        // uuids for their deterministic same-length stand-ins before anything
+        // reads this list, so the bytes on the wire are a pure function of
+        // the trajectory. Local to this turn's copy -- `run_loop`'s own list
+        // keeps the real ids, and since the stand-in is exactly as long,
+        // `measure`/`compact` (which see the real ids) count the same either
+        // way. See `StableToolCallIds`.
+        self.stable_ids.rewrite(&mut messages);
         // Flat baseline: `ToolCallMode::Allow` (`tool_choice:"auto"`) over the
         // flat tool set, so a no-tool-call turn is an ordinary plain-text
         // final answer (`requires_tool_call() == false`). The client renders
@@ -387,10 +645,11 @@ impl AgentBackend for FlatBackend<'_> {
         // truncation `AGENT_TURN_MAX_OUTPUT_TOKENS`'s doc records from real
         // runs. Same ceiling, same window, same `prompt_est` shape as
         // production -- no arithmetic of its own.
-        let prompt_est = doce_lib::inference::token_estimate(
-            &serde_json::to_string(&doce_lib::inference::http::to_openai_messages(&messages))
-                .unwrap_or_default(),
-        );
+        let wire_json =
+            serde_json::to_string(&doce_lib::inference::http::to_openai_messages(&messages))
+                .unwrap_or_default();
+        let prompt_est = doce_lib::inference::token_estimate(&wire_json);
+        print_prompt_digest("flat", self.turns, &wire_json);
         req.max_tokens = Some(doce_lib::context::limits::clamp_output_tokens(
             doce_lib::context::limits::AGENT_TURN_OUTPUT_CEILING,
             doce_lib::inference::CONTEXT_WINDOW_TOKENS,
@@ -424,6 +683,10 @@ impl AgentBackend for FlatBackend<'_> {
         tool_call_id: String,
         call: doce_lib::agent::ToolCall,
     ) -> doce_lib::agent::ToolExecution {
+        // The id names the payload file, whose absolute path rides into the
+        // prompt in a `-> Read "..."` reference line -- so it has to be the
+        // deterministic stand-in here too, not just on the wire.
+        let tool_call_id = self.stable_ids.stabilize(&tool_call_id);
         let outcome = dispatch::execute(&call, Some(self.cwd));
         let outcome = context::annotate_with_token_count(outcome);
         let result = stage_general_tool_result(
@@ -484,11 +747,13 @@ async fn run_flat_conversation(
     // path -- see `FlatBackend::measure`.
     let threshold = doce_lib::inference::CONTEXT_WINDOW_TOKENS
         .saturating_sub(doce_lib::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS);
-    // 2026-07-09 payload-files design: a fresh tempdir SIBLING to `cwd`
+    // 2026-07-09 payload-files design: a fresh scratch dir SIBLING to `cwd`
     // (never nested inside it -- see `FlatBackend::payload_dir`'s doc
     // comment), kept alive for this whole conversation by staying a local
-    // here.
-    let payload_root = tempdir().expect("payload tempdir should create");
+    // here. Deterministically named off `cwd` (see `payload_scratch`): its
+    // path reaches the prompt through every payload reference line, so a
+    // random one re-rolled the prompt bytes every run.
+    let payload_root = payload_scratch(cwd);
     // FR-2: one map for the whole conversation (and every subagent it
     // spawns), mirroring production's single `.manage()`d `LastObservedUsage`
     // -- kept alive by staying a local here, as the backend only borrows it.
@@ -503,6 +768,7 @@ async fn run_flat_conversation(
         conversation_id: "flat-top".to_string(),
         settings: default_context_settings(),
         observed_usage: &observed_usage,
+        stable_ids: StableToolCallIds::default(),
     };
 
     let mut history = vec![ChatMessage::system(FLAT_BASELINE_SYSTEM_PROMPT)];
@@ -574,6 +840,8 @@ struct PlanExecBackend<'a> {
     /// `Task`-spawned subagent backend below, exactly as production shares
     /// one across `RealBackend` and every `SubagentBackend`.
     observed_usage: &'a context::LastObservedUsage,
+    /// See `FlatBackend::stable_ids`.
+    stable_ids: StableToolCallIds,
 }
 
 impl AgentBackend for PlanExecBackend<'_> {
@@ -633,6 +901,11 @@ impl AgentBackend for PlanExecBackend<'_> {
         // canonical list, so `at_len` must be the pre-tail canonical count.
         // Exactly production's `RealBackend::generate`; see that impl for
         // why the resulting base slightly over-covers in the safe direction.
+        // Reproducibility, not fidelity -- see `FlatBackend::generate`'s
+        // matching call and `StableToolCallIds`. Before `at_len`, though the
+        // stand-in is length-preserving so neither the count nor any token
+        // estimate moves.
+        self.stable_ids.rewrite(&mut messages);
         let at_len = doce_lib::inference::http::to_openai_messages(&messages).len();
         let tail = self.plan_state.todo_tail();
         if !tail.is_empty() {
@@ -668,10 +941,11 @@ impl AgentBackend for PlanExecBackend<'_> {
         // nearly 4x the real budget, which is why a prompt growth that
         // starves production's output toward the `MIN_OUTPUT_TOKENS` floor
         // could not turn this gate red.
-        let prompt_est = doce_lib::inference::token_estimate(
-            &serde_json::to_string(&doce_lib::inference::http::to_openai_messages(&messages))
-                .unwrap_or_default(),
-        );
+        let wire_json =
+            serde_json::to_string(&doce_lib::inference::http::to_openai_messages(&messages))
+                .unwrap_or_default();
+        let prompt_est = doce_lib::inference::token_estimate(&wire_json);
+        print_prompt_digest("planned", self.turns, &wire_json);
         req.max_tokens = Some(doce_lib::context::limits::clamp_output_tokens(
             doce_lib::context::limits::AGENT_TURN_OUTPUT_CEILING,
             doce_lib::inference::CONTEXT_WINDOW_TOKENS,
@@ -702,6 +976,10 @@ impl AgentBackend for PlanExecBackend<'_> {
         tool_call_id: String,
         call: doce_lib::agent::ToolCall,
     ) -> doce_lib::agent::ToolExecution {
+        // See `FlatBackend::execute_tool` -- the id names the payload file
+        // and namespaces a `Task` subagent's conversation, both of which
+        // reach the prompt.
+        let tool_call_id = self.stable_ids.stabilize(&tool_call_id);
         let plan_finish: Option<String>;
         let result = if let Some(outcome) = self.plan_state.handle_todo_tool(&call) {
             match outcome {
@@ -767,6 +1045,9 @@ impl AgentBackend for PlanExecBackend<'_> {
                 // hands its single `LastObservedUsage` down from
                 // `RealBackend` to each `SubagentBackend` it spawns.
                 observed_usage: self.observed_usage,
+                // NOT shared with the parent: this subagent's `run_loop`
+                // mints its own ids, and its own map keeps them stable.
+                stable_ids: StableToolCallIds::default(),
             };
             let sub_result = run_loop(&sub_context, sub_messages, &mut sub_backend).await;
             self.turns += sub_backend.turns;
@@ -847,12 +1128,15 @@ async fn run_planned_conversation(
         doce_lib::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS
             + doce_lib::context::limits::STATE_TAIL_RESERVE_TOKENS,
     );
-    // 2026-07-09 payload-files design: a fresh tempdir SIBLING to `cwd`
+    // 2026-07-09 payload-files design: a fresh scratch dir SIBLING to `cwd`
     // (never nested inside it -- see `FlatBackend::payload_dir`'s doc
     // comment), kept alive for this whole conversation by staying a local
     // here. Also hosts the transcript file, outside the workspace like
-    // production's app-data dir.
-    let payload_root = tempdir().expect("payload tempdir should create");
+    // production's app-data dir. Deterministically named off `cwd` (see
+    // `payload_scratch`): the transcript path is quoted verbatim into
+    // `messages[0]`, so a random root put a fresh random string into the
+    // stable prefix of every prompt this suite has ever sent.
+    let payload_root = payload_scratch(cwd);
     let transcript_path = payload_root.path().join("transcript.txt");
     std::fs::write(&transcript_path, "").expect("transcript file should create");
     // FR-2: one map for this whole conversation and every `Task` subagent it
@@ -869,6 +1153,7 @@ async fn run_planned_conversation(
         conversation_id: "planned-top".to_string(),
         settings: default_context_settings(),
         observed_usage: &observed_usage,
+        stable_ids: StableToolCallIds::default(),
     };
 
     let mut history = vec![ChatMessage::system(
@@ -936,7 +1221,7 @@ async fn tier0_multi_turn_recalls_user_name() {
     let Some(server) = common::TestServer::spawn(&model).await else {
         return;
     };
-    let dir = tempdir().unwrap();
+    let dir = ScratchDir::new("T0RECL");
 
     let runs = run_planned_conversation(
         &server.base_url,
@@ -988,7 +1273,7 @@ async fn tier0_plan_greeting_answers_directly_without_planning() {
     let Some(server) = common::TestServer::spawn(&model).await else {
         return;
     };
-    let dir = tempdir().unwrap();
+    let dir = ScratchDir::new("T0GREE");
 
     for greeting in ["ola", "Hello!"] {
         let run = run_planned_task(&server.base_url, greeting, dir.path(), 8).await;
@@ -1020,7 +1305,7 @@ async fn tier0_plan_vague_request_asks_before_planning() {
     let Some(server) = common::TestServer::spawn(&model).await else {
         return;
     };
-    let dir = tempdir().unwrap();
+    let dir = ScratchDir::new("T0VAGU");
 
     let run = run_planned_task(
         &server.base_url,
@@ -1067,7 +1352,7 @@ async fn tier1_single_tool_call_reads_a_known_file() {
     let Some(server) = common::TestServer::spawn(&model).await else {
         return;
     };
-    let dir = tempdir().unwrap();
+    let dir = ScratchDir::new("T1READ");
     std::fs::write(dir.path().join("config.txt"), "hello=world\nsecond=line\n").unwrap();
 
     let run = run_flat_task(
@@ -1104,7 +1389,7 @@ async fn tier1_planned_single_tool_call_reads_a_known_file() {
     let Some(server) = common::TestServer::spawn(&model).await else {
         return;
     };
-    let dir = tempdir().unwrap();
+    let dir = ScratchDir::new("T1PLAN");
     std::fs::write(dir.path().join("config.txt"), "hello=world\nsecond=line\n").unwrap();
 
     let run = run_planned_task(
@@ -1139,7 +1424,7 @@ async fn tier2_few_tool_calls_finds_todo_files() {
     let Some(server) = common::TestServer::spawn(&model).await else {
         return;
     };
-    let dir = tempdir().unwrap();
+    let dir = ScratchDir::new("T2TODO");
     std::fs::write(dir.path().join("a.rs"), "// TODO: fix this\nfn a() {}\n").unwrap();
     std::fs::write(dir.path().join("b.rs"), "fn b() {}\n").unwrap();
     std::fs::write(dir.path().join("c.rs"), "// TODO: refactor\nfn c() {}\n").unwrap();
@@ -1221,7 +1506,7 @@ async fn tier3_multi_step_refactor_adds_a_field_and_updates_call_sites() {
     let Some(server) = common::TestServer::spawn(&model).await else {
         return;
     };
-    let dir = tempdir().unwrap();
+    let dir = ScratchDir::new("T3REFA");
     tier3_fixture(dir.path());
 
     let run = run_flat_task(
@@ -1325,7 +1610,7 @@ async fn tier4_long_running_fixes_many_scattered_bugs() {
     let Some(server) = common::TestServer::spawn(&model).await else {
         return;
     };
-    let dir = tempdir().unwrap();
+    let dir = ScratchDir::new("T4FLAT");
     tier4_fixture(dir.path());
 
     let task = format!(
@@ -1383,7 +1668,7 @@ async fn tier4_planned_long_running_fixes_many_scattered_bugs() {
     let Some(server) = common::TestServer::spawn(&model).await else {
         return;
     };
-    let dir = tempdir().unwrap();
+    let dir = ScratchDir::new("T4PLAN");
     tier4_fixture(dir.path());
 
     let task = format!(
@@ -1494,7 +1779,7 @@ async fn tier5_surgical_edit_in_one_huge_file() {
     let Some(server) = common::TestServer::spawn(&model).await else {
         return;
     };
-    let dir = tempdir().unwrap();
+    let dir = ScratchDir::new("T5SURG");
     let original = tier5_fixture(dir.path());
 
     let run = run_flat_task(
