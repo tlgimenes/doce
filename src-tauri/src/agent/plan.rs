@@ -92,7 +92,7 @@ Not every message is a task. Decide before anything else:
 
 # Todos
 
-For any multi-step task, keep a todo list with Todo: one item per file or unit of work, never a bundled "handle the rest" item. Flip done: true as you finish each item, and work the list in order. Your current todos are shown to you each turn.
+For any multi-step task, keep a todo list with Todo: one item per file or unit of work, never a bundled "handle the rest" item. Mark each item done with TodoDone as you finish it, and work the list in order. Your current todos are shown to you each turn.
 
 # Counting and sampling
 
