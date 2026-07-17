@@ -393,13 +393,16 @@ Work the first undone item; add new items with Todo, mark one done with TodoDone
                 )))
             }
             "TodoDone" => {
-                // The ONLY path to completion: propose flipping exactly ONE
-                // item's done flag by 0-based index. A bad/absent index
-                // names the valid undone items so the model can
-                // self-correct. A valid index does NOT commit here anymore
-                // -- it proposes; `apply_completion_verdict` (via the
-                // always-approve stub in this task, an observer from Task
-                // 4 on) decides whether `commit_todo_done` actually runs.
+                // Self-mark: flip exactly ONE item's done flag by 0-based
+                // index and reply directly -- NO observer here. Per-item
+                // authoritative observation collapsed seed 11 (19->2/20) by
+                // trapping the model in reject/retry loops on files it
+                // struggled to edit (gate 2026-07-16). Completion is now
+                // observer-verified ONLY at FinishTask, where one whole-thread
+                // audit bounces a premature finish (catching a falsely-done
+                // item like bug_04) without derailing per-item progress. A
+                // bad/absent index names the valid undone items so the model
+                // can self-correct.
                 let Some(index) = call
                     .arguments
                     .get("index")
@@ -415,10 +418,7 @@ Work the first undone item; add new items with Todo, mark one done with TodoDone
                         self.todo_done_error(&format!("No todo at index {index}.")),
                     ));
                 }
-                Some(PlanToolReply::ProposeComplete {
-                    kind: CompletionKind::TodoItem(index),
-                    answer: None,
-                })
+                Some(PlanToolReply::Reply(self.commit_todo_done(index)))
             }
             "FinishTask" => {
                 let answer = call
@@ -607,15 +607,8 @@ mod single_mode_tests {
     fn append_merge_never_removes_reorders_relabels_or_undones_existing_items() {
         let mut state = PlanState::default();
         todo(&mut state, &["fix a", "fix b", "fix c"]);
-        // Complete the middle item via the only completion path: propose,
-        // then commit (the always-approve stub in this task).
-        let PlanToolReply::ProposeComplete { kind, answer } = state
-            .handle_todo_tool(&call("TodoDone", serde_json::json!({"index": 1})))
-            .unwrap()
-        else {
-            panic!("valid TodoDone index must propose")
-        };
-        state.apply_completion_verdict(kind, answer, true, "");
+        // Complete the middle item: TodoDone self-marks directly.
+        todo_done_committed(&mut state, 1);
         let before = state.plan.steps.clone();
 
         // A second Todo call that tries to (a) drop items, (b) reorder them,
@@ -669,41 +662,35 @@ mod single_mode_tests {
         );
     }
 
-    /// Convenience: propose `TodoDone {index}` and immediately commit it via
-    /// `apply_completion_verdict` with an approving verdict -- the
-    /// always-approve stub's shape, used throughout these tests wherever
-    /// the old direct-flip `TodoDone` call used to sit.
+    /// Convenience: `TodoDone {index}` self-marks directly now (FinishTask-only
+    /// observation -- per-item observation collapsed seed 11, gate 2026-07-16),
+    /// returning the reply text after the flip commits.
     fn todo_done_committed(state: &mut PlanState, index: usize) -> String {
-        let PlanToolReply::ProposeComplete { kind, answer } = state
+        match state
             .handle_todo_tool(&call("TodoDone", serde_json::json!({"index": index})))
             .unwrap()
-        else {
-            panic!("a valid TodoDone index must propose, not reply directly")
-        };
-        let (text, finish) = state.apply_completion_verdict(kind, answer, true, "");
-        assert!(
-            finish.is_none(),
-            "a TodoItem verdict never finishes the task"
-        );
-        text
+        {
+            PlanToolReply::Reply(text) => text,
+            other => panic!("a valid TodoDone index must self-commit and reply, got {other:?}"),
+        }
     }
 
     #[test]
-    fn todo_done_now_proposes_instead_of_committing() {
+    fn todo_done_commits_directly() {
         let mut state = PlanState::default();
         todo(&mut state, &["a", "b"]);
         let reply = state
             .handle_todo_tool(&call("TodoDone", serde_json::json!({"index": 0})))
             .unwrap();
-        assert_eq!(
-            reply,
-            PlanToolReply::ProposeComplete {
-                kind: CompletionKind::TodoItem(0),
-                answer: None,
-            }
+        let PlanToolReply::Reply(text) = reply else {
+            panic!("TodoDone self-marks: expected Reply, not a proposal")
+        };
+        assert!(
+            text.contains("Marked done") && text.contains("1/2 done"),
+            "{text}"
         );
-        // A valid index only proposes -- the done flag is NOT yet set.
-        assert_eq!(state.plan.steps[0].done, false);
+        // Self-mark: the done flag IS set immediately (no observer at TodoDone).
+        assert!(state.plan.steps[0].done);
     }
 
     #[test]
