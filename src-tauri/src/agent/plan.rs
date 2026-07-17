@@ -283,8 +283,10 @@ impl PlanState {
                     }
                 }
             } else {
-                // Reject: do NOT commit. (These strings are UNREACHED in Task 2 because
-                // the stub always approves; they become live in Task 4.)
+                // Reject: do NOT commit. Post-pivot (FinishTask-only observation)
+                // the FinishTask reject string is live in production; the TodoItem
+                // reject string is unreachable there (TodoDone self-marks) but stays
+                // covered by unit tests and the observer_smoke path.
                 match kind {
                     CompletionKind::TodoItem(_) => (
                         format!("Not done: {missing}. Do the work, then mark it done again."),
@@ -833,7 +835,7 @@ Work the first undone item; add new items with Todo, mark one done with TodoDone
         );
         assert!(finish.is_none());
         assert!(text.starts_with("Not done"), "{text}");
-        assert_eq!(state.plan.steps[0].done, false, "a reject must not commit");
+        assert!(!state.plan.steps[0].done, "a reject must not commit");
     }
 
     #[test]

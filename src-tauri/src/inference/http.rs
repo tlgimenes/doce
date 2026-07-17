@@ -324,10 +324,10 @@ impl ChatRequest {
     /// template and honors this kwarg -- it is the model's supported switch, not
     /// a prompt hack like an injected `/no_think` token.
     ///
-    /// For the out-of-band `Forbid`-mode compaction calls ONLY
-    /// (`context::summarize_and_persist`, `context::extract_and_persist_memories`),
-    /// never for agent turns: an agent turn's reasoning is the point, whereas
-    /// these two calls are mechanical reformatting jobs whose contract
+    /// For the out-of-band calls only (`context::summarize_and_persist`,
+    /// `context::extract_and_persist_memories`, and `agent::observer::
+    /// request_verdict`), never for agent turns: an agent turn's reasoning is
+    /// the point, whereas these calls are mechanical jobs whose contract
     /// ("one fact per line", "output ONLY the <state_snapshot> block") the
     /// reasoning block only ever spends budget against.
     ///
