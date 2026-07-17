@@ -7,7 +7,7 @@
 //!
 //! The llama-server cutover moved generation onto the HTTP client
 //! (`inference::http`), so the generation smokes here spawn a REAL
-//! `llama-server` (via `common::TestServer`) and POST at it through
+//! `llama-server` (via `doce_lib::bench::TestServer`) and POST at it through
 //! `LlamaServerClient::chat` -- the exact path production's
 //! `RealBackend`/`SubagentBackend` use. The in-process engine is gone
 //! entirely: token counting is a pure chars/4 estimate
@@ -16,8 +16,6 @@
 //!
 //! This is the closest thing to a live manual QA pass this environment can
 //! do without a way to drive/inspect the native Tauri window directly.
-
-mod common;
 
 use doce_lib::agent::{dispatch, run_loop, AgentBackend, AgentContext, ToolCall, ToolExecution};
 use doce_lib::context;
@@ -63,7 +61,7 @@ fn the_token_estimate_is_sane() {
 #[ignore]
 async fn a_real_short_completion_streams_from_the_server() {
     let model = installed_model_path();
-    let Some(server) = common::TestServer::spawn(&model).await else {
+    let Some(server) = doce_lib::bench::TestServer::spawn(&model).await else {
         return; // sidecar binary or model GGUF absent -- skip (see TestServer)
     };
 
@@ -114,7 +112,7 @@ async fn grammar_constrained_tool_call_produces_a_well_formed_tool_call_against_
     // `tool_choice:"required"` over a single-tool set forces exactly one
     // well-formed Bash call.
     let model = installed_model_path();
-    let Some(server) = common::TestServer::spawn(&model).await else {
+    let Some(server) = doce_lib::bench::TestServer::spawn(&model).await else {
         return;
     };
 
@@ -255,7 +253,7 @@ fn span_message(chat: ChatMessage, content_type: &str, sequence: i64) -> History
 #[ignore]
 async fn the_real_model_obeys_the_memory_extraction_contract() {
     let model = installed_model_path();
-    let Some(server) = common::TestServer::spawn(&model).await else {
+    let Some(server) = doce_lib::bench::TestServer::spawn(&model).await else {
         return; // sidecar binary or model GGUF absent -- skip (see TestServer)
     };
 
@@ -437,7 +435,7 @@ async fn the_real_model_obeys_the_memory_extraction_contract() {
 #[ignore]
 async fn the_real_model_summarizes_a_span_that_ends_with_an_assistant_message() {
     let model = installed_model_path();
-    let Some(server) = common::TestServer::spawn(&model).await else {
+    let Some(server) = doce_lib::bench::TestServer::spawn(&model).await else {
         return; // sidecar binary or model GGUF absent -- skip (see TestServer)
     };
 
@@ -658,7 +656,7 @@ impl AgentBackend for ReadSmokeBackend {
         let result = LlamaServerClient::new(self.base_url.clone())
             .chat(req, |_piece| {}, &cancel)
             .await;
-        common::chat_outcome_to_turn_outcome(result)
+        doce_lib::bench::chat_outcome_to_turn_outcome(result)
     }
 
     async fn execute_tool(&mut self, _tool_call_id: String, call: ToolCall) -> ToolExecution {
@@ -678,7 +676,7 @@ async fn real_server_one_tool_call_reads_a_file_and_answers() {
     // a tempdir and echo its contents back -- exercising generate ->
     // structured tool_call -> dispatch -> tool_result -> final answer.
     let model = installed_model_path();
-    let Some(server) = common::TestServer::spawn(&model).await else {
+    let Some(server) = doce_lib::bench::TestServer::spawn(&model).await else {
         return;
     };
 
@@ -1078,7 +1076,7 @@ async fn seed_tier_two_fixture(conn: &tokio_rusqlite::Connection) -> String {
 #[ignore]
 async fn the_real_maybe_compact_condenses_an_over_threshold_conversation() {
     let model = installed_model_path();
-    let Some(server) = common::TestServer::spawn(&model).await else {
+    let Some(server) = doce_lib::bench::TestServer::spawn(&model).await else {
         return; // sidecar binary or model GGUF absent -- skip (see TestServer)
     };
 
@@ -1432,7 +1430,7 @@ async fn seed_tier_one_fixture(conn: &tokio_rusqlite::Connection) {
 #[ignore]
 async fn tier_one_alone_stops_the_pipeline_when_the_clearing_frees_enough() {
     let model = installed_model_path();
-    let Some(server) = common::TestServer::spawn(&model).await else {
+    let Some(server) = doce_lib::bench::TestServer::spawn(&model).await else {
         return; // sidecar binary or model GGUF absent -- skip (see TestServer)
     };
 
