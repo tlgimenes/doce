@@ -1,14 +1,32 @@
 name: Build llama-server sidecar
 description: >
-  Build (or restore from cache) the bundled llama-server sidecar that
-  `tauri_build` requires as an externalBin. Without it, ANY cargo command in
-  src-tauri fails its build script with "resource path
-  binaries/llama-server-... doesn't exist". Keyed on the build script so a pin
-  bump (LLAMA_TAG) invalidates the cache.
+  Provide the bundled llama-server sidecar that `tauri_build` requires as an
+  externalBin. Without a file at binaries/llama-server-<triple>, ANY cargo
+  command in src-tauri fails its build script with "resource path ... doesn't
+  exist". Jobs that only COMPILE (clippy/test) need the file to merely EXIST —
+  they never run it — so they can use `placeholder: true` for an instant stub.
+  Jobs that RUN or BUNDLE the app (e2e, release) need the real binary, built
+  from source via scripts/build-llama-server.sh and cached (keyed on that
+  script so a LLAMA_TAG bump invalidates it).
+inputs:
+  placeholder:
+    description: "If 'true', write a stub executable instead of building the real sidecar."
+    default: "false"
 runs:
   using: composite
   steps:
+    - name: Stub sidecar (existence-only, for compile/lint jobs)
+      if: inputs.placeholder == 'true'
+      shell: bash
+      run: |
+        mkdir -p src-tauri/binaries
+        # A real (arm64 Mach-O) executable so any existence/exec check passes;
+        # tauri_build only needs the file present for `cargo clippy`/`test`.
+        cp "$(command -v true)" src-tauri/binaries/llama-server-aarch64-apple-darwin
+        chmod +x src-tauri/binaries/llama-server-aarch64-apple-darwin
+
     - name: Restore sidecar from cache
+      if: inputs.placeholder != 'true'
       id: cache
       uses: actions/cache@v4
       with:
@@ -16,7 +34,7 @@ runs:
         key: llama-sidecar-${{ runner.os }}-${{ hashFiles('scripts/build-llama-server.sh') }}
 
     - name: Build llama-server sidecar (cache miss)
-      if: steps.cache.outputs.cache-hit != 'true'
+      if: inputs.placeholder != 'true' && steps.cache.outputs.cache-hit != 'true'
       shell: bash
       run: |
         command -v cmake >/dev/null 2>&1 || brew install cmake
