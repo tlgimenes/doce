@@ -7,6 +7,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { commands, type Conversation, type Workspace } from "@/lib/ipc";
 import { useContextUsageStore } from "@/state/contextUsageStore";
 import { getConversationWorkspaceLabel } from "@/views/chat/sidebarConversationRow";
+import GoalBar from "@/views/workspace/GoalBar";
 
 interface WorkspaceTopbarProps {
   conversation: Conversation;
@@ -119,6 +120,9 @@ export default function WorkspaceTopbar({ conversation }: WorkspaceTopbarProps) 
           </ItemTitle>
           <div className="pointer-events-auto shrink-0" data-topbar-no-drag>
             <ContextUsageIndicator conversationId={conversation.id} />
+          </div>
+          <div className="pointer-events-auto shrink-0" data-topbar-no-drag>
+            <GoalBar conversationId={conversation.id} />
           </div>
           <ItemDescription className="min-w-0 truncate" data-testid="workspace-topbar-path">
             {workspaceLabel}

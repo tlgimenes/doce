@@ -10,6 +10,8 @@ vi.mock("@/lib/ipc", () => ({
   commands: {
     listWorkspaces: vi.fn(),
     getContextUsage: vi.fn(),
+    getConversationGoal: vi.fn(),
+    setConversationGoal: vi.fn(),
   },
 }));
 
@@ -65,6 +67,7 @@ describe("WorkspaceTopbar", () => {
       tokenBudget: 2048,
       state: "normal",
     });
+    vi.mocked(commands.getConversationGoal).mockResolvedValue(null);
   });
 
   it("portals the conversation title and compact workspace path into the main topbar", async () => {

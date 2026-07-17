@@ -559,6 +559,14 @@ export const commands = {
     invoke<void>("mark_conversation_seen", { conversationId }),
   archiveConversation: (conversationId: string) =>
     invoke<void>("archive_conversation", { conversationId }),
+  // observer-verified completion + goals: `goal: null` (or an
+  // empty/whitespace-only string, normalized to `null` at the call site)
+  // clears the conversation's goal. Mirrors `getActivePlan`'s reload-proof
+  // read pattern -- `None` means no goal is set.
+  setConversationGoal: (conversationId: string, goal: string | null) =>
+    invoke<void>("set_conversation_goal", { conversationId, goal }),
+  getConversationGoal: (conversationId: string) =>
+    invoke<string | null>("get_conversation_goal", { conversationId }),
   searchConversations: (query: string) => invoke<SearchResult[]>("search_conversations", { query }),
   // Values cross as JSON-encoded strings (see commands/settings.rs for why)
   // — parse/stringify at the call site.

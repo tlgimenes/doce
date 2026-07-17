@@ -340,6 +340,29 @@ pub async fn set_conversation_goal(
     .map_err(|e| e.to_string())
 }
 
+/// Reads back the user-set goal for a conversation
+/// (`storage::conversations::get_conversation_goal`) — the read half of
+/// `set_conversation_goal`'s write path, used by the goal UI to populate
+/// its initial state (and to recover it across a reload/remount, same as
+/// `get_active_plan` does for the plan tracker). `None` means no goal is
+/// set, whether that's a `NULL` column or a legacy empty-string value.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_conversation_goal(
+    app: AppHandle,
+    db_cell: State<'_, DbCell>,
+    conversation_id: String,
+) -> Result<Option<String>, String> {
+    let conn = db_cell.get(&app).await?;
+    conn.call(
+        move |conn: &mut Connection| -> rusqlite::Result<Option<String>> {
+            crate::storage::conversations::get_conversation_goal(conn, &conversation_id)
+        },
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
 /// The reload-proof "is a turn genuinely running right now" signal, straight
 /// from `ActiveGenerations` (the same source `compute_status`'s
 /// `in_progress` uses). The frontend needs this because its own in-flight
