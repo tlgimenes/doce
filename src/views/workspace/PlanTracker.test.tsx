@@ -162,9 +162,7 @@ describe("PlanTracker", () => {
     expect(checkboxes[0]).toHaveAttribute("aria-checked", "true");
     expect(checkboxes[1]).toHaveAttribute("aria-checked", "false");
     expect(checkboxes[2]).toHaveAttribute("aria-checked", "false");
-    checkboxes.forEach((checkbox) =>
-      expect(checkbox).toHaveAttribute("aria-disabled", "true"),
-    );
+    checkboxes.forEach((checkbox) => expect(checkbox).toHaveAttribute("aria-disabled", "true"));
 
     expect(screen.getByText("Find all bug markers")).toHaveClass("line-through");
     expect(rows[0]).toHaveClass("text-muted-foreground");

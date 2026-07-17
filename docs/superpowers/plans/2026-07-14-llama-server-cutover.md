@@ -27,9 +27,11 @@
 ### Task 0: Hardware coherence spike (GATE)
 
 **Files:**
+
 - Create: `scratch only` — no repo files. Records verdict in the SDD ledger.
 
 **Interfaces:**
+
 - Produces: the decision `MODEL = Qwen3.5-4B` (coherent) or `MODEL = Qwen3-4B-Thinking-2507` (gibberish), consumed by Task 6.1.
 
 - [ ] **Step 1: Confirm the spike binary + model are present**
@@ -46,6 +48,7 @@ $SP/llama.cpp/build/bin/llama-server --jinja --reasoning-format deepseek \
 # poll until ready
 until curl -sf http://127.0.0.1:18080/health >/dev/null; do sleep 1; done; echo READY
 ```
+
 Expected: `READY` within ~30s; the log shows the model loaded with the `qwen3_5`/`qwen3.5` arch (NOT an "unsupported arch" error).
 
 - [ ] **Step 3: Send one real tool-call prompt**
@@ -58,6 +61,7 @@ curl -s http://127.0.0.1:18080/v1/chat/completions -H 'Content-Type: application
   "temperature":0.6,"top_p":0.95,"top_k":20
 }' | tee /tmp/spike-toolcall.json
 ```
+
 Expected (COHERENT): `choices[0].message.tool_calls[0].function.name == "Read"` with `arguments` naming `file_path` = `/etc/hostname` (arguments may be a string or object). GIBBERISH = repeated tokens, empty/garbled name, or no tool call.
 
 - [ ] **Step 4: Record the verdict and select MODEL**
@@ -71,10 +75,12 @@ Note in the ledger: `Task 0: <coherent|gibberish>; MODEL=<qwen3.5-4b|qwen3-4b-th
 ### Task 1.1: Reproducible llama-server build script
 
 **Files:**
+
 - Create: `scripts/build-llama-server.sh`
 - Create: `scripts/README-llama-server.md` (documents the pin + how to rebuild)
 
 **Interfaces:**
+
 - Produces: a single self-contained `src-tauri/binaries/llama-server-aarch64-apple-darwin` executable consumed by Task 1.2.
 
 - [ ] **Step 1: Write the build script**
@@ -133,12 +139,14 @@ git commit -m "build: reproducible self-contained llama-server (Metal, static, t
 ### Task 1.2: Bundle llama-server as a Tauri sidecar
 
 **Files:**
+
 - Modify: `src-tauri/tauri.conf.json` (add `bundle.externalBin`)
 - Modify: `src-tauri/capabilities/default.json` (shell execute scope) — verify exact path first
 - Modify: `src-tauri/Cargo.toml` (ensure `tauri-plugin-shell` dep)
 - Modify: `src-tauri/src/lib.rs` (register `tauri_plugin_shell::init()`)
 
 **Interfaces:**
+
 - Consumes: `src-tauri/binaries/llama-server-aarch64-apple-darwin` (Task 1.1).
 - Produces: a resolvable sidecar named `llama-server`, spawned in Task 3.1.
 
@@ -149,6 +157,7 @@ git commit -m "build: reproducible self-contained llama-server (Metal, static, t
   "externalBin": ["binaries/llama-server"]
 }
 ```
+
 (Tauri appends the target triple automatically; the file on disk is `binaries/llama-server-aarch64-apple-darwin`.)
 
 - [ ] **Step 2: Add shell plugin + capability**
@@ -172,11 +181,13 @@ git commit -m "build: register llama-server tauri sidecar + shell plugin"
 ### Task 2.1: OpenAI request/response types + message mapping
 
 **Files:**
+
 - Create: `src-tauri/src/inference/http.rs` (types + mapping; client body follows in 2.2/2.3)
 - Modify: `src-tauri/src/inference/mod.rs` (`pub mod http;`)
 - Test: inline `#[cfg(test)]` in `http.rs`
 
 **Interfaces:**
+
 - Consumes: `ChatMessage`/`MessageContent` (`inference/mod.rs:90-136`), `ToolCallMode` (`mod.rs:120-125`), the 9 tool schemas (`agent/plan.rs`).
 - Produces:
   - `fn to_openai_messages(&[ChatMessage]) -> Vec<serde_json::Value>`
@@ -248,10 +259,12 @@ git commit -m "feat(inference): OpenAI request types + ChatMessage/tool mapping"
 ### Task 2.2: Tolerant SSE stream parser
 
 **Files:**
+
 - Modify: `src-tauri/src/inference/http.rs`
 - Test: inline `#[cfg(test)]`
 
 **Interfaces:**
+
 - Produces:
   - `enum ChatChunk { Content(String), Reasoning(String), ToolCallFragment{index:u32, name:Option<String>, args:String}, Usage{prompt:u32, completion:u32}, Done }`
   - `fn parse_sse_line(line: &str) -> Option<Vec<ChatChunk>>`
@@ -310,10 +323,12 @@ fn parses_usage_tail_and_done() {
 ### Task 2.3: The streaming chat client
 
 **Files:**
+
 - Modify: `src-tauri/src/inference/http.rs`
 - Test: inline `#[cfg(test)]` using `wiremock`
 
 **Interfaces:**
+
 - Consumes: 2.1 types, 2.2 parser, `tokio_util::sync::CancellationToken`.
 - Produces:
   - `struct LlamaServerClient { base_url: String, http: reqwest::Client }`
@@ -370,11 +385,13 @@ async fn chat_aborts_on_cancel() {
 ### Task 3.1: Server supervisor — spawn + health gate
 
 **Files:**
+
 - Create: `src-tauri/src/inference/server.rs`
 - Modify: `src-tauri/src/inference/mod.rs` (`pub mod server;`)
 - Modify: `src-tauri/src/commands/conversations.rs` (replace `InferenceState` engine holder — see 3.3)
 
 **Interfaces:**
+
 - Produces:
   - `struct ServerHandle { base_url: String, child: CommandChild, port: u16, pid: u32 }`
   - `async fn spawn(app: &AppHandle, model_path: &Path) -> Result<ServerHandle, String>` (picks a free port, spawns the `llama-server` sidecar with the Global-Constraint flags, polls `/health` until 200 or timeout, emits `server-status`)
@@ -411,9 +428,11 @@ fn builds_launch_args_with_loopback_and_explicit_ctx() {
 ### Task 3.2: Orphan reaping (PID/port file)
 
 **Files:**
+
 - Modify: `src-tauri/src/inference/server.rs`
 
 **Interfaces:**
+
 - Produces: `fn reap_orphan(app: &AppHandle)` (reads `<app_data>/llama-server.pid`, SIGKILLs a live PID owning that port, removes the file); `ServerHandle::persist_pidfile()` and `ServerHandle::remove_pidfile()`.
 
 - [ ] **Step 1: Write failing test — pidfile round-trip + stale-pid handling**
@@ -442,11 +461,13 @@ fn reap_removes_stale_pidfile_and_ignores_dead_pid() {
 ### Task 3.3: Lifecycle wiring — InferenceState, download→spawn, model-switch→restart
 
 **Files:**
+
 - Modify: `src-tauri/src/commands/conversations.rs` (`InferenceState` now holds `Option<ServerHandle>` + the vocab-only tokenizer from Task 5)
 - Modify: `src-tauri/src/commands/models.rs` (`start_model_install` success path spawns/restarts the server; `set_active_model` restarts)
 - Modify: `src-tauri/src/lib.rs` (startup reap; exit kill)
 
 **Interfaces:**
+
 - Consumes: 3.1 `spawn`, 3.2 reap.
 - Produces: the invariant "server is running against the active model whenever one is installed."
 
@@ -465,10 +486,12 @@ fn reap_removes_stale_pidfile_and_ignores_dead_pid() {
 ### Task 4.1: Cut RealBackend/SubagentBackend generate over to the HTTP client
 
 **Files:**
+
 - Modify: `src-tauri/src/commands/agent.rs` (`RealBackend::generate` 629-685, `SubagentBackend::generate` 777-804)
 - Modify: `src-tauri/src/agent/mod.rs` (`run_loop` 275-385, `parse_response` 76-99)
 
 **Interfaces:**
+
 - Consumes: `LlamaServerClient` (Task 2), `InferenceState` server handle (Task 3).
 - Produces: `run_loop` reads structured `tool_calls`; Require-turn empty → retry; `Finish` only via FinishTask.
 
@@ -500,10 +523,12 @@ async fn empty_required_toolcalls_retries_not_done() {
 ### Task 4.2: Real cancellation + reasoning/piece streaming
 
 **Files:**
+
 - Modify: `src-tauri/src/commands/agent.rs` (thread `CancellationToken` from `send_agent_message`; the `on_piece` closure emits `agent-generation-piece` for content AND reasoning)
 - Modify: `src-tauri/src/commands/conversations.rs` (`ActiveGenerations` → provide a cancel token per conversation)
 
 **Interfaces:**
+
 - Consumes: 2.3 `chat(cancel)`, existing `ActiveGenerations`.
 - Produces: cancelling a generation aborts the SSE stream; `agent-generation-piece` still streams live.
 
@@ -522,10 +547,12 @@ async fn empty_required_toolcalls_retries_not_done() {
 ### Task 5.1: Vocab-only tokenizer for count_tokens
 
 **Files:**
+
 - Modify: `src-tauri/src/inference/mod.rs` (strip `InferenceEngine` down to a vocab-only tokenizer; keep `count_tokens`, `context_window`)
 - Modify: `src-tauri/Cargo.toml` (keep `llama-cpp-2` but drop the `metal` feature — vocab-only needs no GPU)
 
 **Interfaces:**
+
 - Consumes: the GGUF path.
 - Produces: `struct Tokenizer { model: LlamaModel }` with `fn count_tokens(&self, &str) -> usize` (exact) and a `context_window()` sourced from the server `/props` `n_ctx` (fallback to `CONTEXT_WINDOW_TOKENS`).
 
@@ -544,9 +571,11 @@ async fn empty_required_toolcalls_retries_not_done() {
 ### Task 6.1: Registry convergence to the single model
 
 **Files:**
+
 - Modify: `src-tauri/src/model_registry/registry.json` (single model, all 4 tiers, using Task-0 `MODEL`)
 
 **Interfaces:**
+
 - Consumes: Task 0 verdict.
 - Produces: `best_candidate_for_tier` returns the one model on every tier.
 
@@ -565,6 +594,7 @@ async fn empty_required_toolcalls_retries_not_done() {
 ### Task 6.2: Remove the Settings model picker
 
 **Files:**
+
 - Modify: `src-tauri/src/commands/models.rs` (delete `list_available_models` + `AvailableModel`; delete `set_active_model` iff Task 3.3 no longer needs it — else keep and repurpose as restart trigger)
 - Modify: `src-tauri/src/commands/mod.rs` (drop the two `collect_commands!` lines)
 - Modify: `src/views/settings/Settings.tsx` (remove the Model `Card` + models state/effects/handlers + `AvailableModel` import)
@@ -573,6 +603,7 @@ async fn empty_required_toolcalls_retries_not_done() {
 - Modify: `src/views/settings/Settings.test.tsx`, `src/App.test.tsx` (drop model-picker mocks/tests)
 
 **Interfaces:**
+
 - Consumes: nothing new.
 - Produces: a Settings screen with no model section; onboarding download/auto-activate unchanged.
 
@@ -585,6 +616,7 @@ async fn empty_required_toolcalls_retries_not_done() {
 - [ ] **Step 4: Run frontend + rust tests.** Run: `npm test` and `cargo test --lib`. Expected: PASS (after removing the stale picker tests).
 
 - [ ] **Step 5: Format + commit.** Run: `npm run format` (oxfmt) then commit.
+
 ```bash
 git commit -m "feat(settings): remove model picker (single-model convergence)"
 ```
@@ -594,6 +626,7 @@ git commit -m "feat(settings): remove model picker (single-model convergence)"
 ### Task 7.1: Delete the hand-rolled inference stack
 
 **Files:**
+
 - Delete: `src-tauri/src/inference/dialect.rs`
 - Modify: `src-tauri/src/inference/mod.rs` (delete grammar/PromptSession/strip_think/render machinery per spec §Phase 7)
 - Modify: `src-tauri/src/agent/mod.rs` (unwind `ToolDialect` from `AgentBackend`, `parse_response`)
@@ -602,6 +635,7 @@ git commit -m "feat(settings): remove model picker (single-model convergence)"
 - Modify: `src-tauri/Cargo.toml` (remove `gbnf`, `hf-chat-template`)
 
 **Interfaces:**
+
 - Consumes: nothing (pure deletion after Tasks 2-4 replace the behavior).
 - Produces: a smaller inference surface; `cargo build` clean; `cargo clippy` no dead-code warnings.
 
@@ -620,9 +654,11 @@ git commit -m "feat(settings): remove model picker (single-model convergence)"
 ### Task 8.1: Real-server integration smoke + test harness re-point
 
 **Files:**
+
 - Modify: `src-tauri/tests/agent_tasks.rs`, `src-tauri/tests/real_model_smoke.rs` (drop `InferenceEngine::load`/`new_session`/`render_chat_prompt`; drive the HTTP path — wiremock for unit-ish, a spawned real server behind an env gate for smoke)
 
 **Interfaces:**
+
 - Consumes: Tasks 2-4.
 - Produces: green tests; a real-server smoke that reads a file end-to-end.
 
@@ -639,9 +675,11 @@ git commit -m "feat(settings): remove model picker (single-model convergence)"
 ### Task 8.2: Benchmark gate
 
 **Files:**
+
 - Modify: the benchmark harness (per project memory: benchmark-gate prompt/inference changes; locate the existing ladder script)
 
 **Interfaces:**
+
 - Consumes: the full cutover.
 - Produces: a tool-call-quality score vs the pre-cutover baseline.
 

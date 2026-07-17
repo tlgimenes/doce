@@ -28,6 +28,7 @@ FR-2 (authoritative usage) lands FIRST — it de-risks FR-1 (always-max-output r
 ### Task 1 (FR-2): API-usage-authoritative measure base
 
 **Files:**
+
 - Modify: `src-tauri/src/context/mod.rs` (add `ObservedUsage`, `LastObservedUsage`, `authoritative_prompt_tokens`; wire into `usage_from_history`)
 - Modify: `src-tauri/src/lib.rs` (`.manage(LastObservedUsage::default())`)
 - Modify: `src-tauri/src/commands/agent.rs` (record observation after a successful `generate`; thread `State`)
@@ -35,6 +36,7 @@ FR-2 (authoritative usage) lands FIRST — it de-risks FR-1 (always-max-output r
 - Test: unit tests in `context::tests`
 
 **Interfaces:**
+
 - Produces: `pub struct ObservedUsage { pub prompt_tokens: u32, pub at_len: usize }`; `pub struct LastObservedUsage(pub std::sync::Mutex<std::collections::HashMap<String, ObservedUsage>>)`; `pub fn authoritative_prompt_tokens(observed: Option<&ObservedUsage>, all_openai_msgs: &[serde_json::Value], estimate: impl Fn(&str) -> u32) -> u32`.
 - `at_len` = the number of OpenAI-shaped messages that were present when the server reported `prompt_tokens` (so the "new tail" is `all_openai_msgs[at_len..]`).
 
@@ -169,11 +171,13 @@ git commit -m "feat(context): measure the window from the server's authoritative
 ### Task 2 (FR-1 + FR-4): always-max-output ceiling + align build-site prompt_est shape
 
 **Files:**
+
 - Modify: `src-tauri/src/context/limits.rs` (add `AGENT_TURN_OUTPUT_CEILING`)
 - Modify: `src-tauri/src/commands/agent.rs` (both build sites: ceiling swap + prompt_est shape align)
 - Test: `limits::tests` + a build-site prompt_est test
 
 **Interfaces:**
+
 - Consumes: `clamp_output_tokens` (unchanged), `CONTEXT_WINDOW_TOKENS`, `to_openai_messages`, `token_estimate`.
 - Produces: `pub const AGENT_TURN_OUTPUT_CEILING: u32 = CONTEXT_WINDOW_TOKENS;`.
 
@@ -221,6 +225,7 @@ Run: Expected PASS.
 - [ ] **Step 3: Swap the ceiling at both build sites + align prompt_est shape**
 
 At `commands/agent.rs` RealBackend (~743) and SubagentBackend (~910):
+
 - Change the `prompt_est` computation from `messages.iter().map(|m| token_estimate(&m.text())).sum()` to the OpenAI shape the trigger uses:
 
 ```rust
@@ -256,11 +261,13 @@ git commit -m "feat(inference): always request the max output that fits the wind
 ### Task 3 (FR-3): restore the most-recent file after compaction
 
 **Files:**
+
 - Modify: `src-tauri/src/context/mod.rs` (pure `most_recent_read_path`; bounded-injection sizing; splice after summary in `summarize_and_persist`/`maybe_compact`)
 - Modify: `src-tauri/src/context/limits.rs` (a `restored_file_note(path, content, truncated)` body builder, if a shared helper is cleaner)
 - Test: `context::tests`
 
 **Interfaces:**
+
 - Produces: `pub fn most_recent_read_path(summarized: &[HistoryMessage]) -> Option<String>` (the last `Read` result's `detail.resolvedPath` in the summarized span; `None` if no `Read`); `pub fn bounded_restore_body(path: &str, content: &str, cap_tokens: usize, estimate: impl Fn(&str) -> u32) -> String` (full content under cap, else head+tail window + truncation note — NEVER a bare reference line).
 
 - [ ] **Step 1: Failing tests for the pure helpers**
@@ -308,13 +315,14 @@ Run: Expected FAIL.
 
 - [ ] **Step 2: Implement the pure helpers**
 
-`most_recent_read_path`: iterate the span in reverse, return the first message whose tool-result detail has `toolName == "Read"`, reading its `resolvedPath` (fallback `filePath`). `bounded_restore_body`: if `estimate(content) <= cap`, return ``format!("Current contents of `{path}`:\n{content}")``; else take a head window + tail window whose combined estimate fits `cap`, joined by ``\n… [{n} lines truncated] …\n``, prefixed the same way. Never emit a "Read … to view" reference.
+`most_recent_read_path`: iterate the span in reverse, return the first message whose tool-result detail has `toolName == "Read"`, reading its `resolvedPath` (fallback `filePath`). `bounded_restore_body`: if `estimate(content) <= cap`, return ``format!("Current contents of `{path}`:\n{content}")``; else take a head window + tail window whose combined estimate fits `cap`, joined by `\n… [{n} lines truncated] …\n`, prefixed the same way. Never emit a "Read … to view" reference.
 
 Run: Expected PASS.
 
 - [ ] **Step 3: Splice the restored file after the summary**
 
 In `summarize_and_persist`'s `Accept` arm (right after `persist_notice` for the summary), before returning `Persisted`:
+
 - `let restored = most_recent_read_path(&to_summarize);`
 - if `Some(path)`: re-read the file fresh from disk NOW via the same capped read `Read` uses (`crate::agent::dispatch`'s fs read or `std::fs::read_to_string` with the Read cap); on Ok, `persist_notice` a SECOND context row `kind: "restoredFile"` whose body is `bounded_restore_body(&path, &content, DEFAULT_TOOL_OUTPUT_OFFLOAD_TOKENS, token_estimate)`, ordered immediately after the summary so `load_history_annotated` splices it right after the summary. On read error / missing file: no-op (summary alone).
 - Exactly one restored-file note per compaction.

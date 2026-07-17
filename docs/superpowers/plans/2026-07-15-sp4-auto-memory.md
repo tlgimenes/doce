@@ -17,7 +17,7 @@
 - **A workspace with no memories must produce a byte-identical agent prompt to pre-SP4.** `memories_section` returns `None` → nothing injected. This is what keeps SP4 inert for the tier4_planned benchmark. Lock it with a test.
 - **Extraction is best-effort and must never fail or block a turn.** Every failure path (server error, parse failure, guard trip) logs and returns `Ok(())`. Compaction must never fail an agent turn.
 - **Never let a bad extraction destroy good memories.** If the parsed set is empty/degenerate while existing memories are non-empty, make no change. This mirrors `evaluate_summary`'s defensive posture.
-- **Do not touch `src/views/**`.** A parallel frontend session owns 4 uncommitted files there. Every commit is scoped to `src-tauri/**` (+ `docs/`).
+- **Do not touch `src/views/**`.** A parallel frontend session owns 4 uncommitted files there. Every commit is scoped to `src-tauri/\*\*`(+`docs/`).
 - **Formatting:** this repo uses `oxfmt`, not prettier. Rust: `cargo fmt`.
 - **NULL workspace is a real bucket.** Query with `workspace_id IS ?1` so a conversation with no workspace matches only NULL-bucket memories and never leaks across workspaces.
 
@@ -26,12 +26,14 @@
 ### Task 1: Memories table + storage layer
 
 **Files:**
+
 - Create: `src-tauri/src/storage/migrations/0010_memories.sql`
 - Modify: `src-tauri/src/storage/migrations.rs` (append to the flat `MIGRATIONS` array; latest is currently `(9, ...)`)
 - Create: `src-tauri/src/storage/memories.rs`
 - Modify: `src-tauri/src/storage/mod.rs` (add `pub mod memories;`)
 
 **Interfaces:**
+
 - Consumes: nothing from earlier tasks.
 - Produces, in `crate::storage::memories`:
   - `pub struct Memory { pub id: String, pub content: String, pub created_at: i64, pub updated_at: i64 }`
@@ -42,6 +44,7 @@
 - [ ] **Step 1: Write the migration**
 
 `src-tauri/src/storage/migrations/0010_memories.sql`:
+
 ```sql
 -- SP4: durable per-workspace agent memory. `workspace_id` mirrors
 -- conversations.workspace_id exactly (nullable, same FK target) so a
@@ -59,6 +62,7 @@ CREATE INDEX idx_memories_workspace ON memories(workspace_id);
 - [ ] **Step 2: Register it**
 
 In `src-tauri/src/storage/migrations.rs`, append to `MIGRATIONS`:
+
 ```rust
     (10, include_str!("migrations/0010_memories.sql")),
 ```
@@ -242,11 +246,13 @@ git commit -m "feat(memory): memories table and per-workspace storage layer"
 ### Task 2: Recall — the `# Memories` block in `messages[0]`
 
 **Files:**
+
 - Modify: `src-tauri/src/context/limits.rs` (add `MEMORIES_MAX_TOKENS`)
 - Modify: `src-tauri/src/commands/agent.rs` (`memories_section`, `plan_system_message` param, thread callers)
 - Modify: `src-tauri/src/commands/context.rs` (two call sites at ~42 and ~101)
 
 **Interfaces:**
+
 - Consumes: `crate::storage::memories::{load_memories, workspace_id_for_conversation}` (Task 1).
 - Produces:
   - `pub const MEMORIES_MAX_TOKENS: usize` in `context::limits`.
@@ -258,6 +264,7 @@ git commit -m "feat(memory): memories table and per-workspace storage layer"
 - [ ] **Step 1: Add the cap constant**
 
 In `src-tauri/src/context/limits.rs`, beside `PROJECT_INSTRUCTIONS_MAX_TOKENS`:
+
 ```rust
 /// Recalled workspace memories are capped at this share of the window,
 /// mirroring `PROJECT_INSTRUCTIONS_MAX_TOKENS`. Injected once into
@@ -401,6 +408,7 @@ pub(crate) async fn memories_section(
 ```
 
 Change `plan_system_message` to take a fourth parameter and splice the block in the same slot as the project-instructions section:
+
 ```rust
 pub fn plan_system_message(
     cwd: Option<&std::path::Path>,
@@ -420,6 +428,7 @@ pub fn plan_system_message(
 ```
 
 Thread the new parameter through every call site:
+
 - `conversation_system_message` gains `memories: Option<&str>` and forwards it.
 - `src/commands/context.rs:42` and `:101`: both already hold `conn` and `conversation_id` — call `memories_section(&conn, &conversation_id).await` and pass `.as_deref()`, so usage accounting measures the same prompt production sends.
 - `src/commands/agent.rs:1533` (the live turn): pass `memories_section(&conn, &conversation_id).await.as_deref()`.
@@ -444,16 +453,19 @@ git commit -m "feat(memory): recall workspace memories into messages[0]"
 ### Task 3: Extraction — the out-of-band pass on tier-2 compaction
 
 **Files:**
+
 - Modify: `src-tauri/src/context/limits.rs` (add `MEMORY_EXTRACTION_PROMPT`)
 - Modify: `src-tauri/src/context/mod.rs` (`extract_and_persist_memories`; call it from `summarize_and_persist`'s Accept arm ~line 678-721)
 
 **Interfaces:**
+
 - Consumes: `crate::storage::memories::{load_memories, replace_memories, workspace_id_for_conversation}` (Task 1).
 - Produces: `pub(crate) async fn extract_and_persist_memories(conn, base_url, conversation_id, to_summarize: &[&HistoryMessage], now: i64) -> Result<(), String>` — always `Ok(())` in practice; errors are logged, never propagated to the turn.
 
 - [ ] **Step 1: Add the extraction prompt**
 
 In `src-tauri/src/context/limits.rs`, beside `SUMMARIZATION_PROMPT`:
+
 ```rust
 /// SP4: the out-of-band memory-extraction prompt. A separate `Forbid`-mode
 /// call (never part of an agent turn), so this text cannot affect the
@@ -619,6 +631,7 @@ pub(crate) async fn extract_and_persist_memories(
 ```
 
 Call it from `summarize_and_persist`'s `SummaryDecision::Accept` arm, after the restored-file notice and before `Ok(SummaryResult::Persisted(summary))`. Swallow the result — extraction must not affect the summary's outcome:
+
 ```rust
             // SP4: out-of-band memory extraction. Deliberately ignores its
             // result -- compaction's success does not depend on it.

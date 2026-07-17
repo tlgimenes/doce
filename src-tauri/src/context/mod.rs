@@ -2971,7 +2971,7 @@ mod tests {
             .unwrap();
         let server = stub_completion("The new fact replaces it.").await;
 
-        let span = vec![history_message("text", 0, "some work")];
+        let span = [history_message("text", 0, "some work")];
         let span_refs: Vec<&HistoryMessage> = span.iter().collect();
         extract_and_persist_memories(&conn, &server.uri(), "c1", &span_refs, 10)
             .await
@@ -3002,7 +3002,7 @@ mod tests {
             .unwrap();
         let server = stub_completion("   \n  \n").await;
 
-        let span = vec![history_message("text", 0, "some work")];
+        let span = [history_message("text", 0, "some work")];
         let span_refs: Vec<&HistoryMessage> = span.iter().collect();
         extract_and_persist_memories(&conn, &server.uri(), "c1", &span_refs, 10)
             .await
@@ -3030,7 +3030,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let span = vec![history_message("text", 0, "some work")];
+        let span = [history_message("text", 0, "some work")];
         let span_refs: Vec<&HistoryMessage> = span.iter().collect();
         let r = extract_and_persist_memories(&conn, &server.uri(), "c1", &span_refs, 10).await;
 
@@ -3049,7 +3049,7 @@ mod tests {
         seed_conversation(&conn, "c1", Some("w1")).await;
         let server = stub_completion("A durable fact.").await;
 
-        let span = vec![history_message("text", 0, "some work")];
+        let span = [history_message("text", 0, "some work")];
         let span_refs: Vec<&HistoryMessage> = span.iter().collect();
         extract_and_persist_memories(&conn, &server.uri(), "c1", &span_refs, 10)
             .await
@@ -3086,7 +3086,7 @@ mod tests {
             .await
             .unwrap();
 
-        let span = vec![history_message("text", 0, "some work")];
+        let span = [history_message("text", 0, "some work")];
         let span_refs: Vec<&HistoryMessage> = span.iter().collect();
         let r = extract_and_persist_memories(&conn, &server.uri(), "c1", &span_refs, 10).await;
 
@@ -3139,7 +3139,7 @@ mod tests {
         let uri = server.uri();
         let extraction_conn = conn.clone();
         let extraction = tokio::spawn(async move {
-            let span = vec![history_message("text", 0, "some work")];
+            let span = [history_message("text", 0, "some work")];
             let span_refs: Vec<&HistoryMessage> = span.iter().collect();
             extract_and_persist_memories(&extraction_conn, &uri, "c1", &span_refs, 20).await
         });
@@ -3331,7 +3331,7 @@ mod tests {
 
         // The hazard's exact shape: the span handed to the extraction ends on an
         // assistant message.
-        let span = vec![
+        let span = [
             history_message("text", 0, "Format the project."),
             assistant_history_message(1, "Done -- the repo formats with oxfmt, not prettier."),
         ];

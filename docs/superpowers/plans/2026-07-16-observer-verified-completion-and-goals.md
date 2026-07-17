@@ -4,7 +4,7 @@
 
 **Goal:** Remove the model's self-report of completion. Every `TodoDone`/`FinishTask` is adjudicated by an authoritative observer LLM against an append-only mutation log; add an optional user goal that rides in the tail slot and is checked at FinishTask.
 
-**Architecture:** `PlanState` gains an append-only mutation log, a goal, and per-item reject counters. Completion tools become *proposals* (`PlanToolReply::ProposeComplete`); the backend runs the observer and commits/rejects. The observer's pure pieces (message building, verdict parsing, prompt, schema) live in a new `agent::observer` module shared by both backends. `run_loop` is untouched.
+**Architecture:** `PlanState` gains an append-only mutation log, a goal, and per-item reject counters. Completion tools become _proposals_ (`PlanToolReply::ProposeComplete`); the backend runs the observer and commits/rejects. The observer's pure pieces (message building, verdict parsing, prompt, schema) live in a new `agent::observer` module shared by both backends. `run_loop` is untouched.
 
 **Tech Stack:** Rust (Tauri backend), rusqlite (storage/migrations), llama-server sidecar (OpenAI `/v1/chat/completions`, `tool_choice:"required"` + grammar), the `bench` cargo feature for the deterministic benchmark.
 
@@ -98,12 +98,14 @@ pub async fn request_verdict(
 ### Task 1: Mutation log — accumulate tool-mutation evidence
 
 **Files:**
+
 - Modify: `src/agent/plan.rs` (add `MutationRecord`, `mutation_log` field + `record_mutation`)
 - Modify: `src/commands/agent.rs` (call `record_mutation` in the real-tool execute path)
 - Modify: `src/bench/mod.rs` (same call in its execute path)
 - Test: `src/agent/plan.rs` unit tests
 
 **Interfaces:**
+
 - Produces: `MutationRecord`, `PlanState.mutation_log`, `PlanState::record_mutation` (see contract).
 - Consumes: nothing new.
 
@@ -134,11 +136,13 @@ fn record_mutation_appends_evidence_and_never_clears() {
 ### Task 2: Propose → commit refactor (behavior-preserving, always-approve stub)
 
 **Files:**
+
 - Modify: `src/agent/plan.rs` (`PlanToolReply::ProposeComplete`, `CompletionKind`, completion arms return proposals, `commit_todo_done`, reject-cap methods)
 - Modify: `src/commands/agent.rs`, `src/bench/mod.rs` (consume `ProposeComplete` via an always-approve stub; commit path byte-identical to today)
 - Test: `src/agent/plan.rs` unit tests
 
 **Interfaces:**
+
 - Produces: `ProposeComplete`, `CompletionKind`, `commit_todo_done`, `note_reject`, `reject_cap_reached`, `OBSERVER_REJECT_CAP`.
 - Consumes: Task 1's `PlanState`.
 
@@ -192,12 +196,14 @@ Also KEEP passing (update to the new commit path where needed): `todo_done_flips
 ### Task 3: Observer module — pure pieces (messages, verdict, prompt, schema)
 
 **Files:**
+
 - Create: `src/agent/observer.rs`
 - Modify: `src/agent/mod.rs` (add `pub mod observer;` — ONE line)
 - Modify: `src/inference/http.rs` (`Verdict` tool schema in `tool_def`)
 - Test: `src/agent/observer.rs` unit tests
 
 **Interfaces:**
+
 - Produces: `Verdict`, `OBSERVER_PROMPT`, `build_observer_messages` (pure), `parse_verdict` (pure), the `Verdict` tool schema.
 - Consumes: `plan::{CompletionKind, Plan, MutationRecord}`.
 
@@ -239,11 +245,13 @@ fn observer_messages_for_finish_include_goal_and_answer() {
 ### Task 4: Wire the real observer call into both backends
 
 **Files:**
+
 - Modify: `src/agent/observer.rs` (`request_verdict` async — build req, POST to endpoint with `Verdict` forced + seed, parse)
 - Modify: `src/commands/agent.rs`, `src/bench/mod.rs` (replace the Task-2 stub with `request_verdict`; pass the backend's endpoint + seed)
 - Test: a real-model integration test (mirror the `summarize_and_persist` real-model test style) — `src/agent/observer.rs` `#[ignore]` or `tests/`
 
 **Interfaces:**
+
 - Produces: `request_verdict`.
 - Consumes: Task 3 pure pieces; the backends' server endpoint + seed.
 
@@ -262,6 +270,7 @@ fn observer_messages_for_finish_include_goal_and_answer() {
 ### Task 5: Goals — persistence, state_tail injection, FinishTask goal-check
 
 **Files:**
+
 - Modify: `src/storage/migrations.rs` (add `goal TEXT` to `conversations`)
 - Modify: `src/storage/conversations.rs` or `messages.rs` (get/set goal)
 - Create/Modify: a `set_conversation_goal` Tauri command (`src/commands/…`)
@@ -270,6 +279,7 @@ fn observer_messages_for_finish_include_goal_and_answer() {
 - Test: `plan.rs` (`state_tail`), storage (migration/get/set)
 
 **Interfaces:**
+
 - Produces: `state_tail`, `set_conversation_goal`, goal persistence.
 - Consumes: Task 4 observer (goal is judged in the `FinishTask` verdict via `build_observer_messages`'s `goal` arg — already wired).
 
@@ -307,10 +317,12 @@ fn observer_messages_for_finish_include_goal_and_answer() {
 ### Task 6: Goal UI
 
 **Files:**
+
 - Create: a new goal control component (e.g. `src/views/…/GoalBar.tsx` — a NEW file, NOT any of the four forbidden files) + wire it to the `set_conversation_goal` command
 - Test: a component test alongside it
 
 **Interfaces:**
+
 - Consumes: `set_conversation_goal` (Task 5).
 
 - [ ] **Step 1: Failing component test** — rendering the goal control shows the current goal and calls the command on save/clear. (Follow the repo's existing view-test patterns; format with **oxfmt**.)

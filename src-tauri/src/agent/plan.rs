@@ -931,8 +931,8 @@ Work the first undone item; add new items with Todo, mark one done with TodoDone
             panic!()
         };
         assert!(text.contains("index"), "{text}");
-        assert_eq!(
-            state.plan.steps[1].done, false,
+        assert!(
+            !state.plan.steps[1].done,
             "a bad TodoDone completes nothing"
         );
     }

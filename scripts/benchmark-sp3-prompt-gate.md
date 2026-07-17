@@ -1,11 +1,13 @@
 # Benchmark gate: SP3 prompt engineering (main vs sp3-prompt-engineering)
 
 The acceptance bar for SP3: **do the reworked prompts make tool-call/task quality no worse (ideally better) than
-main's prompts, on the SAME model?** Unlike the cutover gate (which A/B'd two *models*), this A/Bs two *prompt sets* on
+main's prompts, on the SAME model?** Unlike the cutover gate (which A/B'd two _models_), this A/Bs two _prompt sets_ on
 the one shipped model (Qwen3.5-4B via the sidecar). Runs on your machine (GPU-heavy, ~tens of minutes).
 
 ## What changed on the branch (all benchmark-gated)
+
 `sp3-prompt-engineering` (5 commits off `main`):
+
 - (a) deleted `ToolDialect` + the redundant hand-written `<tools>` block & call-format teaching — tools now come solely
   from the server's `--jinja` template (the API `tools` array). **Biggest prompt-byte change / likeliest regression source.**
 - (b) structured `<state_snapshot>` compaction summary prompt (was a one-sentence prompt).
@@ -18,6 +20,7 @@ The **`_planned` tiers** drive production's exact prompt + plan machine — thos
 **tier4_planned** (`score=N/20` in the `[metrics]` line).
 
 ## Prereqs (same as the cutover runbook)
+
 - Qwen3.5 model on disk: `~/Library/Application Support/app.doce.desktop/models/qwen3.5-4b-q4_k_m.gguf`
   (see `benchmark-cutover-gate.md` §1 to download; sha256 `00fe7986...ef11a4`).
 - Sidecar binary built at `src-tauri/binaries/llama-server-aarch64-apple-darwin`.
@@ -29,8 +32,8 @@ The **`_planned` tiers** drive production's exact prompt + plan machine — thos
 byte-identical run.** Same score, same turn count, same tool calls, same prompt on every turn.
 Measured: two seed-11 runs, both `score=20/20 turns=50`, with all 50 per-turn prompt digests
 identical. Before that fix the same seed on identical code swung `0/20 / 10/20 / 20/20` — the
-`seed=N` in the metrics line pinned the *sampler* while two random values (the `tempfile`
-scratch-dir path, and `run_loop`'s per-tool-call UUIDv7) re-rolled the *prompt bytes* every run.
+`seed=N` in the metrics line pinned the _sampler_ while two random values (the `tempfile`
+scratch-dir path, and `run_loop`'s per-tool-call UUIDv7) re-rolled the _prompt bytes_ every run.
 
 What this changes for you:
 
@@ -40,7 +43,7 @@ What this changes for you:
   its 20/20 ceiling and can therefore only detect regressions. Compare turn counts.
 - **A same-seed re-run that does NOT reproduce is a BUG, not noise.** It means the environment
   moved (toolchain, model file, sidecar binary). Investigate before trusting any number.
-- **You still need multiple seeds.** Determinism removed *measurement* noise, not trajectory
+- **You still need multiple seeds.** Determinism removed _measurement_ noise, not trajectory
   luck. Any prompt change alters the prompt bytes and therefore re-rolls the trajectory, so one
   seed is still one sample. Keep the 3-seed protocol below — each seed is now a clean sample
   instead of a noisy one, which is what makes a 3-seed comparison meaningful at all.
@@ -48,21 +51,25 @@ What this changes for you:
   a machine, never across machines.
 
 ### Debugging a run that won't reproduce
+
 Every turn prints `[prompt] <label> turn=N bytes=… fnv1a=…` over the exact JSON sent to the
 server. Diff the two runs' `[prompt]` streams:
+
 ```bash
 diff <(grep '\[prompt\]' run1.log) <(grep '\[prompt\]' run2.log)
 ```
+
 - **First line differs** → an input is still run-to-run random. Hunt for a fresh path, id, or
   timestamp reaching the prompt.
 - **Agree to turn N, then diverge** → the prompt is reproducible; the residual is llama.cpp's
-  own (batching/threading/float non-associativity). That wall has *not* been hit here (the
+  own (batching/threading/float non-associativity). That wall has _not_ been hit here (the
   sidecar already runs `-np 1` with a fresh server per test), but if it ever is, the levers are
   pinned `--n-threads`, `--parallel 1`, or temp-0 sampling.
 
 See `.superpowers/sdd/bench-determinism-report.md` for the full diagnosis.
 
 ## 1. NEW prompts (branch)
+
 ```bash
 cd <repo-root>
 git checkout sp3-prompt-engineering
@@ -73,10 +80,12 @@ for s in 11 22 33; do
     --ignored --test-threads=1 --nocapture tier4_planned 2>&1 | grep '\[metrics\]'
 done
 ```
+
 Record the three `score=N/20` **and `turns=N`** lines; take the **median**. Call it `NEW`.
 (One run per seed — see §0. Re-running a seed returns the identical number.)
 
 ## 2. BASELINE prompts (main)
+
 ```bash
 cd <repo-root>
 git checkout main
@@ -87,12 +96,14 @@ for s in 11 22 33; do
     --ignored --test-threads=1 --nocapture tier4_planned 2>&1 | grep '\[metrics\]'
 done
 ```
+
 Median = `BASE`.
 
 (Same model, same seeds, only the prompt bytes differ between the two checkouts — so any score delta is attributable to
 the prompt rework.)
 
 ## 3. Decide
+
 - **`NEW >= BASE`** → PASS. Merge the branch to `main`:
   ```bash
   git checkout main && git merge --no-ff sp3-prompt-engineering
@@ -103,11 +114,12 @@ the prompt rework.)
   revise or drop just that commit and re-gate. (b)/(c)/(d) are small and independently revertable.
 
 ## Notes
+
 - Optionally also eyeball **tier5_planned** (harder multi-step) and the non-scored planned tiers for gross breakage
   (e.g. the model no longer emitting valid tool calls — which would show as `score=0` and would implicate (a)'s removal
   of the hand-written call-format teaching, though the `--jinja` template should supply it).
 - Seeds still select among trajectories; a 1-point median difference is not a regression. Look for a consistent,
-  multi-point gap. What is *no longer* true: that a repeat of the same seed can disagree with itself (see §0).
+  multi-point gap. What is _no longer_ true: that a repeat of the same seed can disagree with itself (see §0).
 
 ---
 
@@ -133,13 +145,14 @@ before `16f206f` is not comparable to one taken after. Do not use the table abov
 a baseline.**
 
 ### ⚠️ SUPERSEDED — tier4_planned @ `a108dbf`, measured on the NOISY harness
+
 Production Qwen3.5-4B (sha256 `00fe7986...ef11a4`), real output clamp:
 
-| seed | score | turns |
-|---|---|---|
-| 11 | 20/20 | 42 |
-| 22 | 20/20 | 80 |
-| 33 | 20/20 | 71 |
+| seed       | score     | turns                      |
+| ---------- | --------- | -------------------------- |
+| 11         | 20/20     | 42                         |
+| 22         | 20/20     | 80                         |
+| 33         | 20/20     | 71                         |
 | **median** | **20/20** | 3/3 perfect, no truncation |
 
 **These numbers were taken before the harness was reproducible, and each is one draw from a
@@ -164,13 +177,14 @@ length-preserving, so token counts and difficulty are unchanged — see
 the 20 bugs, the scoring, the tool set and every prompt are untouched.
 
 ### tier4_planned @ `bench-determinism`
+
 Production Qwen3.5-4B (sha256 `00fe7986...ef11a4`), on the reproducible harness:
 
-| seed | score | turns | reproduces? |
-|---|---|---|---|
-| 11 | 20/20 | 50 | ✅ **3/3 runs identical** — all 50 per-turn prompt digests and the full tool-call trace byte-identical |
-| 22 | 20/20 | 54 | control: a different trajectory, so the seed still steers the run |
-| 33 | — | — | not measured |
+| seed | score | turns | reproduces?                                                                                            |
+| ---- | ----- | ----- | ------------------------------------------------------------------------------------------------------ |
+| 11   | 20/20 | 50    | ✅ **3/3 runs identical** — all 50 per-turn prompt digests and the full tool-call trace byte-identical |
+| 22   | 20/20 | 54    | control: a different trajectory, so the seed still steers the run                                      |
+| 33   | —     | —     | not measured                                                                                           |
 
 Compare future prompt work against THIS, and prefer **turns** to **score**: tier 4 is at its
 20/20 ceiling so score can only detect regressions, while turns is now noiseless and moves
@@ -180,7 +194,7 @@ A same-seed re-run must return its exact line. If it doesn't, the environment ch
 that before reading any result.
 
 Seed 11's `turns=42` in the superseded table above is **not** comparable to `turns=50` here:
-the fix necessarily changed the prompt *bytes* (a fixed scratch-dir name and fixed tool-call
-ids are still different bytes, though deliberately the same *length* — so difficulty is
+the fix necessarily changed the prompt _bytes_ (a fixed scratch-dir name and fixed tool-call
+ids are still different bytes, though deliberately the same _length_ — so difficulty is
 unchanged; see the report for the arithmetic). The old 42 was one draw from a noisy process
 regardless.

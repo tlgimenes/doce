@@ -1,10 +1,6 @@
 import { useEffect, useState } from "react";
 import { Checkbox } from "@/components/ui/checkbox";
-import {
-  Marker,
-  MarkerContent,
-  MarkerIcon,
-} from "@/components/ui/marker";
+import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
 import {
   MessageScroller,
   MessageScrollerContent,
@@ -104,7 +100,9 @@ export function PlanTrackerCard({ plan }: { plan: PlanSnapshot }) {
       >
         <span>
           {queuedCount > 0 ? (
-            <>{doneCount} done · {queuedCount} queued</>
+            <>
+              {doneCount} done · {queuedCount} queued
+            </>
           ) : (
             <>{doneCount} completed</>
           )}
@@ -134,11 +132,7 @@ export function PlanTrackerCard({ plan }: { plan: PlanSnapshot }) {
                       data-testid="plan-step"
                     >
                       <MarkerIcon>
-                        <Checkbox
-                          checked={step.done}
-                          className="size-3.5 shrink-0"
-                          disabled
-                        />
+                        <Checkbox checked={step.done} className="size-3.5 shrink-0" disabled />
                       </MarkerIcon>
                       <MarkerContent className="min-w-0">
                         <span

@@ -25,10 +25,12 @@
 ### Task 1: Replace the collapsible tracker with a three-row Marker list
 
 **Files:**
+
 - Modify: `src/views/workspace/PlanTracker.test.tsx`
 - Modify: `src/views/workspace/PlanTracker.tsx`
 
 **Interfaces:**
+
 - Consumes: `PlanSnapshot` with `steps: Array<{ description: string; done: boolean }>` and `currentStepIndex: number | null`.
 - Consumes: `Marker`, `MarkerIcon`, `MarkerContent`, `Checkbox`, and the Shadcn `MessageScroller` primitives.
 - Produces: `PlanTrackerCard({ plan }: { plan: PlanSnapshot })`, retaining `data-testid="plan-tracker"` and one `data-testid="plan-step"` per source step.
@@ -168,11 +170,7 @@ export function PlanTrackerCard({ plan }: { plan: PlanSnapshot }) {
                       data-testid="plan-step"
                     >
                       <MarkerIcon>
-                        <Checkbox
-                          checked={step.done}
-                          className="size-3.5 shrink-0"
-                          disabled
-                        />
+                        <Checkbox checked={step.done} className="size-3.5 shrink-0" disabled />
                       </MarkerIcon>
                       <MarkerContent className="min-w-0">
                         <span
@@ -231,12 +229,14 @@ git commit -m "refactor(chat): flatten plan tracker task list"
 ### Task 2: Add the plan status header
 
 **Files:**
+
 - Modify: `src/views/workspace/PlanTracker.test.tsx`
 - Modify: `src/views/workspace/PlanTracker.tsx`
 - Modify: `docs/superpowers/specs/2026-07-14-plan-tracker-flat-list-design.md`
 - Modify: `docs/superpowers/plans/2026-07-14-plan-tracker-flat-list.md`
 
 **Interfaces:**
+
 - Consumes: `plan.steps`, where each step has a `done: boolean` field.
 - Produces: a `data-testid="plan-status"` header before `data-testid="plan-task-scroller"`.
 - Produces: `{doneCount} done · {queuedCount} queued` while unfinished tasks remain, or `{doneCount} completed` when none remain; no separate overall-status label is rendered.
@@ -258,9 +258,7 @@ it("renders done and queued counts on the left above the task list", async () =>
   expect(status.firstElementChild).not.toHaveClass("ml-auto");
 
   const scroller = screen.getByTestId("plan-task-scroller");
-  expect(
-    status.compareDocumentPosition(scroller) & Node.DOCUMENT_POSITION_FOLLOWING,
-  ).toBeTruthy();
+  expect(status.compareDocumentPosition(scroller) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
 
 it("omits the queued count when every task is done", async () => {
@@ -305,13 +303,12 @@ const queuedCount = plan.steps.length - doneCount;
 Inside the existing `data-testid="plan-tracker"` container, immediately before `MessageScrollerProvider`, add:
 
 ```tsx
-<div
-  className="px-2.5 py-0 text-xs tabular-nums text-muted-foreground"
-  data-testid="plan-status"
->
+<div className="px-2.5 py-0 text-xs tabular-nums text-muted-foreground" data-testid="plan-status">
   <span>
     {queuedCount > 0 ? (
-      <>{doneCount} done · {queuedCount} queued</>
+      <>
+        {doneCount} done · {queuedCount} queued
+      </>
     ) : (
       <>{doneCount} completed</>
     )}

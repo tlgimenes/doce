@@ -125,9 +125,10 @@ pub const SUMMARY_MAX_TOKENS: i32 = (CONTEXT_WINDOW_TOKENS / 8) as i32;
 /// treats a TRAILING ASSISTANT MESSAGE as a prefill to continue, not as
 /// context to act on. `messages_to_summarize` returns an arbitrary slice of
 /// history that routinely ENDS WITH an assistant message, so before the
-/// 2026-07-15 real-model pass the request was `[system(SUMMARIZATION_PROMPT)]
-/// + span` and nothing else -- and the model simply closed out the span's last
-/// assistant sentence (measured: `reasoning_len=0`, and the "summary" came back
+/// 2026-07-15 real-model pass the request was
+/// `[system(SUMMARIZATION_PROMPT)] + span` and nothing else -- and the model
+/// simply closed out the span's last assistant sentence (measured:
+/// `reasoning_len=0`, and the "summary" came back
 /// as that message echoed verbatim plus a tacked-on clause). That echo is
 /// non-empty, not truncated, and smaller than the span it replaces, so
 /// `evaluate_summary` ACCEPTED it: tier-2 compaction did not fail loudly, it

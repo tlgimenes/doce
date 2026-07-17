@@ -314,7 +314,7 @@ pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
                 name: delegate_name.to_string(),
                 arguments: call.arguments.clone(),
             };
-            return execute(&delegated, cwd);
+            execute(&delegated, cwd)
         }
         "Read" => {
             // validate_required_args already guaranteed file_path is present
