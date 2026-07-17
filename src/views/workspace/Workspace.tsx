@@ -216,6 +216,13 @@ export default function Workspace({
   // send completion) — the final answer's own event flips it back off.
   const [backendTurnActive, setBackendTurnActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // observer-verified completion + goals (composer relocation): the
+  // conversation's current goal, fetched below and passed to the main
+  // RichInput's `goal` prop. `null` means "no goal set" (the resolved,
+  // steady state) — also the value used on a failed/unavailable fetch (see
+  // the effect below), matching the old topbar `GoalBar`'s own
+  // never-crash-on-a-failed-invoke guard.
+  const [goal, setGoal] = useState<string | null>(null);
   const isMountedRef = useRef(true);
   const genericStatusFallbackStartedAtRef = useRef<number | null>(null);
   const currentConversationIdRef = useRef(conversationId);
@@ -328,6 +335,59 @@ export default function Workspace({
       cancelled = true;
     };
   }, [conversationId, syncBackendTurnActive]);
+
+  // observer-verified completion + goals (composer relocation): load the
+  // conversation's goal on mount / whenever the active conversation
+  // changes, feeding the main RichInput's `goal.current`. RESILIENCE:
+  // wrapped in try/catch, defaulting to `null` on any throw — a test's
+  // `commands` mock may not stub `getConversationGoal` at all (a missing
+  // mock property calling it throws synchronously, "not a function",
+  // before any Promise even exists to `.catch()`), and this fetch must
+  // never crash the workspace either way. Mirrors the old topbar
+  // `GoalBar.tsx`'s own guard exactly.
+  useEffect(() => {
+    let cancelled = false;
+    setGoal(null);
+    try {
+      commands
+        .getConversationGoal(conversationId)
+        .then((loadedGoal) => {
+          if (cancelled || currentConversationIdRef.current !== conversationId) return;
+          setGoal(loadedGoal);
+        })
+        .catch(() => {
+          if (!cancelled) setGoal(null);
+        });
+    } catch {
+      setGoal(null);
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [conversationId]);
+
+  // Sets (non-empty string) or clears (`null`) the conversation's goal —
+  // updates local state optimistically, then persists via
+  // `setConversationGoal` best-effort (same try/catch-around-the-call
+  // guard as the read path above, for the same reason: a test/host that
+  // hasn't stubbed this command must not crash the composer).
+  const handleSetGoal = useCallback(
+    (nextGoal: string | null) => {
+      setGoal(nextGoal);
+      try {
+        commands.setConversationGoal(conversationId, nextGoal).catch(() => {
+          // Best-effort — the optimistic local state is left in place even
+          // if the persist call fails; a reload would reveal the mismatch,
+          // exactly as it would have if `GoalBar.save()`'s own failure path
+          // had reverted (it deliberately did not).
+        });
+      } catch {
+        // `setConversationGoal` missing/unavailable — ignore, matching the
+        // read-path guard.
+      }
+    },
+    [conversationId],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -635,6 +695,7 @@ export default function Workspace({
                 placeholder="Describe a task…"
                 inputTestId="agent-input"
                 submitTestId="agent-send"
+                goal={{ current: goal, onSet: handleSetGoal }}
               />
             )}
           </div>

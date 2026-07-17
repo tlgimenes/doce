@@ -676,3 +676,197 @@ describe("RichInput (009-rich-chat-input, US2 — paste-collapse)", () => {
     ]);
   });
 });
+
+/**
+ * Composer relocation of the old topbar GoalBar (goal-composer-ui-brief.md):
+ * the ◎ toggle, "send as goal" submit branch, and the "Pursuing goal" banner
+ * are all opt-in via the `goal` prop — omitted on surfaces (EmptyState,
+ * UserAskWidget) that don't pass it, and otherwise wired straight into
+ * `submitCurrentContent`'s existing Enter/click submit paths.
+ */
+describe("RichInput (goal-composer-ui — conversation goal in the composer)", () => {
+  it("does not render the goal toggle when the goal prop is omitted", () => {
+    render(
+      <RichInput
+        onSubmit={vi.fn()}
+        skillsEnabled={false}
+        disabled={false}
+        placeholder="p"
+        inputTestId="test-input"
+        submitTestId="test-submit"
+      />,
+    );
+
+    expect(screen.queryByTestId("rich-input-goal-toggle")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("rich-input-goal-banner")).not.toBeInTheDocument();
+  });
+
+  it("renders the goal toggle when the goal prop is given, idle (not pressed) by default", () => {
+    render(
+      <RichInput
+        onSubmit={vi.fn()}
+        skillsEnabled={false}
+        disabled={false}
+        placeholder="p"
+        inputTestId="test-input"
+        submitTestId="test-submit"
+        goal={{ current: null, onSet: vi.fn() }}
+      />,
+    );
+
+    const toggle = screen.getByTestId("rich-input-goal-toggle");
+    expect(toggle).toBeInTheDocument();
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("clicking the goal toggle enters goal mode: the toggle shows pressed + a Goal label, and the send button's aria-label becomes 'Send as goal'", async () => {
+    render(
+      <RichInput
+        onSubmit={vi.fn()}
+        skillsEnabled={false}
+        disabled={false}
+        placeholder="p"
+        inputTestId="test-input"
+        submitTestId="test-submit"
+        goal={{ current: null, onSet: vi.fn() }}
+      />,
+    );
+
+    const toggle = screen.getByTestId("rich-input-goal-toggle");
+    await userEvent.click(toggle);
+
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    expect(toggle).toHaveTextContent("Goal");
+    expect(screen.getByTestId("test-submit")).toHaveAccessibleName("Send as goal");
+  });
+
+  it("submitting (Enter) while in goal mode calls goal.onSet with the typed text, NOT onSubmit, clears the editor, and exits goal mode", async () => {
+    const onSubmit = vi.fn();
+    const onSet = vi.fn();
+    render(
+      <RichInput
+        onSubmit={onSubmit}
+        skillsEnabled={false}
+        disabled={false}
+        placeholder="p"
+        inputTestId="test-input"
+        submitTestId="test-submit"
+        goal={{ current: null, onSet }}
+      />,
+    );
+
+    await userEvent.click(screen.getByTestId("rich-input-goal-toggle"));
+
+    const editable = screen.getByTestId("test-input");
+    await userEvent.click(editable);
+    await userEvent.type(editable, "Ship the login page{Enter}");
+
+    expect(onSet).toHaveBeenCalledTimes(1);
+    expect(onSet).toHaveBeenCalledWith("Ship the login page");
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(editable).toHaveTextContent("");
+    // Goal mode is exited after a successful "send as goal" — the toggle
+    // reverts to idle and the send button's label reverts too.
+    expect(screen.getByTestId("rich-input-goal-toggle")).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByTestId("test-submit")).toHaveAccessibleName("Send message");
+  });
+
+  it("submitting (the send button) while in goal mode also routes to goal.onSet instead of onSubmit", async () => {
+    const onSubmit = vi.fn();
+    const onSet = vi.fn();
+    render(
+      <RichInput
+        onSubmit={onSubmit}
+        skillsEnabled={false}
+        disabled={false}
+        placeholder="p"
+        inputTestId="test-input"
+        submitTestId="test-submit"
+        goal={{ current: null, onSet }}
+      />,
+    );
+
+    await userEvent.click(screen.getByTestId("rich-input-goal-toggle"));
+    const editable = screen.getByTestId("test-input");
+    await userEvent.click(editable);
+    await userEvent.type(editable, "Ship the login page");
+    await userEvent.click(screen.getByTestId("test-submit"));
+
+    expect(onSet).toHaveBeenCalledWith("Ship the login page");
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("a set goal.current renders the 'Pursuing goal' banner with the goal text", () => {
+    render(
+      <RichInput
+        onSubmit={vi.fn()}
+        skillsEnabled={false}
+        disabled={false}
+        placeholder="p"
+        inputTestId="test-input"
+        submitTestId="test-submit"
+        goal={{ current: "Ship the login page", onSet: vi.fn() }}
+      />,
+    );
+
+    const banner = screen.getByTestId("rich-input-goal-banner");
+    expect(banner).toHaveTextContent("Pursuing goal");
+    expect(banner).toHaveTextContent("Ship the login page");
+    expect(screen.getByTestId("rich-input-goal-edit")).toBeInTheDocument();
+    expect(screen.getByTestId("rich-input-goal-delete")).toBeInTheDocument();
+  });
+
+  it("no banner is rendered when goal.current is null, even with the goal prop present", () => {
+    render(
+      <RichInput
+        onSubmit={vi.fn()}
+        skillsEnabled={false}
+        disabled={false}
+        placeholder="p"
+        inputTestId="test-input"
+        submitTestId="test-submit"
+        goal={{ current: null, onSet: vi.fn() }}
+      />,
+    );
+
+    expect(screen.queryByTestId("rich-input-goal-banner")).not.toBeInTheDocument();
+  });
+
+  it("the banner's delete button calls goal.onSet(null)", async () => {
+    const onSet = vi.fn();
+    render(
+      <RichInput
+        onSubmit={vi.fn()}
+        skillsEnabled={false}
+        disabled={false}
+        placeholder="p"
+        inputTestId="test-input"
+        submitTestId="test-submit"
+        goal={{ current: "Ship the login page", onSet }}
+      />,
+    );
+
+    await userEvent.click(screen.getByTestId("rich-input-goal-delete"));
+
+    expect(onSet).toHaveBeenCalledWith(null);
+  });
+
+  it("the banner's edit button prefills the editor with the goal text and enters goal mode", async () => {
+    render(
+      <RichInput
+        onSubmit={vi.fn()}
+        skillsEnabled={false}
+        disabled={false}
+        placeholder="p"
+        inputTestId="test-input"
+        submitTestId="test-submit"
+        goal={{ current: "Ship the login page", onSet: vi.fn() }}
+      />,
+    );
+
+    await userEvent.click(screen.getByTestId("rich-input-goal-edit"));
+
+    expect(screen.getByTestId("test-input")).toHaveTextContent("Ship the login page");
+    expect(screen.getByTestId("rich-input-goal-toggle")).toHaveAttribute("aria-pressed", "true");
+  });
+});

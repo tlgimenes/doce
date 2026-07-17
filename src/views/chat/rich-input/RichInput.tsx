@@ -5,7 +5,7 @@ import { Placeholder } from "@tiptap/extension-placeholder";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
-import { ArrowUp, Plus, Square } from "lucide-react";
+import { ArrowUp, Pencil, Plus, Square, Target, Trash2 } from "lucide-react";
 import { InputGroup, InputGroupAddon, InputGroupButton } from "@/components/ui/input-group";
 import { cn } from "@/lib/cn";
 import { commands, type RichMessageContent } from "@/lib/ipc";
@@ -143,6 +143,20 @@ export interface RichInputProps {
    * concerns — callers own which gauge/component renders here, if any.
    */
   contextGauge?: ReactNode;
+  /**
+   * Optional conversation-goal control (relocated here from the topbar's
+   * old `GoalBar.tsx`). When present, the composer shows a ◎ Goal toggle
+   * in its toolbar (near the attach button) and, once a goal is set, a
+   * "Pursuing goal" banner above the input. Omitted on surfaces that have
+   * no goal to manage (`EmptyState.tsx`, `UserAskWidget.tsx`) — those keep
+   * rendering exactly as before.
+   */
+  goal?: {
+    /** The active goal, or `null` if none is set. */
+    current: string | null;
+    /** Set (non-empty string) or clear (`null`) the conversation's goal. */
+    onSet: (goal: string | null) => void;
+  };
 }
 
 /**
@@ -189,9 +203,25 @@ export default function RichInput({
   onStop,
   autoFocusToken,
   contextGauge,
+  goal,
 }: RichInputProps) {
   const onSubmitRef = useRef(onSubmit);
   const placeholderRef = useRef(placeholder);
+  // `goal` mirrors `onSubmit`'s own ref pattern (see the comment on
+  // `onSubmitRef` below): `submitCurrentContent` is captured once, at
+  // editor-creation time, by `handleKeyDown` inside the `useEditor()` config
+  // (deps=[]), so anything it reads that can change across renders — the
+  // `goal` prop itself (a fresh object literal each render) and the
+  // `goalMode` toggle state — has to come from a ref, not a closed-over
+  // binding, or Enter-to-send would forever see this component's first
+  // render's values.
+  const goalRef = useRef(goal);
+  const [goalMode, setGoalModeState] = useState(false);
+  const goalModeRef = useRef(goalMode);
+  const setGoalMode = (next: boolean) => {
+    goalModeRef.current = next;
+    setGoalModeState(next);
+  };
   // handleKeyDown (below) is part of the config object passed to
   // useEditor(), which is only ever evaluated on the editor's one-time
   // creation — it can't close over the `editor` binding useEditor returns
@@ -213,6 +243,10 @@ export default function RichInput({
   useEffect(() => {
     placeholderRef.current = placeholder;
   }, [placeholder]);
+
+  useEffect(() => {
+    goalRef.current = goal;
+  }, [goal]);
 
   const insertAttachment = (attrs: AttachmentAttrs) => {
     editorRef.current?.chain().focus().insertContent({ type: "attachment", attrs }).run();
@@ -370,8 +404,41 @@ export default function RichInput({
     // rule, not the flat string's emptiness.
     const hasNonTextSegment = richContent.segments.some((segment) => segment.type !== "text");
     if (!text && !hasNonTextSegment) return;
+    // Goal mode (composer relocation of the old topbar GoalBar): submitting
+    // while the ◎ toggle is ON re-routes the current content to
+    // `goal.onSet` instead of the normal `onSubmit` turn path — "send as
+    // goal" rather than "send as message". Branches here, before the
+    // existing `onSubmitRef.current(...)` call, so every other submit path
+    // (Enter, the send button click) is unaffected when goal mode is off.
+    if (goalModeRef.current && goalRef.current) {
+      goalRef.current.onSet(text || null);
+      editor.commands.clearContent(true);
+      setGoalMode(false);
+      return;
+    }
     onSubmitRef.current(text, hasNonTextSegment ? richContent : undefined);
     editor.commands.clearContent(true);
+  };
+
+  const toggleGoalMode = () => {
+    if (disabled) return;
+    setGoalMode(!goalMode);
+  };
+
+  const startEditingGoal = () => {
+    const editor = editorRef.current;
+    if (editor) {
+      editor.commands.clearContent(true);
+      if (goal?.current) {
+        editor.commands.insertContent(goal.current);
+      }
+      editor.commands.focus("end");
+    }
+    setGoalMode(true);
+  };
+
+  const deleteGoal = () => {
+    goal?.onSet(null);
   };
 
   const editor = useEditor({
@@ -501,6 +568,40 @@ export default function RichInput({
 
   return (
     <div className="flex flex-col gap-1">
+      {/* Composer relocation of the old topbar GoalBar: a compact banner
+          above the input, shown only once a goal is actually set. Styled
+          like this file's other chip surfaces (`pasted-text-node.tsx`'s
+          `rounded-lg border border-border bg-card` chip), not a new
+          convention. */}
+      {goal?.current && (
+        <div
+          className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-1.5 text-xs text-muted-foreground"
+          data-testid="rich-input-goal-banner"
+        >
+          <Target size={14} className="shrink-0 text-primary" />
+          <span className="min-w-0 flex-1 truncate">
+            <span className="font-medium text-foreground">Pursuing goal</span> {goal.current}
+          </span>
+          <button
+            type="button"
+            onClick={startEditingGoal}
+            className="shrink-0 rounded p-1 hover:bg-muted hover:text-foreground"
+            aria-label="Edit goal"
+            data-testid="rich-input-goal-edit"
+          >
+            <Pencil size={12} />
+          </button>
+          <button
+            type="button"
+            onClick={deleteGoal}
+            className="shrink-0 rounded p-1 hover:bg-destructive/10 hover:text-destructive"
+            aria-label="Delete goal"
+            data-testid="rich-input-goal-delete"
+          >
+            <Trash2 size={12} />
+          </button>
+        </div>
+      )}
       <InputGroup
         className={cn(
           "border-transparent bg-secondary shadow-none focus-within:shadow-sm",
@@ -563,6 +664,28 @@ export default function RichInput({
           >
             <Plus size={16} />
           </InputGroupButton>
+          {/* Composer relocation of the old topbar GoalBar (reference design's
+              ◎ toggle): idle = ghost icon; ON = accent-colored (variant
+              "default") with a "Goal" label beside the icon, matching the
+              reference's second state. Only rendered when the caller opted
+              in via the `goal` prop (Workspace.tsx's main composer) — omitted
+              entirely on surfaces with no goal to manage. */}
+          {goal && (
+            <InputGroupButton
+              size={goalMode ? "xs" : "icon-xs"}
+              variant={goalMode ? "default" : "ghost"}
+              className="aria-disabled:opacity-50"
+              onClick={toggleGoalMode}
+              disabled={disabled && !isGenerating}
+              aria-disabled={disabled}
+              aria-pressed={goalMode}
+              aria-label={goalMode ? "Exit goal mode" : "Set as goal"}
+              data-testid="rich-input-goal-toggle"
+            >
+              <Target size={16} />
+              {goalMode && "Goal"}
+            </InputGroupButton>
+          )}
           {contextGauge}
           {isGenerating ? (
             // Generation-cancellation (Task 4.2b): a plain icon swap in the
@@ -588,7 +711,11 @@ export default function RichInput({
               onClick={submitCurrentContent}
               disabled={disabled}
               aria-disabled={disabled || isEmpty}
-              aria-label="Send message"
+              // Goal mode changes the send button's intent — submitting
+              // sets the conversation goal instead of sending a message
+              // (see submitCurrentContent's goalModeRef branch above).
+              aria-label={goal && goalMode ? "Send as goal" : "Send message"}
+              title={goal && goalMode ? "Send as goal" : undefined}
               data-testid={submitTestId}
             >
               <ArrowUp size={16} />
