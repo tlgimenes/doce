@@ -28,6 +28,9 @@ jobs:
         with:
           workspaces: src-tauri -> target
 
+      # tauri_build needs the sidecar to exist even for `cargo clippy`/`test`.
+      - uses: ./.github/actions/build-llama-sidecar
+
       - name: cargo fmt --check
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 
@@ -78,6 +81,8 @@ jobs:
           cache: npm
 
       - run: npm ci
+
+      - uses: ./.github/actions/build-llama-sidecar
 
       # No separate build step: `npm run test:e2e`'s own `pretest:e2e` hook
       # (tests/e2e/build-for-e2e.sh) builds both frontend and backend with
@@ -144,6 +149,8 @@ jobs:
           cache: npm
 
       - run: npm ci
+
+      - uses: ./.github/actions/build-llama-sidecar
 
       # T091 finding: Tauri's dmg bundler shells out to `create-dmg`, which
       # is not preinstalled by default and isn't a cargo/npm dependency —
