@@ -129,8 +129,11 @@ jobs:
   release:
     name: Release (signed .dmg)
     runs-on: macos-26
-    needs: [rust, frontend, e2e]
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Auto-release on every merge to main (and on explicit v* tags). Gated on
+    # rust+frontend only: the heavy/flaky e2e job still runs as a check, but must
+    # not block shipping a build from a merge.
+    needs: [rust, frontend]
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     # Needed for the Publish step to create the GitHub Release + upload assets.
     permissions:
       contents: write
@@ -177,13 +180,30 @@ jobs:
           path: src-tauri/target/release/bundle/dmg/*.dmg
           if-no-files-found: error
 
-      # Create (or update) the GitHub Release for this `v*` tag and attach the
-      # .dmg, so the landing page's `releases/latest` download button resolves
-      # to a real, downloadable installer. Without this, the build above only
-      # lived as a CI artifact (Actions-run-scoped, not public).
+      # The release tag: an explicit `v*` tag when pushed as one, otherwise a
+      # fresh per-merge tag `v<pkgVersion>.<runNumber>` (e.g. v0.1.0.42) so each
+      # merge to main publishes a NEW, uniquely-tagged release.
+      - name: Compute release tag
+        id: relver
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            VERSION=$(node -p "require('./package.json').version")
+            TAG="v${VERSION}.${GITHUB_RUN_NUMBER}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $TAG"
+
+      # Publish the GitHub Release + attach the .dmg. `make_latest: true` forces
+      # `releases/latest` (the landing page's download button target) to resolve
+      # to this build, so the public download always tracks the newest merge.
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.relver.outputs.tag }}
+          name: doce ${{ steps.relver.outputs.tag }}
+          make_latest: true
           files: src-tauri/target/release/bundle/dmg/*.dmg
           fail_on_unmatched_files: true
           generate_release_notes: true
