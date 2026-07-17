@@ -13,8 +13,9 @@ No account. No API key. No cloud. Open the app and start building.
 [![Platform](https://img.shields.io/badge/macOS%2013%2B-Apple%20Silicon-lightgrey?logo=apple)](https://github.com/tlgimenes/doce/releases/latest)
 [![CI](https://github.com/tlgimenes/doce/actions/workflows/ci.yml/badge.svg)](https://github.com/tlgimenes/doce/actions/workflows/ci.yml)
 [![Built with Rust + Tauri](https://img.shields.io/badge/built%20with-Rust%20%2B%20Tauri-dea584?logo=rust)](https://tauri.app)
+[![Website](https://img.shields.io/badge/website-doce-black?logo=github)](https://tlgimenes.github.io/doce/)
 
-### [⬇&nbsp; Download the latest release](https://github.com/tlgimenes/doce/releases/latest)
+### [⬇&nbsp; Download the latest release](https://github.com/tlgimenes/doce/releases/latest) &nbsp;·&nbsp; [🌐&nbsp; Website](https://tlgimenes.github.io/doce/)
 
 </div>
 
