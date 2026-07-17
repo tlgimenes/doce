@@ -22,7 +22,10 @@ runs:
         mkdir -p src-tauri/binaries
         # A real (arm64 Mach-O) executable so any existence/exec check passes;
         # tauri_build only needs the file present for `cargo clippy`/`test`.
-        cp "$(command -v true)" src-tauri/binaries/llama-server-aarch64-apple-darwin
+        # NB: copy `cat` (a real /bin file), NOT `true` — `true` is a shell
+        # builtin so `command -v true` prints "true", not a path, and the copy
+        # would fail.
+        cp "$(command -v cat)" src-tauri/binaries/llama-server-aarch64-apple-darwin
         chmod +x src-tauri/binaries/llama-server-aarch64-apple-darwin
 
     - name: Restore sidecar from cache
