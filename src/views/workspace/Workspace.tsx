@@ -605,6 +605,28 @@ export default function Workspace({
     [conversationId, pendingToolCall, refreshMessages, turnInFlight],
   );
 
+  // "Send as goal": persist the goal, THEN start a turn to pursue it (the goal
+  // text becomes the turn's message). Setting a goal on an idle conversation
+  // should actually begin work, not silently wait for the next manual send
+  // (which is what a persist-only `handleSetGoal` did). The persist is AWAITED
+  // before `send` because the loop reads the goal from the DB at task start
+  // (`send_agent_message` -> `Plan.goal`); sending first would race it. `send`
+  // already no-ops while a turn is in flight, so this is idle-only by
+  // construction. Defined AFTER `send` so it can list it as a dependency.
+  const handleSendAsGoal = useCallback(
+    async (text: string) => {
+      setGoal(text);
+      try {
+        await commands.setConversationGoal(conversationId, text);
+      } catch {
+        // Best-effort persist (same guard as handleSetGoal); still start the
+        // turn so the user's intent isn't dropped on a persist hiccup.
+      }
+      send(text);
+    },
+    [conversationId, send],
+  );
+
   // Generation-cancellation (Task 4.2b): fire-and-forget stop of the running
   // turn, following the same invoke convention as `send`/`/compact`. A user's
   // own stop must NEVER paint an error banner, so failures are only logged —
@@ -695,7 +717,7 @@ export default function Workspace({
                 placeholder="Describe a task…"
                 inputTestId="agent-input"
                 submitTestId="agent-send"
-                goal={{ current: goal, onSet: handleSetGoal }}
+                goal={{ current: goal, onSet: handleSetGoal, onSendAsGoal: handleSendAsGoal }}
               />
             )}
           </div>

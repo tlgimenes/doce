@@ -154,8 +154,19 @@ export interface RichInputProps {
   goal?: {
     /** The active goal, or `null` if none is set. */
     current: string | null;
-    /** Set (non-empty string) or clear (`null`) the conversation's goal. */
+    /**
+     * Persist the goal WITHOUT starting a turn — used by the banner's edit
+     * (update the north-star) and delete (`null`, clear it). Never launches
+     * the agent.
+     */
     onSet: (goal: string | null) => void;
+    /**
+     * "Send as goal": persist the goal AND kick off an agent turn to pursue
+     * it (the goal text becomes the turn's message). This is what makes
+     * setting a goal on an idle conversation actually start work, rather than
+     * silently waiting for the next manual message.
+     */
+    onSendAsGoal: (goal: string) => void;
   };
 }
 
@@ -405,13 +416,19 @@ export default function RichInput({
     const hasNonTextSegment = richContent.segments.some((segment) => segment.type !== "text");
     if (!text && !hasNonTextSegment) return;
     // Goal mode (composer relocation of the old topbar GoalBar): submitting
-    // while the ◎ toggle is ON re-routes the current content to
-    // `goal.onSet` instead of the normal `onSubmit` turn path — "send as
-    // goal" rather than "send as message". Branches here, before the
+    // while the ◎ toggle is ON re-routes the current content to the goal
+    // path instead of the normal `onSubmit` turn path — "send as goal"
+    // rather than "send as message". Non-empty text is sent as the goal AND
+    // kicks off a turn to pursue it (`onSendAsGoal`); an empty send in goal
+    // mode clears the goal (`onSet(null)`). Branches here, before the
     // existing `onSubmitRef.current(...)` call, so every other submit path
     // (Enter, the send button click) is unaffected when goal mode is off.
     if (goalModeRef.current && goalRef.current) {
-      goalRef.current.onSet(text || null);
+      if (text) {
+        goalRef.current.onSendAsGoal(text);
+      } else {
+        goalRef.current.onSet(null);
+      }
       editor.commands.clearContent(true);
       setGoalMode(false);
       return;

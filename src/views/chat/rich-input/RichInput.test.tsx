@@ -710,7 +710,7 @@ describe("RichInput (goal-composer-ui — conversation goal in the composer)", (
         placeholder="p"
         inputTestId="test-input"
         submitTestId="test-submit"
-        goal={{ current: null, onSet: vi.fn() }}
+        goal={{ current: null, onSet: vi.fn(), onSendAsGoal: vi.fn() }}
       />,
     );
 
@@ -728,7 +728,7 @@ describe("RichInput (goal-composer-ui — conversation goal in the composer)", (
         placeholder="p"
         inputTestId="test-input"
         submitTestId="test-submit"
-        goal={{ current: null, onSet: vi.fn() }}
+        goal={{ current: null, onSet: vi.fn(), onSendAsGoal: vi.fn() }}
       />,
     );
 
@@ -740,9 +740,10 @@ describe("RichInput (goal-composer-ui — conversation goal in the composer)", (
     expect(screen.getByTestId("test-submit")).toHaveAccessibleName("Send as goal");
   });
 
-  it("submitting (Enter) while in goal mode calls goal.onSet with the typed text, NOT onSubmit, clears the editor, and exits goal mode", async () => {
+  it("submitting (Enter) while in goal mode calls goal.onSendAsGoal with the typed text (persist + start a turn), NOT onSet or onSubmit, clears the editor, and exits goal mode", async () => {
     const onSubmit = vi.fn();
     const onSet = vi.fn();
+    const onSendAsGoal = vi.fn();
     render(
       <RichInput
         onSubmit={onSubmit}
@@ -751,7 +752,7 @@ describe("RichInput (goal-composer-ui — conversation goal in the composer)", (
         placeholder="p"
         inputTestId="test-input"
         submitTestId="test-submit"
-        goal={{ current: null, onSet }}
+        goal={{ current: null, onSet, onSendAsGoal }}
       />,
     );
 
@@ -761,8 +762,9 @@ describe("RichInput (goal-composer-ui — conversation goal in the composer)", (
     await userEvent.click(editable);
     await userEvent.type(editable, "Ship the login page{Enter}");
 
-    expect(onSet).toHaveBeenCalledTimes(1);
-    expect(onSet).toHaveBeenCalledWith("Ship the login page");
+    expect(onSendAsGoal).toHaveBeenCalledTimes(1);
+    expect(onSendAsGoal).toHaveBeenCalledWith("Ship the login page");
+    expect(onSet).not.toHaveBeenCalled();
     expect(onSubmit).not.toHaveBeenCalled();
     expect(editable).toHaveTextContent("");
     // Goal mode is exited after a successful "send as goal" — the toggle
@@ -771,9 +773,10 @@ describe("RichInput (goal-composer-ui — conversation goal in the composer)", (
     expect(screen.getByTestId("test-submit")).toHaveAccessibleName("Send message");
   });
 
-  it("submitting (the send button) while in goal mode also routes to goal.onSet instead of onSubmit", async () => {
+  it("submitting (the send button) while in goal mode also routes to goal.onSendAsGoal instead of onSubmit", async () => {
     const onSubmit = vi.fn();
     const onSet = vi.fn();
+    const onSendAsGoal = vi.fn();
     render(
       <RichInput
         onSubmit={onSubmit}
@@ -782,7 +785,7 @@ describe("RichInput (goal-composer-ui — conversation goal in the composer)", (
         placeholder="p"
         inputTestId="test-input"
         submitTestId="test-submit"
-        goal={{ current: null, onSet }}
+        goal={{ current: null, onSet, onSendAsGoal }}
       />,
     );
 
@@ -792,7 +795,7 @@ describe("RichInput (goal-composer-ui — conversation goal in the composer)", (
     await userEvent.type(editable, "Ship the login page");
     await userEvent.click(screen.getByTestId("test-submit"));
 
-    expect(onSet).toHaveBeenCalledWith("Ship the login page");
+    expect(onSendAsGoal).toHaveBeenCalledWith("Ship the login page");
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
@@ -805,7 +808,7 @@ describe("RichInput (goal-composer-ui — conversation goal in the composer)", (
         placeholder="p"
         inputTestId="test-input"
         submitTestId="test-submit"
-        goal={{ current: "Ship the login page", onSet: vi.fn() }}
+        goal={{ current: "Ship the login page", onSet: vi.fn(), onSendAsGoal: vi.fn() }}
       />,
     );
 
@@ -825,7 +828,7 @@ describe("RichInput (goal-composer-ui — conversation goal in the composer)", (
         placeholder="p"
         inputTestId="test-input"
         submitTestId="test-submit"
-        goal={{ current: null, onSet: vi.fn() }}
+        goal={{ current: null, onSet: vi.fn(), onSendAsGoal: vi.fn() }}
       />,
     );
 
@@ -842,7 +845,7 @@ describe("RichInput (goal-composer-ui — conversation goal in the composer)", (
         placeholder="p"
         inputTestId="test-input"
         submitTestId="test-submit"
-        goal={{ current: "Ship the login page", onSet }}
+        goal={{ current: "Ship the login page", onSet, onSendAsGoal: vi.fn() }}
       />,
     );
 
@@ -860,7 +863,7 @@ describe("RichInput (goal-composer-ui — conversation goal in the composer)", (
         placeholder="p"
         inputTestId="test-input"
         submitTestId="test-submit"
-        goal={{ current: "Ship the login page", onSet: vi.fn() }}
+        goal={{ current: "Ship the login page", onSet: vi.fn(), onSendAsGoal: vi.fn() }}
       />,
     );
 
