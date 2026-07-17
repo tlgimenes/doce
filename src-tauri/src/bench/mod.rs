@@ -705,7 +705,7 @@ impl AgentBackend for PlanExecBackend<'_> {
         // estimate moves.
         self.stable_ids.rewrite(&mut messages);
         let at_len = crate::inference::http::to_openai_messages(&messages).len();
-        let tail = self.plan_state.todo_tail();
+        let tail = self.plan_state.state_tail();
         if !tail.is_empty() {
             messages.push(ChatMessage::user(tail));
         }

@@ -29,6 +29,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
         include_str!("migrations/0009_conversation_archived_at.sql"),
     ),
     (10, include_str!("migrations/0010_memories.sql")),
+    (11, include_str!("migrations/0011_conversation_goal.sql")),
 ];
 
 pub fn apply_pending(conn: &mut Connection) -> rusqlite::Result<()> {
@@ -335,5 +336,41 @@ mod tests {
             )
             .unwrap();
         assert_eq!(archived_at, None);
+    }
+
+    /// 0011_conversation_goal: confirms the `goal` column exists and
+    /// round-trips (insert a conversation with no goal, set one, read it
+    /// back) -- the storage on top of which
+    /// `storage::conversations::set_conversation_goal`/`get_conversation_goal`
+    /// are built.
+    #[test]
+    fn conversation_goal_column_exists_and_round_trips() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_pending(&mut conn).unwrap();
+        insert_conversation(&conn, "c1");
+
+        let goal: Option<String> = conn
+            .query_row(
+                "SELECT goal FROM conversations WHERE id = 'c1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(goal, None, "goal defaults to NULL for an existing row");
+
+        conn.execute(
+            "UPDATE conversations SET goal = 'ship the login page' WHERE id = 'c1'",
+            [],
+        )
+        .unwrap();
+
+        let goal: Option<String> = conn
+            .query_row(
+                "SELECT goal FROM conversations WHERE id = 'c1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(goal.as_deref(), Some("ship the login page"));
     }
 }

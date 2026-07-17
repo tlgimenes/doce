@@ -129,6 +129,19 @@ pub struct AgentGenerationPiece {
     pub piece: String,
 }
 
+/// Fired once a `FinishTask` with a goal set is let through
+/// (`RealBackend::execute_tool`'s `ProposeComplete` arm) — the observer has
+/// already checked the goal was met before allowing this, so this is purely
+/// an "auto-finish" UI notification, not a second check. Never fired for a
+/// task with no goal, or from a subagent/bench backend (neither has a
+/// live `AppHandle` to emit through).
+#[derive(Debug, Clone, Serialize, specta::Type, tauri_specta::Event)]
+#[serde(rename_all = "camelCase")]
+pub struct GoalComplete {
+    pub conversation_id: String,
+    pub goal: String,
+}
+
 /// Live plan state per conversation — the plan-tracker twin of
 /// `ActiveGenerations`: in-memory, per-process, cleared by RAII at turn
 /// end. `get_active_plan` reads it for mount/reload recovery; the
@@ -739,7 +752,7 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
         // slightly over-covers (it includes the old tail's tokens) — a bounded,
         // safe-direction overcount, never an undercount.
         let at_len = crate::inference::http::to_openai_messages(&messages).len();
-        let tail = self.plan_state.todo_tail();
+        let tail = self.plan_state.state_tail();
         if !tail.is_empty() {
             messages.push(ChatMessage::user(tail));
         }
@@ -865,6 +878,30 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
                         verdict.complete,
                         &verdict.missing,
                     );
+                    // Auto-finish signal: fires only when the observer
+                    // GENUINELY approved this FinishTask (`verdict.complete`)
+                    // with a goal set -- NOT on the separate reject-cap path
+                    // where `apply_completion_verdict` also returns
+                    // `finish = Some(..)` but only because the model won by
+                    // default after two rejections (`OBSERVER_REJECT_CAP`);
+                    // that path is exactly the case the observer did NOT
+                    // confirm the goal was met, so it must not claim
+                    // otherwise to the user. Best-effort UI notification
+                    // only -- a failed emit must never affect the loop, same
+                    // as every other `let _ = self.app.emit(...)` in this
+                    // file. Only `RealBackend` reaches this arm with an
+                    // `AppHandle` to emit through; `SubagentBackend`'s own
+                    // copy of this match arm (below) has no `self.app` and
+                    // intentionally has no matching emit.
+                    if let (true, Some(_), Some(goal_text)) = (verdict.complete, &finish, &goal) {
+                        let _ = self.app.emit(
+                            "goal-complete",
+                            GoalComplete {
+                                conversation_id: self.conversation_id.to_string(),
+                                goal: goal_text.clone(),
+                            },
+                        );
+                    }
                     let execution = finish
                         .map(ToolExecution::Finish)
                         .unwrap_or_else(|| ToolExecution::Result(reply.clone()));
@@ -1032,7 +1069,7 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
         // slightly over-covers (it includes the old tail's tokens) — a bounded,
         // safe-direction overcount, never an undercount.
         let at_len = crate::inference::http::to_openai_messages(&messages).len();
-        let tail = self.plan_state.todo_tail();
+        let tail = self.plan_state.state_tail();
         if !tail.is_empty() {
             messages.push(ChatMessage::user(tail));
         }
@@ -2238,7 +2275,26 @@ pub async fn send_agent_message(
     // per-turn `maybe_compact` calls inside the loop for why this alone
     // isn't sufficient on its own (tool results can push a *later* turn
     // over budget even when the first turn was fine).
-    let plan_state = crate::agent::plan::PlanState::default();
+    let mut plan_state = crate::agent::plan::PlanState::default();
+    // Load this conversation's persisted goal (0011_conversation_goal /
+    // `storage::conversations::set_conversation_goal`) into the SAME
+    // `Plan.goal` field the model's Todo/FinishTask machinery already
+    // reads and renders (`PlanState::state_tail`) -- reusing it rather than
+    // adding a parallel field is what lets the FinishTask observer, already
+    // wired to check `plan.goal` (`execute_tool`'s `ProposeComplete` arm
+    // above), pick this up with no further change. A top-level task only:
+    // a subagent (`plan_state` at the subagent seed above) keeps its
+    // default empty goal, since a delegated subagent has its own isolated
+    // scope, not the parent conversation's.
+    let goal_conversation_id = conversation_id.clone();
+    if let Ok(Some(goal)) = conn
+        .call(move |conn: &mut Connection| {
+            crate::storage::conversations::get_conversation_goal(conn, &goal_conversation_id)
+        })
+        .await
+    {
+        plan_state.plan.goal = goal;
+    }
     // The top-level agent seed names ITS OWN conversation's transcript
     // (contrast the subagent seed above, which names `subagent_id`'s).
     let memories = memories_section(&conn, &conversation_id).await;

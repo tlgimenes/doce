@@ -10,7 +10,7 @@
 //! system prompt per host (`single_mode_system_prompt`) that never changes
 //! within a turn, so `inference::PromptSession`'s KV prefix survives every
 //! turn boundary. The one volatile piece — the current todo list — rides
-//! in a per-turn tail message (`PlanState::todo_tail`) appended after the
+//! in a per-turn tail message (`PlanState::state_tail`) appended after the
 //! whole conversation; the full tool set is advertised and samplable every
 //! turn (`PlanState::single_mode_tool_names`), so there is no per-state
 //! gating left to enforce.
@@ -309,11 +309,32 @@ impl PlanState {
         }
     }
 
-    /// The volatile recitation tail: current todos as one compact line.
-    /// EMPTY when no todos exist — hosts must skip pushing an empty tail.
-    pub fn todo_tail(&self) -> String {
+    /// The volatile recitation tail: a `Goal: <goal>` line (only when
+    /// `plan.goal` is set) followed by the current todos as one compact
+    /// line (unchanged from the old `todo_tail`, which this replaced —
+    /// renamed because it now recites goal state too, not just todos).
+    /// EMPTY when there is neither a goal nor any todos — hosts must skip
+    /// pushing an empty tail.
+    ///
+    /// BYTE-INVARIANCE (benchmark gate): every tier runs with no goal set,
+    /// so `self.plan.goal` is `""` for the whole gate. In that case this
+    /// must produce EXACTLY what the old `todo_tail` produced — see
+    /// `state_tail_with_empty_goal_is_byte_identical_to_old_todo_tail`
+    /// below, which pins this. The goal line is kept to one short line
+    /// (prompt bytes spent every turn) and only appears at all once a goal
+    /// is actually set.
+    pub fn state_tail(&self) -> String {
+        let goal_line = if self.plan.goal.is_empty() {
+            String::new()
+        } else {
+            format!("Goal: {}\n", self.plan.goal)
+        };
         if self.plan.steps.is_empty() {
-            return String::new();
+            // `trim_end` drops the goal line's own trailing newline when a
+            // goal is set but there are no todos yet; with no goal either,
+            // `goal_line` is already `""`, so this is a no-op -- the exact
+            // empty string `todo_tail` returned.
+            return goal_line.trim_end().to_string();
         }
         let items = self
             .plan
@@ -331,7 +352,7 @@ impl PlanState {
             .join("  ");
         let done = self.plan.steps.iter().filter(|s| s.done).count();
         format!(
-            "Todos ({done}/{} done): {items}
+            "{goal_line}Todos ({done}/{} done): {items}
 Work the first undone item; add new items with Todo, mark one done with TodoDone {{\"index\": N}}.",
             self.plan.steps.len()
         )
@@ -561,21 +582,101 @@ mod single_mode_tests {
         // The tail recites the list with 0-based indices the model passes to
         // TodoDone; it is empty before any todos exist.
         assert!(
-            state.todo_tail().contains("0. [ ] fix a"),
+            state.state_tail().contains("0. [ ] fix a"),
             "{}",
-            state.todo_tail()
+            state.state_tail()
         );
         assert!(
-            state.todo_tail().contains("1. [ ] fix b"),
+            state.state_tail().contains("1. [ ] fix b"),
             "{}",
-            state.todo_tail()
+            state.state_tail()
         );
         assert!(
-            state.todo_tail().contains("TodoDone"),
+            state.state_tail().contains("TodoDone"),
             "{}",
-            state.todo_tail()
+            state.state_tail()
         );
-        assert!(PlanState::default().todo_tail().is_empty());
+        assert!(PlanState::default().state_tail().is_empty());
+    }
+
+    /// Reproduces the OLD `todo_tail` formula verbatim (the exact code this
+    /// task's `state_tail` replaced) so the byte-invariance test below has
+    /// something authoritative to compare against, independent of
+    /// `state_tail`'s own implementation.
+    fn old_todo_tail_format(state: &PlanState) -> String {
+        if state.plan.steps.is_empty() {
+            return String::new();
+        }
+        let items = state
+            .plan
+            .steps
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                format!(
+                    "{i}. [{}] {}",
+                    if s.done { "x" } else { " " },
+                    s.description
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("  ");
+        let done = state.plan.steps.iter().filter(|s| s.done).count();
+        format!(
+            "Todos ({done}/{} done): {items}
+Work the first undone item; add new items with Todo, mark one done with TodoDone {{\"index\": N}}.",
+            state.plan.steps.len()
+        )
+    }
+
+    /// BYTE-INVARIANCE (protects the just-passed benchmark gate): every
+    /// benchmark tier runs with no goal set, so `state_tail`'s output for an
+    /// empty-goal plan must be the EXACT SAME bytes the old `todo_tail`
+    /// produced -- not just "equivalent," identical, since the gate's
+    /// prompt-shape score is sensitive to this string. Covers both an empty
+    /// plan (no steps either) and a plan with steps.
+    #[test]
+    fn state_tail_with_empty_goal_is_byte_identical_to_old_todo_tail() {
+        let empty = PlanState::default();
+        assert_eq!(empty.state_tail(), old_todo_tail_format(&empty));
+        assert_eq!(empty.state_tail(), "");
+
+        let mut with_steps = PlanState::default();
+        todo(&mut with_steps, &["fix a", "fix b"]);
+        todo_done_committed(&mut with_steps, 0);
+        assert_eq!(
+            with_steps.state_tail(),
+            old_todo_tail_format(&with_steps),
+            "a set goal must never change the empty-goal path's bytes"
+        );
+        assert!(with_steps.plan.goal.is_empty(), "sanity: goal is unset");
+        assert!(
+            !with_steps.state_tail().starts_with("Goal:"),
+            "no goal line may appear when the goal is empty: {}",
+            with_steps.state_tail()
+        );
+    }
+
+    /// Once a goal IS set, `state_tail` prepends a short `Goal: <goal>`
+    /// line -- rendered even with no todos yet (the goal is meaningful on
+    /// its own, before any Todo call).
+    #[test]
+    fn state_tail_renders_the_goal_line_when_a_goal_is_set() {
+        let mut no_steps = PlanState::default();
+        no_steps.plan.goal = "ship the login page".to_string();
+        assert_eq!(no_steps.state_tail(), "Goal: ship the login page");
+
+        let mut with_steps = PlanState::default();
+        with_steps.plan.goal = "ship the login page".to_string();
+        todo(&mut with_steps, &["fix a"]);
+        let tail = with_steps.state_tail();
+        assert!(tail.starts_with("Goal: ship the login page\n"), "{tail}");
+        assert!(tail.contains("Todos (0/1 done)"), "{tail}");
+        // The goal line is the ONLY thing added on top of the old todo
+        // format -- strip it and what's left must match the old format
+        // exactly.
+        let without_goal_line = tail.strip_prefix("Goal: ship the login page\n").unwrap();
+        assert_eq!(without_goal_line, old_todo_tail_format(&with_steps));
     }
 
     #[test]

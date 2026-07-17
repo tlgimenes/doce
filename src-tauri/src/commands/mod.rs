@@ -23,6 +23,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             conversations::list_messages,
             conversations::mark_conversation_seen,
             conversations::archive_conversation,
+            conversations::set_conversation_goal,
             conversations::is_generation_active,
             conversations::stop_generation,
             context::get_context_usage,
@@ -49,6 +50,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             agent::AgentMessagePersisted,
             agent::AgentGenerationPiece,
             agent::PlanUpdate,
+            agent::GoalComplete,
         ])
         // Every timestamp field in this codebase is `i64` (Unix-epoch-ms,
         // per data-model.md's schema conventions) — specta-typescript

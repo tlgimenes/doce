@@ -714,6 +714,40 @@ pub fn generate_title(first_message: &str) -> String {
     format!("{truncated}…")
 }
 
+/// Persists (or clears) a conversation's user-set goal (0011_conversation_goal
+/// migration's `conversations.goal` column) — the single source of truth
+/// `send_agent_message` reads at task start to populate `Plan.goal`
+/// (`commands::agent::send_agent_message`, near its `PlanState::default()`).
+/// `goal: None` or `Some("")` both clear the column to `NULL`, so a caller
+/// never has to special-case an empty string versus "no goal" itself.
+pub fn set_conversation_goal(
+    conn: &Connection,
+    conversation_id: &str,
+    goal: Option<&str>,
+) -> rusqlite::Result<()> {
+    let goal = goal.filter(|g| !g.is_empty());
+    conn.execute(
+        "UPDATE conversations SET goal = ?1 WHERE id = ?2",
+        rusqlite::params![goal, conversation_id],
+    )?;
+    Ok(())
+}
+
+/// Reads a conversation's goal back — `None` for both an unset (`NULL`)
+/// column and a legacy empty-string value, so every caller sees the same
+/// "no goal" signal regardless of how it got there.
+pub fn get_conversation_goal(
+    conn: &Connection,
+    conversation_id: &str,
+) -> rusqlite::Result<Option<String>> {
+    let goal: Option<String> = conn.query_row(
+        "SELECT goal FROM conversations WHERE id = ?1",
+        [conversation_id],
+        |row| row.get(0),
+    )?;
+    Ok(goal.filter(|g| !g.is_empty()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1785,5 +1819,69 @@ mod tests {
             .unwrap();
         assert_eq!(content_type, "context_notice");
         assert_eq!(sequence, 1);
+    }
+
+    // --- set_conversation_goal / get_conversation_goal (0011_conversation_goal) ---
+    //
+    // Unlike the rest of this file's tests, these need the REAL migrated
+    // `conversations` table (goal included) rather than `setup_conn`'s
+    // hand-rolled `messages`-only schema, so they run migrations for real.
+
+    fn setup_conn_with_conversation(id: &str) -> Connection {
+        let conn = crate::storage::test_connection();
+        conn.execute(
+            "INSERT INTO conversations (id, workspace_id, spawned_by_conversation_id, title, created_at, updated_at) VALUES (?1, NULL, NULL, 'Test', 0, 0)",
+            [id],
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn get_conversation_goal_is_none_before_anything_is_set() {
+        let conn = setup_conn_with_conversation("c1");
+        assert_eq!(get_conversation_goal(&conn, "c1").unwrap(), None);
+    }
+
+    #[test]
+    fn set_then_get_conversation_goal_round_trips() {
+        let conn = setup_conn_with_conversation("c1");
+        set_conversation_goal(&conn, "c1", Some("ship the login page")).unwrap();
+        assert_eq!(
+            get_conversation_goal(&conn, "c1").unwrap().as_deref(),
+            Some("ship the login page")
+        );
+    }
+
+    #[test]
+    fn set_conversation_goal_with_none_clears_it() {
+        let conn = setup_conn_with_conversation("c1");
+        set_conversation_goal(&conn, "c1", Some("ship the login page")).unwrap();
+        set_conversation_goal(&conn, "c1", None).unwrap();
+        assert_eq!(get_conversation_goal(&conn, "c1").unwrap(), None);
+    }
+
+    #[test]
+    fn set_conversation_goal_with_empty_string_also_clears_it() {
+        let conn = setup_conn_with_conversation("c1");
+        set_conversation_goal(&conn, "c1", Some("ship the login page")).unwrap();
+        set_conversation_goal(&conn, "c1", Some("")).unwrap();
+        assert_eq!(
+            get_conversation_goal(&conn, "c1").unwrap(),
+            None,
+            "an empty string must read back as no goal, same as NULL"
+        );
+    }
+
+    #[test]
+    fn set_conversation_goal_only_touches_the_named_conversation() {
+        let conn = setup_conn_with_conversation("c1");
+        conn.execute(
+            "INSERT INTO conversations (id, workspace_id, spawned_by_conversation_id, title, created_at, updated_at) VALUES ('c2', NULL, NULL, 'Test 2', 0, 0)",
+            [],
+        )
+        .unwrap();
+        set_conversation_goal(&conn, "c1", Some("goal for c1")).unwrap();
+        assert_eq!(get_conversation_goal(&conn, "c2").unwrap(), None);
     }
 }

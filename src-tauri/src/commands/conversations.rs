@@ -314,6 +314,32 @@ pub async fn archive_conversation(
     .map_err(|e| e.to_string())
 }
 
+/// Persists the user-set goal for a conversation (`storage::conversations::
+/// set_conversation_goal`) — `send_agent_message` loads it back into
+/// `Plan.goal` at the start of the conversation's NEXT turn (this command
+/// itself does not touch any in-flight turn's already-running `PlanState`).
+/// `goal: None` (or an empty string) clears it. The UI half that calls this
+/// is a later task; this command is the write path it will use.
+#[tauri::command]
+#[specta::specta]
+pub async fn set_conversation_goal(
+    app: AppHandle,
+    db_cell: State<'_, DbCell>,
+    conversation_id: String,
+    goal: Option<String>,
+) -> Result<(), String> {
+    let conn = db_cell.get(&app).await?;
+    conn.call(move |conn: &mut Connection| -> rusqlite::Result<()> {
+        crate::storage::conversations::set_conversation_goal(
+            conn,
+            &conversation_id,
+            goal.as_deref(),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 /// The reload-proof "is a turn genuinely running right now" signal, straight
 /// from `ActiveGenerations` (the same source `compute_status`'s
 /// `in_progress` uses). The frontend needs this because its own in-flight
