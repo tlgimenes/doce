@@ -126,6 +126,9 @@ jobs:
     runs-on: macos-26
     needs: [rust, frontend, e2e]
     if: startsWith(github.ref, 'refs/tags/v')
+    # Needed for the Publish step to create the GitHub Release + upload assets.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -166,3 +169,14 @@ jobs:
           name: doce-dmg
           path: src-tauri/target/release/bundle/dmg/*.dmg
           if-no-files-found: error
+
+      # Create (or update) the GitHub Release for this `v*` tag and attach the
+      # .dmg, so the landing page's `releases/latest` download button resolves
+      # to a real, downloadable installer. Without this, the build above only
+      # lived as a CI artifact (Actions-run-scoped, not public).
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: src-tauri/target/release/bundle/dmg/*.dmg
+          fail_on_unmatched_files: true
+          generate_release_notes: true

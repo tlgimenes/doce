@@ -1,3 +1,8 @@
+#![cfg(feature = "bench")]
+//! (Whole binary requires the `bench` feature -- it consumes `doce_lib::bench`.
+//! Without it, compiles empty so `cargo test --all-targets` (no feature, as CI
+//! runs it) stays green; the benchmark protocol always passes `--features bench`.)
+
 //! 010-context-window-management: a real-model smoke suite, `#[ignore]`d by
 //! default (it needs an actual installed GGUF + the built `llama-server`
 //! sidecar on this machine, unlike every other test in this codebase, which

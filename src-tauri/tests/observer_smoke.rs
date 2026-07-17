@@ -1,3 +1,8 @@
+#![cfg(feature = "bench")]
+//! (Whole binary requires the `bench` feature -- it consumes `doce_lib::bench`.
+//! Without it, compiles empty so `cargo test --all-targets` (no feature, as CI
+//! runs it) stays green; the benchmark protocol always passes `--features bench`.)
+
 //! Real-model smoke test for `agent::observer::request_verdict` (task 4 of
 //! observer-verified completion). `#[ignore]`d, `DOCE_BENCH_MODEL`-driven,
 //! same pattern as `tests/real_model_smoke.rs`: spins a real `llama-server`

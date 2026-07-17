@@ -1,3 +1,8 @@
+#![cfg(feature = "bench")]
+//! (Whole binary requires the `bench` feature -- it consumes `doce_lib::bench`.
+//! Without it, compiles empty so `cargo test --all-targets` (no feature, as CI
+//! runs it) stays green; the benchmark protocol always passes `--features bench`.)
+
 //! Agent task-completion tests -- the hard pass/fail regression suite for
 //! the agent harness running against the real installed GGUF model. This
 //! file started life as a print-and-compare benchmark for the 2026-07
