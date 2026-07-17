@@ -4,7 +4,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
 /// Conversation ids with a turn currently running, each mapped to that
@@ -318,8 +318,13 @@ pub async fn archive_conversation(
 /// set_conversation_goal`) — `send_agent_message` loads it back into
 /// `Plan.goal` at the start of the conversation's NEXT turn (this command
 /// itself does not touch any in-flight turn's already-running `PlanState`).
-/// `goal: None` (or an empty string) clears it. The UI half that calls this
-/// is a later task; this command is the write path it will use.
+/// `goal: None` (or an empty string) clears it. The composer's edit/clear
+/// affordance calls this directly (the "send as goal" path instead goes
+/// through `send_agent_message`'s `set_goal` flag, unidirectional-flow).
+/// Emits `ConversationGoalChanged` after persisting — the same event
+/// `send_agent_message` emits — so the frontend's goal banner reacts to
+/// both write paths identically instead of trusting its own optimistic
+/// state.
 #[tauri::command]
 #[specta::specta]
 pub async fn set_conversation_goal(
@@ -329,15 +334,25 @@ pub async fn set_conversation_goal(
     goal: Option<String>,
 ) -> Result<(), String> {
     let conn = db_cell.get(&app).await?;
+    let goal_conversation_id = conversation_id.clone();
+    let goal_for_persist = goal.clone();
     conn.call(move |conn: &mut Connection| -> rusqlite::Result<()> {
         crate::storage::conversations::set_conversation_goal(
             conn,
-            &conversation_id,
-            goal.as_deref(),
+            &goal_conversation_id,
+            goal_for_persist.as_deref(),
         )
     })
     .await
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    let _ = app.emit(
+        "conversation-goal-changed",
+        crate::commands::agent::ConversationGoalChanged {
+            conversation_id,
+            goal,
+        },
+    );
+    Ok(())
 }
 
 /// Reads back the user-set goal for a conversation

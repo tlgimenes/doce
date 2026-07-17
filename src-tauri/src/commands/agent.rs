@@ -9,7 +9,7 @@ use crate::inference::ChatMessage;
 use crate::storage::conversations::load_history;
 use crate::storage::DbCell;
 use rusqlite::Connection;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
@@ -140,6 +140,21 @@ pub struct AgentGenerationPiece {
 pub struct GoalComplete {
     pub conversation_id: String,
     pub goal: String,
+}
+
+/// Unidirectional set-goal flow: fired whenever a conversation's goal
+/// changes, from either write path -- `send_agent_message`'s `set_goal`
+/// flag (the goal IS that message's content) or `conversations::
+/// set_conversation_goal` (the composer's edit/clear affordance). The
+/// frontend's goal banner subscribes to this ONE event rather than trusting
+/// its own optimistic state, so both paths reconcile identically instead of
+/// needing separate frontend-side bookkeeping per path. `goal: None` means
+/// cleared.
+#[derive(Debug, Clone, Serialize, specta::Type, tauri_specta::Event)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationGoalChanged {
+    pub conversation_id: String,
+    pub goal: Option<String>,
 }
 
 /// Live plan state per conversation — the plan-tracker twin of
@@ -2084,6 +2099,23 @@ async fn persist_user_turn(
     Ok((seq, model_text))
 }
 
+/// The message half of `send_agent_message`'s IPC contract, folded into one
+/// struct (unidirectional goal flow): `content` and `rich_content` were
+/// already tipping the command over specta's `SpectaFn` arg ceiling on
+/// their own (see the comment on the fn below), so adding a bare `set_goal:
+/// bool` alongside them wasn't an option -- folding all three into one
+/// struct instead REDUCES the command's arg count by one, leaving room.
+/// `set_goal: true` means the goal IS `content` (RichInput's "send as
+/// goal" — one request, not persist-then-send from the frontend).
+#[derive(Debug, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentMessageInput {
+    pub content: String,
+    pub rich_content: Option<String>,
+    #[serde(default)]
+    pub set_goal: bool,
+}
+
 /// FR-008/FR-009: runs the agent tool-use loop to completion for one user
 /// message in a workspace-scoped conversation, using the real built-in
 /// tools (`agent::dispatch`) and the loaded model. One known, deliberate
@@ -2094,11 +2126,12 @@ async fn persist_user_turn(
 /// refreshes and then the final answer, not a live token trace.
 #[tauri::command]
 #[specta::specta]
-// 009-rich-chat-input/US2's `rich_content` param tips this over clippy's
-// default 7-argument threshold; every parameter here is either a
-// framework-injected `State`/`AppHandle` or a real, distinct piece of the
-// IPC contract (contracts/rich-chat-input.md) -- there's no natural
-// sub-struct to group them into without inventing an artificial one.
+// Every parameter here is either a framework-injected `State`/`AppHandle`
+// or a real, distinct piece of the IPC contract (contracts/rich-chat-input.
+// md) -- there's no further natural sub-struct to group them into.
+// `content`/`rich_content`/`set_goal` are already folded into
+// `AgentMessageInput` above (that's what keeps this at 9, not 10 — see
+// `AgentMessageInput`'s own doc comment).
 #[allow(clippy::too_many_arguments)]
 pub async fn send_agent_message(
     app: AppHandle,
@@ -2113,8 +2146,7 @@ pub async fn send_agent_message(
     // separate `&CompactionFailures`/`&LastObservedUsage` borrows.
     compaction_state: State<'_, crate::context::CompactionState>,
     conversation_id: String,
-    content: String,
-    rich_content: Option<String>,
+    message: AgentMessageInput,
 ) -> Result<String, String> {
     let conn = db_cell.get(&app).await?.clone();
     let now = now_ms();
@@ -2155,6 +2187,39 @@ pub async fn send_agent_message(
                 Ok(())
             })
             .await;
+    }
+
+    let content = message.content.clone();
+    let rich_content = message.rich_content.clone();
+
+    // Unidirectional set-goal flow: RichInput's "send as goal" now sends
+    // ONE message with `set_goal: true` instead of the frontend doing
+    // persist-then-send (which needed an `await` to dodge a
+    // read-after-write race against this same turn's goal-load below).
+    // The goal IS this message's content -- persist it now, before
+    // `persist_user_turn`, so the `PlanState` goal-load further down (this
+    // same turn, not a future one) picks it up, and emit the event the
+    // frontend's goal banner subscribes to instead of trusting its own
+    // optimistic state.
+    if message.set_goal {
+        let goal_conversation_id = conversation_id.clone();
+        let goal_content = content.clone();
+        conn.call(move |conn: &mut Connection| -> rusqlite::Result<()> {
+            crate::storage::conversations::set_conversation_goal(
+                conn,
+                &goal_conversation_id,
+                Some(&goal_content),
+            )
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        let _ = app.emit(
+            "conversation-goal-changed",
+            ConversationGoalChanged {
+                conversation_id: conversation_id.clone(),
+                goal: Some(content.clone()),
+            },
+        );
     }
 
     let (next_seq, model_text_for_turn) = persist_user_turn(

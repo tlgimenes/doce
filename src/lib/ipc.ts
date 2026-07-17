@@ -577,11 +577,24 @@ export const commands = {
   listWorkspaces: () => invoke<Workspace[]>("list_workspaces"),
   searchFolders: (query: string, maxResults?: number) =>
     invoke<FolderSearchPage>("search_folders", { query, maxResults }),
-  sendAgentMessage: (conversationId: string, content: string, richContent?: string) =>
+  // Unidirectional goal flow: `content`/`richContent`/`setGoal` fold into
+  // ONE wire-payload struct (`AgentMessageInput` — src-tauri's
+  // `send_agent_message` was already at tauri-specta's arg ceiling, so a
+  // bare `setGoal` arg wasn't an option). The positional signature here
+  // stays `(conversationId, content, richContent?, setGoal?)` regardless —
+  // `content`/`richContent` MUST remain args 1 & 2 positionally (a test
+  // reads `richContent` as `calls[0][2]`). `setGoal: true` means the goal
+  // IS `content`; the backend persists it and emits `ConversationGoalChanged`
+  // for the banner to react to — no frontend persist-then-send.
+  sendAgentMessage: (
+    conversationId: string,
+    content: string,
+    richContent?: string,
+    setGoal = false,
+  ) =>
     invoke<string>("send_agent_message", {
       conversationId,
-      content,
-      richContent,
+      message: { content, richContent, setGoal },
     }),
   answerUserQuestion: (questionId: string, answer: string[]) =>
     invoke<void>("answer_user_question", { questionId, answer }),
@@ -638,6 +651,16 @@ export interface AgentMessagePersistedPayload {
   conversationId: string;
 }
 
+/** Unidirectional goal flow: fired whenever a conversation's goal changes,
+ * from either backend write path — `sendAgentMessage`'s `setGoal` flag or
+ * `setConversationGoal` (edit/clear). The goal banner subscribes to this
+ * ONE event rather than trusting its own optimistic state. `goal: null`
+ * means cleared. */
+export interface ConversationGoalChangedPayload {
+  conversationId: string;
+  goal: string | null;
+}
+
 export const events = {
   onModelInstallProgress: (cb: (p: ModelInstallProgressPayload) => void): Promise<UnlistenFn> =>
     listen<ModelInstallProgressPayload>("model-install-progress", (e) => cb(e.payload)),
@@ -651,4 +674,8 @@ export const events = {
     listen<AgentGenerationPiecePayload>("agent-generation-piece", (e) => cb(e.payload)),
   onPlanUpdate: (cb: (p: PlanUpdatePayload) => void): Promise<UnlistenFn> =>
     listen<PlanUpdatePayload>("plan-update", (e) => cb(e.payload)),
+  onConversationGoalChanged: (
+    cb: (p: ConversationGoalChangedPayload) => void,
+  ): Promise<UnlistenFn> =>
+    listen<ConversationGoalChangedPayload>("conversation-goal-changed", (e) => cb(e.payload)),
 };

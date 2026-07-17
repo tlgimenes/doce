@@ -52,6 +52,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             agent::AgentGenerationPiece,
             agent::PlanUpdate,
             agent::GoalComplete,
+            agent::ConversationGoalChanged,
         ])
         // Every timestamp field in this codebase is `i64` (Unix-epoch-ms,
         // per data-model.md's schema conventions) — specta-typescript

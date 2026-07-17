@@ -393,6 +393,7 @@ export default function Workspace({
     let cancelled = false;
     let unlistenPersisted: (() => void) | undefined;
     let unlistenPiece: (() => void) | undefined;
+    let unlistenGoal: (() => void) | undefined;
 
     (async () => {
       unlistenPersisted = await events.onAgentMessagePersisted((p) => {
@@ -420,10 +421,37 @@ export default function Workspace({
       }
     })();
 
+    // Unidirectional goal flow: the goal banner's single source of truth is
+    // this event, fired by the backend on BOTH write paths (`sendAgentMessage`'s
+    // `setGoal` flag and `setConversationGoal`'s edit/clear). RESILIENT by
+    // construction (optional-chaining + try/catch): the forbidden
+    // Workspace.test.tsx's `events` mock does not stub this listener at
+    // all, so `events.onConversationGoalChanged` is `undefined` there —
+    // this must not crash the workspace either way.
+    (async () => {
+      try {
+        const un = await events.onConversationGoalChanged?.((p) => {
+          if (p.conversationId !== conversationId) return;
+          if (cancelled) return;
+          setGoal(p.goal);
+        });
+        if (cancelled) {
+          un?.();
+        } else {
+          unlistenGoal = un;
+        }
+      } catch {
+        // Event unavailable (e.g. a test without the stub) — the banner
+        // just won't live-update; still fine, since `getConversationGoal`
+        // above already covers mount/reload.
+      }
+    })();
+
     return () => {
       cancelled = true;
       unlistenPersisted?.();
       unlistenPiece?.();
+      unlistenGoal?.();
     };
   }, [conversationId]);
 
@@ -490,7 +518,7 @@ export default function Workspace({
     pendingToolCall?.kind === "bash" || pendingToolCall?.kind === "task" ? pendingToolCall : null;
 
   const send = useCallback(
-    (content: string, richContent?: RichMessageContent): boolean => {
+    (content: string, richContent?: RichMessageContent, setGoal = false): boolean => {
       // 010-context-window-management (UI refactor): `/compact`, typed and
       // submitted like any other message, is intercepted here before it ever
       // becomes a persisted agent turn — it triggers compaction directly and
@@ -574,11 +602,26 @@ export default function Workspace({
           // promise is pending -- this call is awaited for its errors and for
           // knowing when to clear `thinking`, not for its return value, which
           // by the time it resolves the live events have already rendered.
-          await commands.sendAgentMessage(
-            conversationId,
-            content,
-            richContent ? JSON.stringify(richContent) : undefined,
-          );
+          //
+          // `setGoal` is passed only when true (not unconditionally as a
+          // 4th positional arg every send) -- Workspace.test.tsx asserts
+          // exact call shapes like `toHaveBeenCalledWith("conv-1", text,
+          // undefined)` for ordinary sends across many cases, and a
+          // trailing `false` would break every one of them.
+          if (setGoal) {
+            await commands.sendAgentMessage(
+              conversationId,
+              content,
+              richContent ? JSON.stringify(richContent) : undefined,
+              true,
+            );
+          } else {
+            await commands.sendAgentMessage(
+              conversationId,
+              content,
+              richContent ? JSON.stringify(richContent) : undefined,
+            );
+          }
         } catch (e) {
           if (isMountedRef.current && currentConversationIdRef.current === conversationId) {
             setError(String(e));
@@ -605,26 +648,19 @@ export default function Workspace({
     [conversationId, pendingToolCall, refreshMessages, turnInFlight],
   );
 
-  // "Send as goal": persist the goal, THEN start a turn to pursue it (the goal
-  // text becomes the turn's message). Setting a goal on an idle conversation
-  // should actually begin work, not silently wait for the next manual send
-  // (which is what a persist-only `handleSetGoal` did). The persist is AWAITED
-  // before `send` because the loop reads the goal from the DB at task start
-  // (`send_agent_message` -> `Plan.goal`); sending first would race it. `send`
-  // already no-ops while a turn is in flight, so this is idle-only by
-  // construction. Defined AFTER `send` so it can list it as a dependency.
+  // "Send as goal" (unidirectional goal flow): ONE request, not
+  // persist-then-send. `send`'s new `setGoal` flag rides along on the same
+  // `send_agent_message` call the turn itself uses -- the backend persists
+  // the goal (the message content IS the goal text) before it loads
+  // `Plan.goal` for this same turn, then emits `ConversationGoalChanged`,
+  // which the subscription below reacts to. No local optimistic `setGoal`
+  // here and no `await` on a separate persist call: there's nothing left to
+  // race, since a single backend call now does both in the right order.
   const handleSendAsGoal = useCallback(
-    async (text: string) => {
-      setGoal(text);
-      try {
-        await commands.setConversationGoal(conversationId, text);
-      } catch {
-        // Best-effort persist (same guard as handleSetGoal); still start the
-        // turn so the user's intent isn't dropped on a persist hiccup.
-      }
-      send(text);
+    (text: string) => {
+      send(text, undefined, true);
     },
-    [conversationId, send],
+    [send],
   );
 
   // Generation-cancellation (Task 4.2b): fire-and-forget stop of the running
