@@ -67,7 +67,7 @@ describe("WorkspaceTopbar", () => {
       tokenBudget: 2048,
       state: "normal",
     });
-    vi.mocked(commands.getConversationGoal).mockResolvedValue(null);
+    vi.mocked(commands.getConversationGoal).mockResolvedValue({ goal: null, achieved: false });
   });
 
   it("portals the conversation title and compact workspace path into the main topbar", async () => {

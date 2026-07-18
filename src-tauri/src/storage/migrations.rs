@@ -30,6 +30,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
     ),
     (10, include_str!("migrations/0010_memories.sql")),
     (11, include_str!("migrations/0011_conversation_goal.sql")),
+    (
+        12,
+        include_str!("migrations/0012_conversation_goal_achieved.sql"),
+    ),
 ];
 
 pub fn apply_pending(conn: &mut Connection) -> rusqlite::Result<()> {

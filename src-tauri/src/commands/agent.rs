@@ -916,6 +916,19 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
                                 goal: goal_text.clone(),
                             },
                         );
+                        // Persist the achieved flag so a reload keeps showing
+                        // "Goal achieved" instead of reverting to "Pursuing
+                        // goal". Best-effort, like the emit — a DB hiccup must
+                        // not affect the loop.
+                        let cid = self.conversation_id.to_string();
+                        let _ = self
+                            .conn
+                            .call(move |conn: &mut Connection| -> rusqlite::Result<()> {
+                                crate::storage::conversations::mark_conversation_goal_achieved(
+                                    conn, &cid,
+                                )
+                            })
+                            .await;
                     }
                     let execution = finish
                         .map(ToolExecution::Finish)

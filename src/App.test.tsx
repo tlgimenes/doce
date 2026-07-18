@@ -142,7 +142,7 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     vi.mocked(events.onModelInstallProgress).mockResolvedValue(() => {});
     vi.mocked(commands.getActivePlan).mockResolvedValue(null);
     vi.mocked(events.onPlanUpdate).mockResolvedValue(() => {});
-    vi.mocked(commands.getConversationGoal).mockResolvedValue(null);
+    vi.mocked(commands.getConversationGoal).mockResolvedValue({ goal: null, achieved: false });
     vi.mocked(homeDir).mockResolvedValue("/Users/tester");
     startDragging.mockResolvedValue(undefined);
   });

@@ -357,12 +357,16 @@ export default function Workspace({
     try {
       commands
         .getConversationGoal(conversationId)
-        .then((loadedGoal) => {
+        .then((loaded) => {
           if (cancelled || currentConversationIdRef.current !== conversationId) return;
-          setGoal(loadedGoal);
+          setGoal(loaded.goal);
+          setGoalAchieved(loaded.achieved);
         })
         .catch(() => {
-          if (!cancelled) setGoal(null);
+          if (!cancelled) {
+            setGoal(null);
+            setGoalAchieved(false);
+          }
         });
     } catch {
       setGoal(null);
