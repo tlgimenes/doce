@@ -661,6 +661,11 @@ export interface ConversationGoalChangedPayload {
   goal: string | null;
 }
 
+export interface GoalCompletePayload {
+  conversationId: string;
+  goal: string;
+}
+
 export const events = {
   onModelInstallProgress: (cb: (p: ModelInstallProgressPayload) => void): Promise<UnlistenFn> =>
     listen<ModelInstallProgressPayload>("model-install-progress", (e) => cb(e.payload)),
@@ -678,4 +683,6 @@ export const events = {
     cb: (p: ConversationGoalChangedPayload) => void,
   ): Promise<UnlistenFn> =>
     listen<ConversationGoalChangedPayload>("conversation-goal-changed", (e) => cb(e.payload)),
+  onGoalComplete: (cb: (p: GoalCompletePayload) => void): Promise<UnlistenFn> =>
+    listen<GoalCompletePayload>("goal-complete", (e) => cb(e.payload)),
 };

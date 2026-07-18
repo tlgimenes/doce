@@ -223,6 +223,11 @@ export default function Workspace({
   // the effect below), matching the old topbar `GoalBar`'s own
   // never-crash-on-a-failed-invoke guard.
   const [goal, setGoal] = useState<string | null>(null);
+  // Whether the observer has confirmed the current goal as met (from the
+  // backend `goal-complete` event). Ephemeral/live only — resets whenever the
+  // goal changes, clears, or the conversation switches. The banner shows
+  // "Goal achieved" (muted, no edit/delete) when this is true.
+  const [goalAchieved, setGoalAchieved] = useState(false);
   const isMountedRef = useRef(true);
   const genericStatusFallbackStartedAtRef = useRef<number | null>(null);
   const currentConversationIdRef = useRef(conversationId);
@@ -348,6 +353,7 @@ export default function Workspace({
   useEffect(() => {
     let cancelled = false;
     setGoal(null);
+    setGoalAchieved(false);
     try {
       commands
         .getConversationGoal(conversationId)
@@ -374,6 +380,7 @@ export default function Workspace({
   const handleSetGoal = useCallback(
     (nextGoal: string | null) => {
       setGoal(nextGoal);
+      setGoalAchieved(false);
       try {
         commands.setConversationGoal(conversationId, nextGoal).catch(() => {
           // Best-effort — the optimistic local state is left in place even
@@ -394,6 +401,7 @@ export default function Workspace({
     let unlistenPersisted: (() => void) | undefined;
     let unlistenPiece: (() => void) | undefined;
     let unlistenGoal: (() => void) | undefined;
+    let unlistenGoalComplete: (() => void) | undefined;
 
     (async () => {
       unlistenPersisted = await events.onAgentMessagePersisted((p) => {
@@ -434,6 +442,8 @@ export default function Workspace({
           if (p.conversationId !== conversationId) return;
           if (cancelled) return;
           setGoal(p.goal);
+          // A goal change/clear means we're (re)pursuing, not achieved.
+          setGoalAchieved(false);
         });
         if (cancelled) {
           un?.();
@@ -447,11 +457,31 @@ export default function Workspace({
       }
     })();
 
+    // The observer confirmed the goal at FinishTask -> flip the banner to
+    // "Goal achieved". Same resilient pattern as above (the forbidden
+    // Workspace.test.tsx mock doesn't stub this listener).
+    (async () => {
+      try {
+        const un = await events.onGoalComplete?.((p) => {
+          if (p.conversationId !== conversationId || cancelled) return;
+          setGoalAchieved(true);
+        });
+        if (cancelled) {
+          un?.();
+        } else {
+          unlistenGoalComplete = un;
+        }
+      } catch {
+        // Event unavailable — banner just won't flip to achieved live.
+      }
+    })();
+
     return () => {
       cancelled = true;
       unlistenPersisted?.();
       unlistenPiece?.();
       unlistenGoal?.();
+      unlistenGoalComplete?.();
     };
   }, [conversationId]);
 
@@ -753,7 +783,12 @@ export default function Workspace({
                 placeholder="Describe a task…"
                 inputTestId="agent-input"
                 submitTestId="agent-send"
-                goal={{ current: goal, onSet: handleSetGoal, onSendAsGoal: handleSendAsGoal }}
+                goal={{
+                  current: goal,
+                  achieved: goalAchieved,
+                  onSet: handleSetGoal,
+                  onSendAsGoal: handleSendAsGoal,
+                }}
               />
             )}
           </div>

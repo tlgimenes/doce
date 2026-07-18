@@ -5,7 +5,7 @@ import { Placeholder } from "@tiptap/extension-placeholder";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
-import { ArrowUp, Pencil, Plus, Square, Target, Trash2 } from "lucide-react";
+import { ArrowUp, CircleCheck, Pencil, Plus, Square, Target, Trash2 } from "lucide-react";
 import { InputGroup, InputGroupAddon, InputGroupButton } from "@/components/ui/input-group";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/cn";
@@ -155,6 +155,11 @@ export interface RichInputProps {
   goal?: {
     /** The active goal, or `null` if none is set. */
     current: string | null;
+    /**
+     * Whether the observer has confirmed the goal as met. When true the banner
+     * reads "Goal achieved" (muted, no edit/delete) instead of "Pursuing goal".
+     */
+    achieved?: boolean;
     /**
      * Persist the goal WITHOUT starting a turn — used by the banner's edit
      * (update the north-star) and delete (`null`, clear it). Never launches
@@ -591,35 +596,48 @@ export default function RichInput({
           like this file's other chip surfaces (`pasted-text-node.tsx`'s
           `rounded-lg border border-border bg-card` chip), not a new
           convention. */}
-      {goal?.current && (
-        <div
-          className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-1.5 text-xs text-muted-foreground"
-          data-testid="rich-input-goal-banner"
-        >
-          <Target size={14} className="shrink-0 text-primary" />
-          <span className="min-w-0 flex-1 truncate">
-            <span className="font-medium text-foreground">Pursuing goal</span> {goal.current}
-          </span>
-          <button
-            type="button"
-            onClick={startEditingGoal}
-            className="shrink-0 rounded p-1 hover:bg-muted hover:text-foreground"
-            aria-label="Edit goal"
-            data-testid="rich-input-goal-edit"
+      {goal?.current &&
+        (goal.achieved ? (
+          // Achieved: the observer confirmed the goal at FinishTask. Muted, a
+          // check icon, and no edit/delete — the goal is done, not being worked.
+          <div
+            className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground"
+            data-testid="rich-input-goal-banner"
           >
-            <Pencil size={12} />
-          </button>
-          <button
-            type="button"
-            onClick={deleteGoal}
-            className="shrink-0 rounded p-1 hover:bg-destructive/10 hover:text-destructive"
-            aria-label="Delete goal"
-            data-testid="rich-input-goal-delete"
+            <CircleCheck size={14} className="shrink-0" />
+            <span className="min-w-0 flex-1 truncate">
+              <span className="font-medium">Goal achieved</span> {goal.current}
+            </span>
+          </div>
+        ) : (
+          <div
+            className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-1.5 text-xs text-muted-foreground"
+            data-testid="rich-input-goal-banner"
           >
-            <Trash2 size={12} />
-          </button>
-        </div>
-      )}
+            <Target size={14} className="shrink-0 text-primary" />
+            <span className="min-w-0 flex-1 truncate">
+              <span className="font-medium text-foreground">Pursuing goal</span> {goal.current}
+            </span>
+            <button
+              type="button"
+              onClick={startEditingGoal}
+              className="shrink-0 rounded p-1 hover:bg-muted hover:text-foreground"
+              aria-label="Edit goal"
+              data-testid="rich-input-goal-edit"
+            >
+              <Pencil size={12} />
+            </button>
+            <button
+              type="button"
+              onClick={deleteGoal}
+              className="shrink-0 rounded p-1 hover:bg-destructive/10 hover:text-destructive"
+              aria-label="Delete goal"
+              data-testid="rich-input-goal-delete"
+            >
+              <Trash2 size={12} />
+            </button>
+          </div>
+        ))}
       <InputGroup
         className={cn(
           "border-transparent bg-secondary shadow-none focus-within:shadow-sm",

@@ -824,6 +824,33 @@ describe("RichInput (goal-composer-ui — conversation goal in the composer)", (
     expect(screen.getByTestId("rich-input-goal-delete")).toBeInTheDocument();
   });
 
+  it("an achieved goal shows 'Goal achieved' with no edit/delete buttons", () => {
+    render(
+      <RichInput
+        onSubmit={vi.fn()}
+        skillsEnabled={false}
+        disabled={false}
+        placeholder="p"
+        inputTestId="test-input"
+        submitTestId="test-submit"
+        goal={{
+          current: "Ship the login page",
+          achieved: true,
+          onSet: vi.fn(),
+          onSendAsGoal: vi.fn(),
+        }}
+      />,
+    );
+
+    const banner = screen.getByTestId("rich-input-goal-banner");
+    expect(banner).toHaveTextContent("Goal achieved");
+    expect(banner).toHaveTextContent("Ship the login page");
+    expect(banner).not.toHaveTextContent("Pursuing goal");
+    // Edit/delete are gone once the goal is achieved.
+    expect(screen.queryByTestId("rich-input-goal-edit")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("rich-input-goal-delete")).not.toBeInTheDocument();
+  });
+
   it("no banner is rendered when goal.current is null, even with the goal prop present", () => {
     render(
       <RichInput
