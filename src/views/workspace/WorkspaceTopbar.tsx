@@ -112,15 +112,25 @@ export default function WorkspaceTopbar({ conversation }: WorkspaceTopbarProps) 
         {/* Full-width row: the title anchors left and claims the free
             space, the gauge follows, and the workspace folder sits at the
             rightmost edge — title and path both give way with truncation
-            when the window narrows. */}
-        <Item size="xs" className="min-w-0 flex-1 gap-3 p-0">
-          <ItemTitle className="min-w-0 flex-1 truncate" data-testid="workspace-topbar-title">
+            when the window narrows. `flex-nowrap` overrides `Item`'s base
+            `flex-wrap` so the three keep to ONE row and truncate rather than
+            wrapping onto stacked lines; `whitespace-nowrap` defeats
+            ItemTitle/ItemDescription's default `line-clamp` so each stays a
+            single truncated line. */}
+        <Item size="xs" className="min-w-0 flex-1 flex-nowrap gap-3 p-0">
+          <ItemTitle
+            className="min-w-0 flex-1 truncate whitespace-nowrap"
+            data-testid="workspace-topbar-title"
+          >
             {conversation.title}
           </ItemTitle>
           <div className="pointer-events-auto shrink-0" data-topbar-no-drag>
             <ContextUsageIndicator conversationId={conversation.id} />
           </div>
-          <ItemDescription className="min-w-0 truncate" data-testid="workspace-topbar-path">
+          <ItemDescription
+            className="min-w-0 truncate whitespace-nowrap"
+            data-testid="workspace-topbar-path"
+          >
             {workspaceLabel}
           </ItemDescription>
         </Item>

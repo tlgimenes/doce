@@ -719,7 +719,7 @@ describe("RichInput (goal-composer-ui — conversation goal in the composer)", (
     expect(toggle).toHaveAttribute("aria-pressed", "false");
   });
 
-  it("clicking the goal toggle enters goal mode: the toggle shows pressed + a Goal label, and the send button's aria-label becomes 'Send as goal'", async () => {
+  it("clicking the goal toggle enters goal mode: the icon-only toggle shows pressed with an updated accessible label, and the send button's aria-label becomes 'Send as goal'", async () => {
     render(
       <RichInput
         onSubmit={vi.fn()}
@@ -733,10 +733,15 @@ describe("RichInput (goal-composer-ui — conversation goal in the composer)", (
     );
 
     const toggle = screen.getByTestId("rich-input-goal-toggle");
+    // Icon-only: no visible text label, the meaning lives in the accessible
+    // name (and a hover tooltip).
+    expect(toggle).toHaveAccessibleName("Set as goal");
+    expect(toggle).not.toHaveTextContent("Goal");
+
     await userEvent.click(toggle);
 
     expect(toggle).toHaveAttribute("aria-pressed", "true");
-    expect(toggle).toHaveTextContent("Goal");
+    expect(toggle).toHaveAccessibleName("Exit goal mode");
     expect(screen.getByTestId("test-submit")).toHaveAccessibleName("Send as goal");
   });
 

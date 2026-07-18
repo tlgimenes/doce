@@ -7,6 +7,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { ArrowUp, Pencil, Plus, Square, Target, Trash2 } from "lucide-react";
 import { InputGroup, InputGroupAddon, InputGroupButton } from "@/components/ui/input-group";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/cn";
 import { commands, type RichMessageContent } from "@/lib/ipc";
 import PastedText from "./extensions/pasted-text-node";
@@ -688,20 +689,28 @@ export default function RichInput({
               in via the `goal` prop (Workspace.tsx's main composer) — omitted
               entirely on surfaces with no goal to manage. */}
           {goal && (
-            <InputGroupButton
-              size={goalMode ? "xs" : "icon-xs"}
-              variant={goalMode ? "default" : "ghost"}
-              className="aria-disabled:opacity-50"
-              onClick={toggleGoalMode}
-              disabled={disabled && !isGenerating}
-              aria-disabled={disabled}
-              aria-pressed={goalMode}
-              aria-label={goalMode ? "Exit goal mode" : "Set as goal"}
-              data-testid="rich-input-goal-toggle"
-            >
-              <Target size={16} />
-              {goalMode && "Goal"}
-            </InputGroupButton>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <InputGroupButton
+                    size="icon-xs"
+                    variant={goalMode ? "default" : "ghost"}
+                    className="aria-disabled:opacity-50"
+                    onClick={toggleGoalMode}
+                    disabled={disabled && !isGenerating}
+                    aria-disabled={disabled}
+                    aria-pressed={goalMode}
+                    aria-label={goalMode ? "Exit goal mode" : "Set as goal"}
+                    data-testid="rich-input-goal-toggle"
+                  />
+                }
+              >
+                <Target size={16} />
+              </TooltipTrigger>
+              <TooltipContent data-testid="rich-input-goal-tooltip">
+                {goalMode ? "Exit goal mode" : "Set as goal"}
+              </TooltipContent>
+            </Tooltip>
           )}
           {contextGauge}
           {isGenerating ? (
