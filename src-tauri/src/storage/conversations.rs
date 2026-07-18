@@ -1914,11 +1914,11 @@ mod tests {
         mark_conversation_goal_achieved(&conn, "c1").unwrap();
         // Changing the goal resets achieved.
         set_conversation_goal(&conn, "c1", Some("second goal")).unwrap();
-        assert_eq!(get_conversation_goal_state(&conn, "c1").unwrap().1, false);
+        assert!(!get_conversation_goal_state(&conn, "c1").unwrap().1);
         // Clearing likewise.
         mark_conversation_goal_achieved(&conn, "c1").unwrap();
         set_conversation_goal(&conn, "c1", None).unwrap();
-        assert_eq!(get_conversation_goal_state(&conn, "c1").unwrap().1, false);
+        assert!(!get_conversation_goal_state(&conn, "c1").unwrap().1);
     }
 
     #[test]
