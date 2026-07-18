@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Archive, Cog, KeyboardIcon, Plus, Search } from "lucide-react";
+import { Archive, Cog, KeyboardIcon, Plus, Search, Target } from "lucide-react";
 import { TopbarHost, TopbarProvider } from "@/components/Topbar";
 import { cn } from "@/lib/cn";
 import { Button } from "@/components/ui/button";
@@ -196,6 +196,12 @@ export default function App() {
             conversationListRef.current?.archiveById(activeConversation.id);
           }
         },
+        toggleGoal: () => {
+          // Same DOM-query approach as `focusInput`: click the composer's goal
+          // toggle directly. Only the workspace composer renders it (the empty
+          // state has no goal), so this is a no-op with no active conversation.
+          document.querySelector<HTMLElement>('[data-testid="rich-input-goal-toggle"]')?.click();
+        },
       }),
     [
       activeConversation,
@@ -255,6 +261,16 @@ export default function App() {
           if (activeConversation) {
             conversationListRef.current?.archiveById(activeConversation.id);
           }
+        },
+      },
+      {
+        id: "toggle-goal",
+        label: "Toggle Goal Mode",
+        icon: <Target />,
+        shortcut: formatCombo("Cmd+G"),
+        disabled: !activeConversation,
+        run: () => {
+          document.querySelector<HTMLElement>('[data-testid="rich-input-goal-toggle"]')?.click();
         },
       },
       {
