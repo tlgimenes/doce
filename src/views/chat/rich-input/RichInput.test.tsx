@@ -719,7 +719,7 @@ describe("RichInput (goal-composer-ui — conversation goal in the composer)", (
     expect(toggle).toHaveAttribute("aria-pressed", "false");
   });
 
-  it("clicking the goal toggle enters goal mode: the toggle shows pressed + a Goal label, and the send button's aria-label becomes 'Send as goal'", async () => {
+  it("clicking the goal toggle enters goal mode: the icon-only toggle shows pressed with an updated accessible label, and the send button's aria-label becomes 'Send as goal'", async () => {
     render(
       <RichInput
         onSubmit={vi.fn()}
@@ -733,10 +733,15 @@ describe("RichInput (goal-composer-ui — conversation goal in the composer)", (
     );
 
     const toggle = screen.getByTestId("rich-input-goal-toggle");
+    // Icon-only: no visible text label, the meaning lives in the accessible
+    // name (and a hover tooltip).
+    expect(toggle).toHaveAccessibleName("Set as goal");
+    expect(toggle).not.toHaveTextContent("Goal");
+
     await userEvent.click(toggle);
 
     expect(toggle).toHaveAttribute("aria-pressed", "true");
-    expect(toggle).toHaveTextContent("Goal");
+    expect(toggle).toHaveAccessibleName("Exit goal mode");
     expect(screen.getByTestId("test-submit")).toHaveAccessibleName("Send as goal");
   });
 
@@ -817,6 +822,33 @@ describe("RichInput (goal-composer-ui — conversation goal in the composer)", (
     expect(banner).toHaveTextContent("Ship the login page");
     expect(screen.getByTestId("rich-input-goal-edit")).toBeInTheDocument();
     expect(screen.getByTestId("rich-input-goal-delete")).toBeInTheDocument();
+  });
+
+  it("an achieved goal shows 'Goal achieved' with no edit/delete buttons", () => {
+    render(
+      <RichInput
+        onSubmit={vi.fn()}
+        skillsEnabled={false}
+        disabled={false}
+        placeholder="p"
+        inputTestId="test-input"
+        submitTestId="test-submit"
+        goal={{
+          current: "Ship the login page",
+          achieved: true,
+          onSet: vi.fn(),
+          onSendAsGoal: vi.fn(),
+        }}
+      />,
+    );
+
+    const banner = screen.getByTestId("rich-input-goal-banner");
+    expect(banner).toHaveTextContent("Goal achieved");
+    expect(banner).toHaveTextContent("Ship the login page");
+    expect(banner).not.toHaveTextContent("Pursuing goal");
+    // Edit/delete are gone once the goal is achieved.
+    expect(screen.queryByTestId("rich-input-goal-edit")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("rich-input-goal-delete")).not.toBeInTheDocument();
   });
 
   it("no banner is rendered when goal.current is null, even with the goal prop present", () => {

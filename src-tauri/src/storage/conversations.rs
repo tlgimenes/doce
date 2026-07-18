@@ -726,11 +726,41 @@ pub fn set_conversation_goal(
     goal: Option<&str>,
 ) -> rusqlite::Result<()> {
     let goal = goal.filter(|g| !g.is_empty());
+    // Changing or clearing the goal resets its achieved flag — a new goal is
+    // being pursued, not met.
     conn.execute(
-        "UPDATE conversations SET goal = ?1 WHERE id = ?2",
+        "UPDATE conversations SET goal = ?1, goal_achieved = 0 WHERE id = ?2",
         rusqlite::params![goal, conversation_id],
     )?;
     Ok(())
+}
+
+/// Mark the conversation's CURRENT goal as achieved (observer-confirmed at
+/// FinishTask). Cleared again by the next `set_conversation_goal`.
+pub fn mark_conversation_goal_achieved(
+    conn: &Connection,
+    conversation_id: &str,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE conversations SET goal_achieved = 1 WHERE id = ?1",
+        [conversation_id],
+    )?;
+    Ok(())
+}
+
+/// The goal AND whether it has been achieved — one row read for the load path
+/// (`get_conversation_goal` alone stays a plain `Option<String>` for
+/// `send_agent_message`, which only needs the text).
+pub fn get_conversation_goal_state(
+    conn: &Connection,
+    conversation_id: &str,
+) -> rusqlite::Result<(Option<String>, bool)> {
+    let (goal, achieved): (Option<String>, i64) = conn.query_row(
+        "SELECT goal, goal_achieved FROM conversations WHERE id = ?1",
+        [conversation_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    Ok((goal.filter(|g| !g.is_empty()), achieved != 0))
 }
 
 /// Reads a conversation's goal back — `None` for both an unset (`NULL`)
@@ -1859,6 +1889,36 @@ mod tests {
         set_conversation_goal(&conn, "c1", Some("ship the login page")).unwrap();
         set_conversation_goal(&conn, "c1", None).unwrap();
         assert_eq!(get_conversation_goal(&conn, "c1").unwrap(), None);
+    }
+
+    #[test]
+    fn goal_achieved_defaults_false_marks_true_and_survives_read() {
+        let conn = setup_conn_with_conversation("c1");
+        set_conversation_goal(&conn, "c1", Some("ship it")).unwrap();
+        // Freshly set -> not achieved.
+        assert_eq!(
+            get_conversation_goal_state(&conn, "c1").unwrap(),
+            (Some("ship it".to_string()), false)
+        );
+        mark_conversation_goal_achieved(&conn, "c1").unwrap();
+        assert_eq!(
+            get_conversation_goal_state(&conn, "c1").unwrap(),
+            (Some("ship it".to_string()), true)
+        );
+    }
+
+    #[test]
+    fn setting_or_clearing_a_goal_resets_achieved() {
+        let conn = setup_conn_with_conversation("c1");
+        set_conversation_goal(&conn, "c1", Some("first goal")).unwrap();
+        mark_conversation_goal_achieved(&conn, "c1").unwrap();
+        // Changing the goal resets achieved.
+        set_conversation_goal(&conn, "c1", Some("second goal")).unwrap();
+        assert!(!get_conversation_goal_state(&conn, "c1").unwrap().1);
+        // Clearing likewise.
+        mark_conversation_goal_achieved(&conn, "c1").unwrap();
+        set_conversation_goal(&conn, "c1", None).unwrap();
+        assert!(!get_conversation_goal_state(&conn, "c1").unwrap().1);
     }
 
     #[test]

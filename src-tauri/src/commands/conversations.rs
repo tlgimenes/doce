@@ -355,23 +355,34 @@ pub async fn set_conversation_goal(
     Ok(())
 }
 
-/// Reads back the user-set goal for a conversation
-/// (`storage::conversations::get_conversation_goal`) — the read half of
-/// `set_conversation_goal`'s write path, used by the goal UI to populate
-/// its initial state (and to recover it across a reload/remount, same as
-/// `get_active_plan` does for the plan tracker). `None` means no goal is
-/// set, whether that's a `NULL` column or a legacy empty-string value.
+/// A conversation's goal plus whether the observer has confirmed it met — the
+/// load-path shape the composer's "Pursuing goal" / "Goal achieved" banner
+/// reads on mount, so the achieved state survives a reload.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationGoal {
+    pub goal: Option<String>,
+    pub achieved: bool,
+}
+
+/// Reads back the user-set goal for a conversation and whether it has been
+/// achieved (`storage::conversations::get_conversation_goal_state`) — used by
+/// the goal UI to populate its initial state and recover it across a
+/// reload/remount, same as `get_active_plan` does for the plan tracker.
+/// `goal: None` means no goal is set (a `NULL` column or a legacy empty string).
 #[tauri::command]
 #[specta::specta]
 pub async fn get_conversation_goal(
     app: AppHandle,
     db_cell: State<'_, DbCell>,
     conversation_id: String,
-) -> Result<Option<String>, String> {
+) -> Result<ConversationGoal, String> {
     let conn = db_cell.get(&app).await?;
     conn.call(
-        move |conn: &mut Connection| -> rusqlite::Result<Option<String>> {
-            crate::storage::conversations::get_conversation_goal(conn, &conversation_id)
+        move |conn: &mut Connection| -> rusqlite::Result<ConversationGoal> {
+            let (goal, achieved) =
+                crate::storage::conversations::get_conversation_goal_state(conn, &conversation_id)?;
+            Ok(ConversationGoal { goal, achieved })
         },
     )
     .await

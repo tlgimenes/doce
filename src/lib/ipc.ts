@@ -566,7 +566,7 @@ export const commands = {
   setConversationGoal: (conversationId: string, goal: string | null) =>
     invoke<void>("set_conversation_goal", { conversationId, goal }),
   getConversationGoal: (conversationId: string) =>
-    invoke<string | null>("get_conversation_goal", { conversationId }),
+    invoke<ConversationGoal>("get_conversation_goal", { conversationId }),
   searchConversations: (query: string) => invoke<SearchResult[]>("search_conversations", { query }),
   // Values cross as JSON-encoded strings (see commands/settings.rs for why)
   // — parse/stringify at the call site.
@@ -661,6 +661,16 @@ export interface ConversationGoalChangedPayload {
   goal: string | null;
 }
 
+export interface GoalCompletePayload {
+  conversationId: string;
+  goal: string;
+}
+
+export interface ConversationGoal {
+  goal: string | null;
+  achieved: boolean;
+}
+
 export const events = {
   onModelInstallProgress: (cb: (p: ModelInstallProgressPayload) => void): Promise<UnlistenFn> =>
     listen<ModelInstallProgressPayload>("model-install-progress", (e) => cb(e.payload)),
@@ -678,4 +688,6 @@ export const events = {
     cb: (p: ConversationGoalChangedPayload) => void,
   ): Promise<UnlistenFn> =>
     listen<ConversationGoalChangedPayload>("conversation-goal-changed", (e) => cb(e.payload)),
+  onGoalComplete: (cb: (p: GoalCompletePayload) => void): Promise<UnlistenFn> =>
+    listen<GoalCompletePayload>("goal-complete", (e) => cb(e.payload)),
 };
