@@ -33,6 +33,7 @@ export interface ShortcutHandlers {
   openCommandCenter: () => void;
   toggleWidgetGallery: () => void;
   archiveCurrent: () => void;
+  toggleGoal: () => void;
 }
 
 // The single source of truth both the global keydown listener and the
@@ -48,6 +49,17 @@ export function buildShortcuts(handlers: ShortcutHandlers): Shortcut[] {
       key: "l",
       description: "Focus composer",
       action: handlers.focusInput,
+    },
+    {
+      // Toggles the composer's goal mode (the ◎ goal button) — send the next
+      // message as the conversation's goal. No-op when the composer has no
+      // goal control (the empty state).
+      id: "toggle-goal",
+      combo: "Cmd+G",
+      metaKey: true,
+      key: "g",
+      description: "Toggle goal mode",
+      action: handlers.toggleGoal,
     },
     {
       id: "new-conversation",

@@ -9,6 +9,7 @@ function handlers() {
     openCommandCenter: vi.fn(),
     toggleWidgetGallery: vi.fn(),
     archiveCurrent: vi.fn(),
+    toggleGoal: vi.fn(),
   };
 }
 
@@ -26,6 +27,21 @@ describe("buildShortcuts", () => {
 
     shortcut?.action();
     expect(h.openCommandCenter).toHaveBeenCalledTimes(1);
+  });
+
+  it("binds Cmd+G to toggling goal mode", () => {
+    const h = handlers();
+    const shortcut = buildShortcuts(h).find((s) => s.id === "toggle-goal");
+
+    expect(shortcut).toMatchObject({
+      combo: "Cmd+G",
+      metaKey: true,
+      key: "g",
+      description: "Toggle goal mode",
+    });
+
+    shortcut?.action();
+    expect(h.toggleGoal).toHaveBeenCalledTimes(1);
   });
 
   it("keeps Cmd+F dedicated to conversation search", () => {
