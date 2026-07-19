@@ -120,31 +120,15 @@ jobs:
             logs/
           if-no-files-found: ignore
 
-  # T090 (specs/001-doce-v1-core/tasks.md): only runs on a `v*` tag, after
-  # rust/frontend/e2e all pass. UNTESTED against a real Apple Developer
-  # account — there is no such account/certificate available in this
-  # environment to verify against. This wires the configuration Tauri v2's
-  # documented macOS signing/notarization flow expects (research.md § 7);
-  # it does not itself obtain or vouch for real credentials. Before this
-  # job can produce a signed, notarized build, the repo needs these
-  # secrets set (Settings -> Secrets and variables -> Actions):
-  #   APPLE_CERTIFICATE          - base64-encoded Developer ID Application
-  #                                .p12 certificate
-  #   APPLE_CERTIFICATE_PASSWORD - the .p12's export password
-  #   APPLE_SIGNING_IDENTITY     - e.g. "Developer ID Application: NAME (TEAMID)"
-  #   APPLE_ID                   - Apple ID email used for notarization
-  #   APPLE_PASSWORD             - an app-specific password for that Apple ID
-  #                                (not the account password)
-  #   APPLE_TEAM_ID              - the Developer Team ID
-  # Verify these exact variable names against Tauri's current official
-  # macOS code-signing guide before relying on this job — they were not
-  # confirmed against a real signing run.
+  # The public build uses Tauri's supported ad-hoc identity (`-`). This gives
+  # the complete app bundle a valid code seal without paid Apple credentials,
+  # but it is not Developer ID signed or notarized. macOS users therefore need
+  # to approve the app once in System Settings -> Privacy & Security.
   release:
-    name: Release (signed .dmg)
+    name: Release (ad-hoc signed .dmg)
     runs-on: macos-26
     # Auto-release on every merge to main (and on explicit v* tags). Gated on
-    # rust+frontend only: the heavy/flaky e2e job still runs as a check, but must
-    # not block shipping a build from a merge.
+    # rust+frontend only; the real-model e2e suite remains on-demand.
     needs: [rust, frontend]
     if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     # Needed for the Publish step to create the GitHub Release + upload assets.
@@ -176,31 +160,95 @@ jobs:
       - name: Install create-dmg
         run: brew install create-dmg
 
-      - name: Build .dmg (signed if a cert is configured, else unsigned)
+      - name: Build ad-hoc signed .dmg
         env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_SIGNING_IDENTITY: "-"
         run: |
-          # No Developer ID configured yet -> build UNSIGNED. Passing an EMPTY
-          # APPLE_CERTIFICATE makes tauri attempt `security import` on nothing
-          # and fail ("failed to import keychain certificate"); unset the whole
-          # signing env so tauri skips codesign entirely. Set the secrets later
-          # to get a signed, notarized build with no further change.
-          if [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
-            echo "No Apple signing identity -> building UNSIGNED."
-            unset APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
-          fi
+          # The Rust cache can restore an older version's bundle. Clear only
+          # generated bundle outputs so the asset checks below cannot select a
+          # stale DMG after a version change.
+          rm -rf src-tauri/target/release/bundle/dmg
+          rm -rf src-tauri/target/release/bundle/macos
           npm run tauri build
+
+      - name: Verify code seal and disk image
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          apps=(src-tauri/target/release/bundle/macos/*.app)
+          dmgs=(src-tauri/target/release/bundle/dmg/*_aarch64.dmg)
+          if (( ${#apps[@]} != 1 || ${#dmgs[@]} != 1 )); then
+            echo "Expected one macOS app and one aarch64 DMG; found ${#apps[@]} app(s) and ${#dmgs[@]} DMG(s)." >&2
+            exit 1
+          fi
+
+          verify_app() {
+            local app_bundle="$1"
+            local signature_info
+            codesign --verify --deep --strict --verbose=4 "$app_bundle"
+            signature_info="$(codesign -dv --verbose=4 "$app_bundle" 2>&1)"
+            if ! grep -Fqx 'Signature=adhoc' <<<"$signature_info"; then
+              echo "Expected an ad-hoc app signature: $app_bundle" >&2
+              return 1
+            fi
+            for executable in \
+              "$app_bundle/Contents/MacOS/doce" \
+              "$app_bundle/Contents/MacOS/llama-server"; do
+              if [[ ! -x "$executable" ]]; then
+                echo "Missing executable: $executable" >&2
+                return 1
+              fi
+              lipo "$executable" -verify_arch arm64
+            done
+          }
+
+          verify_app "${apps[0]}"
+          hdiutil verify "${dmgs[0]}"
+
+          # Validate the app users will actually receive, after DMG packaging.
+          mount_dir="$(mktemp -d)"
+          attached=false
+          cleanup() {
+            if [[ "$attached" == true ]]; then
+              hdiutil detach "$mount_dir" -quiet || true
+            fi
+            rmdir "$mount_dir" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          hdiutil attach "${dmgs[0]}" -readonly -nobrowse -noautoopen -mountpoint "$mount_dir" >/dev/null
+          attached=true
+          mounted_apps=("$mount_dir"/*.app)
+          if (( ${#mounted_apps[@]} != 1 )); then
+            echo "Expected one app inside the DMG, found ${#mounted_apps[@]}." >&2
+            exit 1
+          fi
+          verify_app "${mounted_apps[0]}"
+
+      # GitHub's /releases/latest/download/<filename> endpoint follows the
+      # newest release, but the filename itself must remain stable. Normalize
+      # Tauri's versioned build output to a friendly public download name.
+      - name: Stage stable download asset
+        run: |
+          shopt -s nullglob
+          dmg_files=(src-tauri/target/release/bundle/dmg/*_aarch64.dmg)
+          if (( ${#dmg_files[@]} != 1 )); then
+            echo "Expected exactly one DMG, found ${#dmg_files[@]}." >&2
+            exit 1
+          fi
+          mkdir -p release-assets
+          cp "${dmg_files[0]}" release-assets/doce-aarch64.dmg
+          (
+            cd release-assets
+            shasum -a 256 doce-aarch64.dmg > doce-aarch64.dmg.sha256
+          )
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
           name: doce-dmg
-          path: src-tauri/target/release/bundle/dmg/*.dmg
+          path: |
+            release-assets/doce-aarch64.dmg
+            release-assets/doce-aarch64.dmg.sha256
           if-no-files-found: error
 
       # The release tag: an explicit `v*` tag when pushed as one, otherwise a
@@ -218,15 +266,19 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Release tag: $TAG"
 
-      # Publish the GitHub Release + attach the .dmg. `make_latest: true` forces
-      # `releases/latest` (the landing page's download button target) to resolve
-      # to this build, so the public download always tracks the newest merge.
+      # Publish the GitHub Release + attach the DMG and checksum. Setting
+      # `make_latest` forces
+      # `releases/latest/download/doce-aarch64.dmg` (the landing page's download
+      # button target) to resolve to this build, so the public download always
+      # tracks the newest merge.
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.relver.outputs.tag }}
           name: doce ${{ steps.relver.outputs.tag }}
           make_latest: true
-          files: src-tauri/target/release/bundle/dmg/*.dmg
+          files: |
+            release-assets/doce-aarch64.dmg
+            release-assets/doce-aarch64.dmg.sha256
           fail_on_unmatched_files: true
           generate_release_notes: true
