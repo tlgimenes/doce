@@ -678,11 +678,11 @@ describe("RichInput (009-rich-chat-input, US2 — paste-collapse)", () => {
 });
 
 /**
- * Composer relocation of the old topbar GoalBar (goal-composer-ui-brief.md):
- * the ◎ toggle, "send as goal" submit branch, and the "Pursuing goal" banner
- * are all opt-in via the `goal` prop — omitted on surfaces (EmptyState,
- * UserAskWidget) that don't pass it, and otherwise wired straight into
- * `submitCurrentContent`'s existing Enter/click submit paths.
+ * The composer's conversation-goal controls: the ◎ toggle and the "send as
+ * goal" submit branch (opt-in via the `goal` prop), plus the `editGoalToken`
+ * hook the AgentActivity status line uses to load a goal back for editing. The
+ * goal itself is DISPLAYED by that status line above the composer, not by a
+ * banner in this component.
  */
 describe("RichInput (goal-composer-ui — conversation goal in the composer)", () => {
   it("does not render the goal toggle when the goal prop is omitted", () => {
@@ -804,7 +804,7 @@ describe("RichInput (goal-composer-ui — conversation goal in the composer)", (
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
-  it("a set goal.current renders the 'Pursuing goal' banner with the goal text", () => {
+  it("the goal is not rendered as a banner here — only the toggle (display moved to the status line)", () => {
     render(
       <RichInput
         onSubmit={vi.fn()}
@@ -814,92 +814,31 @@ describe("RichInput (goal-composer-ui — conversation goal in the composer)", (
         inputTestId="test-input"
         submitTestId="test-submit"
         goal={{ current: "Ship the login page", onSet: vi.fn(), onSendAsGoal: vi.fn() }}
-      />,
-    );
-
-    const banner = screen.getByTestId("rich-input-goal-banner");
-    expect(banner).toHaveTextContent("Pursuing goal");
-    expect(banner).toHaveTextContent("Ship the login page");
-    expect(screen.getByTestId("rich-input-goal-edit")).toBeInTheDocument();
-    expect(screen.getByTestId("rich-input-goal-delete")).toBeInTheDocument();
-  });
-
-  it("an achieved goal shows 'Goal achieved' with no edit/delete buttons", () => {
-    render(
-      <RichInput
-        onSubmit={vi.fn()}
-        skillsEnabled={false}
-        disabled={false}
-        placeholder="p"
-        inputTestId="test-input"
-        submitTestId="test-submit"
-        goal={{
-          current: "Ship the login page",
-          achieved: true,
-          onSet: vi.fn(),
-          onSendAsGoal: vi.fn(),
-        }}
-      />,
-    );
-
-    const banner = screen.getByTestId("rich-input-goal-banner");
-    expect(banner).toHaveTextContent("Goal achieved");
-    expect(banner).toHaveTextContent("Ship the login page");
-    expect(banner).not.toHaveTextContent("Pursuing goal");
-    // Edit/delete are gone once the goal is achieved.
-    expect(screen.queryByTestId("rich-input-goal-edit")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("rich-input-goal-delete")).not.toBeInTheDocument();
-  });
-
-  it("no banner is rendered when goal.current is null, even with the goal prop present", () => {
-    render(
-      <RichInput
-        onSubmit={vi.fn()}
-        skillsEnabled={false}
-        disabled={false}
-        placeholder="p"
-        inputTestId="test-input"
-        submitTestId="test-submit"
-        goal={{ current: null, onSet: vi.fn(), onSendAsGoal: vi.fn() }}
       />,
     );
 
     expect(screen.queryByTestId("rich-input-goal-banner")).not.toBeInTheDocument();
+    expect(screen.getByTestId("rich-input-goal-toggle")).toBeInTheDocument();
   });
 
-  it("the banner's delete button calls goal.onSet(null)", async () => {
-    const onSet = vi.fn();
-    render(
-      <RichInput
-        onSubmit={vi.fn()}
-        skillsEnabled={false}
-        disabled={false}
-        placeholder="p"
-        inputTestId="test-input"
-        submitTestId="test-submit"
-        goal={{ current: "Ship the login page", onSet, onSendAsGoal: vi.fn() }}
-      />,
-    );
+  it("a changing editGoalToken prefills the editor with the goal text and enters goal mode, but the mount value does not", () => {
+    const props = {
+      onSubmit: vi.fn(),
+      skillsEnabled: false,
+      disabled: false,
+      placeholder: "p",
+      inputTestId: "test-input",
+      submitTestId: "test-submit",
+      goal: { current: "Ship the login page", onSet: vi.fn(), onSendAsGoal: vi.fn() },
+    };
+    const { rerender } = render(<RichInput {...props} editGoalToken={0} />);
 
-    await userEvent.click(screen.getByTestId("rich-input-goal-delete"));
+    // The initial token must NOT enter edit mode on mount.
+    expect(screen.getByTestId("test-input")).not.toHaveTextContent("Ship the login page");
+    expect(screen.getByTestId("rich-input-goal-toggle")).toHaveAttribute("aria-pressed", "false");
 
-    expect(onSet).toHaveBeenCalledWith(null);
-  });
-
-  it("the banner's edit button prefills the editor with the goal text and enters goal mode", async () => {
-    render(
-      <RichInput
-        onSubmit={vi.fn()}
-        skillsEnabled={false}
-        disabled={false}
-        placeholder="p"
-        inputTestId="test-input"
-        submitTestId="test-submit"
-        goal={{ current: "Ship the login page", onSet: vi.fn(), onSendAsGoal: vi.fn() }}
-      />,
-    );
-
-    await userEvent.click(screen.getByTestId("rich-input-goal-edit"));
+    // A new token (the status line's edit control) loads the goal for editing.
+    rerender(<RichInput {...props} editGoalToken={1} />);
 
     expect(screen.getByTestId("test-input")).toHaveTextContent("Ship the login page");
     expect(screen.getByTestId("rich-input-goal-toggle")).toHaveAttribute("aria-pressed", "true");
