@@ -2,6 +2,7 @@ use crate::agent::tools::{bash, fs, search};
 use crate::agent::ToolCall;
 use serde_json::json;
 use std::path::{Path, PathBuf};
+use tokio_util::sync::CancellationToken;
 
 /// 004-tool-call-widgets: the model-facing text (unchanged from before this
 /// feature — exactly what used to be `execute`'s whole return value) plus a
@@ -243,6 +244,14 @@ fn validate_required_args(call: &ToolCall) -> Option<String> {
 /// requirement, unchanged by this feature) — an absolute path is always
 /// taken exactly as given.
 pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
+    execute_with_cancel(call, cwd, None)
+}
+
+fn execute_with_cancel(
+    call: &ToolCall,
+    cwd: Option<&Path>,
+    cancel: Option<&CancellationToken>,
+) -> ToolOutcome {
     if let Some(error) = validate_required_args(call) {
         let a = |key: &str| {
             call.arguments
@@ -314,7 +323,7 @@ pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
                 name: delegate_name.to_string(),
                 arguments: call.arguments.clone(),
             };
-            execute(&delegated, cwd)
+            execute_with_cancel(&delegated, cwd, cancel)
         }
         "Read" => {
             // validate_required_args already guaranteed file_path is present
@@ -479,7 +488,11 @@ pub fn execute(call: &ToolCall, cwd: Option<&Path>) -> ToolOutcome {
                 .and_then(|v| v.as_str())
                 .unwrap_or_default();
             let timeout_ms = call.arguments.get("timeout").and_then(|v| v.as_u64());
-            match bash::run(command, timeout_ms, cwd) {
+            let result = match cancel {
+                Some(cancel) => bash::run_cancellable(command, timeout_ms, cwd, cancel),
+                None => bash::run(command, timeout_ms, cwd),
+            };
+            match result {
                 // Restorable-compression: `model_text` (what the model
                 // reads, and what `context::payload::stage_tool_result`
                 // checks against the threshold to decide whether this
@@ -712,6 +725,35 @@ pub async fn execute_async(call: ToolCall, cwd: Option<PathBuf>) -> ToolOutcome 
         Ok(outcome) => outcome,
         // A panic inside a tool becomes an ordinary tool-error result the
         // model can react to, not a crashed agent turn.
+        Err(e) => {
+            let text = format!("Error: tool execution failed: {e}");
+            ToolOutcome {
+                detail: json!({
+                    "toolName": name, "arguments": arguments,
+                    "outcome": {"ok": false, "error": text},
+                }),
+                model_text: text,
+            }
+        }
+    }
+}
+
+/// Cancellation-aware dispatch for live agent turns. Most tools are short
+/// filesystem operations; Bash is the important exception and receives the
+/// turn token so Stop can terminate its complete process group promptly.
+pub async fn execute_async_cancellable(
+    call: ToolCall,
+    cwd: Option<PathBuf>,
+    cancel: CancellationToken,
+) -> ToolOutcome {
+    let name = call.name.clone();
+    let arguments = call.arguments.clone();
+    match tokio::task::spawn_blocking(move || {
+        execute_with_cancel(&call, cwd.as_deref(), Some(&cancel))
+    })
+    .await
+    {
+        Ok(outcome) => outcome,
         Err(e) => {
             let text = format!("Error: tool execution failed: {e}");
             ToolOutcome {
@@ -1105,6 +1147,26 @@ mod tests {
             timer_elapsed < std::time::Duration::from_millis(400),
             "the 50ms timer only fired after {timer_elapsed:?} — tool execution starved the executor"
         );
+    }
+
+    #[tokio::test]
+    async fn execute_async_cancellable_stops_a_running_bash_tool() {
+        let cancel = CancellationToken::new();
+        let execution = tokio::spawn(execute_async_cancellable(
+            call("Bash", serde_json::json!({"command": "sleep 30 &"})),
+            None,
+            cancel.clone(),
+        ));
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        cancel.cancel();
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(3), execution)
+            .await
+            .expect("cancellation should release the Bash dispatch promptly")
+            .unwrap();
+
+        assert_eq!(outcome.detail["outcome"]["exitCode"], -1);
+        assert!(outcome.model_text.contains("command stopped"));
     }
 
     #[test]

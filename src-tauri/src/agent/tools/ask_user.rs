@@ -49,6 +49,13 @@ impl PendingQuestions {
             false
         }
     }
+
+    /// Removes a pending question when its owning agent turn is stopped.
+    /// Dropping the sender wakes the receiver, so a paused turn cannot keep
+    /// the global model-generation lease forever after cancellation.
+    pub fn cancel(&self, question_id: &str) -> bool {
+        self.0.lock().unwrap().remove(question_id).is_some()
+    }
 }
 
 #[cfg(test)]
@@ -91,5 +98,15 @@ mod tests {
 
         assert_eq!(rx1.await.unwrap(), vec!["for q1".to_string()]);
         assert_eq!(rx2.await.unwrap(), vec!["for q2".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn cancelling_removes_and_wakes_a_pending_question() {
+        let pending = PendingQuestions::default();
+        let rx = pending.register("q1".to_string());
+
+        assert!(pending.cancel("q1"));
+        assert!(rx.await.is_err());
+        assert!(!pending.answer("q1", vec!["too late".to_string()]));
     }
 }

@@ -30,6 +30,10 @@ const originalStartViewTransition = (document as TestDocument).startViewTransiti
 vi.mock("@/lib/ipc", () => ({
   commands: {
     listModels: vi.fn(),
+    getModelState: vi.fn(),
+    selectCuratedModel: vi.fn(),
+    selectLocalModel: vi.fn(),
+    dismissModelNotice: vi.fn(),
     listConversations: vi.fn(),
     searchConversations: vi.fn(),
     markConversationSeen: vi.fn(),
@@ -103,9 +107,35 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     vi.clearAllMocks();
     useContextUsageStore.setState({ usage: {} });
 
-    vi.mocked(commands.listModels).mockResolvedValue([
-      { id: "m", hardwareTier: "tier1", isActive: true, installed: true },
-    ]);
+    vi.mocked(commands.getModelState).mockResolvedValue({
+      hardware: { tier: "apple-silicon-16gb", ramGb: 16, chip: "Apple M2", diskFreeGb: 200 },
+      options: [
+        {
+          id: "m",
+          displayName: "Balanced",
+          description: "Fast and reliable for everyday work.",
+          technicalName: "Qwen3.5 4B",
+          parameterCount: "4B",
+          quantization: "Q4_K_M",
+          sizeBytes: 2_740_937_888,
+          recommended: true,
+          installed: true,
+          active: true,
+          selected: true,
+          sourceKind: "curated",
+          localPath: "/models/m.gguf",
+          state: "active",
+          bytesDownloaded: 0,
+          bytesTotal: 0,
+        },
+      ],
+      activeId: "m",
+      selectedId: "m",
+      fallbackNotice: null,
+    });
+    vi.mocked(commands.selectCuratedModel).mockImplementation(() => commands.getModelState());
+    vi.mocked(commands.selectLocalModel).mockImplementation(() => commands.getModelState());
+    vi.mocked(commands.dismissModelNotice).mockResolvedValue();
     vi.mocked(commands.listConversations).mockResolvedValue([]);
     vi.mocked(commands.searchConversations).mockResolvedValue([]);
     vi.mocked(commands.markConversationSeen).mockResolvedValue();
@@ -471,9 +501,37 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     await userEvent.click(await screen.findByTestId("open-settings"));
     await screen.findByTestId("settings-view");
 
+    expect(screen.getByTestId("conversation-list")).toBeInTheDocument();
+    expect(screen.getByTestId("open-settings")).toHaveAttribute("aria-current", "page");
     expect(() => pressCmd("l")).not.toThrow();
     expect(screen.queryByTestId("agent-input")).not.toBeInTheDocument();
     expect(screen.queryByTestId("empty-state-input")).not.toBeInTheDocument();
+  });
+
+  it("keeps populated chats visible and selectable while Settings is open", async () => {
+    vi.mocked(commands.listConversations).mockResolvedValue([
+      {
+        id: "existing-chat",
+        workspaceId: "ws-home",
+        title: "Quarterly planning",
+        createdAt: 1,
+        updatedAt: 2,
+        lastSeenAt: 1,
+        status: "done",
+      },
+    ]);
+
+    render(<App />);
+    await waitForReady();
+    expect(await screen.findByText("Quarterly planning")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId("open-settings"));
+    expect(await screen.findByTestId("settings-view")).toBeInTheDocument();
+    expect(screen.getByText("Quarterly planning")).toBeVisible();
+
+    await userEvent.click(screen.getByRole("button", { name: "Open Quarterly planning" }));
+    await waitFor(() => expect(screen.queryByTestId("settings-view")).not.toBeInTheDocument());
+    expect(await screen.findByTestId("agent-input")).toBeInTheDocument();
   });
 
   it("typing a plain 'l' (no Cmd) does not trigger the shortcut", async () => {
@@ -834,11 +892,11 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
 });
 
 // Regression coverage for the App.tsx robustness fix: `ready` used to stay
-// `null` forever (rendering nothing) if listModels() never settled — the
+// `null` forever (rendering nothing) if getModelState() never settled — the
 // exact shape of a still-unresolved CI-only failure (see tasks.md's T095
 // note). checkReadyWithRetries() now bounds that wait and always resolves
 // to a real boolean.
-describe("App's initial readiness check survives a stuck listModels() call", () => {
+describe("App's initial readiness check survives a stuck getModelState() call", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
@@ -848,32 +906,45 @@ describe("App's initial readiness check survives a stuck listModels() call", () 
     vi.useRealTimers();
   });
 
-  it("resolves true immediately when listModels() succeeds with an installed model", async () => {
-    vi.mocked(commands.listModels).mockResolvedValue([
-      { id: "m", hardwareTier: "tier1", isActive: true, installed: true },
-    ]);
+  const state = (activeId: string | null, fallbackNotice: string | null = null) => ({
+    hardware: { tier: "apple-silicon-16gb", ramGb: 16, chip: "Apple M2", diskFreeGb: 200 },
+    options: [],
+    activeId,
+    selectedId: activeId,
+    fallbackNotice,
+  });
+
+  it("resolves true immediately when getModelState() has an active model", async () => {
+    vi.mocked(commands.getModelState).mockResolvedValue(state("m"));
     const resultPromise = checkReadyWithRetries();
     await vi.advanceTimersByTimeAsync(0);
     await expect(resultPromise).resolves.toBe(true);
-    expect(commands.listModels).toHaveBeenCalledTimes(1);
+    expect(commands.getModelState).toHaveBeenCalledTimes(1);
   });
 
-  it("resolves false, without hanging forever, when listModels() never settles across every retry", async () => {
-    vi.mocked(commands.listModels).mockReturnValue(new Promise(() => {}));
+  it("resolves false, without hanging forever, when getModelState() never settles across every retry", async () => {
+    vi.mocked(commands.getModelState).mockReturnValue(new Promise(() => {}));
     const resultPromise = checkReadyWithRetries();
     // 3 attempts * 8s timeout each = 24s worst case.
     await vi.advanceTimersByTimeAsync(24_000);
     await expect(resultPromise).resolves.toBe(false);
-    expect(commands.listModels).toHaveBeenCalledTimes(3);
+    expect(commands.getModelState).toHaveBeenCalledTimes(3);
   });
 
   it("resolves true if a later retry succeeds after earlier ones hang", async () => {
-    vi.mocked(commands.listModels)
+    vi.mocked(commands.getModelState)
       .mockReturnValueOnce(new Promise(() => {}))
-      .mockResolvedValueOnce([{ id: "m", hardwareTier: "tier1", isActive: true, installed: true }]);
+      .mockResolvedValueOnce(state("m"));
     const resultPromise = checkReadyWithRetries();
     await vi.advanceTimersByTimeAsync(8_000);
     await expect(resultPromise).resolves.toBe(true);
-    expect(commands.listModels).toHaveBeenCalledTimes(2);
+    expect(commands.getModelState).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps Settings reachable while a missing local model recovers", async () => {
+    vi.mocked(commands.getModelState).mockResolvedValue(
+      state(null, "Your local model is no longer available. Doce is getting Balanced ready."),
+    );
+    await expect(checkReadyWithRetries()).resolves.toBe(true);
   });
 });

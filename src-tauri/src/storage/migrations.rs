@@ -34,6 +34,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
         12,
         include_str!("migrations/0012_conversation_goal_achieved.sql"),
     ),
+    (13, include_str!("migrations/0013_model_sources.sql")),
 ];
 
 pub fn apply_pending(conn: &mut Connection) -> rusqlite::Result<()> {
@@ -376,5 +377,31 @@ mod tests {
             )
             .unwrap();
         assert_eq!(goal.as_deref(), Some("ship the login page"));
+    }
+
+    #[test]
+    fn existing_models_migrate_as_curated_without_losing_the_active_pointer() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_up_to(&mut conn, 12);
+        conn.execute(
+            "INSERT INTO models (id, hardware_tier, source_url, quantization, sha256, local_path, capability_tags, installed_at, is_active)\
+             VALUES ('balanced', 'apple-silicon-16gb', 'https://example.test/model', 'Q4_K_M', 'sha', '/models/balanced.gguf', '[]', 42, 1)",
+            [],
+        )
+        .unwrap();
+
+        apply_pending(&mut conn).unwrap();
+
+        let row: (String, Option<String>, String, i64) = conn
+            .query_row(
+                "SELECT source_kind, display_name, local_path, is_active FROM models WHERE id = 'balanced'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(row.0, "curated");
+        assert_eq!(row.1, None);
+        assert_eq!(row.2, "/models/balanced.gguf");
+        assert_eq!(row.3, 1);
     }
 }

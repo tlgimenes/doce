@@ -574,6 +574,7 @@ async fn handle_ask_user_question(
     conversation_id: &str,
     tool_call_id: &str,
     call: &ToolCall,
+    cancel: &tokio_util::sync::CancellationToken,
     emit_question: impl FnOnce(AskUserQuestionEvent),
 ) -> String {
     let header = call
@@ -631,8 +632,18 @@ async fn handle_ask_user_question(
         multi_select,
     });
 
-    let answer = rx.await.unwrap_or_default();
-    let model_text = format!("User answered: {}", answer.join(", "));
+    let (answer, cancelled) = tokio::select! {
+        answer = rx => (answer.unwrap_or_default(), false),
+        _ = cancel.cancelled() => {
+            pending.cancel(tool_call_id);
+            (Vec::new(), true)
+        }
+    };
+    let model_text = if cancelled {
+        "The user stopped before answering.".to_string()
+    } else {
+        format!("User answered: {}", answer.join(", "))
+    };
 
     persist_tool_result(
         app,
@@ -650,6 +661,7 @@ async fn handle_ask_user_question(
             "options": options,
             "multiSelect": multi_select,
             "answer": answer,
+            "cancelled": cancelled,
         }),
     )
     .await;
@@ -871,22 +883,30 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
                         let g = &self.plan_state.plan.goal;
                         (!g.is_empty()).then(|| g.clone())
                     };
-                    let verdict = crate::agent::observer::request_verdict(
+                    let verdict_result = crate::agent::observer::request_verdict(
                         &self.base_url,
                         &kind,
                         &self.plan_state.plan,
                         &self.plan_state.mutation_log,
                         answer.as_deref(),
                         goal.as_deref(),
+                        &self.cancel,
                     )
-                    .await
-                    .unwrap_or_else(|e| {
-                        eprintln!("observer failed, approving: {e}");
+                    .await;
+                    let verdict = if self.cancel.is_cancelled() {
                         crate::agent::observer::Verdict {
-                            complete: true,
-                            missing: String::new(),
+                            complete: false,
+                            missing: "The user stopped this turn.".to_string(),
                         }
-                    });
+                    } else {
+                        verdict_result.unwrap_or_else(|e| {
+                            eprintln!("observer failed, approving: {e}");
+                            crate::agent::observer::Verdict {
+                                complete: true,
+                                missing: String::new(),
+                            }
+                        })
+                    };
                     let (reply, finish) = self.plan_state.apply_completion_verdict(
                         kind,
                         answer,
@@ -1170,22 +1190,30 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
                         let g = &self.plan_state.plan.goal;
                         (!g.is_empty()).then(|| g.clone())
                     };
-                    let verdict = crate::agent::observer::request_verdict(
+                    let verdict_result = crate::agent::observer::request_verdict(
                         &self.base_url,
                         &kind,
                         &self.plan_state.plan,
                         &self.plan_state.mutation_log,
                         answer.as_deref(),
                         goal.as_deref(),
+                        &self.cancel,
                     )
-                    .await
-                    .unwrap_or_else(|e| {
-                        eprintln!("observer failed, approving: {e}");
+                    .await;
+                    let verdict = if self.cancel.is_cancelled() {
                         crate::agent::observer::Verdict {
-                            complete: true,
-                            missing: String::new(),
+                            complete: false,
+                            missing: "The user stopped this turn.".to_string(),
                         }
-                    });
+                    } else {
+                        verdict_result.unwrap_or_else(|e| {
+                            eprintln!("observer failed, approving: {e}");
+                            crate::agent::observer::Verdict {
+                                complete: true,
+                                missing: String::new(),
+                            }
+                        })
+                    };
                     let (reply, finish) = self.plan_state.apply_completion_verdict(
                         kind,
                         answer,
@@ -1218,8 +1246,12 @@ impl crate::agent::AgentBackend for SubagentBackend<'_> {
         // parent's transcript). No live-refresh event (`app: None`) -- it
         // isn't rendered by any current view, so there's no consumer to
         // notify.
-        let outcome =
-            dispatch::execute_async(call.clone(), self.cwd.map(|p| p.to_path_buf())).await;
+        let outcome = dispatch::execute_async_cancellable(
+            call.clone(),
+            self.cwd.map(|p| p.to_path_buf()),
+            self.cancel.clone(),
+        )
+        .await;
         let outcome = crate::context::annotate_with_token_count(outcome);
 
         // 010-context-window-management/US3 (FR-011/FR-012), 2026-07-09
@@ -1302,6 +1334,7 @@ async fn execute_top_level_tool(
             parent_conversation_id,
             &tool_call_id,
             &call,
+            cancel,
             |event| {
                 let _ = app.emit("ask-user-question", event);
             },
@@ -1318,6 +1351,7 @@ async fn execute_top_level_tool(
             cwd,
             &tool_call_id,
             &call,
+            cancel,
         )
         .await;
         emit_context_usage_update(app, conn, parent_conversation_id, cwd, observed_usage).await;
@@ -1630,6 +1664,7 @@ async fn handle_general_tool_call(
     cwd: Option<&std::path::Path>,
     tool_call_id: &str,
     call: &ToolCall,
+    cancel: &tokio_util::sync::CancellationToken,
 ) -> String {
     // Derived from the already-resolved `app_data_dir` param (not a fresh
     // `app.path().app_data_dir()` call) -- the same directory
@@ -1648,7 +1683,12 @@ async fn handle_general_tool_call(
     )
     .await;
 
-    let outcome = dispatch::execute_async(call.clone(), cwd.map(|p| p.to_path_buf())).await;
+    let outcome = dispatch::execute_async_cancellable(
+        call.clone(),
+        cwd.map(|p| p.to_path_buf()),
+        cancel.clone(),
+    )
+    .await;
     let outcome = crate::context::annotate_with_token_count(outcome);
 
     // 010-context-window-management/US3 (FR-011/FR-012), 2026-07-09
@@ -1773,6 +1813,33 @@ async fn persist_assistant_text_reply(
     })
     .await
     .map_err(|e| e.to_string())
+}
+
+async fn persist_stopped_reply(
+    app: &AppHandle,
+    conn: &tokio_rusqlite::Connection,
+    transcript_dir: Option<std::path::PathBuf>,
+    conversation_id: &str,
+    turn_started_at: i64,
+) -> Result<String, String> {
+    let persisted_at = now_ms();
+    persist_assistant_text_reply(
+        conn,
+        transcript_dir,
+        conversation_id,
+        STOPPED_TURN_MARKER,
+        turn_started_at,
+        persisted_at,
+        Some(crate::inference::token_estimate(STOPPED_TURN_MARKER) as i64),
+    )
+    .await?;
+    let _ = app.emit(
+        "agent-message-persisted",
+        AgentMessagePersisted {
+            conversation_id: conversation_id.to_string(),
+        },
+    );
+    Ok(STOPPED_TURN_MARKER.to_string())
 }
 
 /// Reads `<cwd>/AGENTS.md` (SP3 project-instructions) and returns it wrapped
@@ -2161,7 +2228,47 @@ pub async fn send_agent_message(
     conversation_id: String,
     message: AgentMessageInput,
 ) -> Result<String, String> {
+    // Register before any database/model wait so Stop remains meaningful for
+    // a turn queued behind a model handoff. The map is also the backend's
+    // single-flight guard: overlapping sends for one conversation are
+    // rejected instead of overwriting each other's cancellation handles.
+    let cancel = tokio_util::sync::CancellationToken::new();
+    {
+        let mut active = active_generations.0.lock().unwrap();
+        if active.contains_key(&conversation_id) {
+            return Err("A response is already in progress for this conversation.".to_string());
+        }
+        active.insert(conversation_id.clone(), cancel.clone());
+    }
+    let _active_guard = ActiveGenerationGuard {
+        active_generations: &active_generations,
+        conversation_id: conversation_id.clone(),
+    };
+
     let conn = db_cell.get(&app).await?.clone();
+
+    // Heal a deleted local/managed path before taking a generation lease: a
+    // fallback activation needs the exclusive side of the same gate. The
+    // active path is deliberately read again after the lease because a
+    // queued switch may complete between these two points.
+    crate::commands::models::ensure_usable_model_path(&app, &conn, &server_state).await?;
+    if cancel.is_cancelled() {
+        return Ok(STOPPED_TURN_MARKER.to_string());
+    }
+
+    // Model handoff safety: this shared lease spans the *entire* turn so an
+    // exclusive model switch cannot begin after the user row is persisted but
+    // before generation, during tool use, or before the final response lands.
+    // Tokio's writer-preferring RwLock also queues later turns behind a switch
+    // that is already waiting for existing generations to finish.
+    let _generation_lease = tokio::select! {
+        lease = server_state.generation_lease() => lease,
+        _ = cancel.cancelled() => return Ok(STOPPED_TURN_MARKER.to_string()),
+    };
+    let model_path = crate::commands::models::active_model_path(&conn).await?;
+    if cancel.is_cancelled() {
+        return Ok(STOPPED_TURN_MARKER.to_string());
+    }
     let now = now_ms();
 
     // 009-rich-chat-input/US2: resolved once, up front, the same way
@@ -2200,6 +2307,9 @@ pub async fn send_agent_message(
                 Ok(())
             })
             .await;
+    }
+    if cancel.is_cancelled() {
+        return Ok(STOPPED_TURN_MARKER.to_string());
     }
 
     let content = message.content.clone();
@@ -2265,39 +2375,14 @@ pub async fn send_agent_message(
     // An RAII guard (not a manual remove-before-every-`?`) covers every
     // early-return between here and the end, including ones this function
     // already had before this feature touched it.
-    // Task 4.2a: this turn's real cancellation handle. Registered in
-    // `ActiveGenerations` (keyed by conversation) so `stop_generation` can
-    // fire it, and threaded into `RealBackend` (and, via it, any subagent)
-    // so a firing cuts the in-flight `chat` short. The RAII guard below
-    // removes the map entry on every exit path — normal completion just
-    // drops the token, it never calls `.cancel()`.
-    let cancel = tokio_util::sync::CancellationToken::new();
-    active_generations
-        .0
-        .lock()
-        .unwrap()
-        .insert(conversation_id.clone(), cancel.clone());
-    let _active_guard = ActiveGenerationGuard {
-        active_generations: &active_generations,
-        conversation_id: conversation_id.clone(),
-    };
+    // Task 4.2a: the cancellation handle registered before preflight above is
+    // threaded into `RealBackend` (and any subagent), so Stop cuts the
+    // in-flight chat short. Its RAII guard covers every exit path.
     let _plan_guard = ActivePlanGuard {
         active_plans: &active_plans,
         app: Some(app.clone()),
         conversation_id: conversation_id.clone(),
     };
-
-    let model_path: Option<String> = conn
-        .call(|conn: &mut Connection| -> rusqlite::Result<String> {
-            conn.query_row(
-                "SELECT local_path FROM models WHERE is_active = 1",
-                [],
-                |row| row.get(0),
-            )
-        })
-        .await
-        .ok();
-    let model_path = model_path.ok_or_else(|| "no active model installed".to_string())?;
 
     // Task 4.1: make sure the supervised `llama-server` is up for the active
     // model before the turn runs — spawns it if this is the first turn after
@@ -2306,10 +2391,15 @@ pub async fn send_agent_message(
     // `SubagentBackend` -> `LlamaServerClient::chat`), so a live server is a
     // HARD prerequisite: if it can't come up, the turn cannot generate, so
     // fail here rather than proceeding to generate against a dead server.
-    let base_url = server_state
-        .ensure_running(&app, std::path::Path::new(&model_path))
-        .await
-        .map_err(|e| format!("llama-server failed to start for this turn: {e}"))?;
+    let base_url_result = server_state
+        .ensure_running_cancellable(&app, std::path::Path::new(&model_path), &cancel)
+        .await;
+    if cancel.is_cancelled() {
+        return persist_stopped_reply(&app, &conn, transcript_dir.clone(), &conversation_id, now)
+            .await;
+    }
+    let base_url =
+        base_url_result.map_err(|e| format!("llama-server failed to start for this turn: {e}"))?;
 
     // 007-workspace-cwd-resolution: resolved once per turn, not per tool
     // call — a conversation's workspace can't change mid-turn. `None` for
@@ -2382,7 +2472,7 @@ pub async fn send_agent_message(
         &conversation_id,
         memories.as_deref(),
     );
-    let usage = crate::context::maybe_compact(
+    let usage_result = crate::context::maybe_compact(
         &conn,
         transcript_dir.clone(),
         &base_url,
@@ -2392,8 +2482,14 @@ pub async fn send_agent_message(
         false,
         &compaction_state.failures,
         &compaction_state.observed_usage,
+        &cancel,
     )
-    .await?;
+    .await;
+    if cancel.is_cancelled() {
+        return persist_stopped_reply(&app, &conn, transcript_dir.clone(), &conversation_id, now)
+            .await;
+    }
+    let usage = usage_result?;
     let settings = crate::context::ContextSettings::load(&conn).await?;
     // Emitted *before* the hard-limit check (not after) -- otherwise the
     // one reading that actually caused a rejection is the one the user
@@ -3276,6 +3372,7 @@ mod tests {
                 "c1",
                 "q1",
                 &call,
+                &tokio_util::sync::CancellationToken::new(),
                 |event| {
                     *emitted_bg.lock().unwrap() = Some(event);
                 },
@@ -3324,6 +3421,64 @@ mod tests {
         assert_eq!(tool_name.as_deref(), Some("AskUserQuestion"));
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(parsed["answer"], serde_json::json!(["A"]));
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_paused_question_releases_the_turn() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_conversation(&conn, "c1").await;
+        let pending = std::sync::Arc::new(PendingQuestions::default());
+        let call = ToolCall {
+            name: "AskUserQuestion".to_string(),
+            arguments: serde_json::json!({
+                "header": "Decision",
+                "question": "Continue?",
+                "options": [{"label": "Yes", "description": "continue"}],
+                "multiSelect": false,
+            }),
+        };
+        let emitted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let pending_bg = pending.clone();
+        let conn_bg = conn.clone();
+        let emitted_bg = emitted.clone();
+        let cancel_bg = cancel.clone();
+        let handle = tokio::spawn(async move {
+            handle_ask_user_question(
+                None,
+                &conn_bg,
+                None,
+                &pending_bg,
+                "c1",
+                "q1",
+                &call,
+                &cancel_bg,
+                |_| {
+                    emitted_bg.store(true, std::sync::atomic::Ordering::SeqCst);
+                },
+            )
+            .await
+        });
+
+        for _ in 0..1000 {
+            if emitted.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(emitted.load(std::sync::atomic::Ordering::SeqCst));
+        cancel.cancel();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), handle)
+            .await
+            .expect("cancellation must release the paused question")
+            .unwrap();
+        assert_eq!(result, "The user stopped before answering.");
+        assert!(!pending.answer("q1", vec!["too late".to_string()]));
+
+        let (_, content_type, _, content) = latest_message(&conn, "c1").await;
+        assert_eq!(content_type, "tool_result");
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed["cancelled"], true);
     }
 
     #[tokio::test]
@@ -3691,9 +3846,17 @@ mod tests {
             arguments: serde_json::json!({"file_path": "notes.txt"}),
         };
 
-        let model_text =
-            handle_general_tool_call(None, None, &conn, "c1", Some(dir.path()), "call1", &call)
-                .await;
+        let model_text = handle_general_tool_call(
+            None,
+            None,
+            &conn,
+            "c1",
+            Some(dir.path()),
+            "call1",
+            &call,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await;
 
         assert!(model_text.contains("hello world"));
 
@@ -3744,6 +3907,7 @@ mod tests {
             None,
             "call1",
             &call,
+            &tokio_util::sync::CancellationToken::new(),
         )
         .await;
 
@@ -3820,6 +3984,7 @@ mod tests {
             Some(dir.path()),
             "call1",
             &call,
+            &tokio_util::sync::CancellationToken::new(),
         )
         .await;
 

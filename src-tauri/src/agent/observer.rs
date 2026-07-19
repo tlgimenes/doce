@@ -97,6 +97,7 @@ pub async fn request_verdict(
     mutation_log: &[MutationRecord],
     answer: Option<&str>,
     goal: Option<&str>,
+    cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<Verdict, String> {
     let msgs = build_observer_messages(kind, plan, mutation_log, answer, goal);
     let mut req = crate::inference::http::ChatRequest::build(
@@ -108,9 +109,8 @@ pub async fn request_verdict(
     );
     req.max_tokens = Some(OBSERVER_MAX_TOKENS);
     req.disable_thinking(); // no reasoning block — mirrors summarize_and_persist
-    let cancel = tokio_util::sync::CancellationToken::new();
     let outcome = crate::inference::http::LlamaServerClient::new(base_url.to_string())
-        .chat(req, |_piece| {}, &cancel)
+        .chat(req, |_piece| {}, cancel)
         .await
         .map_err(|e| format!("observer request failed: {e:?}"))?;
     match outcome.tool_call {

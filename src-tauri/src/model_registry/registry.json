@@ -1,18 +1,56 @@
 {
-  "schema_version": 1,
-  "updated_at": "2026-07-14T00:00:00Z",
+  "schema_version": 2,
+  "updated_at": "2026-07-19T00:00:00Z",
   "tiers": [
+    {
+      "tier_id": "unknown",
+      "min_ram_gb": 0,
+      "chip_families": [],
+      "models": [
+        {
+          "model_id": "qwen3.5-4b-q4_k_m",
+          "display_name": "Balanced",
+          "description": "Fast and reliable for everyday work.",
+          "technical_name": "Qwen3.5 4B",
+          "parameter_count": "4B",
+          "size_bytes": 2740937888,
+          "source_url": "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf",
+          "quantization": "Q4_K_M",
+          "sha256": "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4",
+          "capability_tags": ["tool-calling", "thinking", "general"],
+          "priority": 1
+        },
+        {
+          "model_id": "minicpm5-1b-q4_k_m",
+          "display_name": "Faster",
+          "description": "Prioritizes quick responses and lower memory use.",
+          "technical_name": "MiniCPM5 1B",
+          "parameter_count": "1B",
+          "size_bytes": 688065920,
+          "source_url": "https://huggingface.co/openbmb/MiniCPM5-1B-GGUF/resolve/main/MiniCPM5-1B-Q4_K_M.gguf",
+          "quantization": "Q4_K_M",
+          "sha256": "81b64d05a23b17b34c475f42b3e72fbde62d4b92cc34541f7a8031d0752deafa",
+          "capability_tags": ["tool-calling", "thinking", "fast"],
+          "priority": 2
+        }
+      ]
+    },
     {
       "tier_id": "apple-silicon-8gb",
       "min_ram_gb": 8,
       "chip_families": ["M1", "M2", "M3", "M4"],
       "models": [
         {
-          "model_id": "qwen3.5-4b-q4_k_m",
-          "source_url": "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf",
+          "model_id": "minicpm5-1b-q4_k_m",
+          "display_name": "Faster",
+          "description": "Prioritizes quick responses and lower memory use.",
+          "technical_name": "MiniCPM5 1B",
+          "parameter_count": "1B",
+          "size_bytes": 688065920,
+          "source_url": "https://huggingface.co/openbmb/MiniCPM5-1B-GGUF/resolve/main/MiniCPM5-1B-Q4_K_M.gguf",
           "quantization": "Q4_K_M",
-          "sha256": "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4",
-          "capability_tags": ["tool-calling", "thinking", "general"],
+          "sha256": "81b64d05a23b17b34c475f42b3e72fbde62d4b92cc34541f7a8031d0752deafa",
+          "capability_tags": ["tool-calling", "thinking", "fast"],
           "priority": 1
         }
       ]
@@ -24,26 +62,75 @@
       "models": [
         {
           "model_id": "qwen3.5-4b-q4_k_m",
+          "display_name": "Balanced",
+          "description": "Fast and reliable for everyday work.",
+          "technical_name": "Qwen3.5 4B",
+          "parameter_count": "4B",
+          "size_bytes": 2740937888,
           "source_url": "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf",
           "quantization": "Q4_K_M",
           "sha256": "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4",
           "capability_tags": ["tool-calling", "thinking", "general"],
           "priority": 1
+        },
+        {
+          "model_id": "minicpm5-1b-q4_k_m",
+          "display_name": "Faster",
+          "description": "Prioritizes quick responses and lower memory use.",
+          "technical_name": "MiniCPM5 1B",
+          "parameter_count": "1B",
+          "size_bytes": 688065920,
+          "source_url": "https://huggingface.co/openbmb/MiniCPM5-1B-GGUF/resolve/main/MiniCPM5-1B-Q4_K_M.gguf",
+          "quantization": "Q4_K_M",
+          "sha256": "81b64d05a23b17b34c475f42b3e72fbde62d4b92cc34541f7a8031d0752deafa",
+          "capability_tags": ["tool-calling", "thinking", "fast"],
+          "priority": 2
         }
       ]
     },
     {
-      "tier_id": "apple-silicon-32gb",
+      "tier_id": "apple-silicon-32-to-63gb",
       "min_ram_gb": 32,
       "chip_families": ["M1", "M2", "M3", "M4"],
       "models": [
         {
           "model_id": "qwen3.5-4b-q4_k_m",
+          "display_name": "Balanced",
+          "description": "Fast and reliable for everyday work.",
+          "technical_name": "Qwen3.5 4B",
+          "parameter_count": "4B",
+          "size_bytes": 2740937888,
           "source_url": "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf",
           "quantization": "Q4_K_M",
           "sha256": "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4",
           "capability_tags": ["tool-calling", "thinking", "general"],
           "priority": 1
+        },
+        {
+          "model_id": "minicpm5-1b-q4_k_m",
+          "display_name": "Faster",
+          "description": "Prioritizes quick responses and lower memory use.",
+          "technical_name": "MiniCPM5 1B",
+          "parameter_count": "1B",
+          "size_bytes": 688065920,
+          "source_url": "https://huggingface.co/openbmb/MiniCPM5-1B-GGUF/resolve/main/MiniCPM5-1B-Q4_K_M.gguf",
+          "quantization": "Q4_K_M",
+          "sha256": "81b64d05a23b17b34c475f42b3e72fbde62d4b92cc34541f7a8031d0752deafa",
+          "capability_tags": ["tool-calling", "thinking", "fast"],
+          "priority": 2
+        },
+        {
+          "model_id": "qwen3-8b-q4_k_m",
+          "display_name": "Advanced",
+          "description": "More capability for demanding work. Uses more memory.",
+          "technical_name": "Qwen3 8B",
+          "parameter_count": "8B",
+          "size_bytes": 5027784512,
+          "source_url": "https://huggingface.co/unsloth/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf",
+          "quantization": "Q4_K_M",
+          "sha256": "120307ba529eb2439d6c430d94104dabd578497bc7bfe7e322b5d9933b449bd4",
+          "capability_tags": ["tool-calling", "thinking", "general"],
+          "priority": 3
         }
       ]
     },
@@ -53,12 +140,30 @@
       "chip_families": ["M1", "M2", "M3", "M4"],
       "models": [
         {
+          "model_id": "qwen3-8b-q4_k_m",
+          "display_name": "Advanced",
+          "description": "More capability for demanding work. Uses more memory.",
+          "technical_name": "Qwen3 8B",
+          "parameter_count": "8B",
+          "size_bytes": 5027784512,
+          "source_url": "https://huggingface.co/unsloth/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf",
+          "quantization": "Q4_K_M",
+          "sha256": "120307ba529eb2439d6c430d94104dabd578497bc7bfe7e322b5d9933b449bd4",
+          "capability_tags": ["tool-calling", "thinking", "general"],
+          "priority": 1
+        },
+        {
           "model_id": "qwen3.5-4b-q4_k_m",
+          "display_name": "Balanced",
+          "description": "Fast and reliable for everyday work.",
+          "technical_name": "Qwen3.5 4B",
+          "parameter_count": "4B",
+          "size_bytes": 2740937888,
           "source_url": "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf",
           "quantization": "Q4_K_M",
           "sha256": "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4",
           "capability_tags": ["tool-calling", "thinking", "general"],
-          "priority": 1
+          "priority": 2
         }
       ]
     }

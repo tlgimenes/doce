@@ -49,12 +49,16 @@ export async function checkReadyWithRetries(): Promise<boolean> {
   let lastError: unknown;
   for (let attempt = 0; attempt < READY_CHECK_ATTEMPTS; attempt++) {
     try {
-      const models = await withTimeout(
-        commands.listModels(),
+      const modelState = await withTimeout(
+        commands.getModelState(),
         READY_CHECK_TIMEOUT_MS,
-        "listModels() did not respond in time",
+        "getModelState() did not respond in time",
       );
-      return models.some((m) => m.installed);
+      // First run has neither an active model nor a recovery notice and goes
+      // through onboarding. If a selected local file disappeared, the model
+      // service records a fallback notice and starts recovery; keep the app
+      // usable (especially Settings) while that managed download completes.
+      return modelState.activeId !== null || modelState.fallbackNotice !== null;
     } catch (err) {
       lastError = err;
     }
@@ -407,6 +411,7 @@ export default function App() {
             onNewConversation={startNewConversation}
             onOpenSearch={() => openSearch()}
             onOpenSettings={openSettings}
+            settingsOpen={showSettings}
             onActiveConversationChange={syncActiveConversation}
             onArchive={(conversationId) => {
               if (activeConversation?.id !== conversationId) return;

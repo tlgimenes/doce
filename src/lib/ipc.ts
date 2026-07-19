@@ -25,6 +25,33 @@ export interface ModelRow {
   installed: boolean;
 }
 
+export interface ModelOption {
+  id: string;
+  displayName: string;
+  description: string;
+  technicalName: string;
+  parameterCount: string;
+  quantization: string;
+  sizeBytes: number;
+  recommended: boolean;
+  installed: boolean;
+  active: boolean;
+  selected: boolean;
+  sourceKind: "curated" | "local";
+  localPath: string | null;
+  state: string;
+  bytesDownloaded: number;
+  bytesTotal: number;
+}
+
+export interface ModelState {
+  hardware: HardwareProfile;
+  options: ModelOption[];
+  activeId: string | null;
+  selectedId: string | null;
+  fallbackNotice: string | null;
+}
+
 export type ConversationStatus = "in_progress" | "requires_action" | "failed" | "done";
 
 export interface Conversation {
@@ -550,6 +577,10 @@ export const commands = {
       { modelId },
     ),
   listModels: () => invoke<ModelRow[]>("list_models"),
+  getModelState: () => invoke<ModelState>("get_model_state"),
+  selectCuratedModel: (modelId: string) => invoke<ModelState>("select_curated_model", { modelId }),
+  selectLocalModel: (path: string) => invoke<ModelState>("select_local_model", { path }),
+  dismissModelNotice: () => invoke<void>("dismiss_model_notice"),
   createConversation: (workspaceId?: string) =>
     invoke<Conversation>("create_conversation", { workspaceId }),
   listConversations: (workspaceId?: string) =>

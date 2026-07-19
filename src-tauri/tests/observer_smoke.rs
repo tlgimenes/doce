@@ -69,6 +69,7 @@ async fn the_real_observer_rejects_a_todo_done_claim_with_no_successful_edit() {
         &log,
         None,
         Some(&plan.goal),
+        &tokio_util::sync::CancellationToken::new(),
     )
     .await
     .expect("observer call should succeed against a live server");
@@ -103,6 +104,7 @@ async fn the_real_observer_approves_a_todo_done_claim_with_a_successful_edit() {
         &log,
         None,
         Some(&plan.goal),
+        &tokio_util::sync::CancellationToken::new(),
     )
     .await
     .expect("observer call should succeed against a live server");

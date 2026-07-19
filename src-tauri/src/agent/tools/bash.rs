@@ -1,5 +1,6 @@
 use std::process::Command;
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]
 pub struct BashResult {
@@ -294,11 +295,67 @@ pub fn run(
     timeout_ms: Option<u64>,
     cwd: Option<&std::path::Path>,
 ) -> Result<BashResult, BashError> {
+    run_with_cancel(command, timeout_ms, cwd, None)
+}
+
+/// Cancellation-aware counterpart used by a live agent turn. Stopping a
+/// generation must also stop the process tree of any shell tool that turn
+/// launched; otherwise the generation lease (and therefore a pending model
+/// switch) can remain held until Bash's much longer timeout expires.
+pub fn run_cancellable(
+    command: &str,
+    timeout_ms: Option<u64>,
+    cwd: Option<&std::path::Path>,
+    cancel: &CancellationToken,
+) -> Result<BashResult, BashError> {
+    run_with_cancel(command, timeout_ms, cwd, Some(cancel))
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RunTermination {
+    Exited(i32),
+    TimedOut,
+    Cancelled,
+}
+
+fn terminate_process_group(child: &mut std::process::Child) {
+    // Signal the whole process group first (see the `process_group(0)`
+    // comment below) so a background/forked descendant is killed too,
+    // not just orphaned when the immediate /bin/sh exits.
+    #[cfg(unix)]
+    {
+        let pid = child.id();
+        // SAFETY: `libc::kill` is a plain syscall wrapper; passing the
+        // negated pid targets the whole process group rather than a single
+        // process, which is the documented meaning of a negative pid.
+        unsafe {
+            libc::kill(-(pid as i32), libc::SIGKILL);
+        }
+    }
+    let _ = child.kill();
+    // Reap the immediate child so its own pipe descriptors are closed.
+    let _ = child.wait();
+}
+
+fn run_with_cancel(
+    command: &str,
+    timeout_ms: Option<u64>,
+    cwd: Option<&std::path::Path>,
+    cancel: Option<&CancellationToken>,
+) -> Result<BashResult, BashError> {
     if is_denylisted(command) {
         return Err(BashError::Denylisted);
     }
 
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(120_000).min(600_000));
+
+    if cancel.is_some_and(CancellationToken::is_cancelled) {
+        return Ok(BashResult {
+            stdout: String::new(),
+            stderr: "command stopped".to_string(),
+            exit_code: -1,
+        });
+    }
 
     let mut cmd = Command::new("/bin/sh");
     cmd.arg("-c")
@@ -336,23 +393,17 @@ pub fn run(
     // for exit/timeout, not also drain output.
     //
     // Each reader sends its result over an mpsc channel rather than only
-    // being joinable via its `JoinHandle`, so the timeout path below can
-    // bound how long it waits on a reader instead of blocking on it
-    // unconditionally -- see that path's comment for why a bare wait isn't
-    // safe there even with the process-group kill above. The normal-exit
-    // path uses a plain (non-timeout) `recv()`, which is every bit as safe
-    // as a `join()` would be there: the child has already exited and
-    // closed its own copy of the pipes, so the reader threads are always
-    // moments from sending.
+    // being joinable via its `JoinHandle`. The poll loop watches those
+    // channels as well as /bin/sh: a background child can inherit a pipe,
+    // outlive the shell, and keep EOF from arriving. Continuing to poll
+    // keeps Stop and the timeout effective during that interval.
     use std::io::Read;
     use std::sync::mpsc;
     let (stdout_tx, stdout_rx) = mpsc::channel::<String>();
     let (stderr_tx, stderr_rx) = mpsc::channel::<String>();
     // The `None` arms are unreachable today (both streams are always piped
-    // above), but each tx must still be dropped there: an undropped sender
-    // with no reader thread would make the normal-exit path's blocking
-    // `recv()` below wait forever on a message that can never come, instead
-    // of returning the disconnected-channel default.
+    // above), but each tx must still be dropped there so the receiver can
+    // observe disconnection and treat that stream as empty.
     match child.stdout.take() {
         Some(mut out) => {
             std::thread::spawn(move || {
@@ -377,87 +428,82 @@ pub fn run(
     // A simple poll loop rather than a dedicated timeout crate: this tool
     // is invoked from within the agent loop, which itself runs on a
     // blocking thread (spawn_blocking), so a coarse poll is an acceptable
-    // trade-off for the dependency it avoids.
+    // trade-off for the dependency it avoids. Completion requires both the
+    // immediate shell to exit and both capture pipes to reach EOF. Requiring
+    // only the former would block later on `recv()` for `sleep 30 &`, after
+    // the loop had stopped observing cancellation and timeout.
     let start = std::time::Instant::now();
-    let exit_code = loop {
-        if let Some(status) = child.try_wait()? {
-            break Some(status.code().unwrap_or(-1));
+    let mut exit_code = None;
+    let mut stdout = None;
+    let mut stderr = None;
+    let termination = loop {
+        if cancel.is_some_and(CancellationToken::is_cancelled) {
+            terminate_process_group(&mut child);
+            break RunTermination::Cancelled;
         }
         if start.elapsed() > timeout {
-            // Signal the whole process group first (see the
-            // `process_group(0)` comment above) so a background/forked
-            // descendant that outlives the immediate /bin/sh is killed
-            // too, not just orphaned.
-            #[cfg(unix)]
-            {
-                let pid = child.id();
-                // SAFETY: `libc::kill` is a plain syscall wrapper; passing
-                // the negated pid targets the whole process group rather
-                // than a single process, which is exactly the documented
-                // meaning of a negative pid argument to kill(2).
-                unsafe {
-                    libc::kill(-(pid as i32), libc::SIGKILL);
-                }
+            terminate_process_group(&mut child);
+            break RunTermination::TimedOut;
+        }
+
+        if exit_code.is_none() {
+            if let Some(status) = child.try_wait()? {
+                exit_code = Some(status.code().unwrap_or(-1));
             }
-            let _ = child.kill();
-            // Reaps the killed child so its own pipe descriptors are fully
-            // closed -- otherwise the reader threads awaited just below
-            // could themselves block waiting for EOF that a lingering
-            // zombie's still-open descriptors would never deliver.
-            let _ = child.wait();
-            break None;
+        }
+        if stdout.is_none() {
+            match stdout_rx.try_recv() {
+                Ok(value) => stdout = Some(value),
+                Err(mpsc::TryRecvError::Disconnected) => stdout = Some(String::new()),
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if stderr.is_none() {
+            match stderr_rx.try_recv() {
+                Ok(value) => stderr = Some(value),
+                Err(mpsc::TryRecvError::Disconnected) => stderr = Some(String::new()),
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if let (Some(code), Some(_), Some(_)) = (exit_code, stdout.as_ref(), stderr.as_ref()) {
+            break RunTermination::Exited(code);
         }
         std::thread::sleep(Duration::from_millis(20));
     };
 
-    let (stdout, stderr) = match exit_code {
-        Some(_) => {
-            // Normal exit: the pipes are already at EOF (the child closed
-            // them by exiting), so these are always moments from a send --
-            // this doesn't reintroduce the deadlock the comment above
-            // describes.
-            let stdout = stdout_rx.recv().unwrap_or_default();
-            let stderr = stderr_rx.recv().unwrap_or_default();
-            (stdout, stderr)
-        }
-        None => {
-            // Timeout: belt-and-suspenders on top of the process-group
-            // kill above. Never wait unboundedly on a reader thread here --
-            // even with the group kill, a descendant that ignored/blocked
-            // SIGKILL (or one the group kill somehow missed, e.g. a
-            // process that re-parented into its own new group) can still
-            // hold the pipe's write end open, and `read_to_string` only
-            // returns once every holder of that write end has actually
-            // closed it. Bound the wait instead of trusting it: if a
-            // reader doesn't finish within the window, that stream's
-            // capture falls back to EMPTY -- each reader sends one
-            // complete buffer only at EOF, so an expired `recv_timeout`
-            // yields nothing, not a partial read. The thread itself is
-            // left running in that case (not aborted) -- it will still
-            // exit on its own once the pipe eventually closes, it's just
-            // no longer waited on.
-            let stdout = stdout_rx
-                .recv_timeout(Duration::from_millis(500))
-                .unwrap_or_default();
-            let stderr = stderr_rx
-                .recv_timeout(Duration::from_millis(500))
-                .unwrap_or_default();
-            (stdout, stderr)
-        }
-    };
+    // Forced termination is belt-and-suspenders bounded: even after the
+    // process-group kill, never trust a missed or re-grouped descendant to
+    // close a pipe promptly. Any stream already captured by the poll loop is
+    // preserved; an outstanding reader gets only this short grace period.
+    let stdout = stdout.unwrap_or_else(|| {
+        stdout_rx
+            .recv_timeout(Duration::from_millis(500))
+            .unwrap_or_default()
+    });
+    let stderr = stderr.unwrap_or_else(|| {
+        stderr_rx
+            .recv_timeout(Duration::from_millis(500))
+            .unwrap_or_default()
+    });
 
-    Ok(match exit_code {
-        Some(code) => BashResult {
+    Ok(match termination {
+        RunTermination::Exited(code) => BashResult {
             stdout,
             stderr,
             exit_code: code,
         },
-        None => {
+        RunTermination::TimedOut | RunTermination::Cancelled => {
             // Unlike the old design, partial output captured before the
-            // timeout fired is preserved rather than discarded -- it's
+            // stop fired is preserved rather than discarded -- it's
             // real signal (e.g. how far a hung build/test got) that a
-            // bare "timed out" notice alone would throw away.
-            let notice = format!("command timed out after {}ms", timeout.as_millis());
+            // bare termination notice alone would throw away.
+            let notice = match termination {
+                RunTermination::TimedOut => {
+                    format!("command timed out after {}ms", timeout.as_millis())
+                }
+                RunTermination::Cancelled => "command stopped".to_string(),
+                RunTermination::Exited(_) => unreachable!(),
+            };
             let stderr = if stderr.is_empty() {
                 notice
             } else {
@@ -728,6 +774,34 @@ mod tests {
         assert!(
             result.stderr.contains("command timed out"),
             "expected a timeout notice in stderr, got: {:?}",
+            result.stderr
+        );
+    }
+
+    #[test]
+    fn cancellation_stops_a_running_process_group_promptly() {
+        let cancel = CancellationToken::new();
+        let worker_cancel = cancel.clone();
+        let start = std::time::Instant::now();
+        let worker = std::thread::spawn(move || {
+            // /bin/sh exits immediately here; the background child keeps
+            // the capture pipes open. Cancellation must remain observable
+            // after that shell exit rather than blocking on the readers.
+            run_cancellable("sleep 30 &", None, None, &worker_cancel).unwrap()
+        });
+
+        std::thread::sleep(Duration::from_millis(100));
+        cancel.cancel();
+        let result = worker.join().unwrap();
+
+        assert!(
+            start.elapsed() < Duration::from_secs(3),
+            "cancellation should kill Bash and its descendants promptly"
+        );
+        assert_eq!(result.exit_code, -1);
+        assert!(
+            result.stderr.contains("command stopped"),
+            "expected a stop notice in stderr, got: {:?}",
             result.stderr
         );
     }

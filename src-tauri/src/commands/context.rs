@@ -81,20 +81,24 @@ pub async fn compact_conversation(
     conversation_id: String,
 ) -> Result<ContextUsage, String> {
     let conn = db_cell.get(&app).await?.clone();
+    crate::commands::models::ensure_usable_model_path(&app, &conn, &server_state).await?;
+
+    // Manual compaction calls the same model server as a normal turn, so it
+    // participates in the same handoff gate and cannot race a server restart.
+    // Keep this guard alive for the full compaction operation.
+    let _generation_lease = server_state.generation_lease().await;
+    let model_path = crate::commands::models::active_model_path(&conn).await?;
     let skills_dir = app
         .path()
         .app_data_dir()
         .map_err(|e| e.to_string())?
         .join("skills");
 
-    // A manual "Compact now" summarizes through the supervised server, so it
-    // requires one to already be running (a turn spawns it; there's no model
-    // path in hand here to launch one on demand). Erroring if none is up is
-    // honest -- there's nothing to generate the summary against otherwise.
+    // Manual compaction now resolves the same active global model as a normal
+    // turn, including a cold start after launch or a recovered fallback.
     let base_url = server_state
-        .current_base_url()
-        .await
-        .ok_or("model server not running")?;
+        .ensure_running(&app, std::path::Path::new(&model_path))
+        .await?;
 
     let transcript_dir = app
         .path()
@@ -109,7 +113,8 @@ pub async fn compact_conversation(
         &conversation_id,
         memories.as_deref(),
     );
-    context::maybe_compact(
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let compact = context::maybe_compact(
         &conn,
         transcript_dir,
         &base_url,
@@ -119,6 +124,9 @@ pub async fn compact_conversation(
         true,
         &compaction_state.failures,
         &compaction_state.observed_usage,
-    )
-    .await
+        &cancel,
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(5 * 60), compact)
+        .await
+        .map_err(|_| "Compaction took too long and was stopped.".to_string())?
 }

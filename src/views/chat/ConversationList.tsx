@@ -32,6 +32,7 @@ interface ConversationListProps {
   onNewConversation: () => void;
   onOpenSearch: () => void;
   onOpenSettings: () => void;
+  settingsOpen?: boolean;
   onActiveConversationChange?: (conversation: Conversation) => void;
   onArchive?: (conversationId: string) => void;
 }
@@ -78,6 +79,7 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
       onNewConversation,
       onOpenSearch,
       onOpenSettings,
+      settingsOpen = false,
       onActiveConversationChange,
       onArchive,
     },
@@ -239,17 +241,6 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
                   </KbdGroup>
                 </SidebarMenuButton>
               </SidebarMenuItem>
-              <SidebarMenuItem>
-                <SidebarMenuButton
-                  className={SIDEBAR_ACTION_BUTTON}
-                  onClick={onOpenSettings}
-                  data-testid="open-settings"
-                  aria-label="Settings"
-                >
-                  <Cog className="size-4" />
-                  Settings
-                </SidebarMenuButton>
-              </SidebarMenuItem>
             </SidebarMenu>
           </SidebarGroup>
           <SidebarGroup className="min-h-0 flex-1 p-0">
@@ -377,6 +368,23 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
             </SidebarMenu>
           </SidebarGroup>
         </SidebarContent>
+        <div className="shrink-0 px-2 pb-3">
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                className={SIDEBAR_ACTION_BUTTON}
+                isActive={settingsOpen}
+                onClick={onOpenSettings}
+                data-testid="open-settings"
+                aria-label="Settings"
+                aria-current={settingsOpen ? "page" : undefined}
+              >
+                <Cog className="size-4" />
+                Settings
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </div>
       </div>
     );
   },

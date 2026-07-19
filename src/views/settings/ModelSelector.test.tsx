@@ -1,0 +1,465 @@
+import { act, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { open } from "@tauri-apps/plugin-dialog";
+import { commands } from "@/lib/ipc";
+import ModelSelector from "./ModelSelector";
+
+const progressEvents = vi.hoisted(() => ({
+  callback: null as
+    | ((payload: {
+        modelId: string;
+        bytesDownloaded: number;
+        bytesTotal: number;
+        state: string;
+      }) => void)
+    | null,
+  unlisten: vi.fn(),
+}));
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
+
+vi.mock("@/lib/ipc", () => ({
+  commands: {
+    getModelState: vi.fn(),
+    selectCuratedModel: vi.fn(),
+    selectLocalModel: vi.fn(),
+    dismissModelNotice: vi.fn(),
+  },
+  events: {
+    onModelInstallProgress: vi.fn(async (callback) => {
+      progressEvents.callback = callback;
+      return progressEvents.unlisten;
+    }),
+  },
+}));
+
+type State = Awaited<ReturnType<typeof commands.getModelState>>;
+type Option = State["options"][number];
+
+function modelOption(overrides: Partial<Option> = {}): Option {
+  return {
+    id: "balanced",
+    displayName: "Balanced",
+    description: "Fast and efficient for everyday work.",
+    technicalName: "Qwen 3.5 4B",
+    parameterCount: "4B",
+    quantization: "Q4_K_M",
+    sizeBytes: 2_700_000_000,
+    recommended: true,
+    installed: true,
+    active: true,
+    selected: true,
+    sourceKind: "curated",
+    localPath: null,
+    state: "active",
+    bytesDownloaded: 2_700_000_000,
+    bytesTotal: 2_700_000_000,
+    ...overrides,
+  } as Option;
+}
+
+function modelState(overrides: Partial<State> = {}): State {
+  return {
+    hardware: { tier: "32gb", ramGb: 32, chip: "Apple M3", diskFreeGb: 120 },
+    options: [modelOption()],
+    activeId: "balanced",
+    selectedId: "balanced",
+    fallbackNotice: null,
+    ...overrides,
+  } as State;
+}
+
+const capable = (overrides: Partial<Option> = {}) =>
+  modelOption({
+    id: "capable",
+    displayName: "More capable",
+    description: "More room for complex work.",
+    technicalName: "Qwen 3.5 8B",
+    parameterCount: "8B",
+    sizeBytes: 5_100_000_000,
+    recommended: false,
+    installed: false,
+    active: false,
+    selected: false,
+    state: "available",
+    bytesDownloaded: 0,
+    bytesTotal: 5_100_000_000,
+    ...overrides,
+  });
+
+describe("ModelSelector", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    progressEvents.callback = null;
+    vi.mocked(open).mockResolvedValue(null);
+    vi.mocked(commands.getModelState).mockResolvedValue(
+      modelState({ options: [modelOption(), capable()] }),
+    );
+  });
+
+  it("uses friendly names while keeping technical metadata in a disclosure", async () => {
+    render(<ModelSelector />);
+
+    const trigger = await screen.findByTestId("model-selector-trigger");
+    expect(trigger).toHaveTextContent("Balanced");
+    expect(trigger).not.toHaveTextContent("Qwen 3.5 4B");
+    expect(screen.getByTestId("active-model-summary")).toHaveTextContent("Balanced");
+    expect(screen.getByTestId("model-recommendation")).toHaveTextContent(
+      "Balanced is recommended for this Mac.",
+    );
+
+    await userEvent.click(trigger);
+    expect(await screen.findByTestId("model-option-balanced")).toHaveTextContent(
+      "Fast and efficient for everyday work.",
+    );
+    expect(screen.getAllByText("Recommended")).toHaveLength(1);
+
+    const details = screen.getByTestId("model-technical-details");
+    expect(details).not.toHaveAttribute("open");
+    await userEvent.click(screen.getByText("Technical details"));
+    expect(details).toHaveAttribute("open");
+    expect(details).toHaveTextContent("Qwen 3.5 4B");
+    expect(details).toHaveTextContent("Q4_K_M");
+    expect(details).toHaveTextContent("2.7 GB");
+  });
+
+  it("selects a curated model and keeps the old model active during download", async () => {
+    const initial = modelState({ options: [modelOption(), capable()] });
+    const pending = modelState({
+      options: [
+        modelOption({ selected: false }),
+        capable({
+          selected: true,
+          state: "downloading",
+          bytesDownloaded: 1_000,
+          bytesTotal: 2_000,
+        }),
+      ],
+      selectedId: "capable",
+    });
+    vi.mocked(commands.getModelState).mockResolvedValueOnce(initial).mockResolvedValue(pending);
+    vi.mocked(commands.selectCuratedModel).mockResolvedValue(pending);
+
+    render(<ModelSelector />);
+    await userEvent.click(await screen.findByTestId("model-selector-trigger"));
+    await userEvent.click(await screen.findByTestId("model-option-capable"));
+
+    await waitFor(() => expect(commands.selectCuratedModel).toHaveBeenCalledWith("capable"));
+    expect(screen.getByTestId("active-model-summary")).toHaveTextContent("Balanced");
+    expect(await screen.findByTestId("model-progress")).toHaveTextContent(
+      "Balanced stays active until the new model is ready.",
+    );
+
+    await waitFor(() => expect(progressEvents.callback).not.toBeNull());
+    act(() => {
+      progressEvents.callback?.({
+        modelId: "capable",
+        bytesDownloaded: 3_000,
+        bytesTotal: 4_000,
+        state: "downloading",
+      });
+    });
+    expect(screen.getByTestId("model-progress")).toHaveTextContent("75%");
+    expect(screen.getByTestId("active-model-summary")).toHaveTextContent("Balanced");
+  });
+
+  it("commits an active progress event even when the follow-up snapshot fails", async () => {
+    vi.mocked(commands.getModelState)
+      .mockResolvedValueOnce(
+        modelState({
+          options: [
+            modelOption({ selected: false }),
+            capable({ selected: true, state: "preparing" }),
+          ],
+          selectedId: "capable",
+        }),
+      )
+      .mockRejectedValueOnce(new Error("temporary read failure"));
+
+    render(<ModelSelector />);
+    await screen.findByTestId("model-selector-trigger");
+    await waitFor(() => expect(progressEvents.callback).not.toBeNull());
+
+    act(() => {
+      progressEvents.callback?.({
+        modelId: "capable",
+        bytesDownloaded: 5_100_000_000,
+        bytesTotal: 5_100_000_000,
+        state: "active",
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("active-model-summary")).toHaveTextContent("More capable");
+    });
+    expect(screen.queryByTestId("model-progress")).not.toBeInTheDocument();
+  });
+
+  it("lets a newer choice supersede an installed-model handoff that is still waiting", async () => {
+    let resolveFirst: ((state: State) => void) | undefined;
+    const firstRequest = new Promise<State>((resolve) => {
+      resolveFirst = resolve;
+    });
+    vi.mocked(commands.selectCuratedModel).mockImplementation((modelId) =>
+      modelId === "capable"
+        ? firstRequest
+        : Promise.resolve(modelState({ options: [modelOption(), capable()] })),
+    );
+
+    render(<ModelSelector />);
+    const trigger = await screen.findByTestId("model-selector-trigger");
+    await userEvent.click(trigger);
+    await userEvent.click(await screen.findByTestId("model-option-capable"));
+
+    expect(trigger).not.toBeDisabled();
+    await userEvent.click(trigger);
+    await userEvent.click(await screen.findByTestId("model-option-balanced"));
+    await waitFor(() => expect(commands.selectCuratedModel).toHaveBeenLastCalledWith("balanced"));
+    expect(screen.getByTestId("active-model-summary")).toHaveTextContent("Balanced");
+
+    resolveFirst?.(
+      modelState({
+        options: [modelOption({ selected: false }), capable({ selected: true })],
+        selectedId: "capable",
+      }),
+    );
+    await act(async () => Promise.resolve());
+    expect(screen.getByTestId("active-model-summary")).toHaveTextContent("Balanced");
+    expect(screen.getByTestId("model-selector-trigger")).toHaveTextContent("Balanced");
+    expect(screen.queryByTestId("model-progress")).not.toBeInTheDocument();
+  });
+
+  it("lets a curated choice supersede an unresolved local-model handoff", async () => {
+    let resolveLocal: ((state: State) => void) | undefined;
+    vi.mocked(open).mockResolvedValue("/Users/maya/Models/atlas-4b.gguf");
+    vi.mocked(commands.selectLocalModel).mockImplementation(
+      () =>
+        new Promise<State>((resolve) => {
+          resolveLocal = resolve;
+        }),
+    );
+    const installedCapable = capable({ installed: true, state: "installed" });
+    vi.mocked(commands.getModelState).mockResolvedValue(
+      modelState({ options: [modelOption(), installedCapable] }),
+    );
+    vi.mocked(commands.selectCuratedModel).mockResolvedValue(
+      modelState({
+        options: [
+          modelOption({ active: false, selected: false }),
+          capable({ installed: true, active: true, selected: true, state: "active" }),
+        ],
+        activeId: "capable",
+        selectedId: "capable",
+      }),
+    );
+
+    render(<ModelSelector />);
+    await userEvent.click(await screen.findByTestId("choose-local-model-button"));
+    await waitFor(() => expect(commands.selectLocalModel).toHaveBeenCalled());
+
+    const trigger = screen.getByTestId("model-selector-trigger");
+    expect(trigger).not.toBeDisabled();
+    await userEvent.click(trigger);
+    await userEvent.click(await screen.findByTestId("model-option-capable"));
+    await waitFor(() => expect(trigger).toHaveTextContent("More capable"));
+
+    const staleLocal = modelOption({
+      id: "local-atlas",
+      displayName: "atlas-4b",
+      sourceKind: "local",
+      localPath: "/Users/maya/Models/atlas-4b.gguf",
+    });
+    resolveLocal?.(
+      modelState({ options: [staleLocal], activeId: "local-atlas", selectedId: "local-atlas" }),
+    );
+    await act(async () => Promise.resolve());
+
+    expect(trigger).toHaveTextContent("More capable");
+    expect(screen.getByTestId("active-model-summary")).toHaveTextContent("More capable");
+  });
+
+  it("ignores progress events for a model other than the current selection", async () => {
+    render(<ModelSelector />);
+    await screen.findByTestId("model-selector-trigger");
+    await waitFor(() => expect(progressEvents.callback).not.toBeNull());
+
+    act(() => {
+      progressEvents.callback?.({
+        modelId: "capable",
+        bytesDownloaded: 500,
+        bytesTotal: 1_000,
+        state: "downloading",
+      });
+    });
+
+    expect(screen.queryByTestId("model-progress")).not.toBeInTheDocument();
+  });
+
+  it("shows indeterminate preparation without rendering NaN for an unknown total", async () => {
+    vi.mocked(commands.getModelState).mockResolvedValue(
+      modelState({
+        options: [
+          modelOption({ selected: false }),
+          capable({ selected: true, state: "preparing", bytesDownloaded: 0, bytesTotal: 0 }),
+        ],
+        selectedId: "capable",
+      }),
+    );
+
+    const { container } = render(<ModelSelector />);
+
+    expect(await screen.findByTestId("model-progress")).toHaveTextContent("Preparing…");
+    expect(container.innerHTML).not.toContain("NaN");
+  });
+
+  it("opens a GGUF-only native picker and passes the selected path to the backend", async () => {
+    vi.mocked(open).mockResolvedValue("/Users/maya/Models/atlas-4b.gguf");
+    const local = modelOption({
+      id: "local-atlas",
+      displayName: "atlas-4b",
+      description: "A compatible model file from this Mac.",
+      technicalName: "atlas-4b.gguf",
+      parameterCount: "Local",
+      quantization: "GGUF",
+      sizeBytes: 2_600_000_000,
+      recommended: false,
+      sourceKind: "local",
+      localPath: "/Users/maya/Models/atlas-4b.gguf",
+    });
+    vi.mocked(commands.selectLocalModel).mockResolvedValue(
+      modelState({
+        options: [modelOption({ active: false, selected: false }), local],
+        activeId: "local-atlas",
+        selectedId: "local-atlas",
+      }),
+    );
+
+    render(<ModelSelector />);
+    await userEvent.click(await screen.findByTestId("choose-local-model-button"));
+
+    await waitFor(() => {
+      expect(open).toHaveBeenCalledWith({
+        multiple: false,
+        directory: false,
+        filters: [{ name: "GGUF model", extensions: ["gguf"] }],
+      });
+      expect(commands.selectLocalModel).toHaveBeenCalledWith("/Users/maya/Models/atlas-4b.gguf");
+    });
+    expect(screen.getByTestId("active-model-summary")).toHaveTextContent("atlas-4b");
+    expect(screen.getByTestId("active-model-summary")).toHaveTextContent(
+      "/Users/maya/Models/atlas-4b.gguf",
+    );
+  });
+
+  it("treats cancelling the local picker as a no-op", async () => {
+    vi.mocked(open).mockResolvedValue(null);
+
+    render(<ModelSelector />);
+    await userEvent.click(await screen.findByTestId("choose-local-model-button"));
+
+    expect(commands.selectLocalModel).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("model-action-error")).not.toBeInTheDocument();
+  });
+
+  it("shows local validation errors without replacing the active model", async () => {
+    vi.mocked(open).mockResolvedValue("/Users/maya/Models/broken.gguf");
+    vi.mocked(commands.selectLocalModel).mockRejectedValue(
+      new Error("The selected file is not a valid GGUF model."),
+    );
+
+    render(<ModelSelector />);
+    await userEvent.click(await screen.findByTestId("choose-local-model-button"));
+
+    expect(await screen.findByTestId("model-action-error")).toHaveTextContent(
+      "not a valid GGUF model",
+    );
+    expect(screen.getByTestId("active-model-summary")).toHaveTextContent("Balanced");
+  });
+
+  it("keeps the active model visible after an error and offers retry", async () => {
+    vi.mocked(commands.getModelState).mockResolvedValue(
+      modelState({
+        options: [
+          modelOption({ selected: false }),
+          capable({ selected: true, state: "error: Not enough disk space" }),
+        ],
+        selectedId: "capable",
+      }),
+    );
+    vi.mocked(commands.selectCuratedModel).mockResolvedValue(
+      modelState({ options: [modelOption(), capable()] }),
+    );
+
+    render(<ModelSelector />);
+
+    expect(await screen.findByTestId("model-error")).toHaveTextContent("Not enough disk space");
+    expect(screen.getByTestId("active-model-summary")).toHaveTextContent("Balanced");
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(commands.selectCuratedModel).toHaveBeenCalledWith("capable");
+  });
+
+  it("shows and dismisses a recovered local-model fallback notice", async () => {
+    vi.mocked(commands.getModelState).mockResolvedValue(
+      modelState({
+        fallbackNotice: "atlas-4b.gguf could not be found, so Doce switched back to Balanced.",
+      }),
+    );
+    vi.mocked(commands.dismissModelNotice).mockResolvedValue(undefined);
+
+    render(<ModelSelector />);
+
+    expect(await screen.findByTestId("model-fallback-notice")).toHaveTextContent(
+      "switched back to Balanced",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Dismiss model notice" }));
+    await waitFor(() => expect(commands.dismissModelNotice).toHaveBeenCalledOnce());
+    expect(screen.queryByTestId("model-fallback-notice")).not.toBeInTheDocument();
+  });
+
+  it("uses recovery language and a loading status while a fallback has no active model", async () => {
+    vi.mocked(commands.getModelState).mockResolvedValue(
+      modelState({
+        options: [
+          modelOption({
+            active: false,
+            selected: true,
+            installed: false,
+            state: "downloading",
+            bytesDownloaded: 500,
+            bytesTotal: 1_000,
+          }),
+        ],
+        activeId: null,
+        selectedId: "balanced",
+        fallbackNotice: "The local model is no longer available. Doce is getting Balanced ready.",
+      }),
+    );
+
+    render(<ModelSelector />);
+
+    expect(await screen.findByTestId("model-fallback-notice")).toHaveTextContent(
+      "Doce is getting a model ready",
+    );
+    expect(screen.getByTestId("active-model-summary")).toHaveTextContent("No active model");
+    expect(screen.getByTestId("active-model-summary")).not.toHaveTextContent("Active");
+    expect(screen.getByTestId("model-progress")).toHaveTextContent("50%");
+  });
+
+  it("associates the visible model label and description with the selector", async () => {
+    render(<ModelSelector />);
+
+    const trigger = await screen.findByTestId("model-selector-trigger");
+    expect(trigger).toHaveAccessibleName("Model Balanced");
+    expect(trigger).toHaveAccessibleDescription("Choose one model for everything.");
+  });
+
+  it("unsubscribes from model progress events when unmounted", async () => {
+    const { unmount } = render(<ModelSelector />);
+    await screen.findByTestId("model-selector-trigger");
+    await waitFor(() => expect(progressEvents.callback).not.toBeNull());
+
+    unmount();
+    expect(progressEvents.unlisten).toHaveBeenCalledOnce();
+  });
+});
