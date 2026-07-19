@@ -5,7 +5,7 @@ import { Placeholder } from "@tiptap/extension-placeholder";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
-import { ArrowUp, CircleCheck, Pencil, Plus, Square, Target, Trash2 } from "lucide-react";
+import { ArrowUp, Plus, Square, Target } from "lucide-react";
 import { InputGroup, InputGroupAddon, InputGroupButton } from "@/components/ui/input-group";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/cn";
@@ -145,25 +145,18 @@ export interface RichInputProps {
    */
   contextGauge?: ReactNode;
   /**
-   * Optional conversation-goal control (relocated here from the topbar's
-   * old `GoalBar.tsx`). When present, the composer shows a ◎ Goal toggle
-   * in its toolbar (near the attach button) and, once a goal is set, a
-   * "Pursuing goal" banner above the input. Omitted on surfaces that have
-   * no goal to manage (`EmptyState.tsx`, `UserAskWidget.tsx`) — those keep
-   * rendering exactly as before.
+   * Optional conversation-goal control (the composer's ◎ toggle). When
+   * present, the composer shows a ◎ Goal toggle in its toolbar (near the
+   * attach button); the goal itself is DISPLAYED by the AgentActivity status
+   * line above the composer, not here. Omitted on surfaces that have no goal
+   * to manage (`EmptyState.tsx`, `UserAskWidget.tsx`).
    */
   goal?: {
     /** The active goal, or `null` if none is set. */
     current: string | null;
     /**
-     * Whether the observer has confirmed the goal as met. When true the banner
-     * reads "Goal achieved" (muted, no edit/delete) instead of "Pursuing goal".
-     */
-    achieved?: boolean;
-    /**
-     * Persist the goal WITHOUT starting a turn — used by the banner's edit
-     * (update the north-star) and delete (`null`, clear it). Never launches
-     * the agent.
+     * Persist the goal WITHOUT starting a turn — used to clear it (`null`) on
+     * an empty goal-mode send. Never launches the agent.
      */
     onSet: (goal: string | null) => void;
     /**
@@ -174,6 +167,14 @@ export interface RichInputProps {
      */
     onSendAsGoal: (goal: string) => void;
   };
+  /**
+   * A changing token requesting that the current goal be loaded back into the
+   * composer for editing (goal mode + prefill). Driven by the AgentActivity
+   * status line's "edit goal" control, whose display lives outside this
+   * component but whose edit action needs this editor. Each distinct value
+   * triggers one edit-entry.
+   */
+  editGoalToken?: number;
 }
 
 /**
@@ -221,6 +222,7 @@ export default function RichInput({
   autoFocusToken,
   contextGauge,
   goal,
+  editGoalToken,
 }: RichInputProps) {
   const onSubmitRef = useRef(onSubmit);
   const placeholderRef = useRef(placeholder);
@@ -460,10 +462,6 @@ export default function RichInput({
     setGoalMode(true);
   };
 
-  const deleteGoal = () => {
-    goal?.onSet(null);
-  };
-
   const editor = useEditor({
     extensions: [
       StarterKit.configure({
@@ -578,6 +576,22 @@ export default function RichInput({
     editor?.commands.focus("end");
   }, [autoFocusToken, editor]);
 
+  // Edit-goal requests from the status line: a changing `editGoalToken` loads
+  // the goal back into the composer (goal mode + prefill). A ref-tracked
+  // previous value skips the mount run, so the composer only enters edit mode
+  // on an actual click, never on first render.
+  const editGoalTokenRef = useRef(editGoalToken);
+  useEffect(() => {
+    if (editGoalToken === editGoalTokenRef.current) return;
+    editGoalTokenRef.current = editGoalToken;
+    startEditingGoal();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the
+    // token alone; `startEditingGoal` closes over the current `goal`/editor
+    // and is re-created each render, so including it would re-run this effect
+    // every render (the token guard would still gate the action, but the
+    // subscription churn is pointless).
+  }, [editGoalToken]);
+
   // useEditor() itself doesn't trigger a re-render on every keystroke
   // (shouldRerenderOnTransaction defaults to off) — this is the documented
   // opt-in way to reactively derive UI state (here, whether to disable the
@@ -591,53 +605,6 @@ export default function RichInput({
 
   return (
     <div className="flex flex-col gap-1">
-      {/* Composer relocation of the old topbar GoalBar: a compact banner
-          above the input, shown only once a goal is actually set. Styled
-          like this file's other chip surfaces (`pasted-text-node.tsx`'s
-          `rounded-lg border border-border bg-card` chip), not a new
-          convention. */}
-      {goal?.current &&
-        (goal.achieved ? (
-          // Achieved: the observer confirmed the goal at FinishTask. Muted, a
-          // check icon, and no edit/delete — the goal is done, not being worked.
-          <div
-            className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground"
-            data-testid="rich-input-goal-banner"
-          >
-            <CircleCheck size={14} className="shrink-0" />
-            <span className="min-w-0 flex-1 truncate">
-              <span className="font-medium">Goal achieved</span> {goal.current}
-            </span>
-          </div>
-        ) : (
-          <div
-            className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-1.5 text-xs text-muted-foreground"
-            data-testid="rich-input-goal-banner"
-          >
-            <Target size={14} className="shrink-0 text-primary" />
-            <span className="min-w-0 flex-1 truncate">
-              <span className="font-medium text-foreground">Pursuing goal</span> {goal.current}
-            </span>
-            <button
-              type="button"
-              onClick={startEditingGoal}
-              className="shrink-0 rounded p-1 hover:bg-muted hover:text-foreground"
-              aria-label="Edit goal"
-              data-testid="rich-input-goal-edit"
-            >
-              <Pencil size={12} />
-            </button>
-            <button
-              type="button"
-              onClick={deleteGoal}
-              className="shrink-0 rounded p-1 hover:bg-destructive/10 hover:text-destructive"
-              aria-label="Delete goal"
-              data-testid="rich-input-goal-delete"
-            >
-              <Trash2 size={12} />
-            </button>
-          </div>
-        ))}
       <InputGroup
         className={cn(
           "border-transparent bg-secondary shadow-none focus-within:shadow-sm",

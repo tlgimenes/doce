@@ -7,8 +7,7 @@ import EditDiffWidget from "@/views/chat/tool-widgets/EditDiffWidget";
 import BashWidget from "@/views/chat/tool-widgets/BashWidget";
 import SearchResultsWidget from "@/views/chat/tool-widgets/SearchResultsWidget";
 import TaskWidget from "@/views/chat/tool-widgets/TaskWidget";
-import { PlanTrackerCard } from "@/views/workspace/PlanTracker";
-import StreamingStatus from "@/views/workspace/StreamingStatus";
+import { AgentActivityView } from "@/views/workspace/AgentActivity";
 import AskUserQuestionWidget from "@/views/chat/tool-widgets/AskUserQuestionWidget";
 import UserAskWidget from "@/views/chat/tool-widgets/UserAskWidget";
 import UnknownToolWidget from "@/views/chat/tool-widgets/UnknownToolWidget";
@@ -481,11 +480,11 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
         </Section>
 
         <Section
-          title="Plan tracker"
-          description="The live plan/todo strip docked above the composer — a collapsed one-liner with n/m progress; expanding opens the step list upward. Rendered here from mock snapshots."
+          title="Agent activity"
+          description="The single status line docked above the composer: a collapsed pill of primary · progress · working, where the primary slot grows and shows the goal (or, with none, the current todo). A thinking row streams the model's reasoning above it; the ⌄ expands the plan checklist + goal controls below. Rendered here from mock snapshots."
         >
-          <Example label="Mid-execution">
-            <PlanTrackerCard
+          <Example label="Goal + plan + working + thinking">
+            <AgentActivityView
               plan={{
                 goal: "Refactor the auth module",
                 currentStepIndex: 2,
@@ -496,45 +495,47 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
                   { description: "Wire the new store into login", done: false },
                 ],
               }}
+              goal={{
+                current: "Ship the login flow with email + password and OAuth",
+                achieved: false,
+                onEdit: () => {},
+                onDelete: () => {},
+              }}
+              working={{
+                active: true,
+                elapsedLabel: "12.3s",
+                tokens: { input: 1042, output: 320 },
+                thinkingLine:
+                  "The session token is stored in a cookie, so I should check the login command first.",
+              }}
             />
           </Example>
-          <Example label="Long step text (truncated with ellipsis)">
-            <PlanTrackerCard
+          <Example label="No goal → current todo fills the primary slot">
+            <AgentActivityView
               plan={{
-                goal: "Ship the release",
+                goal: "",
                 currentStepIndex: 1,
                 steps: [
                   { description: "Audit the changelog", done: true },
                   {
                     description:
-                      "Cross-check every model registry entry against the upstream capability matrix, then regenerate the tool grammar so the name-enum gate covers the plan tools and the search bound floors",
+                      "Cross-check every model registry entry against the upstream capability matrix, then regenerate the tool grammar",
                     done: false,
                   },
                   { description: "Tag and publish", done: false },
                 ],
               }}
-            />
-          </Example>
-          <Example label="Long plan (completed steps folded, pending capped)">
-            <PlanTrackerCard
-              plan={{
-                goal: "Fix every bug file",
-                currentStepIndex: 5,
-                steps: [
-                  ...Array.from({ length: 5 }, (_, i) => ({
-                    description: `Fix bug_0${i}.txt`,
-                    done: true,
-                  })),
-                  ...Array.from({ length: 7 }, (_, i) => ({
-                    description: `Fix bug_0${i + 5}.txt`,
-                    done: false,
-                  })),
-                ],
+              goal={{ current: null, achieved: false, onEdit: () => {}, onDelete: () => {} }}
+              working={{
+                active: true,
+                elapsedLabel: "4.1s",
+                tokens: { input: 8300, output: 0 },
+                thinkingLine: null,
               }}
             />
           </Example>
-          <Example label="All done (back in planning)">
-            <PlanTrackerCard
+          <Example label="Goal achieved (muted), plan complete">
+            <AgentActivityView
               plan={{
                 goal: "Rename the config module",
                 currentStepIndex: null,
@@ -543,40 +544,20 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
                   { description: "Update the imports", done: true },
                 ],
               }}
+              goal={{
+                current: "Rename the config module across the codebase",
+                achieved: true,
+                onEdit: () => {},
+                onDelete: () => {},
+              }}
+              working={{ active: false, elapsedLabel: null, tokens: null, thinkingLine: null }}
             />
           </Example>
-        </Section>
-
-        <Section
-          title="Working / thinking stream"
-          description="The live turn indicator docked above the composer: the model's current reasoning line IS the shimmering working line, advancing line by line as it thinks — chron + the turn's ↑/↓ accumulator on the right. Chrons tick live; stream states are mock snapshots."
-        >
-          <Example label="Just started (no tokens yet)">
-            <StreamingStatus startedAt={Date.now()} />
-          </Example>
-          <Example label="Reasoning line replaces Working">
-            <StreamingStatus
-              startedAt={Date.now() - 4200}
-              tokens={{ input: 1042, output: 0 }}
-              stream={
-                "<think>\nThe user wants a count of TypeScript files.\nGlob caps at 100, so a find pipeline is the honest tool."
-              }
-            />
-          </Example>
-          <Example label="Long line (truncates)">
-            <StreamingStatus
-              startedAt={Date.now() - 31000}
-              tokens={{ input: 8300, output: 512 }}
-              stream={
-                "<think>\nComparing every tool schema against the registry entries and checking whether the grammar name-enum gate covers the plan tools as well as the executing-mode set before answering."
-              }
-            />
-          </Example>
-          <Example label="Thinking closed (tool call generating)">
-            <StreamingStatus
-              startedAt={Date.now() - 9000}
-              tokens={{ input: 2100, output: 0 }}
-              stream={'<think>\nplan settled\n</think><tool_call>{"name": "Read"'}
+          <Example label="Working only — no goal, no plan (indicator justifies right)">
+            <AgentActivityView
+              plan={null}
+              goal={{ current: null, achieved: false, onEdit: () => {}, onDelete: () => {} }}
+              working={{ active: true, elapsedLabel: "2.0s", tokens: null, thinkingLine: null }}
             />
           </Example>
         </Section>

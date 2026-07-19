@@ -12,8 +12,7 @@ import {
 } from "@/components/ui/message-scroller";
 import RichInput from "@/views/chat/rich-input/RichInput";
 import UserAskWidget from "@/views/chat/tool-widgets/UserAskWidget";
-import PlanTracker from "@/views/workspace/PlanTracker";
-import StreamingStatus from "@/views/workspace/StreamingStatus";
+import AgentActivity from "@/views/workspace/AgentActivity";
 import WorkspaceTopbar from "@/views/workspace/WorkspaceTopbar";
 import TranscriptTurn, { type PendingTurnWidget } from "@/views/workspace/TranscriptTurn";
 import { accumulateTurnTokens, groupTranscriptTurns } from "@/views/workspace/transcriptTurns";
@@ -228,6 +227,11 @@ export default function Workspace({
   // goal changes, clears, or the conversation switches. The banner shows
   // "Goal achieved" (muted, no edit/delete) when this is true.
   const [goalAchieved, setGoalAchieved] = useState(false);
+  // Bumped when the status line's "edit goal" control is clicked — forwarded
+  // to RichInput's `editGoalToken`, which loads the goal back into the
+  // composer (goal mode + prefill). A changing token (not a boolean) so a
+  // second edit click after cancelling still re-triggers.
+  const [editGoalToken, setEditGoalToken] = useState(0);
   const isMountedRef = useRef(true);
   const genericStatusFallbackStartedAtRef = useRef<number | null>(null);
   const currentConversationIdRef = useRef(conversationId);
@@ -760,14 +764,21 @@ export default function Workspace({
           </MessageScrollerViewport>
           <MessageScrollerButton data-testid="scroll-to-bottom" />
         </MessageScroller>
-        <PlanTracker conversationId={conversationId} />
-        {showGenericStreamingStatus && (
-          <StreamingStatus
-            startedAt={activeTurnStartedAt}
-            tokens={activeTurnTokens}
-            stream={liveGenText}
-          />
-        )}
+        <AgentActivity
+          conversationId={conversationId}
+          goal={{
+            current: goal,
+            achieved: goalAchieved,
+            onEdit: () => setEditGoalToken((token) => token + 1),
+            onDelete: () => handleSetGoal(null),
+          }}
+          streaming={{
+            active: showGenericStreamingStatus,
+            startedAt: activeTurnStartedAt,
+            tokens: activeTurnTokens,
+            stream: liveGenText,
+          }}
+        />
         <div className="p-4" data-testid="workspace-composer-shell">
           {/* The view-transition name lives on the max-w-xl column, matching
               EmptyState's named element exactly — same width on both sides
@@ -787,9 +798,9 @@ export default function Workspace({
                 placeholder="Describe a task…"
                 inputTestId="agent-input"
                 submitTestId="agent-send"
+                editGoalToken={editGoalToken}
                 goal={{
                   current: goal,
-                  achieved: goalAchieved,
                   onSet: handleSetGoal,
                   onSendAsGoal: handleSendAsGoal,
                 }}
