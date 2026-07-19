@@ -5,6 +5,7 @@ on:
     branches: [main]
     tags: ["v*"]
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -70,10 +71,13 @@ jobs:
     name: E2E (WebdriverIO + @wdio/tauri-service)
     runs-on: macos-26
     needs: [rust, frontend]
-    # Informational for now: the e2e suite drives the real app against a real
-    # GGUF model, which CI does not yet provision (multi-GB download/cache is a
-    # separate task). Keep it running as a signal, but a failure here must not
-    # red the workflow or block the auto-release. Remove this once CI has a model.
+    # On-demand only: the e2e suite drives the real app against a real GGUF
+    # model, which CI does not provision yet (a multi-GB model download/cache is
+    # a separate task), so it can't pass on push/PR — running it there just
+    # paints a permanent red check. Gate it to manual `workflow_dispatch` so
+    # automated runs stay clean; trigger it by hand when a model is available.
+    # (Kept out of the release gate too — `release` only needs rust+frontend.)
+    if: github.event_name == 'workflow_dispatch'
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
