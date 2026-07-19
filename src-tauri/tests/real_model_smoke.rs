@@ -330,9 +330,16 @@ async fn the_real_model_obeys_the_memory_extraction_contract() {
     ];
     let span_refs: Vec<&HistoryMessage> = span.iter().collect();
 
-    context::extract_and_persist_memories(&conn, &server.base_url, "c1", &span_refs, 1_000)
-        .await
-        .expect("extraction must never fail the turn");
+    context::extract_and_persist_memories(
+        &conn,
+        &server.base_url,
+        "c1",
+        &span_refs,
+        1_000,
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("extraction must never fail the turn");
 
     let memories = doce_lib::storage::memories::load_memories(&conn, Some("w1"))
         .await
@@ -574,6 +581,7 @@ async fn the_real_model_summarizes_a_span_that_ends_with_an_assistant_message() 
         "c1",
         &history,
         protected_recent,
+        &tokio_util::sync::CancellationToken::new(),
     )
     .await
     .expect("summarization must not error against a healthy server");
@@ -1130,6 +1138,7 @@ async fn the_real_maybe_compact_condenses_an_over_threshold_conversation() {
         false,
         &failures,
         &observed_usage,
+        &tokio_util::sync::CancellationToken::new(),
     )
     .await
     .expect("maybe_compact must not error against a healthy server");
@@ -1460,6 +1469,7 @@ async fn tier_one_alone_stops_the_pipeline_when_the_clearing_frees_enough() {
         false,
         &failures,
         &observed_usage,
+        &tokio_util::sync::CancellationToken::new(),
     )
     .await
     .expect("maybe_compact must not error against a healthy server");

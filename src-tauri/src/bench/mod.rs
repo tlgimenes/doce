@@ -803,6 +803,7 @@ impl AgentBackend for PlanExecBackend<'_> {
                         &self.plan_state.mutation_log,
                         answer.as_deref(),
                         goal.as_deref(),
+                        &tokio_util::sync::CancellationToken::new(),
                     )
                     .await
                     .unwrap_or_else(|e| {

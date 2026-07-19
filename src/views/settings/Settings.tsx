@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTheme } from "next-themes";
 import { X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Field, FieldContent, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import {
@@ -21,48 +21,49 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { commands, type McpServerConnection, type SkillSummary } from "@/lib/ipc";
+import ModelSelector from "./ModelSelector";
 
 interface SettingsProps {
   onClose: () => void;
 }
 
-// Maps next-themes' raw theme values to display labels — without an
-// `items` map, Base UI's <Select.Value> renders the raw selected value
-// verbatim (e.g. "system"), not the matching <SelectItem>'s children.
 const THEME_LABELS: Record<string, string> = {
   system: "System",
   light: "Light",
   dark: "Dark",
 };
 
-/**
- * User Story 4: MCP server registration (FR-018/FR-019) and filesystem
- * skill discovery (FR-020). Minimal by design — connection testing lists
- * a server's tools on demand rather than keeping a live session, and
- * skills are read-only here (added by dropping a `SKILL.md` folder into
- * `<app data dir>/skills`, not managed through this UI yet).
- */
 export default function Settings({ onClose }: SettingsProps) {
   const { theme, setTheme } = useTheme();
   const [servers, setServers] = useState<McpServerConnection[]>([]);
   const [skills, setSkills] = useState<SkillSummary[]>([]);
-  const [activeTab, setActiveTab] = useState<"mcp" | "skills">("mcp");
   const [addError, setAddError] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [command, setCommand] = useState("");
   const [argsInput, setArgsInput] = useState("");
   const [toolsByServer, setToolsByServer] = useState<Record<string, string[] | "error">>({});
 
-  const refresh = () => {
-    commands.listMcpServers().then(setServers);
-    commands.listSkills().then(setSkills);
-  };
+  const refresh = useCallback(() => {
+    void commands
+      .listMcpServers()
+      .then(setServers)
+      .catch(() => {
+        // Model and Skills settings remain independently usable if MCP
+        // discovery is temporarily unavailable.
+      });
+    void commands
+      .listSkills()
+      .then(setSkills)
+      .catch(() => {
+        // Keep the rest of the consolidated screen mounted on discovery
+        // failures; a future refresh can reconcile the list.
+      });
+  }, []);
 
   useEffect(() => {
     refresh();
-  }, []);
+  }, [refresh]);
 
   const addServer = async () => {
     if (!name.trim() || !command.trim()) return;
@@ -74,17 +75,20 @@ export default function Settings({ onClose }: SettingsProps) {
       setCommand("");
       setArgsInput("");
       refresh();
-    } catch (err) {
-      setAddError(err instanceof Error ? err.message : String(err));
+    } catch (error) {
+      setAddError(error instanceof Error ? error.message : String(error));
     }
   };
 
   const testServer = async (serverId: string) => {
     try {
       const tools = await commands.listMcpServerTools(serverId);
-      setToolsByServer((prev) => ({ ...prev, [serverId]: tools.map((t) => t.name) }));
+      setToolsByServer((previous) => ({
+        ...previous,
+        [serverId]: tools.map((tool) => tool.name),
+      }));
     } catch {
-      setToolsByServer((prev) => ({ ...prev, [serverId]: "error" }));
+      setToolsByServer((previous) => ({ ...previous, [serverId]: "error" }));
     }
   };
 
@@ -93,10 +97,14 @@ export default function Settings({ onClose }: SettingsProps) {
       className="flex h-full flex-col overflow-y-auto bg-background p-6 text-foreground"
       data-testid="settings-view"
     >
-      {/* Readable column, not window-wide sprawl — mirrors the chat surface. */}
       <div className="mx-auto w-full max-w-2xl">
         <div className="mb-6 flex items-center justify-between">
-          <h2 className="text-balance text-lg font-medium">Settings</h2>
+          <div>
+            <h2 className="text-balance text-lg font-medium">Settings</h2>
+            <p className="mt-0.5 text-sm text-muted-foreground">
+              Manage how Doce looks, works, and connects on this Mac.
+            </p>
+          </div>
           <Button
             variant="ghost"
             size="icon-xs"
@@ -109,216 +117,217 @@ export default function Settings({ onClose }: SettingsProps) {
           </Button>
         </div>
 
-        <Card size="sm" className="mb-6" data-testid="settings-appearance-panel">
-          <CardHeader>
-            <CardTitle>Appearance</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <Field orientation="horizontal" className="items-center justify-between gap-4">
-              <FieldContent>
-                <FieldLabel htmlFor="theme-select">Theme</FieldLabel>
-                <FieldDescription>Match your system, or force light or dark.</FieldDescription>
-              </FieldContent>
-              <Select
-                items={THEME_LABELS}
-                value={theme ?? "system"}
-                onValueChange={(value) => setTheme(value ?? "system")}
-              >
-                <SelectTrigger
-                  id="theme-select"
-                  data-testid="theme-select"
-                  aria-label="Theme"
-                  size="sm"
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="system">System</SelectItem>
-                  <SelectItem value="light">Light</SelectItem>
-                  <SelectItem value="dark">Dark</SelectItem>
-                </SelectContent>
-              </Select>
-            </Field>
-          </CardContent>
-        </Card>
-
-        <Tabs
-          value={activeTab}
-          onValueChange={(value) => setActiveTab(value as "mcp" | "skills")}
-          className="gap-0"
+        <section
+          className="mb-8"
+          aria-labelledby="general-settings-heading"
+          data-testid="settings-general-section"
         >
-          <TabsList className="mb-6 rounded-md border border-border bg-card p-1">
-            <TabsTrigger
-              value="mcp"
-              aria-selected={activeTab === "mcp"}
-              data-testid="settings-tab-mcp"
-              className="min-w-28 rounded-sm px-3 py-1 text-sm data-active:bg-primary data-active:text-primary-foreground"
-            >
-              MCP Servers
-            </TabsTrigger>
-            <TabsTrigger
-              value="skills"
-              aria-selected={activeTab === "skills"}
-              data-testid="settings-tab-skills"
-              className="min-w-20 rounded-sm px-3 py-1 text-sm data-active:bg-primary data-active:text-primary-foreground"
-            >
-              Skills
-            </TabsTrigger>
-          </TabsList>
+          <h3
+            id="general-settings-heading"
+            className="mb-2 text-xs font-medium tracking-wide text-muted-foreground uppercase"
+          >
+            General
+          </h3>
+          <Card size="sm" data-testid="settings-appearance-panel">
+            <CardContent>
+              <Field orientation="horizontal" className="items-center justify-between gap-4">
+                <FieldContent>
+                  <FieldLabel htmlFor="theme-select">Appearance</FieldLabel>
+                  <FieldDescription>Match this Mac, or always use light or dark.</FieldDescription>
+                </FieldContent>
+                <Select
+                  items={THEME_LABELS}
+                  value={theme ?? "system"}
+                  onValueChange={(value) => setTheme(value ?? "system")}
+                >
+                  <SelectTrigger
+                    id="theme-select"
+                    data-testid="theme-select"
+                    aria-label="Appearance"
+                    size="sm"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="system">System</SelectItem>
+                    <SelectItem value="light">Light</SelectItem>
+                    <SelectItem value="dark">Dark</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+            </CardContent>
+          </Card>
+        </section>
 
-          <TabsContent value="mcp">
-            {activeTab === "mcp" && (
-              <section data-testid="settings-mcp-panel">
-                <Card size="sm" className="mb-4">
-                  <CardHeader>
-                    <CardTitle>MCP servers</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    {/* items-end bottom-aligns the Add button with the input
-                    row — the labels above the inputs otherwise leave it
-                    floating. */}
-                    <div className="flex flex-wrap items-end gap-2">
-                      <Field className="min-w-40 flex-1 gap-1">
-                        <FieldLabel
-                          htmlFor="mcp-name-input"
-                          className="text-xs text-muted-foreground"
-                        >
-                          Server name
-                        </FieldLabel>
-                        <Input
-                          id="mcp-name-input"
-                          placeholder="name"
-                          value={name}
-                          onChange={(e) => setName(e.target.value)}
-                          data-testid="mcp-name-input"
-                        />
-                      </Field>
-                      <Field className="min-w-48 flex-1 gap-1">
-                        <FieldLabel
-                          htmlFor="mcp-command-input"
-                          className="text-xs text-muted-foreground"
-                        >
-                          Command
-                        </FieldLabel>
-                        <Input
-                          id="mcp-command-input"
-                          placeholder="command (e.g. npx)"
-                          value={command}
-                          onChange={(e) => setCommand(e.target.value)}
-                          data-testid="mcp-command-input"
-                        />
-                      </Field>
-                      <Field className="min-w-56 flex-[2] gap-1">
-                        <FieldLabel
-                          htmlFor="mcp-args-input"
-                          className="text-xs text-muted-foreground"
-                        >
-                          Arguments
-                        </FieldLabel>
-                        <Input
-                          id="mcp-args-input"
-                          placeholder="args (space-separated)"
-                          value={argsInput}
-                          onChange={(e) => setArgsInput(e.target.value)}
-                          data-testid="mcp-args-input"
-                        />
-                      </Field>
-                      <Button
-                        variant="default"
-                        size="sm"
-                        onClick={addServer}
-                        disabled={!name.trim() || !command.trim()}
-                        data-testid="add-mcp-server"
+        <ModelSelector />
+
+        <section
+          aria-labelledby="extensions-settings-heading"
+          data-testid="settings-extensions-section"
+        >
+          <h3
+            id="extensions-settings-heading"
+            className="mb-3 text-xs font-medium tracking-wide text-muted-foreground uppercase"
+          >
+            Extensions
+          </h3>
+
+          <div className="space-y-8">
+            <section aria-labelledby="mcp-settings-heading" data-testid="settings-mcp-panel">
+              <div className="mb-3">
+                <h4 id="mcp-settings-heading" className="text-sm font-medium">
+                  MCP servers
+                </h4>
+                <p className="mt-0.5 text-sm text-muted-foreground">
+                  Connect Doce to tools and business services.
+                </p>
+              </div>
+
+              <Card size="sm" className="mb-4">
+                <CardContent>
+                  <div className="flex flex-wrap items-end gap-2">
+                    <Field className="min-w-40 flex-1 gap-1">
+                      <FieldLabel
+                        htmlFor="mcp-name-input"
+                        className="text-xs text-muted-foreground"
                       >
-                        Add
-                      </Button>
-                    </div>
-                    {addError && (
-                      <p className="mt-2 text-sm text-destructive" data-testid="mcp-add-error">
-                        {addError}
-                      </p>
-                    )}
-                  </CardContent>
-                </Card>
+                        Server name
+                      </FieldLabel>
+                      <Input
+                        id="mcp-name-input"
+                        placeholder="name"
+                        value={name}
+                        onChange={(event) => setName(event.target.value)}
+                        data-testid="mcp-name-input"
+                      />
+                    </Field>
+                    <Field className="min-w-48 flex-1 gap-1">
+                      <FieldLabel
+                        htmlFor="mcp-command-input"
+                        className="text-xs text-muted-foreground"
+                      >
+                        Command
+                      </FieldLabel>
+                      <Input
+                        id="mcp-command-input"
+                        placeholder="command (e.g. npx)"
+                        value={command}
+                        onChange={(event) => setCommand(event.target.value)}
+                        data-testid="mcp-command-input"
+                      />
+                    </Field>
+                    <Field className="min-w-56 flex-[2] gap-1">
+                      <FieldLabel
+                        htmlFor="mcp-args-input"
+                        className="text-xs text-muted-foreground"
+                      >
+                        Arguments
+                      </FieldLabel>
+                      <Input
+                        id="mcp-args-input"
+                        placeholder="args (space-separated)"
+                        value={argsInput}
+                        onChange={(event) => setArgsInput(event.target.value)}
+                        data-testid="mcp-args-input"
+                      />
+                    </Field>
+                    <Button
+                      variant="default"
+                      onClick={addServer}
+                      disabled={!name.trim() || !command.trim()}
+                      data-testid="add-mcp-server"
+                    >
+                      Add
+                    </Button>
+                  </div>
+                  {addError ? (
+                    <p className="mt-2 text-sm text-destructive" data-testid="mcp-add-error">
+                      {addError}
+                    </p>
+                  ) : null}
+                </CardContent>
+              </Card>
 
-                <ItemGroup className="gap-3">
-                  {servers.map((s) => (
+              <ItemGroup className="gap-3">
+                {servers.map((server) => (
+                  <Item
+                    key={server.id}
+                    variant="outline"
+                    className="bg-card text-sm"
+                    data-testid="mcp-server-item"
+                  >
+                    <ItemContent className="min-w-0 gap-2">
+                      <ItemTitle className="flex-wrap">
+                        <span>{server.name}</span>
+                        <span className="flex flex-wrap items-center gap-2">
+                          <Badge variant="outline">{server.transport}</Badge>
+                          <Badge variant={server.enabled ? "default" : "secondary"}>
+                            {server.enabled ? "Enabled" : "Disabled"}
+                          </Badge>
+                        </span>
+                      </ItemTitle>
+                      {toolsByServer[server.id] === "error" ? (
+                        <ItemDescription className="text-xs text-destructive">
+                          Failed to connect
+                        </ItemDescription>
+                      ) : null}
+                      {Array.isArray(toolsByServer[server.id]) ? (
+                        <ItemDescription
+                          className="text-xs text-muted-foreground"
+                          data-testid="mcp-server-tools"
+                        >
+                          Tools: {(toolsByServer[server.id] as string[]).join(", ") || "(none)"}
+                        </ItemDescription>
+                      ) : null}
+                    </ItemContent>
+                    <ItemActions className="ml-auto self-start">
+                      <Button
+                        variant="link"
+                        size="sm"
+                        onClick={() => void testServer(server.id)}
+                        data-testid="test-mcp-server"
+                      >
+                        Test connection
+                      </Button>
+                    </ItemActions>
+                  </Item>
+                ))}
+              </ItemGroup>
+            </section>
+
+            <section aria-labelledby="skills-settings-heading" data-testid="settings-skills-panel">
+              <div className="mb-3">
+                <h4 id="skills-settings-heading" className="text-sm font-medium">
+                  Skills
+                </h4>
+                <p className="mt-0.5 text-sm text-muted-foreground">
+                  Use specialized workflows available on this Mac.
+                </p>
+              </div>
+              {skills.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  No skills found. Add a folder with a SKILL.md to your skills directory.
+                </p>
+              ) : (
+                <ItemGroup className="gap-2">
+                  {skills.map((skill) => (
                     <Item
-                      key={s.id}
+                      key={skill.name}
                       variant="outline"
                       className="bg-card text-sm"
-                      data-testid="mcp-server-item"
+                      data-testid="skill-item"
                     >
-                      <ItemContent className="min-w-0 gap-2">
-                        <ItemTitle className="flex-wrap">
-                          <span>{s.name}</span>
-                          <span className="flex flex-wrap items-center gap-2">
-                            <Badge variant="outline">{s.transport}</Badge>
-                            <Badge variant={s.enabled ? "default" : "secondary"}>
-                              {s.enabled ? "Enabled" : "Disabled"}
-                            </Badge>
-                          </span>
-                        </ItemTitle>
-                        {toolsByServer[s.id] === "error" ? (
-                          <ItemDescription className="text-xs text-destructive">
-                            Failed to connect
-                          </ItemDescription>
-                        ) : null}
-                        {Array.isArray(toolsByServer[s.id]) ? (
-                          <ItemDescription
-                            className="text-xs text-muted-foreground"
-                            data-testid="mcp-server-tools"
-                          >
-                            Tools: {(toolsByServer[s.id] as string[]).join(", ") || "(none)"}
-                          </ItemDescription>
-                        ) : null}
+                      <ItemContent>
+                        <ItemTitle>{skill.name}</ItemTitle>
+                        <ItemDescription>{skill.description}</ItemDescription>
                       </ItemContent>
-                      <ItemActions className="ml-auto self-start">
-                        <Button
-                          variant="link"
-                          size="sm"
-                          onClick={() => testServer(s.id)}
-                          data-testid="test-mcp-server"
-                        >
-                          Test connection
-                        </Button>
-                      </ItemActions>
                     </Item>
                   ))}
                 </ItemGroup>
-              </section>
-            )}
-          </TabsContent>
-
-          <TabsContent value="skills">
-            {activeTab === "skills" && (
-              <section data-testid="settings-skills-panel">
-                <h3 className="mb-3 text-sm font-medium">Skills</h3>
-                {skills.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">
-                    No skills found. Add a folder with a SKILL.md to your skills directory.
-                  </p>
-                ) : (
-                  <ItemGroup className="gap-2">
-                    {skills.map((s) => (
-                      <Item
-                        key={s.name}
-                        variant="outline"
-                        className="bg-card text-sm"
-                        data-testid="skill-item"
-                      >
-                        <ItemContent>
-                          <ItemTitle>{s.name}</ItemTitle>
-                          <ItemDescription>{s.description}</ItemDescription>
-                        </ItemContent>
-                      </Item>
-                    ))}
-                  </ItemGroup>
-                )}
-              </section>
-            )}
-          </TabsContent>
-        </Tabs>
+              )}
+            </section>
+          </div>
+        </section>
       </div>
     </div>
   );

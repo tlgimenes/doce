@@ -725,6 +725,7 @@ pub async fn summarize_and_persist(
     conversation_id: &str,
     history: &[HistoryMessage],
     protected_recent: usize,
+    cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<SummaryResult, String> {
     let to_summarize = messages_to_summarize(history, protected_recent);
     if to_summarize.is_empty() {
@@ -742,9 +743,8 @@ pub async fn summarize_and_persist(
     messages.push(ChatMessage::user(limits::SUMMARIZATION_FINAL_TURN));
 
     // `Forbid`: tools and tool_choice both `None` (a summary must never be
-    // able to emit a tool call). Compaction is best-effort, so a fresh,
-    // never-cancelled token — there is no per-turn cancel handle to thread
-    // here the way a live agent turn has.
+    // able to emit a tool call). The owning turn's token is threaded through
+    // so Stop can release the global generation lease during compaction.
     let mut req = crate::inference::http::ChatRequest::build(
         "doce",
         crate::inference::http::to_openai_messages(&messages),
@@ -760,9 +760,8 @@ pub async fn summarize_and_persist(
     // spends the output budget before any content is emitted (see
     // `disable_thinking`).
     req.disable_thinking();
-    let cancel = tokio_util::sync::CancellationToken::new();
     let outcome = crate::inference::http::LlamaServerClient::new(base_url)
-        .chat(req, |_piece| {}, &cancel)
+        .chat(req, |_piece| {}, cancel)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -842,6 +841,7 @@ pub async fn summarize_and_persist(
                 conversation_id,
                 &to_summarize,
                 crate::commands::models::now_ms(),
+                cancel,
             )
             .await;
 
@@ -884,6 +884,7 @@ pub async fn extract_and_persist_memories(
     conversation_id: &str,
     to_summarize: &[&HistoryMessage],
     now: i64,
+    cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<(), String> {
     // LATENT HAZARD -- subagent conversations and the NULL bucket. A subagent
     // is created with `workspace_id` NULL (`agent::subagent::spawn`), so this
@@ -948,9 +949,7 @@ pub async fn extract_and_persist_memories(
     messages.push(ChatMessage::user(limits::EXTRACTION_FINAL_TURN));
 
     // `Forbid`: tools and tool_choice both `None` -- an extraction must never
-    // emit a tool call. Fresh never-cancelled token, exactly as
-    // `summarize_and_persist` does: this is best-effort background work with no
-    // per-turn cancel handle to thread.
+    // emit a tool call. It shares its owning turn's cancellation token.
     let mut req = crate::inference::http::ChatRequest::build(
         "doce",
         crate::inference::http::to_openai_messages(&messages),
@@ -962,9 +961,8 @@ pub async fn extract_and_persist_memories(
     // budget (empty content, `finish_reason:"length"`, nothing persisted). See
     // `disable_thinking`.
     req.disable_thinking();
-    let cancel = tokio_util::sync::CancellationToken::new();
     let outcome = match crate::inference::http::LlamaServerClient::new(base_url)
-        .chat(req, |_piece| {}, &cancel)
+        .chat(req, |_piece| {}, cancel)
         .await
     {
         Ok(o) => o,
@@ -1209,6 +1207,7 @@ pub async fn maybe_compact(
     force: bool,
     failures: &CompactionFailures,
     observed_usage: &LastObservedUsage,
+    cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<ContextUsage, String> {
     let settings = ContextSettings::load(conn).await?;
     let mut history = load_history_via_conn(conn, conversation_id, skills_dir).await?;
@@ -1307,6 +1306,7 @@ pub async fn maybe_compact(
             conversation_id,
             &history,
             PROTECTED_RECENT_MESSAGES,
+            cancel,
         )
         .await?
         {
@@ -2973,9 +2973,16 @@ mod tests {
 
         let span = [history_message("text", 0, "some work")];
         let span_refs: Vec<&HistoryMessage> = span.iter().collect();
-        extract_and_persist_memories(&conn, &server.uri(), "c1", &span_refs, 10)
-            .await
-            .unwrap();
+        extract_and_persist_memories(
+            &conn,
+            &server.uri(),
+            "c1",
+            &span_refs,
+            10,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(
             contents_of(&conn, Some("w1")).await,
@@ -3004,9 +3011,16 @@ mod tests {
 
         let span = [history_message("text", 0, "some work")];
         let span_refs: Vec<&HistoryMessage> = span.iter().collect();
-        extract_and_persist_memories(&conn, &server.uri(), "c1", &span_refs, 10)
-            .await
-            .unwrap();
+        extract_and_persist_memories(
+            &conn,
+            &server.uri(),
+            "c1",
+            &span_refs,
+            10,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(
             contents_of(&conn, Some("w1")).await,
@@ -3032,7 +3046,15 @@ mod tests {
 
         let span = [history_message("text", 0, "some work")];
         let span_refs: Vec<&HistoryMessage> = span.iter().collect();
-        let r = extract_and_persist_memories(&conn, &server.uri(), "c1", &span_refs, 10).await;
+        let r = extract_and_persist_memories(
+            &conn,
+            &server.uri(),
+            "c1",
+            &span_refs,
+            10,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await;
 
         assert!(r.is_ok(), "a server error must never fail the turn");
         assert_eq!(
@@ -3051,9 +3073,16 @@ mod tests {
 
         let span = [history_message("text", 0, "some work")];
         let span_refs: Vec<&HistoryMessage> = span.iter().collect();
-        extract_and_persist_memories(&conn, &server.uri(), "c1", &span_refs, 10)
-            .await
-            .unwrap();
+        extract_and_persist_memories(
+            &conn,
+            &server.uri(),
+            "c1",
+            &span_refs,
+            10,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(
             contents_of(&conn, Some("w1")).await,
@@ -3088,7 +3117,15 @@ mod tests {
 
         let span = [history_message("text", 0, "some work")];
         let span_refs: Vec<&HistoryMessage> = span.iter().collect();
-        let r = extract_and_persist_memories(&conn, &server.uri(), "c1", &span_refs, 10).await;
+        let r = extract_and_persist_memories(
+            &conn,
+            &server.uri(),
+            "c1",
+            &span_refs,
+            10,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await;
 
         assert!(r.is_ok(), "a read failure must never fail the turn");
         assert_eq!(
@@ -3141,7 +3178,9 @@ mod tests {
         let extraction = tokio::spawn(async move {
             let span = [history_message("text", 0, "some work")];
             let span_refs: Vec<&HistoryMessage> = span.iter().collect();
-            extract_and_persist_memories(&extraction_conn, &uri, "c1", &span_refs, 20).await
+            let cancel = tokio_util::sync::CancellationToken::new();
+            extract_and_persist_memories(&extraction_conn, &uri, "c1", &span_refs, 20, &cancel)
+                .await
         });
 
         // The sibling compacts and commits while the extraction above is parked
@@ -3261,9 +3300,17 @@ mod tests {
              ENDS on an assistant message"
         );
 
-        summarize_and_persist(&conn, None, &server.uri(), "c1", &history, protected_recent)
-            .await
-            .unwrap();
+        summarize_and_persist(
+            &conn,
+            None,
+            &server.uri(),
+            "c1",
+            &history,
+            protected_recent,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .unwrap();
 
         // An ACCEPTED summary chains straight into the out-of-band memory
         // extraction (`summarize_and_persist`'s `Accept` arm awaits
@@ -3344,9 +3391,16 @@ mod tests {
              ENDS on an assistant message"
         );
 
-        extract_and_persist_memories(&conn, &server.uri(), "c1", &span_refs, 10)
-            .await
-            .unwrap();
+        extract_and_persist_memories(
+            &conn,
+            &server.uri(),
+            "c1",
+            &span_refs,
+            10,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .unwrap();
 
         let bodies = request_bodies(&server).await;
         assert_eq!(

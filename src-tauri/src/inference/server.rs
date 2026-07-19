@@ -10,12 +10,11 @@
 //! given a model path, produce a running, healthy server or a clear error.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 /// Filename of the crash-safety pidfile written under `app_data_dir` (Task
 /// 3.2). `panic = "abort"` is set for release builds (`Cargo.toml`), which
@@ -147,6 +146,17 @@ pub struct ServerHandle {
 /// check timed out — in which case the half-started child is killed here
 /// rather than left running as an immediate orphan).
 pub async fn spawn(app: &AppHandle, model_path: &Path) -> Result<ServerHandle, String> {
+    spawn_with_cancel(app, model_path, None).await
+}
+
+async fn spawn_with_cancel(
+    app: &AppHandle,
+    model_path: &Path,
+    cancel: Option<&tokio_util::sync::CancellationToken>,
+) -> Result<ServerHandle, String> {
+    if cancel.is_some_and(tokio_util::sync::CancellationToken::is_cancelled) {
+        return Err("llama-server startup was cancelled".to_string());
+    }
     let port = free_port();
     let base_url = format!("http://127.0.0.1:{port}");
 
@@ -221,7 +231,7 @@ pub async fn spawn(app: &AppHandle, model_path: &Path) -> Result<ServerHandle, S
     let health_url = format!("{base_url}/health");
     let deadline = tokio::time::Instant::now() + HEALTH_TIMEOUT;
     loop {
-        let healthy = http
+        let health_request = http
             .get(&health_url)
             // Per-request timeout: a hung TCP handshake or stalled response
             // must not itself eat the ~60s health deadline in one bad poll
@@ -229,9 +239,21 @@ pub async fn spawn(app: &AppHandle, model_path: &Path) -> Result<ServerHandle, S
             // and generous for a loopback request to a process on the same
             // machine.
             .timeout(Duration::from_secs(2))
-            .send()
-            .await
-            .is_ok_and(|resp| resp.status().is_success());
+            .send();
+        let health_result = if let Some(cancel) = cancel {
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    emit_status("error");
+                    let _ = child.kill();
+                    return Err("llama-server startup was cancelled".to_string());
+                }
+                result = health_request => result,
+            }
+        } else {
+            health_request.await
+        };
+        let healthy = health_result.is_ok_and(|resp| resp.status().is_success());
         if healthy {
             break;
         }
@@ -246,7 +268,19 @@ pub async fn spawn(app: &AppHandle, model_path: &Path) -> Result<ServerHandle, S
                 HEALTH_TIMEOUT
             ));
         }
-        tokio::time::sleep(HEALTH_POLL_INTERVAL).await;
+        if let Some(cancel) = cancel {
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    emit_status("error");
+                    let _ = child.kill();
+                    return Err("llama-server startup was cancelled".to_string());
+                }
+                _ = tokio::time::sleep(HEALTH_POLL_INTERVAL) => {}
+            }
+        } else {
+            tokio::time::sleep(HEALTH_POLL_INTERVAL).await;
+        }
     }
 
     emit_status("ready");
@@ -397,13 +431,31 @@ pub struct RunningServer {
 }
 
 /// App-managed (`tauri::manage`) holder for the at-most-one supervised
-/// `llama-server` (Task 3.3). This owns *only* the process lifecycle — one
-/// server runs whenever a model is active, restarts on a model switch, and is
-/// killed on graceful exit. The server is now the sole owner of generation;
-/// there is no in-process engine (token counting is a pure chars/4 estimate,
-/// `inference::token_estimate`).
-#[derive(Default)]
-pub struct ServerState(pub Arc<Mutex<Option<RunningServer>>>);
+/// `llama-server` (Task 3.3). The process mutex serializes spawn/restart/
+/// shutdown operations. The separate Tokio [`RwLock`] is the model-handoff
+/// gate: a generation holds a read lease for its entire operation, while a
+/// model switch holds a write lease while replacing the server. Tokio's
+/// write-preferring, fair queue prevents new generations from starving a
+/// queued switch.
+///
+/// Keep the lock order `handoff_gate -> server` everywhere. In particular,
+/// switch callers acquire [`ServerState::switch_lease`] before calling
+/// [`ServerState::restart_with_rollback`], and generation entry points acquire
+/// [`ServerState::generation_lease`] before calling `ensure_running` or
+/// `current_base_url`.
+pub struct ServerState {
+    server: Mutex<Option<RunningServer>>,
+    handoff_gate: RwLock<()>,
+}
+
+impl Default for ServerState {
+    fn default() -> Self {
+        Self {
+            server: Mutex::new(None),
+            handoff_gate: RwLock::new(()),
+        }
+    }
+}
 
 /// What [`ServerState::ensure_running`] should do given the model the
 /// supervised server (if any) is currently serving vs. the one just
@@ -419,6 +471,17 @@ pub enum ServerAction {
     /// A server is up but for a *different* model — tear it down and respawn
     /// on the requested GGUF.
     Restart,
+}
+
+/// A candidate failed its health-gated launch. `previous_restored` is true
+/// only when the prior model was subsequently spawned and passed the same
+/// health check; callers must not infer recovery from a path merely existing
+/// on disk.
+#[derive(Debug, thiserror::Error)]
+#[error("{candidate_error}")]
+pub struct ServerRestartError {
+    pub candidate_error: String,
+    pub previous_restored: bool,
 }
 
 /// Decide Reuse/Spawn/Restart from the currently-served model path (if any)
@@ -456,8 +519,9 @@ async fn spawn_and_store(
     guard: &mut Option<RunningServer>,
     app: &AppHandle,
     model_path: &Path,
+    cancel: Option<&tokio_util::sync::CancellationToken>,
 ) -> Result<String, String> {
-    let handle = spawn(app, model_path).await?;
+    let handle = spawn_with_cancel(app, model_path, cancel).await?;
     let base_url = handle.base_url.clone();
     *guard = Some(RunningServer {
         handle,
@@ -467,6 +531,21 @@ async fn spawn_and_store(
 }
 
 impl ServerState {
+    /// Acquires shared permission to run model-backed work. Hold the returned
+    /// guard for the complete operation, not only the individual HTTP call:
+    /// this keeps a switch from changing the model between persistence,
+    /// compaction, tool use, and the final response.
+    pub async fn generation_lease(&self) -> RwLockReadGuard<'_, ()> {
+        self.handoff_gate.read().await
+    }
+
+    /// Acquires exclusive permission to switch the active model. Tokio's
+    /// writer-preferring queue ensures that once this request is waiting, new
+    /// generation leases queue behind it while existing generations finish.
+    pub async fn switch_lease(&self) -> RwLockWriteGuard<'_, ()> {
+        self.handoff_gate.write().await
+    }
+
     /// Ensures a healthy `llama-server` is running for `model_path` and
     /// returns its base_url. Reuses an existing server already serving this
     /// model, spawns one if none is running, or restarts (kill + respawn) if
@@ -478,7 +557,29 @@ impl ServerState {
         app: &AppHandle,
         model_path: &Path,
     ) -> Result<String, String> {
-        let mut guard = self.0.lock().await;
+        self.ensure_running_inner(app, model_path, None).await
+    }
+
+    /// Cancellation-aware cold start for an agent turn. If Stop fires while
+    /// the sidecar is still loading its model, the half-started child is
+    /// killed and the generation lease can be released immediately.
+    pub async fn ensure_running_cancellable(
+        &self,
+        app: &AppHandle,
+        model_path: &Path,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<String, String> {
+        self.ensure_running_inner(app, model_path, Some(cancel))
+            .await
+    }
+
+    async fn ensure_running_inner(
+        &self,
+        app: &AppHandle,
+        model_path: &Path,
+        cancel: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<String, String> {
+        let mut guard = self.server.lock().await;
         match plan_action(guard.as_ref().map(|r| r.model_path.as_path()), model_path) {
             ServerAction::Reuse => Ok(guard
                 .as_ref()
@@ -490,25 +591,66 @@ impl ServerState {
                 if let Some(running) = guard.take() {
                     kill_and_cleanup(running, app);
                 }
-                spawn_and_store(&mut guard, app, model_path).await
+                spawn_and_store(&mut guard, app, model_path, cancel).await
             }
-            ServerAction::Spawn => spawn_and_store(&mut guard, app, model_path).await,
+            ServerAction::Spawn => spawn_and_store(&mut guard, app, model_path, cancel).await,
         }
     }
 
-    /// Unconditionally tears down the current server (if any) and spawns a
-    /// fresh one for `model_path`, returning its base_url. A model-switch
-    /// entry point: the caller already knows the active model changed, so
-    /// there's no Reuse case to consider here. Currently unreferenced —
-    /// Task 6.2 removed the Settings manual model-switch surface that used
-    /// to call this when the registry converged on a single model; kept as
-    /// the restart primitive for if manual switching returns.
+    /// Compatibility wrapper for callers that do not need rollback. It takes
+    /// the switch lease itself so legacy callers cannot overlap a generation.
+    /// New model-switch flows that already hold the lease should call
+    /// [`ServerState::restart_with_rollback`] directly instead.
     pub async fn restart(&self, app: &AppHandle, model_path: &Path) -> Result<String, String> {
-        let mut guard = self.0.lock().await;
+        let _switch_lease = self.switch_lease().await;
+        self.restart_with_rollback(app, model_path, None)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    /// Replaces the supervised server with `candidate_path`, restoring
+    /// `previous_path` if the candidate cannot spawn and pass its health
+    /// check. The candidate's original error is returned even when rollback
+    /// also fails; rollback failure is logged and leaves the process slot
+    /// empty so a later `ensure_running` can retry cleanly.
+    ///
+    /// The caller must already hold [`ServerState::switch_lease`]. This method
+    /// then takes the process mutex, preserving the global lock order
+    /// `handoff_gate -> server`.
+    pub async fn restart_with_rollback(
+        &self,
+        app: &AppHandle,
+        candidate_path: &Path,
+        previous_path: Option<&Path>,
+    ) -> Result<String, ServerRestartError> {
+        let mut guard = self.server.lock().await;
         if let Some(running) = guard.take() {
             kill_and_cleanup(running, app);
         }
-        spawn_and_store(&mut guard, app, model_path).await
+
+        let candidate_error = match spawn_and_store(&mut guard, app, candidate_path, None).await {
+            Ok(base_url) => return Ok(base_url),
+            Err(error) => error,
+        };
+
+        let previous_restored = if let Some(previous_path) = previous_path {
+            match spawn_and_store(&mut guard, app, previous_path, None).await {
+                Ok(_) => true,
+                Err(rollback_error) => {
+                    eprintln!(
+                        "[llama-server] failed to restore previous model after candidate error: {rollback_error}"
+                    );
+                    false
+                }
+            }
+        } else {
+            false
+        };
+
+        Err(ServerRestartError {
+            candidate_error,
+            previous_restored,
+        })
     }
 
     /// The base_url of the currently-supervised server, or `None` if none is
@@ -517,7 +659,7 @@ impl ServerState {
     /// command) that need a live server to generate against but have no model
     /// path in hand to launch one.
     pub async fn current_base_url(&self) -> Option<String> {
-        let guard = self.0.lock().await;
+        let guard = self.server.lock().await;
         guard
             .as_ref()
             .map(|running| running.handle.base_url.clone())
@@ -528,7 +670,7 @@ impl ServerState {
     /// shutdown doesn't leave an orphaned `llama-server` holding the model's
     /// GPU memory. Idempotent and best-effort.
     pub async fn shutdown(&self, app: &AppHandle) {
-        let mut guard = self.0.lock().await;
+        let mut guard = self.server.lock().await;
         if let Some(running) = guard.take() {
             kill_and_cleanup(running, app);
         }
@@ -538,6 +680,8 @@ impl ServerState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use tokio::sync::{mpsc, oneshot};
 
     #[test]
     fn builds_launch_args_with_loopback_and_explicit_ctx() {
@@ -651,5 +795,88 @@ mod tests {
             ),
             ServerAction::Restart
         );
+    }
+
+    #[tokio::test]
+    async fn switch_lease_waits_for_an_existing_generation() {
+        let state = Arc::new(ServerState::default());
+        let generation = state.generation_lease().await;
+        let (started_tx, started_rx) = oneshot::channel();
+
+        let switch_state = Arc::clone(&state);
+        let switch_task = tokio::spawn(async move {
+            started_tx.send(()).unwrap();
+            let _switch = switch_state.switch_lease().await;
+        });
+
+        started_rx.await.unwrap();
+        tokio::task::yield_now().await;
+        assert!(
+            !switch_task.is_finished(),
+            "a switch must not overlap an existing generation lease"
+        );
+
+        drop(generation);
+        tokio::time::timeout(std::time::Duration::from_secs(1), switch_task)
+            .await
+            .expect("switch should proceed when the generation finishes")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn queued_switch_precedes_a_later_generation() {
+        let state = Arc::new(ServerState::default());
+        let initial_generation = state.generation_lease().await;
+        let (order_tx, mut order_rx) = mpsc::unbounded_channel();
+        let (switch_started_tx, switch_started_rx) = oneshot::channel();
+        let (release_switch_tx, release_switch_rx) = oneshot::channel();
+
+        let switch_state = Arc::clone(&state);
+        let switch_order = order_tx.clone();
+        let switch_task = tokio::spawn(async move {
+            switch_started_tx.send(()).unwrap();
+            let _switch = switch_state.switch_lease().await;
+            switch_order.send("switch").unwrap();
+            let _ = release_switch_rx.await;
+        });
+
+        // The notification is sent immediately before awaiting the write
+        // lease. Yield once so the writer is definitely queued behind the
+        // initial reader before the later reader starts.
+        switch_started_rx.await.unwrap();
+        tokio::task::yield_now().await;
+
+        let (generation_started_tx, generation_started_rx) = oneshot::channel();
+        let generation_state = Arc::clone(&state);
+        let generation_order = order_tx.clone();
+        let generation_task = tokio::spawn(async move {
+            generation_started_tx.send(()).unwrap();
+            let _generation = generation_state.generation_lease().await;
+            generation_order.send("generation").unwrap();
+        });
+        generation_started_rx.await.unwrap();
+        tokio::task::yield_now().await;
+
+        drop(initial_generation);
+
+        let first = tokio::time::timeout(std::time::Duration::from_secs(1), order_rx.recv())
+            .await
+            .expect("one queued lease should acquire")
+            .expect("order channel should stay open");
+        assert_eq!(first, "switch");
+        assert!(
+            order_rx.try_recv().is_err(),
+            "the later generation must stay queued while the switch holds its lease"
+        );
+
+        release_switch_tx.send(()).unwrap();
+        let second = tokio::time::timeout(std::time::Duration::from_secs(1), order_rx.recv())
+            .await
+            .expect("later generation should proceed after the switch")
+            .expect("order channel should stay open");
+        assert_eq!(second, "generation");
+
+        switch_task.await.unwrap();
+        generation_task.await.unwrap();
     }
 }

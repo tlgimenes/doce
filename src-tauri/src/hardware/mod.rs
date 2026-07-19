@@ -80,18 +80,53 @@ pub fn detect() -> HardwareProfile {
     // TODO: real statvfs-based free-space calculation; stubbed for this pass.
     let disk_free_gb = 0u32;
 
-    let tier = match ram_gb {
-        0..=8 => "apple-silicon-8gb",
-        9..=16 => "apple-silicon-16gb",
-        17..=32 => "apple-silicon-32gb",
-        _ => "apple-silicon-64gb-plus",
-    }
-    .to_string();
+    let tier = tier_for_ram_gb(ram_gb).to_string();
 
     HardwareProfile {
         tier,
         ram_gb,
         chip,
         disk_free_gb,
+    }
+}
+
+/// Maps detected unified memory to the curated model tier.
+///
+/// `0` is reserved for detection failure rather than being treated as an
+/// 8 GB Mac. The 32 GB catalog intentionally remains valid through 63 GB so
+/// 36/48 GB configurations do not receive the 64 GB recommendation.
+pub fn tier_for_ram_gb(ram_gb: u32) -> &'static str {
+    match ram_gb {
+        0 => "unknown",
+        1..=8 => "apple-silicon-8gb",
+        9..=31 => "apple-silicon-16gb",
+        32..=63 => "apple-silicon-32-to-63gb",
+        _ => "apple-silicon-64gb-plus",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tier_for_ram_gb;
+
+    #[test]
+    fn memory_boundaries_map_to_explicit_curated_tiers() {
+        let cases = [
+            (0, "unknown"),
+            (1, "apple-silicon-8gb"),
+            (8, "apple-silicon-8gb"),
+            (9, "apple-silicon-16gb"),
+            (16, "apple-silicon-16gb"),
+            (31, "apple-silicon-16gb"),
+            (32, "apple-silicon-32-to-63gb"),
+            (33, "apple-silicon-32-to-63gb"),
+            (63, "apple-silicon-32-to-63gb"),
+            (64, "apple-silicon-64gb-plus"),
+            (128, "apple-silicon-64gb-plus"),
+        ];
+
+        for (ram_gb, expected) in cases {
+            assert_eq!(tier_for_ram_gb(ram_gb), expected, "{ram_gb} GB");
+        }
     }
 }

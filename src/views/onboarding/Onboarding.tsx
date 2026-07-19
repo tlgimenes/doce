@@ -6,7 +6,7 @@ interface OnboardingProps {
   onReady: () => void;
 }
 
-type Phase = "detecting" | "downloading" | "verifying" | "installed" | "error";
+type Phase = "detecting" | "downloading" | "verifying" | "preparing" | "active" | "error";
 
 /**
  * FR-001–FR-004: zero-config first run. No model picker, no API key, no
@@ -40,8 +40,12 @@ export default function Onboarding({ onReady }: OnboardingProps) {
           setBytesTotal(p.bytesTotal);
           if (p.state === "downloading") setPhase("downloading");
           if (p.state === "verifying") setPhase("verifying");
-          if (p.state === "installed") {
-            setPhase("installed");
+          if (p.state === "preparing" || p.state === "downloaded") setPhase("preparing");
+          // Downloaded bytes are not enough: enter the app only after the
+          // supervised server has loaded and health-checked the model and the
+          // global active pointer has committed.
+          if (p.state === "active") {
+            setPhase("active");
             onReady();
           }
           // Without this, a failed download/verification (checksum
@@ -78,7 +82,7 @@ export default function Onboarding({ onReady }: OnboardingProps) {
           {profile.chip} · {profile.ramGb}GB · tier {profile.tier}
         </p>
       )}
-      {(phase === "downloading" || phase === "verifying") && (
+      {(phase === "downloading" || phase === "verifying" || phase === "preparing") && (
         <div className="w-64">
           <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
             <div
@@ -87,7 +91,11 @@ export default function Onboarding({ onReady }: OnboardingProps) {
             />
           </div>
           <p className="mt-2 text-center text-xs tabular-nums text-muted-foreground">
-            {phase === "downloading" ? `Downloading model… ${pct}%` : `Verifying… ${pct}%`}
+            {phase === "downloading"
+              ? `Downloading model… ${pct}%`
+              : phase === "verifying"
+                ? `Verifying… ${pct}%`
+                : "Getting the model ready…"}
           </p>
         </div>
       )}
