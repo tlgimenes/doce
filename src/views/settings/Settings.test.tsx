@@ -82,6 +82,15 @@ describe("Settings", () => {
     expect(screen.getByTestId("settings-view")).not.toHaveClass("h-dvh");
   });
 
+  it("shows the running build's version at the bottom", () => {
+    render(<Settings onClose={vi.fn()} />);
+
+    // Version + build commit are injected at build time (vite.config.ts's
+    // `define`); assert the shape rather than a pinned commit.
+    const version = screen.getByTestId("settings-version");
+    expect(version).toHaveTextContent(/^doce v\d+\.\d+\.\d+/);
+  });
+
   it("renders one consolidated, ordered screen without tabs, search, or help", async () => {
     render(<Settings onClose={vi.fn()} />);
 
