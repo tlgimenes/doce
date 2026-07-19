@@ -328,6 +328,21 @@ export default function Settings({ onClose }: SettingsProps) {
             </section>
           </div>
         </section>
+
+        {/* Which build is running — the package version plus the exact build
+            commit (dev or a released .dmg), injected at build time. */}
+        <p
+          className="mt-8 text-center text-xs text-muted-foreground"
+          data-testid="settings-version"
+        >
+          doce v{__APP_VERSION__}
+          {__GIT_COMMIT__ !== "unknown" && (
+            <>
+              {" · "}
+              <span className="font-mono">{__GIT_COMMIT__}</span>
+            </>
+          )}
+        </p>
       </div>
     </div>
   );
