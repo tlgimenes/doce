@@ -109,6 +109,12 @@ a {
   transform: translateY(-1px);
 }
 
+.button:focus-visible,
+.star-badge:focus-visible {
+  outline: 3px solid var(--color-text);
+  outline-offset: 3px;
+}
+
 .button-primary {
   background: var(--color-1);
   color: var(--color-text);
@@ -121,6 +127,19 @@ a {
 .platform-note {
   margin: 0;
   font-size: 0.9rem;
+  color: var(--color-text-muted);
+}
+
+.download-meta {
+  display: grid;
+  gap: 0.45rem;
+  max-width: 34rem;
+}
+
+.first-launch-note {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.45;
   color: var(--color-text-muted);
 }
 

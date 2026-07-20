@@ -1,11 +1,12 @@
 name: Deploy landing page
 
 on:
-  push:
+  # CI publishes the stable DMG before this workflow deploys a page that links
+  # to it. The branch filter excludes pull-request CI runs.
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
-    paths:
-      - "site/**"
-      - ".github/workflows/pages.yml"
   workflow_dispatch:
 
 concurrency:
@@ -19,12 +20,28 @@ permissions:
 
 jobs:
   deploy:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Verify the direct download is available
+        env:
+          DOWNLOAD_URL: https://github.com/tlgimenes/doce/releases/latest/download/doce-aarch64.dmg
+        run: |
+          for attempt in {1..30}; do
+            if curl --fail --silent --location --head "$DOWNLOAD_URL" >/dev/null; then
+              echo "Direct download is available."
+              exit 0
+            fi
+            echo "Waiting for the release asset to propagate ($attempt/30)..."
+            sleep 10
+          done
+          echo "The direct download did not become available; keeping the existing site live." >&2
+          exit 1
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
