@@ -10,7 +10,9 @@ use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
+use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 
 const SELECTED_MODEL_SETTING: &str = "model.selectedId";
 const FALLBACK_NOTICE_SETTING: &str = "model.fallbackNotice";
@@ -38,39 +40,103 @@ pub struct ModelInstallStatus {
     pub bytes_total: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelDownload {
+    pub model_id: String,
+    pub display_name: String,
+    pub state: String,
+    pub bytes_downloaded: u64,
+    pub bytes_total: u64,
+    pub revision: u32,
+    pub error: Option<String>,
+}
+
+#[derive(Clone)]
+struct ActiveDownload {
+    revision: u32,
+    cancel: CancellationToken,
+    done: watch::Receiver<bool>,
+}
+
 /// Process-local download snapshots plus the in-flight set used to dedupe
 /// StrictMode, Settings remounts, retries, and fallback recovery. The durable
 /// selected model still lives in SQLite; this state only describes work that
 /// is currently running (or its most recent terminal result).
 #[derive(Default, Clone)]
 pub struct ModelSelectionState {
-    in_flight: Arc<Mutex<HashSet<String>>>,
+    active_downloads: Arc<Mutex<HashMap<String, ActiveDownload>>>,
     progress: Arc<Mutex<HashMap<String, ModelInstallProgress>>>,
     intent_gate: Arc<tokio::sync::Mutex<()>>,
+    download_gate: Arc<tokio::sync::Mutex<()>>,
+    restored_downloads: Arc<tokio::sync::Mutex<bool>>,
+    activation_failures: Arc<Mutex<HashSet<String>>>,
 }
 
 impl ModelSelectionState {
-    pub(crate) fn record_progress(&self, progress: ModelInstallProgress) {
-        self.progress
-            .lock()
-            .unwrap()
-            .insert(progress.model_id.clone(), progress);
+    /// Returns false for an event from an older attempt. Callers must not emit
+    /// those events either: a late cancelled worker can otherwise regress a
+    /// newly-resumed download in the UI.
+    pub(crate) fn record_progress(&self, progress: ModelInstallProgress) -> bool {
+        let mut snapshots = self.progress.lock().unwrap();
+        if snapshots
+            .get(&progress.model_id)
+            .is_some_and(|current| current.revision > progress.revision)
+        {
+            return false;
+        }
+        snapshots.insert(progress.model_id.clone(), progress);
+        true
     }
 
     fn progress_for(&self, model_id: &str) -> Option<ModelInstallProgress> {
         self.progress.lock().unwrap().get(model_id).cloned()
     }
 
-    fn begin(&self, model_id: &str) -> bool {
-        self.in_flight.lock().unwrap().insert(model_id.to_string())
+    fn active_download(&self, model_id: &str) -> Option<ActiveDownload> {
+        self.active_downloads.lock().unwrap().get(model_id).cloned()
     }
 
-    fn finish(&self, model_id: &str) {
-        self.in_flight.lock().unwrap().remove(model_id);
+    fn begin(&self, model_id: &str, download: ActiveDownload) -> bool {
+        let mut active = self.active_downloads.lock().unwrap();
+        if active.contains_key(model_id) {
+            return false;
+        }
+        active.insert(model_id.to_string(), download);
+        true
+    }
+
+    fn finish(&self, model_id: &str, revision: u32) {
+        let mut active = self.active_downloads.lock().unwrap();
+        if active
+            .get(model_id)
+            .is_some_and(|download| download.revision == revision)
+        {
+            active.remove(model_id);
+        }
     }
 
     async fn intent_lease(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.intent_gate.lock().await
+    }
+
+    async fn download_lease(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.download_gate.lock().await
+    }
+
+    fn mark_activation_failed(&self, model_id: &str) {
+        self.activation_failures
+            .lock()
+            .unwrap()
+            .insert(model_id.to_string());
+    }
+
+    fn clear_activation_failure(&self, model_id: &str) {
+        self.activation_failures.lock().unwrap().remove(model_id);
+    }
+
+    fn activation_failed(&self, model_id: &str) -> bool {
+        self.activation_failures.lock().unwrap().contains(model_id)
     }
 }
 
@@ -123,6 +189,7 @@ pub struct ModelState {
     pub active_id: Option<String>,
     pub selected_id: Option<String>,
     pub fallback_notice: Option<String>,
+    pub downloads: Vec<ModelDownload>,
 }
 
 fn candidates_for_tier<'a>(registry: &'a Registry, tier: &str) -> Vec<&'a ModelCandidate> {
@@ -165,6 +232,184 @@ async fn stored_models(conn: &tokio_rusqlite::Connection) -> Result<Vec<StoredMo
             rows.collect::<Result<Vec<_>, _>>()
         },
     )
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[derive(Debug, Clone)]
+struct StoredDownload {
+    model_id: String,
+    display_name: Option<String>,
+    state: String,
+    bytes_downloaded: u64,
+    bytes_total: u64,
+    revision: u32,
+    error: Option<String>,
+}
+
+async fn stored_downloads(
+    conn: &tokio_rusqlite::Connection,
+) -> Result<Vec<StoredDownload>, String> {
+    conn.call(
+        |conn: &mut Connection| -> rusqlite::Result<Vec<StoredDownload>> {
+            let mut stmt = conn.prepare(
+                "SELECT d.model_id, m.display_name, d.state, d.bytes_downloaded, d.bytes_total, d.revision, d.error \
+                 FROM model_downloads d JOIN models m ON m.id = d.model_id \
+                 ORDER BY d.updated_at, d.model_id",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok(StoredDownload {
+                    model_id: row.get(0)?,
+                    display_name: row.get(1)?,
+                    state: row.get(2)?,
+                    bytes_downloaded: row.get::<_, i64>(3)?.max(0) as u64,
+                    bytes_total: row.get::<_, i64>(4)?.max(0) as u64,
+                    revision: row.get::<_, i64>(5)?.max(0) as u32,
+                    error: row.get(6)?,
+                })
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()
+        },
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
+
+async fn stored_download(
+    conn: &tokio_rusqlite::Connection,
+    model_id: &str,
+) -> Result<Option<StoredDownload>, String> {
+    let model_id = model_id.to_string();
+    Ok(stored_downloads(conn)
+        .await?
+        .into_iter()
+        .find(|download| download.model_id == model_id))
+}
+
+fn download_display_name(download: &StoredDownload) -> String {
+    download.display_name.clone().unwrap_or_else(|| {
+        model_registry::find_candidate(&model_registry::bundled(), &download.model_id)
+            .map(|candidate| candidate.display_name.clone())
+            .unwrap_or_else(|| download.model_id.clone())
+    })
+}
+
+fn merge_download_snapshot(
+    stored: &StoredDownload,
+    live: Option<ModelInstallProgress>,
+) -> ModelDownload {
+    let use_live = live
+        .as_ref()
+        .is_some_and(|progress| progress.revision >= stored.revision);
+    ModelDownload {
+        model_id: stored.model_id.clone(),
+        display_name: download_display_name(stored),
+        state: if use_live {
+            live.as_ref().unwrap().state.clone()
+        } else {
+            stored.state.clone()
+        },
+        bytes_downloaded: if use_live {
+            live.as_ref().unwrap().bytes_downloaded
+        } else {
+            stored.bytes_downloaded
+        },
+        bytes_total: if use_live {
+            live.as_ref().unwrap().bytes_total
+        } else {
+            stored.bytes_total
+        },
+        revision: if use_live {
+            live.as_ref().unwrap().revision
+        } else {
+            stored.revision
+        },
+        error: if use_live {
+            live.as_ref().unwrap().error.clone()
+        } else {
+            stored.error.clone()
+        },
+    }
+}
+
+async fn model_downloads(
+    conn: &tokio_rusqlite::Connection,
+    selection_state: &ModelSelectionState,
+) -> Result<Vec<ModelDownload>, String> {
+    Ok(stored_downloads(conn)
+        .await?
+        .into_iter()
+        .map(|stored| {
+            let live = selection_state.progress_for(&stored.model_id);
+            merge_download_snapshot(&stored, live)
+        })
+        .collect())
+}
+
+async fn persist_download_state(
+    conn: &tokio_rusqlite::Connection,
+    model_id: &str,
+    state: &str,
+    bytes_downloaded: u64,
+    bytes_total: u64,
+    revision: u32,
+    error: Option<String>,
+) -> Result<(), String> {
+    let model_id = model_id.to_string();
+    let state = state.to_string();
+    let now = now_ms();
+    conn.call(move |conn: &mut Connection| -> rusqlite::Result<()> {
+        conn.execute(
+            "INSERT INTO model_downloads (model_id, state, bytes_downloaded, bytes_total, revision, error, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+             ON CONFLICT(model_id) DO UPDATE SET state = excluded.state, bytes_downloaded = excluded.bytes_downloaded, \
+             bytes_total = excluded.bytes_total, revision = excluded.revision, error = excluded.error, updated_at = excluded.updated_at \
+             WHERE excluded.revision >= model_downloads.revision",
+            rusqlite::params![
+                model_id,
+                state,
+                bytes_downloaded as i64,
+                bytes_total as i64,
+                revision as i64,
+                error,
+                now
+            ],
+        )?;
+        Ok(())
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
+async fn begin_download_revision(
+    conn: &tokio_rusqlite::Connection,
+    model_id: &str,
+    bytes_downloaded: u64,
+    bytes_total: u64,
+) -> Result<u32, String> {
+    let model_id = model_id.to_string();
+    let now = now_ms();
+    conn.call(move |conn: &mut Connection| -> rusqlite::Result<u32> {
+        let tx = conn.transaction()?;
+        let previous = tx
+            .query_row(
+                "SELECT revision FROM model_downloads WHERE model_id = ?1",
+                [&model_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        let revision = previous.saturating_add(1).min(u32::MAX as i64);
+        tx.execute(
+            "INSERT INTO model_downloads (model_id, state, bytes_downloaded, bytes_total, revision, error, updated_at) \
+             VALUES (?1, 'queued', ?2, ?3, ?4, NULL, ?5) \
+             ON CONFLICT(model_id) DO UPDATE SET state = 'queued', bytes_downloaded = excluded.bytes_downloaded, \
+             bytes_total = excluded.bytes_total, revision = excluded.revision, error = NULL, updated_at = excluded.updated_at",
+            rusqlite::params![model_id, bytes_downloaded as i64, bytes_total as i64, revision, now],
+        )?;
+        tx.commit()?;
+        Ok(revision as u32)
+    })
     .await
     .map_err(|error| error.to_string())
 }
@@ -350,12 +595,14 @@ async fn restore_healthy_active_selection_if_current(
     Ok(())
 }
 
-fn publish_state(
+fn publish_download_state(
     app: &AppHandle,
     model_id: &str,
+    revision: u32,
     state: impl Into<String>,
     bytes_downloaded: u64,
     bytes_total: u64,
+    error: Option<String>,
 ) {
     downloader::publish_model_progress(
         app,
@@ -364,8 +611,59 @@ fn publish_state(
             bytes_downloaded,
             bytes_total,
             state: state.into(),
+            revision,
+            error,
         },
     );
+}
+
+/// Activation still uses the historical install event so existing onboarding
+/// can observe `preparing`/`active`, but these phases are deliberately not
+/// recorded as download state. The durable transfer remains `completed` even
+/// if loading the model into llama-server later fails.
+fn emit_activation_state(
+    app: &AppHandle,
+    model_id: &str,
+    state: impl Into<String>,
+    error: Option<String>,
+) {
+    if error.is_some() {
+        if let Some(selection) = app.try_state::<ModelSelectionState>() {
+            selection.mark_activation_failed(model_id);
+        }
+    }
+    let revision = app
+        .try_state::<ModelSelectionState>()
+        .and_then(|selection| selection.progress_for(model_id))
+        .map(|progress| progress.revision)
+        .unwrap_or(0);
+    let _ = app.emit(
+        "model-install-progress",
+        ModelInstallProgress {
+            model_id: model_id.to_string(),
+            bytes_downloaded: 0,
+            bytes_total: 0,
+            state: state.into(),
+            revision,
+            error,
+        },
+    );
+}
+
+fn model_destination(app: &AppHandle, model_id: &str) -> Result<PathBuf, String> {
+    Ok(app
+        .path()
+        .app_local_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("models")
+        .join(format!("{model_id}.gguf")))
+}
+
+fn partial_bytes(dest: &Path) -> u64 {
+    let (part_path, _) = downloader::partial_paths(dest);
+    std::fs::metadata(part_path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0)
 }
 
 /// Restore the last active server after a candidate had already loaded. The
@@ -439,17 +737,16 @@ async fn activate_model(
             .as_deref()
             != Some(model_id)
     {
-        publish_state(
+        emit_activation_state(
             app,
             model_id,
             if was_active { "active" } else { "installed" },
-            0,
-            0,
+            None,
         );
         return Ok(false);
     }
 
-    publish_state(app, model_id, "preparing", 0, 0);
+    emit_activation_state(app, model_id, "preparing", None);
     if was_active {
         if let Err(error) = server_state.ensure_running(app, &candidate_path).await {
             let _ = clear_active_model_row(conn).await;
@@ -489,10 +786,10 @@ async fn activate_model(
     };
     if require_selected && selected_after_load.as_deref() != Some(model_id) {
         if was_active {
-            publish_state(app, model_id, "active", 0, 0);
+            emit_activation_state(app, model_id, "active", None);
         } else {
             restore_previous_server(app, conn, server_state, previous_path.as_deref(), false).await;
-            publish_state(app, model_id, "installed", 0, 0);
+            emit_activation_state(app, model_id, "installed", None);
         }
         return Ok(false);
     }
@@ -509,8 +806,42 @@ async fn activate_model(
         return Err(ActivationError::new(error, previous_healthy));
     }
 
-    publish_state(app, model_id, "active", 0, 0);
+    if let Some(selection) = app.try_state::<ModelSelectionState>() {
+        selection.clear_activation_failure(model_id);
+    }
+    emit_activation_state(app, model_id, "active", None);
     Ok(true)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum DownloadStartPolicy {
+    /// A direct user intent (Select/Resume) or required missing-model
+    /// fallback may start from any prior state.
+    Explicit,
+    /// Normal reconciliation may create a missing job or continue a running
+    /// one, but must preserve durable Pause/Stop/Failure intent.
+    Recoverable,
+    /// Relaunch restoration is valid only for the exact running row observed
+    /// by the restore scan. Any intervening control makes the snapshot stale.
+    RestoreRunning { revision: u32 },
+}
+
+impl DownloadStartPolicy {
+    fn allows(self, download: Option<&StoredDownload>) -> bool {
+        match self {
+            Self::Explicit => true,
+            Self::Recoverable => !download.is_some_and(|download| {
+                matches!(download.state.as_str(), "paused" | "stopped" | "failed")
+            }),
+            Self::RestoreRunning { revision } => download.is_some_and(|download| {
+                download.revision == revision
+                    && matches!(
+                        download.state.as_str(),
+                        "queued" | "downloading" | "verifying"
+                    )
+            }),
+        }
+    }
 }
 
 async fn begin_install(
@@ -519,34 +850,74 @@ async fn begin_install(
     selection_state: &ModelSelectionState,
     profile: &HardwareProfile,
     candidate: &ModelCandidate,
+    start_policy: DownloadStartPolicy,
 ) -> Result<bool, String> {
     upsert_curated_model(conn, &profile.tier, candidate).await?;
-    let dir = app
-        .path()
-        .app_local_data_dir()
-        .map_err(|error| error.to_string())?
-        .join("models");
-    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
-    let dest = dir.join(format!("{}.gguf", candidate.model_id));
-    let resumed = dest.with_extension("part").exists();
+    let dest = model_destination(app, &candidate.model_id)?;
+    let dir = dest
+        .parent()
+        .ok_or_else(|| "model destination has no parent".to_string())?;
+    std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
 
-    // The intent check, in-flight reservation, and task spawn are one atomic
-    // step relative to later clicks. A reconciliation action computed for A
-    // therefore cannot begin a multi-GB download after the user has selected
-    // B, while a download that was legitimately started remains reusable.
-    let _intent_lease = selection_state.intent_lease().await;
-    if setting_string(conn, SELECTED_MODEL_SETTING)
-        .await?
-        .as_deref()
-        != Some(candidate.model_id.as_str())
+    // One command gate makes the active-map check, durable revision bump,
+    // reservation, and spawn atomic. Different model ids may still transfer
+    // concurrently after this short critical section is released.
+    let _download_lease = selection_state.download_lease().await;
+    if selection_state
+        .active_download(&candidate.model_id)
+        .is_some()
     {
-        return Ok(false);
-    }
-    if !selection_state.begin(&candidate.model_id) {
         return Ok(true);
     }
 
-    publish_state(app, &candidate.model_id, "queued", 0, candidate.size_bytes);
+    // Automatic recovery makes its decision from a snapshot taken before it
+    // reaches this gate. Pause/Stop may have committed while it waited, so
+    // re-read the durable row here, at the same linearization point as the
+    // revision bump and writer reservation. Explicit Select/Resume is the
+    // only policy allowed to revive a terminal job.
+    let durable_download = stored_download(conn, &candidate.model_id).await?;
+    if !start_policy.allows(durable_download.as_ref()) {
+        return Ok(false);
+    }
+
+    if stored_models(conn)
+        .await?
+        .into_iter()
+        .find(|model| model.id == candidate.model_id)
+        .is_some_and(|model| model.is_usable())
+    {
+        return Ok(false);
+    }
+
+    let bytes_downloaded = partial_bytes(&dest);
+    let resumed = bytes_downloaded > 0;
+    let revision = begin_download_revision(
+        conn,
+        &candidate.model_id,
+        bytes_downloaded,
+        candidate.size_bytes,
+    )
+    .await?;
+    let cancel = CancellationToken::new();
+    let (done_tx, done_rx) = watch::channel(false);
+    let active = ActiveDownload {
+        revision,
+        cancel: cancel.clone(),
+        done: done_rx,
+    };
+    if !selection_state.begin(&candidate.model_id, active) {
+        return Ok(true);
+    }
+
+    publish_download_state(
+        app,
+        &candidate.model_id,
+        revision,
+        "queued",
+        bytes_downloaded,
+        candidate.size_bytes,
+        None,
+    );
 
     let app = app.clone();
     let conn = conn.clone();
@@ -555,14 +926,19 @@ async fn begin_install(
     tauri::async_runtime::spawn(async move {
         let result = downloader::download_resumable(
             &app,
-            &candidate.model_id,
-            &candidate.source_url,
-            &dest,
-            &candidate.sha256,
-            candidate.size_bytes,
+            downloader::DownloadRequest {
+                model_id: &candidate.model_id,
+                url: &candidate.source_url,
+                dest: &dest,
+                expected_sha256: &candidate.sha256,
+                expected_size: candidate.size_bytes,
+                revision,
+            },
+            &cancel,
         )
         .await;
 
+        let mut should_activate = false;
         match result {
             Ok(path) => {
                 let model_id = candidate.model_id.clone();
@@ -579,50 +955,118 @@ async fn begin_install(
                     .await;
 
                 if let Err(error) = write_result {
-                    publish_state(&app, &candidate.model_id, format!("error: {error}"), 0, 0);
-                } else if setting_string(&conn, SELECTED_MODEL_SETTING)
-                    .await
-                    .ok()
-                    .flatten()
-                    .as_deref()
-                    == Some(candidate.model_id.as_str())
-                {
-                    if let Some(server_state) =
-                        app.try_state::<crate::inference::server::ServerState>()
-                    {
-                        match activate_model(&app, &conn, &server_state, &candidate.model_id, true)
-                            .await
-                        {
-                            Ok(_) => {}
-                            Err(error) => {
-                                if error.previous_healthy {
-                                    let _ = restore_healthy_active_selection_if_current(
-                                        &conn,
-                                        &selection_state,
-                                        &candidate.model_id,
-                                    )
-                                    .await;
-                                }
-                                publish_state(
-                                    &app,
-                                    &candidate.model_id,
-                                    format!("error: {error}"),
-                                    0,
-                                    0,
-                                );
-                            }
-                        }
-                    } else {
-                        publish_state(&app, &candidate.model_id, "installed", 0, 0);
-                    }
+                    let message = error.to_string();
+                    let bytes = partial_bytes(&dest);
+                    let _ = persist_download_state(
+                        &conn,
+                        &candidate.model_id,
+                        "failed",
+                        bytes,
+                        candidate.size_bytes,
+                        revision,
+                        Some(message.clone()),
+                    )
+                    .await;
+                    publish_download_state(
+                        &app,
+                        &candidate.model_id,
+                        revision,
+                        "failed",
+                        bytes,
+                        candidate.size_bytes,
+                        Some(message),
+                    );
                 } else {
-                    publish_state(&app, &candidate.model_id, "installed", 0, 0);
+                    let completed_bytes = std::fs::metadata(&path)
+                        .map(|metadata| metadata.len())
+                        .unwrap_or(candidate.size_bytes);
+                    let _ = persist_download_state(
+                        &conn,
+                        &candidate.model_id,
+                        "completed",
+                        completed_bytes,
+                        completed_bytes,
+                        revision,
+                        None,
+                    )
+                    .await;
+                    publish_download_state(
+                        &app,
+                        &candidate.model_id,
+                        revision,
+                        "completed",
+                        completed_bytes,
+                        completed_bytes,
+                        None,
+                    );
+                    should_activate = true;
                 }
             }
-            Err(error) => publish_state(&app, &candidate.model_id, format!("error: {error}"), 0, 0),
+            Err(downloader::DownloadError::Cancelled) => {}
+            Err(error) => {
+                let message = error.to_string();
+                let bytes = partial_bytes(&dest);
+                let _ = persist_download_state(
+                    &conn,
+                    &candidate.model_id,
+                    "failed",
+                    bytes,
+                    candidate.size_bytes,
+                    revision,
+                    Some(message.clone()),
+                )
+                .await;
+                publish_download_state(
+                    &app,
+                    &candidate.model_id,
+                    revision,
+                    "failed",
+                    bytes,
+                    candidate.size_bytes,
+                    Some(message),
+                );
+            }
         }
 
-        selection_state.finish(&candidate.model_id);
+        // Controls wait on this exact signal before touching `.part`, so a
+        // resumed worker can never overlap the cancelled writer.
+        selection_state.finish(&candidate.model_id, revision);
+        let _ = done_tx.send(true);
+
+        if should_activate
+            && setting_string(&conn, SELECTED_MODEL_SETTING)
+                .await
+                .ok()
+                .flatten()
+                .as_deref()
+                == Some(candidate.model_id.as_str())
+        {
+            if let Some(server_state) = app.try_state::<crate::inference::server::ServerState>() {
+                if let Err(error) =
+                    activate_model(&app, &conn, &server_state, &candidate.model_id, true).await
+                {
+                    if error.previous_healthy {
+                        let _ = restore_healthy_active_selection_if_current(
+                            &conn,
+                            &selection_state,
+                            &candidate.model_id,
+                        )
+                        .await;
+                    }
+                    let message = error.to_string();
+                    emit_activation_state(
+                        &app,
+                        &candidate.model_id,
+                        format!("error: {message}"),
+                        Some(message),
+                    );
+                }
+            } else {
+                emit_activation_state(&app, &candidate.model_id, "installed", None);
+            }
+        } else if should_activate {
+            emit_activation_state(&app, &candidate.model_id, "installed", None);
+        }
     });
 
     Ok(resumed)
@@ -675,12 +1119,26 @@ pub async fn start_model_install(
                 )
                 .await?;
             }
-            publish_state(&app, &candidate.model_id, format!("error: {error}"), 0, 0);
+            let message = error.to_string();
+            emit_activation_state(
+                &app,
+                &candidate.model_id,
+                format!("error: {message}"),
+                Some(message),
+            );
             return Err(error.to_string());
         }
         false
     } else {
-        begin_install(&app, &conn, &selection_state, &profile, &candidate).await?
+        begin_install(
+            &app,
+            &conn,
+            &selection_state,
+            &profile,
+            &candidate,
+            DownloadStartPolicy::Explicit,
+        )
+        .await?
     };
 
     Ok(StartModelInstallResult {
@@ -697,28 +1155,203 @@ pub async fn get_model_install_status(
     selection_state: State<'_, ModelSelectionState>,
     model_id: String,
 ) -> Result<ModelInstallStatus, String> {
-    if let Some(progress) = selection_state.progress_for(&model_id) {
-        return Ok(ModelInstallStatus {
-            state: progress.state,
-            bytes_downloaded: progress.bytes_downloaded,
-            bytes_total: progress.bytes_total,
-        });
-    }
-
     let conn = db_cell.get(&app).await?;
     let model = stored_models(conn)
         .await?
         .into_iter()
         .find(|model| model.id == model_id);
+    if let Some(model) = model.as_ref() {
+        if model.is_active && model.is_usable() {
+            return Ok(ModelInstallStatus {
+                state: "active".to_string(),
+                bytes_downloaded: 0,
+                bytes_total: 0,
+            });
+        }
+        if model.is_usable() {
+            return Ok(ModelInstallStatus {
+                state: "installed".to_string(),
+                bytes_downloaded: 0,
+                bytes_total: 0,
+            });
+        }
+    }
+    if let Some(stored) = stored_download(conn, &model_id).await? {
+        let download = merge_download_snapshot(&stored, selection_state.progress_for(&model_id));
+        return Ok(ModelInstallStatus {
+            state: download.state,
+            bytes_downloaded: download.bytes_downloaded,
+            bytes_total: download.bytes_total,
+        });
+    }
     Ok(ModelInstallStatus {
-        state: match model {
-            Some(model) if model.is_active && model.is_usable() => "active".to_string(),
-            Some(model) if model.is_usable() => "installed".to_string(),
-            _ => "idle".to_string(),
-        },
+        state: "idle".to_string(),
         bytes_downloaded: 0,
         bytes_total: 0,
     })
+}
+
+async fn authoritative_download(
+    conn: &tokio_rusqlite::Connection,
+    selection_state: &ModelSelectionState,
+    model_id: &str,
+) -> Result<ModelDownload, String> {
+    let stored = stored_download(conn, model_id)
+        .await?
+        .ok_or_else(|| "that model has no download to control".to_string())?;
+    Ok(merge_download_snapshot(
+        &stored,
+        selection_state.progress_for(model_id),
+    ))
+}
+
+async fn cancel_and_wait(active: ActiveDownload) -> u32 {
+    let revision = active.revision;
+    active.cancel.cancel();
+    let mut done = active.done;
+    while !*done.borrow() {
+        if done.changed().await.is_err() {
+            break;
+        }
+    }
+    revision
+}
+
+async fn installed_model_is_usable(
+    conn: &tokio_rusqlite::Connection,
+    model_id: &str,
+) -> Result<bool, String> {
+    Ok(stored_models(conn)
+        .await?
+        .into_iter()
+        .find(|model| model.id == model_id)
+        .is_some_and(|model| model.is_usable()))
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn pause_model_download(
+    app: AppHandle,
+    db_cell: State<'_, DbCell>,
+    selection_state: State<'_, ModelSelectionState>,
+    model_id: String,
+) -> Result<ModelDownload, String> {
+    let conn = db_cell.get(&app).await?.clone();
+    let _download_lease = selection_state.download_lease().await;
+    if let Some(active) = selection_state.active_download(&model_id) {
+        let revision = cancel_and_wait(active).await;
+        selection_state.finish(&model_id, revision);
+    }
+
+    let current = authoritative_download(&conn, &selection_state, &model_id).await?;
+    if installed_model_is_usable(&conn, &model_id).await? {
+        return Ok(current);
+    }
+    if !matches!(
+        current.state.as_str(),
+        "queued" | "downloading" | "verifying"
+    ) {
+        return Ok(current);
+    }
+    let dest = model_destination(&app, &model_id)?;
+    let bytes = partial_bytes(&dest);
+    let revision = current.revision.saturating_add(1);
+    persist_download_state(
+        &conn,
+        &model_id,
+        "paused",
+        bytes,
+        current.bytes_total,
+        revision,
+        None,
+    )
+    .await?;
+    publish_download_state(
+        &app,
+        &model_id,
+        revision,
+        "paused",
+        bytes,
+        current.bytes_total,
+        None,
+    );
+    authoritative_download(&conn, &selection_state, &model_id).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn resume_model_download(
+    app: AppHandle,
+    db_cell: State<'_, DbCell>,
+    selection_state: State<'_, ModelSelectionState>,
+    model_id: String,
+) -> Result<ModelDownload, String> {
+    let conn = db_cell.get(&app).await?.clone();
+    let registry = model_registry::bundled();
+    let candidate = model_registry::find_candidate(&registry, &model_id)
+        .cloned()
+        .ok_or_else(|| "that curated model is no longer available".to_string())?;
+    let profile = hardware::detect();
+    begin_install(
+        &app,
+        &conn,
+        &selection_state,
+        &profile,
+        &candidate,
+        DownloadStartPolicy::Explicit,
+    )
+    .await?;
+    authoritative_download(&conn, &selection_state, &model_id).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn stop_model_download(
+    app: AppHandle,
+    db_cell: State<'_, DbCell>,
+    selection_state: State<'_, ModelSelectionState>,
+    model_id: String,
+) -> Result<ModelDownload, String> {
+    let conn = db_cell.get(&app).await?.clone();
+    let _download_lease = selection_state.download_lease().await;
+    if let Some(active) = selection_state.active_download(&model_id) {
+        let revision = cancel_and_wait(active).await;
+        selection_state.finish(&model_id, revision);
+    }
+
+    let current = authoritative_download(&conn, &selection_state, &model_id).await?;
+    // The verified final rename is the commit point. If completion won the
+    // race, Stop is an idempotent no-op and never removes the final GGUF.
+    if current.state == "completed" || installed_model_is_usable(&conn, &model_id).await? {
+        return Ok(current);
+    }
+    if current.state == "stopped" {
+        return Ok(current);
+    }
+
+    let dest = model_destination(&app, &model_id)?;
+    downloader::remove_partial_files(&dest).map_err(|error| error.to_string())?;
+    let revision = current.revision.saturating_add(1);
+    persist_download_state(
+        &conn,
+        &model_id,
+        "stopped",
+        0,
+        current.bytes_total,
+        revision,
+        None,
+    )
+    .await?;
+    publish_download_state(
+        &app,
+        &model_id,
+        revision,
+        "stopped",
+        0,
+        current.bytes_total,
+        None,
+    );
+    authoritative_download(&conn, &selection_state, &model_id).await
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
@@ -761,7 +1394,7 @@ pub async fn list_models(
 }
 
 fn progress_state(
-    selection_state: &ModelSelectionState,
+    downloads: &[ModelDownload],
     model_id: &str,
     installed: bool,
     active: bool,
@@ -769,11 +1402,13 @@ fn progress_state(
     if active {
         return ("active".to_string(), 0, 0);
     }
-    if let Some(progress) = selection_state.progress_for(model_id) {
-        let terminal_ready = matches!(progress.state.as_str(), "active" | "installed");
-        if !(terminal_ready && installed) {
+    if let Some(progress) = downloads
+        .iter()
+        .find(|download| download.model_id == model_id)
+    {
+        if !(progress.state == "completed" && installed) {
             return (
-                progress.state,
+                progress.state.clone(),
                 progress.bytes_downloaded,
                 progress.bytes_total,
             );
@@ -797,6 +1432,7 @@ async fn build_model_state(
         .first()
         .map(|candidate| candidate.model_id.as_str());
     let stored = stored_models(conn).await?;
+    let downloads = model_downloads(conn, selection_state).await?;
     let selected_id = selected_model_id(conn, &stored).await?;
     let active_id = stored
         .iter()
@@ -811,7 +1447,7 @@ async fn build_model_state(
         let active = active_id.as_deref() == Some(candidate.model_id.as_str());
         let selected = selected_id.as_deref() == Some(candidate.model_id.as_str());
         let (state, bytes_downloaded, bytes_total) =
-            progress_state(selection_state, &candidate.model_id, installed, active);
+            progress_state(&downloads, &candidate.model_id, installed, active);
         options.push(ModelOption {
             id: candidate.model_id.clone(),
             display_name: candidate.display_name.clone(),
@@ -854,7 +1490,7 @@ async fn build_model_state(
         let active = active_id.as_deref() == Some(model.id.as_str());
         let selected = selected_id.as_deref() == Some(model.id.as_str());
         let (state, bytes_downloaded, bytes_total) =
-            progress_state(selection_state, &model.id, installed, active);
+            progress_state(&downloads, &model.id, installed, active);
         options.push(ModelOption {
             id: model.id.clone(),
             display_name: candidate.display_name.clone(),
@@ -883,7 +1519,7 @@ async fn build_model_state(
         let active = active_id.as_deref() == Some(model.id.as_str());
         let selected = selected_id.as_deref() == Some(model.id.as_str());
         let (state, bytes_downloaded, bytes_total) =
-            progress_state(selection_state, &model.id, installed, active);
+            progress_state(&downloads, &model.id, installed, active);
         let path = model.local_path.clone();
         let technical_name = path
             .as_deref()
@@ -925,13 +1561,79 @@ async fn build_model_state(
         active_id,
         selected_id,
         fallback_notice,
+        downloads,
     })
 }
 
 enum ReconcileAction {
     None,
     Activate(String),
-    Install(Box<ModelCandidate>),
+    Install(Box<ModelCandidate>, DownloadStartPolicy),
+}
+
+async fn restore_running_downloads(
+    app: &AppHandle,
+    conn: &tokio_rusqlite::Connection,
+    selection_state: &ModelSelectionState,
+) -> Result<(), String> {
+    let mut restored = selection_state.restored_downloads.lock().await;
+    if *restored {
+        return Ok(());
+    }
+
+    let registry = model_registry::bundled();
+    let profile = hardware::detect();
+    let downloads = stored_downloads(conn).await?;
+    for download in downloads.into_iter().filter(|download| {
+        matches!(
+            download.state.as_str(),
+            "queued" | "downloading" | "verifying"
+        )
+    }) {
+        if installed_model_is_usable(conn, &download.model_id).await? {
+            let dest = model_destination(app, &download.model_id)?;
+            let bytes = std::fs::metadata(dest)
+                .map(|metadata| metadata.len())
+                .unwrap_or(download.bytes_total);
+            persist_download_state(
+                conn,
+                &download.model_id,
+                "completed",
+                bytes,
+                bytes,
+                download.revision,
+                None,
+            )
+            .await?;
+            continue;
+        }
+        let Some(candidate) = model_registry::find_candidate(&registry, &download.model_id) else {
+            persist_download_state(
+                conn,
+                &download.model_id,
+                "failed",
+                download.bytes_downloaded,
+                download.bytes_total,
+                download.revision,
+                Some("the curated model is no longer available".to_string()),
+            )
+            .await?;
+            continue;
+        };
+        begin_install(
+            app,
+            conn,
+            selection_state,
+            &profile,
+            candidate,
+            DownloadStartPolicy::RestoreRunning {
+                revision: download.revision,
+            },
+        )
+        .await?;
+    }
+    *restored = true;
+    Ok(())
 }
 
 /// Reconcile a stale active path before Settings renders or any new model
@@ -944,6 +1646,7 @@ pub async fn reconcile_active_model(
     selection_state: &ModelSelectionState,
     server_state: &crate::inference::server::ServerState,
 ) -> Result<(), String> {
+    restore_running_downloads(app, conn, selection_state).await?;
     let registry = model_registry::bundled();
     let profile = hardware::detect();
     let candidates = candidates_for_tier(&registry, &profile.tier);
@@ -1026,26 +1729,28 @@ pub async fn reconcile_active_model(
             if target_is_ready {
                 ReconcileAction::Activate(target.model_id)
             } else {
-                ReconcileAction::Install(Box::new(target))
+                ReconcileAction::Install(Box::new(target), DownloadStartPolicy::Explicit)
             }
         } else if let Some(selected_id) = selected {
             // Reconstruct work after a relaunch: a durable selection can point
             // to an installed model awaiting handoff or to a curated download
             // whose `.part` file should resume. The old active model remains
             // available while that work proceeds.
-            let failed_this_run = selection_state
-                .progress_for(&selected_id)
-                .is_some_and(|progress| progress.state.starts_with("error"));
+            let blocked_download = selection_state.activation_failed(&selected_id)
+                || stored_download(conn, &selected_id)
+                    .await?
+                    .is_some_and(|download| {
+                        matches!(download.state.as_str(), "paused" | "stopped" | "failed")
+                    });
             if models
                 .iter()
                 .any(|model| model.id == selected_id && model.is_active && model.is_usable())
             {
                 ReconcileAction::None
-            } else if failed_this_run {
-                // Do not repeat an OOM, incompatible-model, or network
-                // failure on every Settings snapshot. Explicit Retry invokes
-                // the selection command directly; a relaunch gets one fresh
-                // attempt because progress snapshots are process-local.
+            } else if blocked_download {
+                // Paused, stopped, and failed are durable user-visible states.
+                // Snapshot reads and generation preflight must not turn them
+                // back into downloads; explicit Select/Resume is the trigger.
                 ReconcileAction::None
             } else if let Some(selected_model) = models.iter().find(|model| model.id == selected_id)
             {
@@ -1062,7 +1767,10 @@ pub async fn reconcile_active_model(
                     if selected_model.is_usable() {
                         ReconcileAction::Activate(selected_id)
                     } else {
-                        ReconcileAction::Install(Box::new(candidate))
+                        ReconcileAction::Install(
+                            Box::new(candidate),
+                            DownloadStartPolicy::Recoverable,
+                        )
                     }
                 } else {
                     ReconcileAction::None
@@ -1071,7 +1779,7 @@ pub async fn reconcile_active_model(
                 model_registry::find_candidate(&registry, &selected_id).cloned()
             {
                 upsert_curated_model(conn, &profile.tier, &candidate).await?;
-                ReconcileAction::Install(Box::new(candidate))
+                ReconcileAction::Install(Box::new(candidate), DownloadStartPolicy::Recoverable)
             } else {
                 ReconcileAction::None
             }
@@ -1092,11 +1800,20 @@ pub async fn reconcile_active_model(
                     )
                     .await;
                 }
-                publish_state(app, &model_id, format!("error: {error}"), 0, 0);
+                let message = error.to_string();
+                emit_activation_state(app, &model_id, format!("error: {message}"), Some(message));
             }
         }
-        ReconcileAction::Install(candidate) => {
-            begin_install(app, conn, selection_state, &profile, &candidate).await?;
+        ReconcileAction::Install(candidate, start_policy) => {
+            begin_install(
+                app,
+                conn,
+                selection_state,
+                &profile,
+                &candidate,
+                start_policy,
+            )
+            .await?;
         }
     }
     Ok(())
@@ -1188,11 +1905,25 @@ pub async fn select_curated_model(
                 )
                 .await?;
             }
-            publish_state(&app, &candidate.model_id, format!("error: {error}"), 0, 0);
+            let message = error.to_string();
+            emit_activation_state(
+                &app,
+                &candidate.model_id,
+                format!("error: {message}"),
+                Some(message),
+            );
             return Err(error.to_string());
         }
     } else {
-        begin_install(&app, &conn, &selection_state, &profile, &candidate).await?;
+        begin_install(
+            &app,
+            &conn,
+            &selection_state,
+            &profile,
+            &candidate,
+            DownloadStartPolicy::Explicit,
+        )
+        .await?;
     }
     build_model_state(&conn, &selection_state).await
 }
@@ -1277,7 +2008,8 @@ pub async fn select_local_model(
         if error.previous_healthy {
             restore_healthy_active_selection_if_current(&conn, &selection_state, &model_id).await?;
         }
-        publish_state(&app, &model_id, format!("error: {error}"), 0, 0);
+        let message = error.to_string();
+        emit_activation_state(&app, &model_id, format!("error: {message}"), Some(message));
         return Err(error.to_string());
     }
     build_model_state(&conn, &selection_state).await
@@ -1428,19 +2160,131 @@ mod tests {
     #[test]
     fn progress_snapshot_keeps_active_and_pending_states_distinct() {
         let state = ModelSelectionState::default();
-        state.record_progress(ModelInstallProgress {
+        assert!(state.record_progress(ModelInstallProgress {
             model_id: "advanced".to_string(),
             bytes_downloaded: 50,
             bytes_total: 100,
             state: "downloading".to_string(),
-        });
+            revision: 2,
+            error: None,
+        }));
+        let downloads = vec![ModelDownload {
+            model_id: "advanced".to_string(),
+            display_name: "Advanced".to_string(),
+            state: "downloading".to_string(),
+            bytes_downloaded: 50,
+            bytes_total: 100,
+            revision: 2,
+            error: None,
+        }];
         assert_eq!(
-            progress_state(&state, "advanced", false, false),
+            progress_state(&downloads, "advanced", false, false),
             ("downloading".to_string(), 50, 100)
         );
         assert_eq!(
-            progress_state(&state, "balanced", true, true),
+            progress_state(&downloads, "balanced", true, true),
             ("active".to_string(), 0, 0)
         );
+
+        assert!(!state.record_progress(ModelInstallProgress {
+            model_id: "advanced".to_string(),
+            bytes_downloaded: 25,
+            bytes_total: 100,
+            state: "downloading".to_string(),
+            revision: 1,
+            error: None,
+        }));
+        assert_eq!(state.progress_for("advanced").unwrap().bytes_downloaded, 50);
+    }
+
+    #[test]
+    fn one_writer_reservation_is_idempotent_and_revision_guarded() {
+        let state = ModelSelectionState::default();
+        let (_done_tx, done) = watch::channel(false);
+        let first = ActiveDownload {
+            revision: 4,
+            cancel: CancellationToken::new(),
+            done: done.clone(),
+        };
+        assert!(state.begin("balanced", first));
+        assert!(!state.begin(
+            "balanced",
+            ActiveDownload {
+                revision: 5,
+                cancel: CancellationToken::new(),
+                done,
+            }
+        ));
+        state.finish("balanced", 3);
+        assert_eq!(state.active_download("balanced").unwrap().revision, 4);
+        state.finish("balanced", 4);
+        assert!(state.active_download("balanced").is_none());
+    }
+
+    #[test]
+    fn automatic_start_policies_preserve_intervening_pause_and_stop() {
+        let stored = |state: &str, revision: u32| StoredDownload {
+            model_id: "balanced".to_string(),
+            display_name: Some("Balanced".to_string()),
+            state: state.to_string(),
+            bytes_downloaded: 40,
+            bytes_total: 100,
+            revision,
+            error: None,
+        };
+        let paused = stored("paused", 8);
+        let stopped = stored("stopped", 9);
+        let running = stored("downloading", 7);
+
+        assert!(!DownloadStartPolicy::Recoverable.allows(Some(&paused)));
+        assert!(!DownloadStartPolicy::Recoverable.allows(Some(&stopped)));
+        assert!(DownloadStartPolicy::Explicit.allows(Some(&stopped)));
+        assert!(DownloadStartPolicy::Recoverable.allows(None));
+
+        let restore = DownloadStartPolicy::RestoreRunning { revision: 7 };
+        assert!(restore.allows(Some(&running)));
+        assert!(!restore.allows(Some(&paused)));
+        assert!(!DownloadStartPolicy::RestoreRunning { revision: 6 }.allows(Some(&running)));
+        assert!(!restore.allows(None));
+    }
+
+    #[tokio::test]
+    async fn durable_paused_download_round_trips_with_live_overlay() {
+        let conn = crate::storage::test_async_connection().await;
+        conn.call(|conn: &mut Connection| -> rusqlite::Result<()> {
+            conn.execute(
+                "INSERT INTO models (id, hardware_tier, source_url, quantization, sha256, capability_tags, source_kind, display_name)\
+                 VALUES ('balanced', '32gb', 'https://example.test/model', 'Q4_K_M', 'sha', '[]', 'curated', 'Balanced')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        persist_download_state(&conn, "balanced", "paused", 40, 100, 2, None)
+            .await
+            .unwrap();
+        let state = ModelSelectionState::default();
+        let snapshot = authoritative_download(&conn, &state, "balanced")
+            .await
+            .unwrap();
+        assert_eq!(snapshot.state, "paused");
+        assert_eq!(snapshot.bytes_downloaded, 40);
+        assert_eq!(snapshot.revision, 2);
+
+        assert!(state.record_progress(ModelInstallProgress {
+            model_id: "balanced".to_string(),
+            bytes_downloaded: 75,
+            bytes_total: 100,
+            state: "downloading".to_string(),
+            revision: 3,
+            error: None,
+        }));
+        let live = authoritative_download(&conn, &state, "balanced")
+            .await
+            .unwrap();
+        assert_eq!(live.state, "downloading");
+        assert_eq!(live.bytes_downloaded, 75);
+        assert_eq!(live.revision, 3);
     }
 }
