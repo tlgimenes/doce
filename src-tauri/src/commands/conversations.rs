@@ -137,6 +137,8 @@ pub async fn create_conversation(
     .await
     .map_err(|e| e.to_string())?;
 
+    crate::commands::agent::emit_conversations_changed(&app);
+
     Ok(Conversation {
         id,
         workspace_id,
@@ -295,7 +297,9 @@ pub async fn mark_conversation_seen(
         mark_conversation_seen_in_conn(conn, &conversation_id, now)
     })
     .await
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    crate::commands::agent::emit_conversations_changed(&app);
+    Ok(())
 }
 
 #[tauri::command]
@@ -311,7 +315,9 @@ pub async fn archive_conversation(
         archive_conversation_in_conn(conn, &conversation_id, now)
     })
     .await
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    crate::commands::agent::emit_conversations_changed(&app);
+    Ok(())
 }
 
 /// Persists the user-set goal for a conversation (`storage::conversations::

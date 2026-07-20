@@ -19,7 +19,13 @@ import {
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
 import { cn } from "@/lib/cn";
-import { commands, type Conversation, type ConversationStatus, type Workspace } from "@/lib/ipc";
+import {
+  commands,
+  events,
+  type Conversation,
+  type ConversationStatus,
+  type Workspace,
+} from "@/lib/ipc";
 import {
   formatConversationRelativeTime,
   getConversationWorkspaceLabel,
@@ -66,10 +72,11 @@ const SIDEBAR_ACTION_BUTTON =
 
 /**
  * User Story 7: at-a-glance conversation status (FR-011) and auto-generated
- * titles (FR-012), refreshed on a short poll — there's no dedicated
- * "conversation changed" event yet, and status can change from generation
- * activity happening entirely on the backend with no user action to hang
- * a refresh off of.
+ * titles (FR-012), refreshed off the backend's `conversations-changed` event.
+ * That event fires from every list-mutating site — create/archive/seen, and a
+ * turn's start/end/persist — which is what makes the status dot update even
+ * when it changes from generation activity happening entirely on the backend
+ * with no user action to hang a refresh off of.
  */
 const ConversationList = forwardRef<ConversationListHandle, ConversationListProps>(
   function ConversationList(
@@ -155,8 +162,22 @@ const ConversationList = forwardRef<ConversationListHandle, ConversationListProp
 
     useEffect(() => {
       refresh();
-      const id = setInterval(refresh, 2000);
-      return () => clearInterval(id);
+      // Refresh on the backend's "conversation list changed" event instead of
+      // polling — covers status flips that happen with no user action (a turn
+      // starting/ending on the backend) as well as create/archive/seen/title.
+      let unlisten: (() => void) | undefined;
+      let cancelled = false;
+      events
+        .onConversationsChanged(refresh)
+        .then((fn) => {
+          if (cancelled) fn();
+          else unlisten = fn;
+        })
+        .catch(console.error);
+      return () => {
+        cancelled = true;
+        unlisten?.();
+      };
     }, [refresh]);
 
     useEffect(() => {

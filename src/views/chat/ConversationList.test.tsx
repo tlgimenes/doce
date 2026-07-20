@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { homeDir } from "@tauri-apps/api/path";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import ConversationList, { type ConversationListHandle } from "./ConversationList";
-import { commands } from "@/lib/ipc";
+import { commands, events } from "@/lib/ipc";
 
 vi.mock("@/hooks/use-mobile", () => ({
   useIsMobile: () => false,
@@ -21,6 +21,9 @@ vi.mock("@/lib/ipc", () => ({
     listWorkspaces: vi.fn(),
     archiveConversation: vi.fn(),
   },
+  events: {
+    onConversationsChanged: vi.fn(),
+  },
 }));
 
 function render(ui: ReactElement) {
@@ -32,6 +35,7 @@ describe("ConversationList", () => {
     vi.clearAllMocks();
     vi.mocked(homeDir).mockResolvedValue("/Users/tester");
     vi.mocked(commands.listWorkspaces).mockResolvedValue([]);
+    vi.mocked(events.onConversationsChanged).mockResolvedValue(() => {});
   });
 
   it("renders titles and a status dot per conversation (FR-011/FR-012)", async () => {
@@ -528,6 +532,44 @@ describe("ConversationList", () => {
     } finally {
       dateNow.mockRestore();
     }
+  });
+
+  it("re-fetches the list when the backend emits conversations-changed, with no polling", async () => {
+    let fireChanged: (() => void) | undefined;
+    vi.mocked(events.onConversationsChanged).mockImplementation(async (cb) => {
+      fireChanged = cb;
+      return () => {};
+    });
+    vi.mocked(commands.listConversations).mockResolvedValue([]);
+
+    render(
+      <ConversationList
+        activeId={null}
+        onSelect={vi.fn()}
+        onNewConversation={vi.fn()}
+        onOpenSearch={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />,
+    );
+
+    // One fetch on mount — no interval firing more.
+    await waitFor(() => expect(commands.listConversations).toHaveBeenCalledTimes(1));
+    expect(fireChanged).toBeDefined();
+
+    // A backend list-change event drives the re-fetch.
+    vi.mocked(commands.listConversations).mockResolvedValue([
+      {
+        id: "new",
+        workspaceId: null,
+        title: "Appeared via event",
+        createdAt: 1,
+        updatedAt: 2,
+        lastSeenAt: 0,
+        status: "done",
+      },
+    ]);
+    fireChanged!();
+    expect(await screen.findByText("Appeared via event")).toBeInTheDocument();
   });
 
   it("keeps the sidebar mounted when workspace polling fails", async () => {

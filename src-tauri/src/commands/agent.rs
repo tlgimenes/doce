@@ -189,6 +189,22 @@ pub struct PlanUpdate {
     pub plan: Option<PlanSnapshot>,
 }
 
+/// Fired whenever the sidebar conversation list would change — a new
+/// conversation, an archive, a seen-marker, or a status/title/`updated_at`
+/// change from a turn starting, ending, or persisting a message. The sidebar
+/// re-fetches on this instead of polling. Payloadless on purpose: the
+/// frontend re-reads the whole (small) list, and `status` is *derived* at read
+/// time from `ActiveGenerations`, so there's no single stored field to ship.
+#[derive(Debug, Clone, Serialize, specta::Type, tauri_specta::Event)]
+pub struct ConversationsChanged {}
+
+/// Best-effort `ConversationsChanged` emit — called from every list-mutating
+/// site so the sidebar updates live. Best-effort like every other `app.emit`
+/// here: a dropped event just means the next one reconciles the list.
+pub fn emit_conversations_changed(app: &AppHandle) {
+    let _ = app.emit("conversations-changed", ConversationsChanged {});
+}
+
 fn plan_snapshot(state: &crate::agent::plan::PlanState) -> PlanSnapshot {
     PlanSnapshot {
         goal: state.plan.goal.clone(),
@@ -294,6 +310,7 @@ pub fn get_active_plan(
 struct ActiveGenerationGuard<'a> {
     active_generations: &'a ActiveGenerations,
     conversation_id: String,
+    app: AppHandle,
 }
 
 impl Drop for ActiveGenerationGuard<'_> {
@@ -303,6 +320,11 @@ impl Drop for ActiveGenerationGuard<'_> {
             .lock()
             .unwrap()
             .remove(&self.conversation_id);
+        // Turn end: the conversation just left `ActiveGenerations`, so its
+        // derived sidebar status recomputes (in_progress -> done / ready /
+        // requires_action). Emit here, in Drop, so every exit path — success,
+        // `?` early-return, cancel — refreshes the list.
+        emit_conversations_changed(&self.app);
     }
 }
 
@@ -373,6 +395,9 @@ async fn persist_tool_call(
             "agent-message-persisted",
             AgentMessagePersisted { conversation_id },
         );
+        // A persisted message can change the title / updated_at / status shown
+        // in the sidebar mid-turn.
+        emit_conversations_changed(app);
     }
 }
 
@@ -446,6 +471,9 @@ async fn persist_tool_result(
             "agent-message-persisted",
             AgentMessagePersisted { conversation_id },
         );
+        // A persisted message can change the title / updated_at / status shown
+        // in the sidebar mid-turn.
+        emit_conversations_changed(app);
     }
 }
 
@@ -2243,7 +2271,11 @@ pub async fn send_agent_message(
     let _active_guard = ActiveGenerationGuard {
         active_generations: &active_generations,
         conversation_id: conversation_id.clone(),
+        app: app.clone(),
     };
+    // Turn start: the conversation just entered `ActiveGenerations`, so its
+    // derived sidebar status flips to in_progress.
+    emit_conversations_changed(&app);
 
     let conn = db_cell.get(&app).await?.clone();
 

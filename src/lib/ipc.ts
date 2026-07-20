@@ -721,4 +721,9 @@ export const events = {
     listen<ConversationGoalChangedPayload>("conversation-goal-changed", (e) => cb(e.payload)),
   onGoalComplete: (cb: (p: GoalCompletePayload) => void): Promise<UnlistenFn> =>
     listen<GoalCompletePayload>("goal-complete", (e) => cb(e.payload)),
+  // Payloadless "the sidebar conversation list changed, re-fetch it" signal —
+  // fired by every list-mutating backend site (create/archive/seen + a turn's
+  // start/end/persist), replacing the old client-side poll.
+  onConversationsChanged: (cb: () => void): Promise<UnlistenFn> =>
+    listen("conversations-changed", () => cb()),
 };

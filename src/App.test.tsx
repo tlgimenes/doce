@@ -59,6 +59,7 @@ vi.mock("@/lib/ipc", () => ({
     onAgentGenerationPiece: vi.fn(),
     onPlanUpdate: vi.fn(),
     onModelInstallProgress: vi.fn(),
+    onConversationsChanged: vi.fn(),
   },
 }));
 
@@ -168,6 +169,7 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     vi.mocked(commands.getContextUsage).mockRejectedValue(new Error("No model loaded"));
     vi.mocked(events.onContextUsageUpdate).mockResolvedValue(() => {});
     vi.mocked(events.onAgentMessagePersisted).mockResolvedValue(() => {});
+    vi.mocked(events.onConversationsChanged).mockResolvedValue(() => {});
     vi.mocked(events.onAgentGenerationPiece).mockResolvedValue(() => {});
     vi.mocked(events.onModelInstallProgress).mockResolvedValue(() => {});
     vi.mocked(commands.getActivePlan).mockResolvedValue(null);
@@ -377,6 +379,11 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
       updatedAt: 3,
       status: "done" as const,
     };
+    let fireConversationsChanged: (() => void) | undefined;
+    vi.mocked(events.onConversationsChanged).mockImplementation(async (cb) => {
+      fireConversationsChanged = cb;
+      return () => {};
+    });
     vi.mocked(commands.listConversations)
       .mockResolvedValueOnce([initialConversation])
       .mockResolvedValue([refreshedConversation]);
@@ -389,6 +396,11 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     expect(await within(mainTopbar).findByTestId("workspace-topbar-title")).toHaveTextContent(
       "New conversation",
     );
+
+    // The backend signals the list changed (the turn produced a title and
+    // finished) — the sidebar re-fetches and the topbar re-syncs. Previously
+    // this refresh came from a 2s poll; now it's event-driven.
+    fireConversationsChanged?.();
 
     await waitFor(() => expect(commands.listConversations).toHaveBeenCalledTimes(2), {
       timeout: 3000,
