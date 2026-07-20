@@ -97,20 +97,32 @@ fn ensure_not_cancelled(cancel: &CancellationToken) -> Result<(), DownloadError>
     }
 }
 
+pub struct DownloadRequest<'a> {
+    pub model_id: &'a str,
+    pub url: &'a str,
+    pub dest: &'a Path,
+    pub expected_sha256: &'a str,
+    pub expected_size: u64,
+    pub revision: u32,
+}
+
 /// Resumable, checksum-verified download. A final GGUF left by a prior crash
 /// is verified and adopted; partial downloads resume only when the server
 /// actually honors the Range request. Corrupt partial/final files are reset
 /// so Retry can make progress instead of re-verifying the same bad bytes.
 pub async fn download_resumable(
     app: &AppHandle,
-    model_id: &str,
-    url: &str,
-    dest: &Path,
-    expected_sha256: &str,
-    expected_size: u64,
-    revision: u32,
+    request: DownloadRequest<'_>,
     cancel: &CancellationToken,
 ) -> Result<PathBuf, DownloadError> {
+    let DownloadRequest {
+        model_id,
+        url,
+        dest,
+        expected_sha256,
+        expected_size,
+        revision,
+    } = request;
     ensure_not_cancelled(cancel)?;
     let client = reqwest::Client::new();
 

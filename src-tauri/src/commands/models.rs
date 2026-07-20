@@ -857,7 +857,7 @@ async fn begin_install(
     let dir = dest
         .parent()
         .ok_or_else(|| "model destination has no parent".to_string())?;
-    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
 
     // One command gate makes the active-map check, durable revision bump,
     // reservation, and spawn atomic. Different model ids may still transfer
@@ -926,12 +926,14 @@ async fn begin_install(
     tauri::async_runtime::spawn(async move {
         let result = downloader::download_resumable(
             &app,
-            &candidate.model_id,
-            &candidate.source_url,
-            &dest,
-            &candidate.sha256,
-            candidate.size_bytes,
-            revision,
+            downloader::DownloadRequest {
+                model_id: &candidate.model_id,
+                url: &candidate.source_url,
+                dest: &dest,
+                expected_sha256: &candidate.sha256,
+                expected_size: candidate.size_bytes,
+                revision,
+            },
             &cancel,
         )
         .await;
