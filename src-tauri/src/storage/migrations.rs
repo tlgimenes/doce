@@ -35,6 +35,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
         include_str!("migrations/0012_conversation_goal_achieved.sql"),
     ),
     (13, include_str!("migrations/0013_model_sources.sql")),
+    (14, include_str!("migrations/0014_model_downloads.sql")),
 ];
 
 pub fn apply_pending(conn: &mut Connection) -> rusqlite::Result<()> {
@@ -403,5 +404,44 @@ mod tests {
         assert_eq!(row.1, None);
         assert_eq!(row.2, "/models/balanced.gguf");
         assert_eq!(row.3, 1);
+    }
+
+    #[test]
+    fn model_downloads_are_durable_and_keyed_once_per_model() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_pending(&mut conn).unwrap();
+        conn.execute(
+            "INSERT INTO models (id, hardware_tier, source_url, quantization, sha256, capability_tags, source_kind)\
+             VALUES ('balanced', '32gb', 'https://example.test/model', 'Q4_K_M', 'sha', '[]', 'curated')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO model_downloads (model_id, state, bytes_downloaded, bytes_total, revision, updated_at)\
+             VALUES ('balanced', 'paused', 42, 100, 3, 7)",
+            [],
+        )
+        .unwrap();
+
+        let row: (String, i64, i64, i64) = conn
+            .query_row(
+                "SELECT state, bytes_downloaded, bytes_total, revision FROM model_downloads WHERE model_id = 'balanced'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(row, ("paused".to_string(), 42, 100, 3));
+        assert!(conn
+            .execute(
+                "INSERT INTO model_downloads (model_id, state, updated_at) VALUES ('balanced', 'queued', 8)",
+                [],
+            )
+            .is_err());
+        assert!(conn
+            .execute(
+                "UPDATE model_downloads SET state = 'preparing' WHERE model_id = 'balanced'",
+                [],
+            )
+            .is_err());
     }
 }

@@ -132,6 +132,7 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
       activeId: "m",
       selectedId: "m",
       fallbackNotice: null,
+      downloads: [],
     });
     vi.mocked(commands.selectCuratedModel).mockImplementation(() => commands.getModelState());
     vi.mocked(commands.selectLocalModel).mockImplementation(() => commands.getModelState());
@@ -506,6 +507,21 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     expect(() => pressCmd("l")).not.toThrow();
     expect(screen.queryByTestId("agent-input")).not.toBeInTheDocument();
     expect(screen.queryByTestId("empty-state-input")).not.toBeInTheDocument();
+  });
+
+  it("removes the main topbar while Settings is open", async () => {
+    render(<App />);
+    await waitForReady();
+
+    expect(screen.getByTestId("topbar-main")).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId("open-settings"));
+
+    expect(await screen.findByTestId("settings-view")).toBeInTheDocument();
+    expect(screen.queryByTestId("topbar-main")).not.toBeInTheDocument();
+    expect(screen.getByTestId("topbar-sidebar")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId("close-settings"));
+    expect(await screen.findByTestId("topbar-main")).toBeInTheDocument();
   });
 
   it("keeps populated chats visible and selectable while Settings is open", async () => {
@@ -912,6 +928,7 @@ describe("App's initial readiness check survives a stuck getModelState() call", 
     activeId,
     selectedId: activeId,
     fallbackNotice,
+    downloads: [],
   });
 
   it("resolves true immediately when getModelState() has an active model", async () => {

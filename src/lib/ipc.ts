@@ -44,12 +44,32 @@ export interface ModelOption {
   bytesTotal: number;
 }
 
+export type ModelDownloadState =
+  | "queued"
+  | "downloading"
+  | "verifying"
+  | "paused"
+  | "failed"
+  | "stopped"
+  | "completed";
+
+export interface ModelDownload {
+  modelId: string;
+  displayName: string;
+  state: ModelDownloadState;
+  bytesDownloaded: number;
+  bytesTotal: number;
+  revision: number;
+  error: string | null;
+}
+
 export interface ModelState {
   hardware: HardwareProfile;
   options: ModelOption[];
   activeId: string | null;
   selectedId: string | null;
   fallbackNotice: string | null;
+  downloads: ModelDownload[];
 }
 
 export type ConversationStatus = "in_progress" | "requires_action" | "failed" | "done";
@@ -580,6 +600,11 @@ export const commands = {
   getModelState: () => invoke<ModelState>("get_model_state"),
   selectCuratedModel: (modelId: string) => invoke<ModelState>("select_curated_model", { modelId }),
   selectLocalModel: (path: string) => invoke<ModelState>("select_local_model", { path }),
+  pauseModelDownload: (modelId: string) =>
+    invoke<ModelDownload>("pause_model_download", { modelId }),
+  resumeModelDownload: (modelId: string) =>
+    invoke<ModelDownload>("resume_model_download", { modelId }),
+  stopModelDownload: (modelId: string) => invoke<ModelDownload>("stop_model_download", { modelId }),
   dismissModelNotice: () => invoke<void>("dismiss_model_notice"),
   createConversation: (workspaceId?: string) =>
     invoke<Conversation>("create_conversation", { workspaceId }),
@@ -652,6 +677,8 @@ export interface ModelInstallProgressPayload {
   bytesDownloaded: number;
   bytesTotal: number;
   state: string;
+  revision: number;
+  error: string | null;
 }
 
 // 004-tool-call-widgets/US3 — the one live event this feature adds

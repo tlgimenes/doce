@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { commands, events, type HardwareProfile } from "@/lib/ipc";
+import {
+  commands,
+  events,
+  type HardwareProfile,
+  type ModelInstallProgressPayload,
+} from "@/lib/ipc";
 import logo from "@/assets/logo.png";
 
 interface OnboardingProps {
@@ -35,7 +40,19 @@ export default function Onboarding({ onReady }: OnboardingProps) {
         const hw = await commands.getHardwareProfile();
         setProfile(hw);
 
-        const sub = await events.onModelInstallProgress((p) => {
+        let targetModelId: string | null = null;
+        let latestRevision = -1;
+        let ready = false;
+        const bufferedProgress: ModelInstallProgressPayload[] = [];
+        const applyProgress = (p: ModelInstallProgressPayload) => {
+          if (!targetModelId) {
+            bufferedProgress.push(p);
+            return;
+          }
+          if (p.modelId !== targetModelId) return;
+          const revision = p.revision ?? 0;
+          if (revision < latestRevision) return;
+          latestRevision = revision;
           setBytesDownloaded(p.bytesDownloaded);
           setBytesTotal(p.bytesTotal);
           if (p.state === "downloading") setPhase("downloading");
@@ -44,7 +61,8 @@ export default function Onboarding({ onReady }: OnboardingProps) {
           // Downloaded bytes are not enough: enter the app only after the
           // supervised server has loaded and health-checked the model and the
           // global active pointer has committed.
-          if (p.state === "active") {
+          if (p.state === "active" && !ready) {
+            ready = true;
             setPhase("active");
             onReady();
           }
@@ -52,15 +70,18 @@ export default function Onboarding({ onReady }: OnboardingProps) {
           // mismatch, network error, disk full) left the UI stuck on
           // "Downloading…"/"Verifying…" forever with no feedback — found
           // via e2e testing hanging indefinitely with no error shown.
-          if (p.state.startsWith("error")) {
-            setError(p.state);
+          if (p.state === "failed" || p.state.startsWith("error")) {
+            setError(p.error ?? p.state);
             setPhase("error");
           }
-        });
+        };
+        const sub = await events.onModelInstallProgress(applyProgress);
         unlisten = sub;
 
         setPhase("downloading");
-        await commands.startModelInstall();
+        const install = await commands.startModelInstall();
+        targetModelId = install.modelId;
+        for (const progress of bufferedProgress) applyProgress(progress);
       } catch (e) {
         setError(String(e));
         setPhase("error");

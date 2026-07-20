@@ -4,6 +4,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DownloadError {
@@ -13,6 +14,8 @@ pub enum DownloadError {
     Io(#[from] std::io::Error),
     #[error("checksum mismatch: expected {expected}, got {actual}")]
     ChecksumMismatch { expected: String, actual: String },
+    #[error("download cancelled")]
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Serialize, specta::Type, tauri_specta::Event)]
@@ -22,6 +25,8 @@ pub struct ModelInstallProgress {
     pub bytes_downloaded: u64,
     pub bytes_total: u64,
     pub state: String,
+    pub revision: u32,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,12 +49,21 @@ fn remove_file_if_present(path: &Path) -> std::io::Result<()> {
 /// phase or byte counts.
 pub fn publish_model_progress(app: &AppHandle, progress: ModelInstallProgress) {
     if let Some(state) = app.try_state::<crate::commands::models::ModelSelectionState>() {
-        state.record_progress(progress.clone());
+        if !state.record_progress(progress.clone()) {
+            return;
+        }
     }
     let _ = app.emit("model-install-progress", progress);
 }
 
-fn publish(app: &AppHandle, model_id: &str, bytes_downloaded: u64, bytes_total: u64, state: &str) {
+fn publish(
+    app: &AppHandle,
+    model_id: &str,
+    revision: u32,
+    bytes_downloaded: u64,
+    bytes_total: u64,
+    state: &str,
+) {
     publish_model_progress(
         app,
         ModelInstallProgress {
@@ -57,8 +71,30 @@ fn publish(app: &AppHandle, model_id: &str, bytes_downloaded: u64, bytes_total: 
             bytes_downloaded,
             bytes_total,
             state: state.to_string(),
+            revision,
+            error: None,
         },
     );
+}
+
+pub fn partial_paths(dest: &Path) -> (PathBuf, PathBuf) {
+    let part_path = dest.with_extension("part");
+    let identity_path = part_path.with_extension("part.meta");
+    (part_path, identity_path)
+}
+
+pub fn remove_partial_files(dest: &Path) -> std::io::Result<()> {
+    let (part_path, identity_path) = partial_paths(dest);
+    remove_file_if_present(&part_path)?;
+    remove_file_if_present(&identity_path)
+}
+
+fn ensure_not_cancelled(cancel: &CancellationToken) -> Result<(), DownloadError> {
+    if cancel.is_cancelled() {
+        Err(DownloadError::Cancelled)
+    } else {
+        Ok(())
+    }
 }
 
 /// Resumable, checksum-verified download. A final GGUF left by a prior crash
@@ -72,23 +108,26 @@ pub async fn download_resumable(
     dest: &Path,
     expected_sha256: &str,
     expected_size: u64,
+    revision: u32,
+    cancel: &CancellationToken,
 ) -> Result<PathBuf, DownloadError> {
+    ensure_not_cancelled(cancel)?;
     let client = reqwest::Client::new();
 
     if dest.is_file() {
         let total = std::fs::metadata(dest)
             .map(|metadata| metadata.len())
             .unwrap_or(0);
-        let actual = hash_file_with_progress(app, model_id, dest, total).await?;
+        let actual = hash_file_with_progress(app, model_id, dest, total, revision, cancel).await?;
         if actual == expected_sha256 {
-            publish(app, model_id, total, total, "downloaded");
+            publish(app, model_id, revision, total, total, "completed");
             return Ok(dest.to_path_buf());
         }
+        ensure_not_cancelled(cancel)?;
         std::fs::remove_file(dest)?;
     }
 
-    let part_path = dest.with_extension("part");
-    let identity_path = part_path.with_extension("part.meta");
+    let (part_path, identity_path) = partial_paths(dest);
     let identity = PartialIdentity {
         source_url: url.to_string(),
         sha256: expected_sha256.to_string(),
@@ -124,7 +163,11 @@ pub async fn download_resumable(
     // HEAD is an optimization, not a prerequisite: several otherwise valid
     // artifact hosts reject it. The signed registry size keeps progress and
     // resume decisions determinate when HEAD fails or omits the header.
-    let head_len = match client.head(url).send().await {
+    let head_response = tokio::select! {
+        _ = cancel.cancelled() => return Err(DownloadError::Cancelled),
+        response = client.head(url).send() => response,
+    };
+    let head_len = match head_response {
         Ok(response) if response.status().is_success() => response
             .headers()
             .get(reqwest::header::CONTENT_LENGTH)
@@ -145,7 +188,10 @@ pub async fn download_resumable(
         } else {
             client.get(url)
         };
-        let mut response = request.send().await?;
+        let mut response = tokio::select! {
+            _ = cancel.cancelled() => return Err(DownloadError::Cancelled),
+            response = request.send() => response?,
+        };
         let mut resume_accepted =
             can_resume && response.status() == reqwest::StatusCode::PARTIAL_CONTENT;
 
@@ -155,14 +201,27 @@ pub async fn download_resumable(
         // terminal retry error. If it is not complete/correct, restart with a
         // normal GET rather than appending unrelated bytes.
         if can_resume && response.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
-            let actual = hash_file_with_progress(app, model_id, &part_path, total_len).await?;
+            let actual =
+                hash_file_with_progress(app, model_id, &part_path, total_len, revision, cancel)
+                    .await?;
             if actual == expected_sha256 {
+                ensure_not_cancelled(cancel)?;
                 std::fs::rename(&part_path, dest)?;
                 remove_file_if_present(&identity_path)?;
-                publish(app, model_id, existing_len, total_len, "downloaded");
+                publish(
+                    app,
+                    model_id,
+                    revision,
+                    existing_len,
+                    total_len,
+                    "completed",
+                );
                 return Ok(dest.to_path_buf());
             }
-            response = client.get(url).send().await?;
+            response = tokio::select! {
+                _ = cancel.cancelled() => return Err(DownloadError::Cancelled),
+                response = client.get(url).send() => response?,
+            };
             resume_accepted = false;
         }
         let mut response = response.error_for_status()?;
@@ -176,14 +235,27 @@ pub async fn download_resumable(
         let mut last_published_bytes = downloaded;
         let mut last_published_at = Instant::now();
 
-        while let Some(chunk) = response.chunk().await? {
+        loop {
+            let chunk = tokio::select! {
+                _ = cancel.cancelled() => return Err(DownloadError::Cancelled),
+                chunk = response.chunk() => chunk?,
+            };
+            let Some(chunk) = chunk else { break };
+            ensure_not_cancelled(cancel)?;
             file.write_all(&chunk)?;
             downloaded += chunk.len() as u64;
             let should_publish = downloaded.saturating_sub(last_published_bytes) >= 4 * 1024 * 1024
                 || last_published_at.elapsed() >= Duration::from_millis(200)
                 || (total_len > 0 && downloaded >= total_len);
             if should_publish {
-                publish(app, model_id, downloaded, total_len, "downloading");
+                publish(
+                    app,
+                    model_id,
+                    revision,
+                    downloaded,
+                    total_len,
+                    "downloading",
+                );
                 last_published_bytes = downloaded;
                 last_published_at = Instant::now();
             }
@@ -191,7 +263,8 @@ pub async fn download_resumable(
         downloaded
     };
 
-    let actual_sha256 = hash_file_with_progress(app, model_id, &part_path, total_len).await?;
+    let actual_sha256 =
+        hash_file_with_progress(app, model_id, &part_path, total_len, revision, cancel).await?;
     if actual_sha256 != expected_sha256 {
         // The partial file is app-owned and known-corrupt. Removing it is
         // what makes the next retry a real retry rather than an infinite
@@ -204,9 +277,10 @@ pub async fn download_resumable(
         });
     }
 
+    ensure_not_cancelled(cancel)?;
     std::fs::rename(&part_path, dest)?;
     remove_file_if_present(&identity_path)?;
-    publish(app, model_id, downloaded, total_len, "downloaded");
+    publish(app, model_id, revision, downloaded, total_len, "completed");
     Ok(dest.to_path_buf())
 }
 
@@ -215,21 +289,32 @@ async fn hash_file_with_progress(
     model_id: &str,
     path: &Path,
     bytes_total: u64,
+    revision: u32,
+    cancel: &CancellationToken,
 ) -> Result<String, DownloadError> {
-    publish(app, model_id, 0, bytes_total, "verifying");
+    ensure_not_cancelled(cancel)?;
+    publish(app, model_id, revision, 0, bytes_total, "verifying");
     let app = app.clone();
     let model_id = model_id.to_string();
     let path = path.to_path_buf();
+    let cancel = cancel.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let mut last_published_bytes = 0u64;
         let mut last_published_at = Instant::now();
-        sha256_file_with_progress(&path, |bytes_read| {
+        sha256_file_with_progress(&path, &cancel, |bytes_read| {
             let should_publish = bytes_read.saturating_sub(last_published_bytes)
                 >= 16 * 1024 * 1024
                 || last_published_at.elapsed() >= Duration::from_millis(200)
                 || (bytes_total > 0 && bytes_read >= bytes_total);
             if should_publish {
-                publish(&app, &model_id, bytes_read, bytes_total, "verifying");
+                publish(
+                    &app,
+                    &model_id,
+                    revision,
+                    bytes_read,
+                    bytes_total,
+                    "verifying",
+                );
                 last_published_bytes = bytes_read;
                 last_published_at = Instant::now();
             }
@@ -237,18 +322,20 @@ async fn hash_file_with_progress(
     })
     .await
     .map_err(|error| DownloadError::Io(std::io::Error::other(error.to_string())))?
-    .map_err(DownloadError::Io)
 }
 
 fn sha256_file_with_progress(
     path: &Path,
+    cancel: &CancellationToken,
     mut on_progress: impl FnMut(u64),
-) -> std::io::Result<String> {
+) -> Result<String, DownloadError> {
+    ensure_not_cancelled(cancel)?;
     let mut file = std::fs::File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; 1024 * 1024];
     let mut total = 0u64;
     loop {
+        ensure_not_cancelled(cancel)?;
         let count = file.read(&mut buffer)?;
         if count == 0 {
             break;
@@ -257,5 +344,41 @@ fn sha256_file_with_progress(
         total += count as u64;
         on_progress(total);
     }
+    ensure_not_cancelled(cancel)?;
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hashing_honors_a_pre_cancelled_token_without_touching_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("model.part");
+        std::fs::write(&path, b"some model bytes").unwrap();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let result = sha256_file_with_progress(&path, &cancel, |_| {});
+        assert!(matches!(result, Err(DownloadError::Cancelled)));
+        assert_eq!(std::fs::read(&path).unwrap(), b"some model bytes");
+    }
+
+    #[test]
+    fn stop_cleanup_removes_only_partial_artifacts() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("model.gguf");
+        let (part, meta) = partial_paths(&dest);
+        std::fs::write(&dest, b"verified final").unwrap();
+        std::fs::write(&part, b"partial").unwrap();
+        std::fs::write(&meta, b"identity").unwrap();
+
+        remove_partial_files(&dest).unwrap();
+
+        assert!(dest.is_file(), "the verified final must never be removed");
+        assert!(!part.exists());
+        assert!(!meta.exists());
+        remove_partial_files(&dest).unwrap(); // idempotent
+    }
 }

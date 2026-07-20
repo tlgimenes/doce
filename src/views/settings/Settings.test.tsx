@@ -49,6 +49,7 @@ const DEFAULT_MODEL_STATE = {
   activeId: "balanced",
   selectedId: "balanced",
   fallbackNotice: null,
+  downloads: [],
 } as unknown as Awaited<ReturnType<typeof commands.getModelState>>;
 
 function render(ui: ReactElement) {

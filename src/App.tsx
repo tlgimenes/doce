@@ -433,13 +433,17 @@ export default function App() {
               empty state, settings, or the widget gallery. `relative` lifts
               the host's paint order so the shadow isn't covered by the
               content pane that follows it in the DOM. */}
-          <TopbarHost
-            target="main"
-            className={cn(
-              "px-4",
-              !showWidgetGallery && !showSettings && activeConversation && "relative shadow-sm",
-            )}
-          />
+          {/* Settings owns the full content surface, so it does not reserve
+              the otherwise shared 40px workspace topbar. */}
+          {showSettings ? null : (
+            <TopbarHost
+              target="main"
+              className={cn(
+                "px-4",
+                !showWidgetGallery && activeConversation && "relative shadow-sm",
+              )}
+            />
+          )}
           <div
             className="min-h-0 flex-1 [view-transition-name:chat-surface]"
             data-testid="app-content-pane"
