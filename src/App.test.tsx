@@ -925,8 +925,8 @@ describe("App's initial readiness check survives a stuck getModelState() call", 
   it("resolves false, without hanging forever, when getModelState() never settles across every retry", async () => {
     vi.mocked(commands.getModelState).mockReturnValue(new Promise(() => {}));
     const resultPromise = checkReadyWithRetries();
-    // 3 attempts * 8s timeout each = 24s worst case.
-    await vi.advanceTimersByTimeAsync(24_000);
+    // Escalating timeouts (1.5s + 4s + 8s) = 13.5s worst case across 3 attempts.
+    await vi.advanceTimersByTimeAsync(13_500);
     await expect(resultPromise).resolves.toBe(false);
     expect(commands.getModelState).toHaveBeenCalledTimes(3);
   });
@@ -936,7 +936,8 @@ describe("App's initial readiness check survives a stuck getModelState() call", 
       .mockReturnValueOnce(new Promise(() => {}))
       .mockResolvedValueOnce(state("m"));
     const resultPromise = checkReadyWithRetries();
-    await vi.advanceTimersByTimeAsync(8_000);
+    // First attempt times out at 1.5s, then the second resolves.
+    await vi.advanceTimersByTimeAsync(1_500);
     await expect(resultPromise).resolves.toBe(true);
     expect(commands.getModelState).toHaveBeenCalledTimes(2);
   });
@@ -946,5 +947,22 @@ describe("App's initial readiness check survives a stuck getModelState() call", 
       state(null, "Your local model is no longer available. Doce is getting Balanced ready."),
     );
     await expect(checkReadyWithRetries()).resolves.toBe(true);
+  });
+});
+
+// The boot-perf fix: the app must paint the branded splash the instant React
+// mounts — never a blank window — while the readiness check (and the Tauri
+// bridge behind it) is still in flight.
+describe("App paints an instant splash before the readiness check resolves", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(events.onContextUsageUpdate).mockResolvedValue(() => {});
+  });
+
+  it("renders the splash, not a blank screen, while getModelState() is still pending", () => {
+    // A never-settling call keeps `ready === null` for this render.
+    vi.mocked(commands.getModelState).mockReturnValue(new Promise(() => {}));
+    render(<App />);
+    expect(screen.getByTestId("app-splash")).toBeInTheDocument();
   });
 });

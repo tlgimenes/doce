@@ -5,6 +5,7 @@ import { cn } from "@/lib/cn";
 import { Button } from "@/components/ui/button";
 import { Sidebar, SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import Onboarding from "@/views/onboarding/Onboarding";
+import Splash from "@/views/Splash";
 import ConversationList, { type ConversationListHandle } from "@/views/chat/ConversationList";
 import ConversationSearchDialog from "@/views/chat/ConversationSearchDialog";
 import EmptyState from "@/views/chat/EmptyState";
@@ -27,11 +28,15 @@ import type { PendingInitialTurn } from "@/views/workspace/pendingInitialTurn";
 // even diagnose it from the outside — found via a still-unresolved CI
 // investigation (see specs/001-doce-v1-core/tasks.md's T095 note) where
 // this exact call appeared to hang indefinitely in one environment while
-// always resolving quickly in every other one tested. `attempts` retries
-// give a transient bridge-not-ready race a real chance to clear before
-// falling back.
-const READY_CHECK_TIMEOUT_MS = 8000;
-const READY_CHECK_ATTEMPTS = 3;
+// always resolving quickly in every other one tested.
+//
+// The timeouts ESCALATE across attempts rather than sitting at a flat 8s:
+// on a healthy launch the bridge answers in well under the first 1.5s, so
+// a genuinely stuck bridge now falls back to a usable app in ~13.5s instead
+// of a flat 24s — and the user watches the Splash the whole time, never a
+// blank window. Each retry still gets a longer, more patient window in case
+// the first probe merely raced the bridge coming up.
+const READY_CHECK_TIMEOUTS_MS = [1500, 4000, 8000];
 
 function hasSameConversationData(a: Conversation, b: Conversation) {
   return (
@@ -47,11 +52,11 @@ function hasSameConversationData(a: Conversation, b: Conversation) {
 
 export async function checkReadyWithRetries(): Promise<boolean> {
   let lastError: unknown;
-  for (let attempt = 0; attempt < READY_CHECK_ATTEMPTS; attempt++) {
+  for (const timeoutMs of READY_CHECK_TIMEOUTS_MS) {
     try {
       const modelState = await withTimeout(
         commands.getModelState(),
-        READY_CHECK_TIMEOUT_MS,
+        timeoutMs,
         "getModelState() did not respond in time",
       );
       // First run has neither an active model nor a recovery notice and goes
@@ -378,7 +383,7 @@ export default function App() {
     [activateConversation, markSeen],
   );
 
-  if (ready === null) return null;
+  if (ready === null) return <Splash />;
   if (!ready) return <Onboarding onReady={() => setReady(true)} />;
 
   return (
