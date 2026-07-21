@@ -74,6 +74,17 @@ export interface ModelState {
 
 export type ConversationStatus = "in_progress" | "requires_action" | "failed" | "done";
 
+/**
+ * Outcome of `steerGeneration` (Rust `SteerResult`, camelCase-serialized):
+ * - `injected` — the message was folded into the running turn; it will appear
+ *   in the transcript via the normal `agent-message-persisted` refresh.
+ * - `noActiveTurn` — nothing is running; the caller should dispatch it as a
+ *   fresh turn (`sendAgentMessage`) instead.
+ * - `rejected` — the conversation is busy with work that can't take a steer
+ *   (a standalone `/compact`); the caller should keep the message queued.
+ */
+export type SteerGenerationOutcome = "injected" | "noActiveTurn" | "rejected";
+
 export interface Conversation {
   id: string;
   workspaceId: string | null;
@@ -668,6 +679,15 @@ export const commands = {
   isGenerationActive: (conversationId: string) =>
     invoke<boolean>("is_generation_active", { conversationId }),
   stopGeneration: (conversationId: string) => invoke<void>("stop_generation", { conversationId }),
+  // Steers a queued message into the running turn (no new turn). `richContent`
+  // stays arg-shaped identically to `sendAgentMessage` (`{ content, richContent }`
+  // under `message`). Returns which happened; on `noActiveTurn` the caller
+  // falls back to `sendAgentMessage`, on `rejected` it keeps the message queued.
+  steerGeneration: (conversationId: string, content: string, richContent?: string) =>
+    invoke<SteerGenerationOutcome>("steer_generation", {
+      conversationId,
+      message: { content, richContent },
+    }),
   getActivePlan: (conversationId: string) =>
     invoke<PlanSnapshot | null>("get_active_plan", { conversationId }),
 };

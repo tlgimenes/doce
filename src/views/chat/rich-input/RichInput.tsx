@@ -13,7 +13,11 @@ import { commands, type RichMessageContent } from "@/lib/ipc";
 import PastedText from "./extensions/pasted-text-node";
 import SkillMention, { isSkillMentionSuggestionActive } from "./extensions/skill-mention";
 import Attachment, { type AttachmentAttrs } from "./extensions/attachment-node";
-import { richMessageContentFromDoc, shouldCollapsePastedText } from "./serialize";
+import {
+  richMessageContentFromDoc,
+  richMessageContentToDoc,
+  shouldCollapsePastedText,
+} from "./serialize";
 
 // 009-rich-chat-input, User Story 4 (T044-T047): image/file attachment via
 // paste, native OS drag-and-drop, and a file-picker button. A reasonable
@@ -135,6 +139,15 @@ export interface RichInputProps {
    */
   autoFocusToken?: number;
   /**
+   * Queue "edit" (recall): pops a previously-queued message back into the
+   * editor for editing. Modeled as a changing `token` (like `autoFocusToken`)
+   * so the same message can be recalled repeatedly while mounted; the effect
+   * clears the editor and prefills `content`/`richContent` (full-fidelity via
+   * `richMessageContentToDoc`, so chips/attachments survive the round-trip),
+   * then focuses the end. Omitted on surfaces with no queue (`EmptyState.tsx`).
+   */
+  recall?: { token: number; content: string; richContent?: RichMessageContent };
+  /**
    * 010-context-window-management (UI refactor): an optional node rendered
    * immediately after the attach button — the composer-integrated context
    * usage gauge, when the caller has a real conversation to report usage
@@ -220,6 +233,7 @@ export default function RichInput({
   isGenerating,
   onStop,
   autoFocusToken,
+  recall,
   contextGauge,
   goal,
   editGoalToken,
@@ -592,6 +606,25 @@ export default function RichInput({
     // subscription churn is pointless).
   }, [editGoalToken]);
 
+  // Queue "edit"/recall: prefill the editor from a recalled queued message.
+  // Keyed on `recall.token` so re-recalling the same message re-fires. Rich
+  // content is rebuilt via `richMessageContentToDoc` (chips/attachments
+  // intact); plain content is inserted as text. Cleared first so a recall
+  // always replaces, never appends to, whatever is being composed.
+  useEffect(() => {
+    if (recall === undefined || !editor) return;
+    editor.commands.clearContent(true);
+    if (recall.richContent) {
+      editor.commands.setContent(richMessageContentToDoc(recall.richContent));
+    } else if (recall.content) {
+      editor.commands.insertContent(recall.content);
+    }
+    editor.commands.focus("end");
+    // Only re-run when a NEW recall arrives (its token changes), not on every
+    // editor identity change — matching the autoFocusToken effect's intent.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recall?.token, editor]);
+
   // useEditor() itself doesn't trigger a re-render on every keystroke
   // (shouldRerenderOnTransaction defaults to off) — this is the documented
   // opt-in way to reactively derive UI state (here, whether to disable the
@@ -698,38 +731,40 @@ export default function RichInput({
             </Tooltip>
           )}
           {contextGauge}
-          {isGenerating ? (
-            // Generation-cancellation (Task 4.2b): a plain icon swap in the
-            // send button's own slot (same `ml-auto`/`icon-sm` shape, so
-            // layout never shifts). Deliberately NOT `disabled` even though
-            // the composer is `disabled` during a turn — this is the one
-            // control that must stay clickable while generating.
+          {/* Queue & steer: the submit button ALWAYS renders now (it never
+              swaps out for stop) so a message can be composed and QUEUED while
+              a turn is generating — submitting mid-turn enqueues (the caller
+              routes on its own busy state), so its intent reads "Queue message"
+              then. The stop button is rendered ALONGSIDE it during generation
+              (it used to replace it), the one control that stays clickable
+              regardless of `disabled`. */}
+          <InputGroupButton
+            variant="default"
+            size="icon-sm"
+            className="ml-auto aria-disabled:opacity-50"
+            onClick={submitCurrentContent}
+            disabled={disabled}
+            aria-disabled={disabled || isEmpty}
+            // Goal mode changes the send button's intent — submitting sets the
+            // conversation goal instead of sending; while generating, an
+            // ordinary submit queues rather than sends.
+            aria-label={
+              isGenerating ? "Queue message" : goal && goalMode ? "Send as goal" : "Send message"
+            }
+            title={isGenerating ? "Queue message" : goal && goalMode ? "Send as goal" : undefined}
+            data-testid={submitTestId}
+          >
+            <ArrowUp size={16} />
+          </InputGroupButton>
+          {isGenerating && (
             <InputGroupButton
               variant="destructive"
               size="icon-sm"
-              className="ml-auto"
               onClick={onStop}
               aria-label="Stop generating"
               data-testid="stop-generation"
             >
               <Square size={16} className="fill-current" />
-            </InputGroupButton>
-          ) : (
-            <InputGroupButton
-              variant="default"
-              size="icon-sm"
-              className="ml-auto aria-disabled:opacity-50"
-              onClick={submitCurrentContent}
-              disabled={disabled}
-              aria-disabled={disabled || isEmpty}
-              // Goal mode changes the send button's intent — submitting
-              // sets the conversation goal instead of sending a message
-              // (see submitCurrentContent's goalModeRef branch above).
-              aria-label={goal && goalMode ? "Send as goal" : "Send message"}
-              title={goal && goalMode ? "Send as goal" : undefined}
-              data-testid={submitTestId}
-            >
-              <ArrowUp size={16} />
             </InputGroupButton>
           )}
         </InputGroupAddon>
