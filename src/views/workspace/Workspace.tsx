@@ -13,6 +13,14 @@ import {
 import RichInput from "@/views/chat/rich-input/RichInput";
 import UserAskWidget from "@/views/chat/tool-widgets/UserAskWidget";
 import AgentActivity from "@/views/workspace/AgentActivity";
+import QueuedMessages from "@/views/workspace/QueuedMessages";
+import {
+  enqueueMessage,
+  getQueueSnapshot,
+  removeQueuedMessage,
+  subscribeToQueue,
+  type QueuedMessage,
+} from "@/views/workspace/messageQueueRegistry";
 import WorkspaceTopbar from "@/views/workspace/WorkspaceTopbar";
 import TranscriptTurn, { type PendingTurnWidget } from "@/views/workspace/TranscriptTurn";
 import { accumulateTurnTokens, groupTranscriptTurns } from "@/views/workspace/transcriptTurns";
@@ -246,6 +254,33 @@ export default function Workspace({
     () => conversationsWithSendInFlight.has(conversationId),
     getServerSnapshot,
   );
+  // Queue & steer: messages the user composed while this conversation's turn is
+  // in flight, held client-side until they drain (FIFO, as new turns) or are
+  // steered ("Send now"). Per-conversation, module-global, remount-proof — see
+  // messageQueueRegistry.ts.
+  const queue = useSyncExternalStore(
+    subscribeToQueue,
+    () => getQueueSnapshot(conversationId),
+    () => getQueueSnapshot(conversationId),
+  );
+  // A subtle inline error when a steer is refused (a `rejected` outcome); the
+  // row stays queued. Cleared on the next enqueue or a successful steer.
+  const [steerError, setSteerError] = useState<string | null>(null);
+  // Recall token for RichInput's "edit": bumping `token` re-fires the prefill
+  // effect even when re-editing the same text.
+  const [recall, setRecall] = useState<{
+    token: number;
+    content: string;
+    richContent?: RichMessageContent;
+  } | null>(null);
+  // Holds the conversation id whose NEXT idle-drain a manual Stop must skip — a
+  // Stop leaves queued messages intact (they drain only after a
+  // naturally-completing turn). Conversation-scoped (not a bare boolean) so a
+  // Stop in one conversation never suppresses another's drain; consumed on the
+  // first idle pass for that conversation REGARDLESS of queue contents, so a
+  // Stop with an empty queue can't strand the flag and wrongly suppress a later
+  // turn's drain.
+  const drainSuppressedRef = useRef<string | null>(null);
 
   const syncBackendTurnActive = useCallback(() => {
     const targetConversationId = conversationId;
@@ -701,6 +736,66 @@ export default function Workspace({
     [send],
   );
 
+  // Queue & steer: enqueue a message composed while the conversation is busy
+  // (or while other messages are already queued, so the queue is never jumped).
+  // Empty guard mirrors `send`'s — a chips-only message has empty flat text but
+  // must not be dropped. A fresh id per enqueue keys the row.
+  const enqueue = useCallback(
+    (content: string, richContent?: RichMessageContent, setGoalIntent = false) => {
+      if (!content.trim() && !richContent) return;
+      setSteerError(null);
+      enqueueMessage(conversationId, {
+        id: crypto.randomUUID(),
+        content,
+        richContent,
+        setGoal: setGoalIntent,
+      });
+    },
+    [conversationId],
+  );
+
+  // "Send now": steer a queued message into the running turn. On `injected` the
+  // row is removed and the message renders via the normal
+  // `agent-message-persisted` refresh (no manual insert). On `noActiveTurn` (the
+  // turn ended between queueing and clicking) fall back to a fresh turn. On
+  // `rejected` (a standalone /compact holds the conversation) keep the row and
+  // surface a subtle error.
+  const handleSteer = useCallback(
+    (item: QueuedMessage) => {
+      void (async () => {
+        const rich = item.richContent ? JSON.stringify(item.richContent) : undefined;
+        try {
+          const outcome = await commands.steerGeneration(conversationId, item.content, rich);
+          if (!isMountedRef.current || currentConversationIdRef.current !== conversationId) return;
+          if (outcome === "injected") {
+            removeQueuedMessage(conversationId, item.id);
+            setSteerError(null);
+          } else if (outcome === "noActiveTurn") {
+            if (send(item.content, item.richContent, item.setGoal ?? false)) {
+              removeQueuedMessage(conversationId, item.id);
+            }
+          } else {
+            setSteerError("Couldn't send now — the turn isn't accepting messages.");
+          }
+        } catch (e) {
+          if (isMountedRef.current && currentConversationIdRef.current === conversationId) {
+            setSteerError(String(e));
+          }
+        }
+      })();
+    },
+    [conversationId, send],
+  );
+
+  // "Edit": recall a queued message back into the composer and drop its row.
+  const handleEditQueued = useCallback(
+    (item: QueuedMessage) => {
+      setRecall({ token: Date.now(), content: item.content, richContent: item.richContent });
+      removeQueuedMessage(conversationId, item.id);
+    },
+    [conversationId],
+  );
+
   // Generation-cancellation (Task 4.2b): fire-and-forget stop of the running
   // turn, following the same invoke convention as `send`/`/compact`. A user's
   // own stop must NEVER paint an error banner, so failures are only logged —
@@ -708,11 +803,38 @@ export default function Workspace({
   // transcript + status refresh themselves off the backend's own
   // `agent-message-persisted` event once the loop halts (the cancel arm now
   // persists a stopped marker), so nothing to update here.
+  //
+  // Queue & steer: suppress the ONE drain that the falling edge of
+  // `turnInFlight` would otherwise trigger — a manual Stop leaves the queue
+  // intact (rows stay actionable and drain only after a naturally-completing
+  // turn), unlike a natural completion which does drain.
   const handleStop = useCallback(() => {
+    drainSuppressedRef.current = conversationId;
     void commands.stopGeneration(conversationId).catch((e) => {
       console.error("stop_generation failed", e);
     });
   }, [conversationId]);
+
+  // Queue & steer: drain the queue FIFO once the conversation goes idle. Each
+  // dequeued message is dispatched as its own new turn; `send` re-marks
+  // in-flight synchronously, so this effect then waits for that turn to complete
+  // before the next iteration dispatches the following message. The head is
+  // removed before dispatch so a `send` that consumes-without-a-turn (an
+  // intercepted `/compact`) can't re-drain forever.
+  useEffect(() => {
+    if (turnInFlight || pendingToolCall) return;
+    // Consume a pending Stop-suppression for THIS conversation on the first idle
+    // pass — before the empty-queue check — so an empty-queue Stop can't leave
+    // the flag set to poison a future turn's drain.
+    if (drainSuppressedRef.current === conversationId) {
+      drainSuppressedRef.current = null;
+      return;
+    }
+    if (queue.length === 0) return;
+    const head = queue[0];
+    removeQueuedMessage(conversationId, head.id);
+    send(head.content, head.richContent, head.setGoal ?? false);
+  }, [turnInFlight, pendingToolCall, queue, send, conversationId]);
 
   useEffect(() => {
     if (!pendingInitialTurn) return;
@@ -764,37 +886,63 @@ export default function Workspace({
           </MessageScrollerViewport>
           <MessageScrollerButton data-testid="scroll-to-bottom" />
         </MessageScroller>
-        <AgentActivity
-          conversationId={conversationId}
-          goal={{
-            current: goal,
-            achieved: goalAchieved,
-            onEdit: () => setEditGoalToken((token) => token + 1),
-            onDelete: () => handleSetGoal(null),
-          }}
-          streaming={{
-            active: showGenericStreamingStatus,
-            startedAt: activeTurnStartedAt,
-            tokens: activeTurnTokens,
-            stream: liveGenText,
-          }}
-        />
         <div className="p-4" data-testid="workspace-composer-shell">
           {/* The view-transition name lives on the max-w-xl column, matching
-              EmptyState's named element exactly — same width on both sides
-              of the transition, so the morph never grows on the x axis. */}
-          <div className="mx-auto w-full max-w-xl [view-transition-name:chat-composer]">
+              EmptyState's named element exactly — same width on both sides of
+              the transition, so the morph never grows on the x axis. Queue &
+              steer + agent-activity stack as one surface (gap-1) in the order
+              queued messages → status line → input. */}
+          <div className="mx-auto flex w-full max-w-xl flex-col gap-1 [view-transition-name:chat-composer]">
+            {/* Queued messages sit at the top of the stack — above the status
+                line and the ask widget, so they stay manageable even when a
+                question is pending. */}
+            <QueuedMessages
+              items={queue}
+              onSteer={handleSteer}
+              onEdit={handleEditQueued}
+              onDelete={(id) => removeQueuedMessage(conversationId, id)}
+              steerError={steerError}
+            />
+            {/* The single agent-activity status line, docked directly on the
+                composer: goal › current todo › thinking, plus progress and the
+                working indicator. */}
+            <AgentActivity
+              conversationId={conversationId}
+              goal={{
+                current: goal,
+                achieved: goalAchieved,
+                onEdit: () => setEditGoalToken((token) => token + 1),
+                onDelete: () => handleSetGoal(null),
+              }}
+              streaming={{
+                active: showGenericStreamingStatus,
+                startedAt: activeTurnStartedAt,
+                tokens: activeTurnTokens,
+                stream: liveGenText,
+              }}
+            />
             {pendingQuestion ? (
               <UserAskWidget detail={pendingQuestion} />
             ) : (
               <RichInput
+                // Queue & steer: while the conversation is busy (or the queue is
+                // non-empty, so the queue is never jumped) a submit ENQUEUES;
+                // otherwise it sends immediately as before.
                 onSubmit={(content, richContent) => {
-                  send(content, richContent);
+                  if (turnInFlight || pendingToolCall !== null || queue.length > 0) {
+                    enqueue(content, richContent);
+                  } else {
+                    send(content, richContent);
+                  }
                 }}
                 skillsEnabled={true}
-                disabled={turnInFlight || pendingToolCall !== null}
+                // Editable even while a turn runs — that's how a message gets
+                // composed to queue. Duplicate-send is still prevented because a
+                // busy submit enqueues rather than sends.
+                disabled={false}
                 isGenerating={turnInFlight}
                 onStop={handleStop}
+                recall={recall ?? undefined}
                 placeholder="Describe a task…"
                 inputTestId="agent-input"
                 submitTestId="agent-send"
@@ -802,7 +950,15 @@ export default function Workspace({
                 goal={{
                   current: goal,
                   onSet: handleSetGoal,
-                  onSendAsGoal: handleSendAsGoal,
+                  // Goal submits queue too when busy (drain as a goal turn); the
+                  // row hides "Send now" since steering carries no goal intent.
+                  onSendAsGoal: (text) => {
+                    if (turnInFlight || pendingToolCall !== null || queue.length > 0) {
+                      enqueue(text, undefined, true);
+                    } else {
+                      handleSendAsGoal(text);
+                    }
+                  },
                 }}
               />
             )}

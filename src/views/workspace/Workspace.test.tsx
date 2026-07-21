@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import Workspace, { __resetSendInFlightRegistryForTests } from "./Workspace";
+import { __resetQueueRegistryForTests } from "./messageQueueRegistry";
 import { commands, events } from "@/lib/ipc";
 import type { RichMessageContent } from "@/lib/ipc";
 
@@ -41,6 +42,8 @@ vi.mock("@/lib/ipc", async (importOriginal) => {
       listSkills: vi.fn(),
       answerUserQuestion: vi.fn(),
       isGenerationActive: vi.fn(),
+      stopGeneration: vi.fn(),
+      steerGeneration: vi.fn(),
       getActivePlan: vi.fn(),
     },
     events: {
@@ -65,12 +68,6 @@ function messageFixture(id: string, content: string, createdAt = 1) {
   };
 }
 
-function expectElementBefore(first: HTMLElement, second: HTMLElement) {
-  expect(Boolean(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(
-    true,
-  );
-}
-
 describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -79,8 +76,13 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     // a prior test that left a turn pending (never-resolving `sendAgentMessage`
     // mock) would otherwise leak `turnInFlight` into this test.
     __resetSendInFlightRegistryForTests();
+    // Queue & steer: the queue registry is module-global and survives unmount
+    // too, so reset it between tests just like the send-in-flight registry.
+    __resetQueueRegistryForTests();
     vi.mocked(commands.listMessages).mockResolvedValue([]);
     vi.mocked(commands.isGenerationActive).mockResolvedValue(false);
+    vi.mocked(commands.stopGeneration).mockResolvedValue(undefined);
+    vi.mocked(commands.steerGeneration).mockResolvedValue("injected");
     // No model loaded in these unit tests — ContextUsageIndicator's
     // getContextUsage call is expected to fail and swallow the error,
     // leaving the indicator simply unrendered.
@@ -465,7 +467,9 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     expect(thinkingTokens).not.toHaveTextContent("↓");
     expect(status.closest('[data-testid="chat-message"]')).toBeNull();
     expect(status.closest('[data-testid="transcript-turn"]')).toBeNull();
-    expectElementBefore(status, composerShell);
+    // The working status is docked inside the composer (the status line now
+    // stacks with the queue + input), not floating in the transcript.
+    expect(composerShell.contains(status)).toBe(true);
     expect(composerShell).not.toHaveClass("border-t");
 
     resolveAgent("Found 3 files: a.rs, b.rs, c.rs");
@@ -763,12 +767,11 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     expect(screen.queryByTestId("agent-thinking")).not.toBeInTheDocument();
   });
 
-  it("blocks the composer and shows Working when the latest message is an unfinished tool_call with no dedicated pending widget (e.g. Grep)", async () => {
-    // Regression: only AskUserQuestion/Bash/Task counted as "in flight",
-    // so a turn stuck inside any other tool (a slow Grep, in production)
-    // left the composer enabled after a reload wiped the in-memory
-    // send-in-flight flag — letting the user queue a duplicate user
-    // message behind the still-running turn.
+  it("keeps the composer editable but QUEUES (never duplicate-sends) when the latest message is an unfinished tool_call with no dedicated pending widget (e.g. Grep)", async () => {
+    // Regression + queue & steer: a turn stuck inside a non-widget tool (a slow
+    // Grep) must not let a submit fire a DUPLICATE turn. The composer is now
+    // editable (so a message can be composed to queue), but submitting mid-turn
+    // enqueues rather than calling sendAgentMessage again.
     vi.mocked(commands.listMessages).mockResolvedValue([
       {
         id: "u1",
@@ -799,22 +802,36 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     render(<Workspace conversationId="conv-1" />);
 
     expect(await screen.findByTestId("agent-thinking")).toHaveTextContent("Working");
-    expect(screen.getByTestId("agent-input")).toHaveAttribute("contenteditable", "false");
+    const input = screen.getByTestId("agent-input");
+    expect(input).toHaveAttribute("contenteditable", "true");
+
+    // Submitting mid-tool enqueues instead of sending a duplicate turn.
+    await userEvent.type(input, "queue this");
+    await userEvent.click(screen.getByTestId("agent-send"));
+    expect(screen.getByTestId("queued-message-row")).toHaveTextContent("queue this");
+    expect(commands.sendAgentMessage).not.toHaveBeenCalled();
   });
 
-  it("keeps the composer blocked after a reload while the backend reports the turn still active, even with no trailing tool_call (generation phase)", async () => {
+  it("keeps the composer editable but QUEUES after a reload while the backend reports the turn still active, even with no trailing tool_call (generation phase)", async () => {
     // The trailing-tool_call signal only covers the tool-execution window.
     // While the model is *generating* (latest row = user text or a paired
     // tool_result — the longest phases with local inference), only the
-    // backend's ActiveGenerations knows a turn is live; a reload wipes
-    // every in-memory frontend flag.
+    // backend's ActiveGenerations knows a turn is live; a reload wipes every
+    // in-memory frontend flag. The composer is editable, but a submit enqueues
+    // rather than firing a duplicate turn.
     vi.mocked(commands.listMessages).mockResolvedValue([messageFixture("u1", "find the needle")]);
     vi.mocked(commands.isGenerationActive).mockResolvedValue(true);
 
     render(<Workspace conversationId="conv-1" />);
 
     await screen.findByTestId("agent-thinking");
-    expect(screen.getByTestId("agent-input")).toHaveAttribute("contenteditable", "false");
+    const input = screen.getByTestId("agent-input");
+    expect(input).toHaveAttribute("contenteditable", "true");
+
+    await userEvent.type(input, "queue this");
+    await userEvent.click(screen.getByTestId("agent-send"));
+    expect(screen.getByTestId("queued-message-row")).toHaveTextContent("queue this");
+    expect(commands.sendAgentMessage).not.toHaveBeenCalled();
   });
 
   it("starts the streaming chron from the latest persisted user message during a backend-active reload", async () => {
@@ -1667,19 +1684,22 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
 
     await waitFor(() => {
       expect(screen.getByTestId("agent-thinking")).toBeInTheDocument();
-      expect(screen.getByTestId("agent-input")).toHaveAttribute("contenteditable", "false");
+      // The composer is editable throughout now; the per-conversation "a turn
+      // is in flight here" signal is the stop button (shown when turnInFlight).
+      expect(screen.getByTestId("stop-generation")).toBeInTheDocument();
     });
 
     rerender(<Workspace conversationId="conv-2" />);
     await screen.findByText("second workspace");
 
-    expect(screen.getByTestId("agent-input")).toHaveAttribute("contenteditable", "true");
+    // conv-2 has no in-flight turn of its own — no stop button leaks across.
+    expect(screen.queryByTestId("stop-generation")).not.toBeInTheDocument();
     expect(screen.queryByText("first workspace task")).not.toBeInTheDocument();
 
     resolveSend("old conversation done");
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(screen.getByTestId("agent-input")).toHaveAttribute("contenteditable", "true");
+    expect(screen.queryByTestId("stop-generation")).not.toBeInTheDocument();
     expect(screen.getByText("second workspace")).toBeInTheDocument();
     expect(screen.queryByText("first workspace task")).not.toBeInTheDocument();
   });
@@ -1868,7 +1888,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     expect(onConversationSeen).toHaveBeenCalledWith("conv-1");
   });
 
-  it("keeps the original conversation disabled across remounts while its send is still pending", async () => {
+  it("keeps the original conversation's turn in flight across remounts and QUEUES (never duplicate-sends) while its send is still pending", async () => {
     let resolveSend!: (value: string) => void;
     vi.mocked(commands.listMessages).mockImplementation((requestedConversationId) => {
       if (requestedConversationId === "conv-2") {
@@ -1907,30 +1927,35 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
         "first workspace task",
         undefined,
       );
-      expect(screen.getByTestId("agent-input")).toHaveAttribute("contenteditable", "false");
+      // Composer stays editable throughout (queue & steer); the stop button is
+      // the "turn in flight" signal.
+      expect(screen.getByTestId("stop-generation")).toBeInTheDocument();
     });
 
     rerender(<Workspace key="conv-2" conversationId="conv-2" />);
     await screen.findByText("second workspace");
-    expect(screen.getByTestId("agent-input")).toHaveAttribute("contenteditable", "true");
+    expect(screen.queryByTestId("stop-generation")).not.toBeInTheDocument();
 
     rerender(<Workspace key="conv-1-return" conversationId="conv-1" />);
     await waitFor(() => {
-      expect(screen.getByTestId("agent-input")).toHaveAttribute("contenteditable", "false");
+      expect(screen.getByTestId("stop-generation")).toBeInTheDocument();
       expect(screen.getByTestId("agent-thinking")).toBeInTheDocument();
     });
 
-    // While the turn is still pending, the send control is swapped for the
-    // stop button (generation-cancellation, Task 4.2b) — there is no send
-    // button to re-fire a second send from, and the editor stays disabled.
-    expect(screen.queryByTestId("agent-send")).not.toBeInTheDocument();
-    expect(screen.getByTestId("stop-generation")).toBeInTheDocument();
+    // The composer is editable and the send button IS present — but because the
+    // turn is still in flight, a second submit ENQUEUES rather than firing a
+    // duplicate send_agent_message (the anti-duplicate invariant, now enforced
+    // by queueing instead of by disabling the composer).
+    expect(screen.getByTestId("agent-input")).toHaveAttribute("contenteditable", "true");
+    await userEvent.type(screen.getByTestId("agent-input"), "a second message");
+    await userEvent.click(screen.getByTestId("agent-send"));
+    expect(screen.getByTestId("queued-message-row")).toHaveTextContent("a second message");
+    // The one send is still the only send — the second submit was queued, not
+    // fired. (On completion it would drain as its own turn; covered separately.)
     expect(commands.sendAgentMessage).toHaveBeenCalledTimes(1);
 
-    resolveSend("first send done");
-    await waitFor(() => {
-      expect(screen.getByTestId("agent-input")).toHaveAttribute("contenteditable", "true");
-    });
+    // Leave the send pending — the next test's registry reset clears it.
+    void resolveSend;
   });
 
   it("shows an error instead of hanging if sending fails", async () => {
@@ -2021,7 +2046,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
 
   // --- Plan tracker integration ---
 
-  it("docks the plan tracker between the transcript and the composer", async () => {
+  it("docks the plan tracker inside the composer, above the input (not in the transcript)", async () => {
     vi.mocked(commands.getActivePlan).mockResolvedValue({
       goal: "Ship it",
       currentStepIndex: 0,
@@ -2033,18 +2058,15 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     const tracker = await screen.findByTestId("plan-tracker");
     const scroller = screen.getByTestId("workspace-scroll-container");
     const composer = screen.getByTestId("workspace-composer-shell");
-    // Not inside the scroller any more…
+    const input = screen.getByTestId("agent-input");
+    // Not inside the transcript scroller…
     expect(scroller.contains(tracker)).toBe(false);
     // Load-bearing guard: the old location was inside the MessageScroller
     // ROOT (a sibling of the viewport), which the viewport check can't see.
     expect(document.querySelector('[data-slot="message-scroller"]')?.contains(tracker)).toBe(false);
-    // …and between it and the composer in document order.
-    expect(
-      scroller.compareDocumentPosition(tracker) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-    expect(
-      tracker.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
+    // …the status line now stacks inside the composer, above the input.
+    expect(composer.contains(tracker)).toBe(true);
+    expect(tracker.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("keeps the prompt's ↑ estimate when the persisted user row lands without its token count yet", async () => {
@@ -2125,5 +2147,267 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     await waitFor(() =>
       expect(screen.queryByTestId("agent-thinking-stream")).not.toBeInTheDocument(),
     );
+  });
+
+  // --- Queue & steer (2026-07-20) ---
+
+  // Starts a turn whose `sendAgentMessage` never resolves on its own, so the
+  // conversation stays "in flight"; returns the resolver so a test can complete
+  // it. Leaves the composer editable with the stop button showing.
+  async function startPendingTurn(text = "start the turn"): Promise<(v: string) => void> {
+    let resolve!: (v: string) => void;
+    vi.mocked(commands.sendAgentMessage).mockReturnValueOnce(
+      new Promise<string>((r) => {
+        resolve = r;
+      }),
+    );
+    await userEvent.type(screen.getByTestId("agent-input"), text);
+    await userEvent.click(screen.getByTestId("agent-send"));
+    await screen.findByTestId("stop-generation");
+    return resolve;
+  }
+
+  it("queues a composer submission while a turn is in flight instead of sending it", async () => {
+    render(<Workspace conversationId="conv-1" />);
+    await screen.findByTestId("agent-input");
+    const resolveFirst = await startPendingTurn("first turn");
+    expect(commands.sendAgentMessage).toHaveBeenCalledTimes(1);
+
+    await userEvent.type(screen.getByTestId("agent-input"), "queued follow-up");
+    await userEvent.click(screen.getByTestId("agent-send"));
+
+    expect(screen.getByTestId("queued-message-row")).toHaveTextContent("queued follow-up");
+    // No second send — it was queued, not dispatched.
+    expect(commands.sendAgentMessage).toHaveBeenCalledTimes(1);
+    void resolveFirst;
+  });
+
+  it("drains the queue FIFO as sequential turns when the running turn completes", async () => {
+    render(<Workspace conversationId="conv-1" />);
+    await screen.findByTestId("agent-input");
+    const resolveFirst = await startPendingTurn("first turn");
+
+    await userEvent.type(screen.getByTestId("agent-input"), "message A");
+    await userEvent.click(screen.getByTestId("agent-send"));
+    await userEvent.type(screen.getByTestId("agent-input"), "message B");
+    await userEvent.click(screen.getByTestId("agent-send"));
+    expect(screen.getAllByTestId("queued-message-row")).toHaveLength(2);
+
+    // Drained turns resolve immediately so the queue fully empties.
+    vi.mocked(commands.sendAgentMessage).mockResolvedValue("done");
+    resolveFirst("first done");
+
+    await waitFor(() => expect(screen.queryByTestId("queued-message-row")).not.toBeInTheDocument());
+    const sentTexts = vi.mocked(commands.sendAgentMessage).mock.calls.map((c) => c[1]);
+    expect(sentTexts).toContain("message A");
+    expect(sentTexts).toContain("message B");
+    // FIFO: A dispatched before B.
+    expect(sentTexts.indexOf("message A")).toBeLessThan(sentTexts.indexOf("message B"));
+  });
+
+  it("Send now steers via steerGeneration and removes the row on injected", async () => {
+    render(<Workspace conversationId="conv-1" />);
+    await screen.findByTestId("agent-input");
+    const resolveFirst = await startPendingTurn("first turn");
+
+    await userEvent.type(screen.getByTestId("agent-input"), "steer me now");
+    await userEvent.click(screen.getByTestId("agent-send"));
+    expect(screen.getByTestId("queued-message-row")).toBeInTheDocument();
+
+    vi.mocked(commands.steerGeneration).mockResolvedValue("injected");
+    await userEvent.click(screen.getByTestId("queued-message-send-now"));
+
+    await waitFor(() => {
+      expect(commands.steerGeneration).toHaveBeenCalledWith("conv-1", "steer me now", undefined);
+      expect(screen.queryByTestId("queued-message-row")).not.toBeInTheDocument();
+    });
+    // Steering injects into the running turn — no new sendAgentMessage.
+    expect(commands.sendAgentMessage).toHaveBeenCalledTimes(1);
+    void resolveFirst;
+  });
+
+  it("Send now falls back to sendAgentMessage when steer returns noActiveTurn", async () => {
+    render(<Workspace conversationId="conv-1" />);
+    await screen.findByTestId("agent-input");
+    const resolveFirst = await startPendingTurn("first turn");
+
+    await userEvent.type(screen.getByTestId("agent-input"), "late steer");
+    await userEvent.click(screen.getByTestId("agent-send"));
+
+    // Manual stop leaves the row queued; completing the (now-stopped) turn takes
+    // the conversation idle without draining, so a subsequent steer finds no
+    // active turn.
+    await userEvent.click(screen.getByTestId("stop-generation"));
+    vi.mocked(commands.sendAgentMessage).mockResolvedValue("ok");
+    resolveFirst("stopped");
+    await waitFor(() => expect(screen.queryByTestId("stop-generation")).not.toBeInTheDocument());
+    expect(screen.getByTestId("queued-message-row")).toBeInTheDocument();
+
+    vi.mocked(commands.steerGeneration).mockResolvedValue("noActiveTurn");
+    const callsBefore = vi.mocked(commands.sendAgentMessage).mock.calls.length;
+    await userEvent.click(screen.getByTestId("queued-message-send-now"));
+
+    await waitFor(() => {
+      const calls = vi.mocked(commands.sendAgentMessage).mock.calls;
+      expect(calls.length).toBe(callsBefore + 1);
+      expect(calls[calls.length - 1]).toEqual(["conv-1", "late steer", undefined]);
+      expect(screen.queryByTestId("queued-message-row")).not.toBeInTheDocument();
+    });
+  });
+
+  it("Send now keeps the row and surfaces an error when steer is rejected", async () => {
+    render(<Workspace conversationId="conv-1" />);
+    await screen.findByTestId("agent-input");
+    const resolveFirst = await startPendingTurn("first turn");
+
+    await userEvent.type(screen.getByTestId("agent-input"), "reject me");
+    await userEvent.click(screen.getByTestId("agent-send"));
+
+    vi.mocked(commands.steerGeneration).mockResolvedValue("rejected");
+    await userEvent.click(screen.getByTestId("queued-message-send-now"));
+
+    await waitFor(() => expect(screen.getByTestId("queue-steer-error")).toBeInTheDocument());
+    // Row stays; no fallback send.
+    expect(screen.getByTestId("queued-message-row")).toHaveTextContent("reject me");
+    expect(commands.sendAgentMessage).toHaveBeenCalledTimes(1);
+    void resolveFirst;
+  });
+
+  it("edit recalls a queued message into the composer and removes the row", async () => {
+    render(<Workspace conversationId="conv-1" />);
+    await screen.findByTestId("agent-input");
+    const resolveFirst = await startPendingTurn("first turn");
+
+    await userEvent.type(screen.getByTestId("agent-input"), "edit me");
+    await userEvent.click(screen.getByTestId("agent-send"));
+    expect(screen.getByTestId("queued-message-row")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId("queued-message-edit"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("agent-input")).toHaveTextContent("edit me");
+      expect(screen.queryByTestId("queued-message-row")).not.toBeInTheDocument();
+    });
+    void resolveFirst;
+  });
+
+  it("delete removes a queued message without sending or steering", async () => {
+    render(<Workspace conversationId="conv-1" />);
+    await screen.findByTestId("agent-input");
+    const resolveFirst = await startPendingTurn("first turn");
+
+    await userEvent.type(screen.getByTestId("agent-input"), "delete me");
+    await userEvent.click(screen.getByTestId("agent-send"));
+    expect(screen.getByTestId("queued-message-row")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId("queued-message-delete"));
+
+    expect(screen.queryByTestId("queued-message-row")).not.toBeInTheDocument();
+    expect(commands.steerGeneration).not.toHaveBeenCalled();
+    expect(commands.sendAgentMessage).toHaveBeenCalledTimes(1);
+    void resolveFirst;
+  });
+
+  it("an idle submit still sends immediately without queuing", async () => {
+    vi.mocked(commands.sendAgentMessage).mockResolvedValue("ok");
+    render(<Workspace conversationId="conv-1" />);
+    await screen.findByTestId("agent-input");
+
+    await userEvent.type(screen.getByTestId("agent-input"), "just send it");
+    await userEvent.click(screen.getByTestId("agent-send"));
+
+    await waitFor(() =>
+      expect(commands.sendAgentMessage).toHaveBeenCalledWith("conv-1", "just send it", undefined),
+    );
+    expect(screen.queryByTestId("queued-messages")).not.toBeInTheDocument();
+  });
+
+  it("a manual Stop leaves the queued messages intact and does not auto-drain", async () => {
+    render(<Workspace conversationId="conv-1" />);
+    await screen.findByTestId("agent-input");
+    const resolveFirst = await startPendingTurn("first turn");
+
+    await userEvent.type(screen.getByTestId("agent-input"), "survive the stop");
+    await userEvent.click(screen.getByTestId("agent-send"));
+    expect(screen.getByTestId("queued-message-row")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId("stop-generation"));
+    expect(commands.stopGeneration).toHaveBeenCalledWith("conv-1");
+    // Completing the stopped turn goes idle WITHOUT draining the queue.
+    resolveFirst("stopped");
+
+    await waitFor(() => expect(screen.queryByTestId("stop-generation")).not.toBeInTheDocument());
+    expect(screen.getByTestId("queued-message-row")).toHaveTextContent("survive the stop");
+    // The queued message was never dispatched (only the initial send happened).
+    expect(commands.sendAgentMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("a Stop with an empty queue does not suppress a later turn's drain", async () => {
+    // Regression (drainSuppressedRef stranding): stopping a turn with NOTHING
+    // queued must not leave the suppress flag set to poison the next turn's
+    // drain.
+    render(<Workspace conversationId="conv-1" />);
+    await screen.findByTestId("agent-input");
+
+    // First turn, empty queue, then Stop.
+    const resolveFirst = await startPendingTurn("first turn");
+    await userEvent.click(screen.getByTestId("stop-generation"));
+    resolveFirst("stopped");
+    await waitFor(() => expect(screen.queryByTestId("stop-generation")).not.toBeInTheDocument());
+
+    // Second turn, queue a message, complete it NATURALLY — it must drain.
+    const resolveSecond = await startPendingTurn("second turn");
+    await userEvent.type(screen.getByTestId("agent-input"), "should drain");
+    await userEvent.click(screen.getByTestId("agent-send"));
+    expect(screen.getByTestId("queued-message-row")).toBeInTheDocument();
+
+    vi.mocked(commands.sendAgentMessage).mockResolvedValue("done");
+    resolveSecond("second done");
+
+    await waitFor(() => {
+      const sent = vi.mocked(commands.sendAgentMessage).mock.calls.map((c) => c[1]);
+      expect(sent).toContain("should drain");
+    });
+    await waitFor(() => expect(screen.queryByTestId("queued-message-row")).not.toBeInTheDocument());
+  });
+
+  it("queued messages are isolated per conversation", async () => {
+    const { rerender } = render(<Workspace key="conv-1" conversationId="conv-1" />);
+    await screen.findByTestId("agent-input");
+    const resolveFirst = await startPendingTurn("first turn");
+
+    await userEvent.type(screen.getByTestId("agent-input"), "conv-1 only");
+    await userEvent.click(screen.getByTestId("agent-send"));
+    expect(screen.getByTestId("queued-message-row")).toHaveTextContent("conv-1 only");
+
+    rerender(<Workspace key="conv-2" conversationId="conv-2" />);
+    await screen.findByTestId("agent-input");
+    expect(screen.queryByTestId("queued-message-row")).not.toBeInTheDocument();
+
+    rerender(<Workspace key="conv-1-again" conversationId="conv-1" />);
+    await waitFor(() =>
+      expect(screen.getByTestId("queued-message-row")).toHaveTextContent("conv-1 only"),
+    );
+    void resolveFirst;
+  });
+
+  it("a goal-mode submit while busy queues and the row hides Send now", async () => {
+    render(<Workspace conversationId="conv-1" />);
+    await screen.findByTestId("agent-input");
+    const resolveFirst = await startPendingTurn("first turn");
+
+    // Turn on goal mode, then submit — routes to onSendAsGoal, which queues with
+    // goal intent while busy.
+    await userEvent.click(screen.getByTestId("rich-input-goal-toggle"));
+    await userEvent.type(screen.getByTestId("agent-input"), "pursue this goal");
+    await userEvent.click(screen.getByTestId("agent-send"));
+
+    const row = await screen.findByTestId("queued-message-row");
+    expect(row).toHaveTextContent("pursue this goal");
+    // Goal rows can't be steered — no "Send now" — but stay editable/deletable.
+    expect(screen.queryByTestId("queued-message-send-now")).not.toBeInTheDocument();
+    expect(screen.getByTestId("queued-message-edit")).toBeInTheDocument();
+    expect(screen.getByTestId("queued-message-delete")).toBeInTheDocument();
+    void resolveFirst;
   });
 });

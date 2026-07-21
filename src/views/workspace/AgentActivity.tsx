@@ -198,203 +198,229 @@ export function AgentActivityView({
   const open = expanded && canExpand;
 
   return (
-    <div className="px-4" data-testid="agent-activity">
-      <div className="mx-auto w-full max-w-xl py-2">
-        {/* Thinking row — the model's live reasoning, above the pill. Present
-            only while the model is actually reasoning (gone during a tool
-            call). */}
-        {working.thinkingLine != null && (
-          <div className="flex min-w-0 items-center gap-1.5 px-3 py-0.5 text-xs text-muted-foreground">
-            <Sparkles size={12} className="shrink-0" />
-            <span className="shimmer shrink-0 font-medium">Thinking</span>
+    <div className="mx-auto w-full max-w-xl" data-testid="agent-activity">
+      {/* The pill. Unified radius (rounded-lg) with the queue rows and the
+            composer, so the stacked composer reads as one surface. */}
+      <div
+        className={cn(
+          "flex items-center gap-2 border border-border bg-card px-3 py-1.5 text-xs",
+          open ? "rounded-t-lg border-b-transparent" : "rounded-lg",
+          // The whole strip is the expand/collapse target when there's
+          // something to reveal — click anywhere on it, with a pointer cursor.
+          canExpand && "cursor-pointer",
+        )}
+        data-testid={hasPlan ? "plan-tracker" : undefined}
+        role={canExpand ? "button" : undefined}
+        tabIndex={canExpand ? 0 : undefined}
+        aria-expanded={canExpand ? open : undefined}
+        aria-label={canExpand ? (open ? "Collapse activity" : "Expand activity") : undefined}
+        onClick={canExpand ? () => setExpanded((prev) => !prev) : undefined}
+        onKeyDown={
+          canExpand
+            ? (e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setExpanded((prev) => !prev);
+                }
+              }
+            : undefined
+        }
+      >
+        {/* Primary slot — grows to fill the line. Goal, else current todo,
+              else empty. */}
+        {goal.current != null ? (
+          <span className="flex min-w-0 flex-1 items-center gap-1.5">
+            {goal.achieved ? (
+              <CircleCheck size={13} className="shrink-0 text-muted-foreground" />
+            ) : (
+              <Target size={13} className="shrink-0" />
+            )}
+            <span
+              className={cn(
+                "min-w-0 flex-1 truncate font-medium",
+                goal.achieved && "font-normal text-muted-foreground",
+              )}
+              title={goal.current}
+              data-testid="agent-activity-goal"
+            >
+              {goal.current}
+            </span>
+          </span>
+        ) : currentStep ? (
+          <span className="flex min-w-0 flex-1 items-center gap-1.5">
+            <CornerDownRight size={13} className="shrink-0 text-muted-foreground" />
+            <span
+              className="min-w-0 flex-1 truncate font-medium"
+              title={currentStep.description}
+              data-testid="agent-activity-current-todo"
+            >
+              {currentStep.description}
+            </span>
+          </span>
+        ) : working.thinkingLine != null ? (
+          // No goal and no todo: the model's live reasoning fills the primary
+          // slot. No "Thinking" label — the pulsing working dot already says
+          // it's live; a dimmed sparkle distinguishes it from a todo.
+          <span className="flex min-w-0 flex-1 items-center gap-1.5">
+            <Sparkles size={12} className="shimmer shrink-0 text-muted-foreground" />
             <span
               aria-hidden="true"
-              className="min-w-0 flex-1 truncate italic"
+              className="min-w-0 flex-1 truncate italic text-muted-foreground"
               data-testid="agent-thinking-stream"
             >
               {working.thinkingLine}
             </span>
-          </div>
+          </span>
+        ) : working.active ? (
+          // Working, but between reasoning lines (e.g. running a tool, or
+          // before the first think token) — a static "Thinking…" keeps the
+          // slot from collapsing to blank.
+          <span className="flex min-w-0 flex-1 items-center gap-1.5">
+            <Sparkles size={12} className="shimmer shrink-0 text-muted-foreground" />
+            <span
+              className="truncate italic text-muted-foreground shimmer"
+              data-testid="agent-thinking-fallback"
+            >
+              Thinking…
+            </span>
+          </span>
+        ) : (
+          <span className="flex-1" />
         )}
 
-        {/* The pill. */}
-        <div
-          className={cn(
-            "flex items-center gap-2 border border-border bg-card px-3 py-1.5 text-xs",
-            open ? "rounded-t-lg border-b-transparent" : "rounded-full",
-          )}
-          data-testid={hasPlan ? "plan-tracker" : undefined}
-        >
-          {/* Primary slot — grows to fill the line. Goal, else current todo,
-              else empty. */}
-          {goal.current != null ? (
-            <span className="flex min-w-0 flex-1 items-center gap-1.5">
-              {goal.achieved ? (
-                <CircleCheck size={13} className="shrink-0 text-muted-foreground" />
-              ) : (
-                <Target size={13} className="shrink-0" />
-              )}
-              <span
-                className={cn(
-                  "min-w-0 flex-1 truncate font-medium",
-                  goal.achieved && "font-normal text-muted-foreground",
-                )}
-                title={goal.current}
-                data-testid="agent-activity-goal"
-              >
-                {goal.current}
-              </span>
-            </span>
-          ) : currentStep ? (
-            <span className="flex min-w-0 flex-1 items-center gap-1.5">
-              <CornerDownRight size={13} className="shrink-0 text-muted-foreground" />
-              <span
-                className="min-w-0 flex-1 truncate font-medium"
-                title={currentStep.description}
-                data-testid="agent-activity-current-todo"
-              >
-                {currentStep.description}
-              </span>
-            </span>
-          ) : (
-            <span className="flex-1" />
-          )}
-
-          {/* Progress — mini bar + done/total. */}
-          {hasPlan && (
-            <>
-              <span className="h-4 w-px shrink-0 bg-border" />
-              <span
-                className="flex shrink-0 items-center gap-1.5 tabular-nums text-muted-foreground"
-                data-testid="plan-status"
-              >
-                <span className="h-1 w-8 overflow-hidden rounded-full bg-muted">
-                  <span
-                    className="block h-full rounded-full bg-foreground"
-                    style={{ width: `${(doneCount / steps.length) * 100}%` }}
-                  />
-                </span>
-                <span className="font-mono">
-                  {doneCount}/{steps.length}
-                </span>
-              </span>
-            </>
-          )}
-
-          {/* Working — the pulsing filled circle, chron, and token totals,
-              justified to the right edge. */}
-          {working.active && (
-            <>
-              <span className="h-4 w-px shrink-0 bg-border" />
-              <span className="flex shrink-0 items-center gap-1.5" data-testid="agent-thinking">
-                <span
-                  role="status"
-                  aria-atomic="true"
-                  aria-label="Working"
-                  className="flex items-center"
-                  data-testid="agent-thinking-status"
-                >
-                  <span className="size-2 animate-pulse rounded-full bg-foreground" />
-                  <span className="sr-only">Working</span>
-                </span>
-                {working.elapsedLabel != null && (
-                  <span
-                    aria-live="off"
-                    className="font-mono tabular-nums"
-                    data-testid="agent-thinking-timer"
-                  >
-                    {working.elapsedLabel}
-                  </span>
-                )}
-                {/* Zero-valued directions stay hidden — "↓ 0" is noise while
-                    the first generation is still running. */}
-                {working.tokens && (working.tokens.input > 0 || working.tokens.output > 0) && (
-                  <span
-                    aria-live="off"
-                    className="font-mono tabular-nums text-muted-foreground"
-                    data-testid="agent-thinking-tokens"
-                  >
-                    {working.tokens.input > 0 && <>↑ {formatTokenCount(working.tokens.input)}</>}
-                    {working.tokens.input > 0 && working.tokens.output > 0 && " "}
-                    {working.tokens.output > 0 && <>↓ {formatTokenCount(working.tokens.output)}</>}
-                  </span>
-                )}
-              </span>
-            </>
-          )}
-
-          {/* Expander — only when there's a plan or editable goal to reveal. */}
-          {canExpand && (
-            <button
-              type="button"
-              onClick={() => setExpanded((prev) => !prev)}
-              className="-mr-1 shrink-0 rounded p-0.5 text-muted-foreground hover:text-foreground"
-              aria-expanded={open}
-              aria-label={open ? "Collapse activity" : "Expand activity"}
-              data-testid="agent-activity-expander"
+        {/* Progress — mini bar + done/total. */}
+        {hasPlan && (
+          <>
+            <span className="h-4 w-px shrink-0 bg-border" />
+            <span
+              className="flex shrink-0 items-center gap-1.5 tabular-nums text-muted-foreground"
+              data-testid="plan-status"
             >
-              <ChevronDown size={14} className={cn("transition-transform", open && "rotate-180")} />
-            </button>
-          )}
-        </div>
+              <span className="h-1 w-8 overflow-hidden rounded-full bg-muted">
+                <span
+                  className="block h-full rounded-full bg-foreground"
+                  style={{ width: `${(doneCount / steps.length) * 100}%` }}
+                />
+              </span>
+              <span className="font-mono">
+                {doneCount}/{steps.length}
+              </span>
+            </span>
+          </>
+        )}
 
-        {/* Expanded panel — goal controls + the full plan checklist. */}
-        {open && (
-          <div
-            className="rounded-b-lg border border-t-0 border-border bg-card px-2 pb-1.5"
-            data-testid="agent-activity-panel"
-          >
-            {goal.current != null && !goal.achieved && (
-              <div className="flex items-center gap-2 px-1.5 py-1 text-xs">
-                <span className="min-w-0 flex-1 truncate text-muted-foreground">
-                  <span className="font-medium text-foreground">Goal</span> {goal.current}
+        {/* Working — the pulsing filled circle, chron, and token totals,
+              justified to the right edge. */}
+        {working.active && (
+          <>
+            <span className="h-4 w-px shrink-0 bg-border" />
+            <span className="flex shrink-0 items-center gap-1.5" data-testid="agent-thinking">
+              <span
+                role="status"
+                aria-atomic="true"
+                aria-label="Working"
+                className="flex items-center"
+                data-testid="agent-thinking-status"
+              >
+                <span className="size-2 animate-pulse rounded-full bg-foreground" />
+                <span className="sr-only">Working</span>
+              </span>
+              {working.elapsedLabel != null && (
+                <span
+                  aria-live="off"
+                  className="font-mono tabular-nums"
+                  data-testid="agent-thinking-timer"
+                >
+                  {working.elapsedLabel}
                 </span>
-                <button
-                  type="button"
-                  onClick={goal.onEdit}
-                  className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-                  aria-label="Edit goal"
-                  data-testid="agent-activity-goal-edit"
+              )}
+              {/* Zero-valued directions stay hidden — "↓ 0" is noise while
+                    the first generation is still running. */}
+              {working.tokens && (working.tokens.input > 0 || working.tokens.output > 0) && (
+                <span
+                  aria-live="off"
+                  className="font-mono tabular-nums text-muted-foreground"
+                  data-testid="agent-thinking-tokens"
                 >
-                  <Pencil size={12} />
-                </button>
-                <button
-                  type="button"
-                  onClick={goal.onDelete}
-                  className="shrink-0 rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                  aria-label="Delete goal"
-                  data-testid="agent-activity-goal-delete"
-                >
-                  <Trash2 size={12} />
-                </button>
-              </div>
-            )}
-            {steps.map((step, index) => {
-              const isCurrent = index === curIndex;
-              return (
-                <div
-                  key={index}
-                  className={cn(
-                    "flex items-center gap-1.5 px-1.5 py-0.5 text-xs",
-                    isCurrent ? "text-foreground" : "text-muted-foreground",
-                  )}
-                  data-current={isCurrent ? "true" : undefined}
-                  data-state={step.done ? "done" : "todo"}
-                  data-testid="plan-step"
-                >
-                  <Checkbox checked={step.done} className="size-3.5 shrink-0" disabled />
-                  <span
-                    className={cn("min-w-0 flex-1 truncate", step.done && "line-through")}
-                    title={step.description}
-                  >
-                    {step.description}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
+                  {working.tokens.input > 0 && <>↑ {formatTokenCount(working.tokens.input)}</>}
+                  {working.tokens.input > 0 && working.tokens.output > 0 && " "}
+                  {working.tokens.output > 0 && <>↓ {formatTokenCount(working.tokens.output)}</>}
+                </span>
+              )}
+            </span>
+          </>
+        )}
+
+        {/* Chevron — a decorative indicator only (the whole strip above is the
+            button); clicks on it bubble up to the strip's toggle. Shown only
+            when there's a plan or editable goal to reveal. */}
+        {canExpand && (
+          <span
+            className="-mr-1 shrink-0 p-0.5 text-muted-foreground"
+            aria-hidden="true"
+            data-testid="agent-activity-expander"
+          >
+            <ChevronDown size={14} className={cn("transition-transform", open && "rotate-180")} />
+          </span>
         )}
       </div>
+
+      {/* Expanded panel — goal controls + the full plan checklist. */}
+      {open && (
+        <div
+          className="rounded-b-lg border border-t-0 border-border bg-card px-2 pb-1.5"
+          data-testid="agent-activity-panel"
+        >
+          {goal.current != null && !goal.achieved && (
+            <div className="flex items-center gap-2 px-1.5 py-1 text-xs">
+              <span className="min-w-0 flex-1 truncate text-muted-foreground">
+                <span className="font-medium text-foreground">Goal</span> {goal.current}
+              </span>
+              <button
+                type="button"
+                onClick={goal.onEdit}
+                className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                aria-label="Edit goal"
+                data-testid="agent-activity-goal-edit"
+              >
+                <Pencil size={12} />
+              </button>
+              <button
+                type="button"
+                onClick={goal.onDelete}
+                className="shrink-0 rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                aria-label="Delete goal"
+                data-testid="agent-activity-goal-delete"
+              >
+                <Trash2 size={12} />
+              </button>
+            </div>
+          )}
+          {steps.map((step, index) => {
+            const isCurrent = index === curIndex;
+            return (
+              <div
+                key={index}
+                className={cn(
+                  "flex items-center gap-1.5 px-1.5 py-0.5 text-xs",
+                  isCurrent ? "text-foreground" : "text-muted-foreground",
+                )}
+                data-current={isCurrent ? "true" : undefined}
+                data-state={step.done ? "done" : "todo"}
+                data-testid="plan-step"
+              >
+                <Checkbox checked={step.done} className="size-3.5 shrink-0" disabled />
+                <span
+                  className={cn("min-w-0 flex-1 truncate", step.done && "line-through")}
+                  title={step.description}
+                >
+                  {step.description}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

@@ -481,9 +481,9 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
 
         <Section
           title="Agent activity"
-          description="The single status line docked above the composer: a collapsed pill of primary · progress · working, where the primary slot grows and shows the goal (or, with none, the current todo). A thinking row streams the model's reasoning above it; the ⌄ expands the plan checklist + goal controls below. Rendered here from mock snapshots."
+          description="The single status line docked directly on the composer: a rounded bar (same radius as the input) of primary · progress · working. The primary slot grows and shows the goal, else the current todo, else — with neither — the model's live reasoning (italic, no label; the pulsing dot carries 'live'). The ⌄ expands the plan checklist + goal controls below. Rendered here from mock snapshots."
         >
-          <Example label="Goal + plan + working + thinking">
+          <Example label="Goal + plan + working (goal wins the primary slot)">
             <AgentActivityView
               plan={{
                 goal: "Refactor the auth module",
@@ -505,6 +505,8 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
                 active: true,
                 elapsedLabel: "12.3s",
                 tokens: { input: 1042, output: 320 },
+                // A goal (or a todo) takes the primary slot; the reasoning line
+                // is not shown while either is present.
                 thinkingLine:
                   "The session token is stored in a cookie, so I should check the login command first.",
               }}
@@ -553,11 +555,16 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
               working={{ active: false, elapsedLabel: null, tokens: null, thinkingLine: null }}
             />
           </Example>
-          <Example label="Working only — no goal, no plan (indicator justifies right)">
+          <Example label="No goal, no todo — thinking fills the primary slot (no label)">
             <AgentActivityView
               plan={null}
               goal={{ current: null, achieved: false, onEdit: () => {}, onDelete: () => {} }}
-              working={{ active: true, elapsedLabel: "2.0s", tokens: null, thinkingLine: null }}
+              working={{
+                active: true,
+                elapsedLabel: "2.2s",
+                tokens: null,
+                thinkingLine: "weighing whether to answer directly or set up a small proof first",
+              }}
             />
           </Example>
         </Section>

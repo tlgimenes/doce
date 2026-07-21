@@ -13,8 +13,31 @@ use uuid::Uuid;
 /// running turn. Populated by `send_agent_message` for the duration of each
 /// turn (RAII guard, so every early-return clears the entry — normal
 /// completion just drops the token, it does NOT `.cancel()`).
+/// One running turn's live state in `ActiveGenerations`: the `CancellationToken`
+/// `stop_generation` fires, plus `steers` — a FIFO queue of already-persisted,
+/// rich-expanded user turns that arrived mid-turn via `steer_generation` and are
+/// drained into the running agent loop at its next step boundary (see
+/// `RealBackend::drain_steers` and `run_loop`). Membership of the map already
+/// means "a regular, steerable turn is live", so the steer queue rides the same
+/// per-turn lifecycle and RAII cleanup as the token.
 #[derive(Default)]
-pub struct ActiveGenerations(pub Mutex<HashMap<String, tokio_util::sync::CancellationToken>>);
+pub struct ActiveGeneration {
+    pub cancel: tokio_util::sync::CancellationToken,
+    pub steers: Vec<String>,
+}
+
+#[derive(Default)]
+pub struct ActiveGenerations(pub Mutex<HashMap<String, ActiveGeneration>>);
+
+/// Conversation ids currently running a *standalone* `/compact` (the
+/// `compact_conversation` command), which holds the single llama-server and is
+/// NOT registered in `ActiveGenerations`. `steer_generation` consults this to
+/// return `Rejected` (vs `NoActiveTurn`) so the frontend keeps the message
+/// queued instead of dispatching it as a doomed new turn. Automatic per-turn
+/// compaction inside a regular turn is unaffected — that runs while the
+/// conversation IS in `ActiveGenerations`, so steers there queue normally.
+#[derive(Default)]
+pub struct CompactingConversations(pub Mutex<HashSet<String>>);
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -427,8 +450,8 @@ pub fn is_generation_active(
 #[tauri::command]
 #[specta::specta]
 pub fn stop_generation(active_generations: State<'_, ActiveGenerations>, conversation_id: String) {
-    if let Some(token) = active_generations.0.lock().unwrap().get(&conversation_id) {
-        token.cancel();
+    if let Some(entry) = active_generations.0.lock().unwrap().get(&conversation_id) {
+        entry.cancel.cancel();
     }
 }
 
@@ -459,6 +482,34 @@ mod tests {
             rusqlite::params![uuid::Uuid::now_v7().to_string(), conv_id, role, content_type, content, tool_name, seq],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn active_generation_holds_a_cancel_token_and_a_steer_queue() {
+        // Guards the value-type refactor: `stop_generation` fires
+        // `entry.cancel.cancel()`, and a steered message rides the same entry
+        // in `steers` without disturbing the token.
+        let gens = ActiveGenerations::default();
+        let token = tokio_util::sync::CancellationToken::new();
+        gens.0.lock().unwrap().insert(
+            "c1".to_string(),
+            ActiveGeneration {
+                cancel: token.clone(),
+                steers: vec!["steered!".to_string()],
+            },
+        );
+
+        // The exact lookup + fire `stop_generation` performs.
+        if let Some(entry) = gens.0.lock().unwrap().get("c1") {
+            entry.cancel.cancel();
+        }
+        assert!(token.is_cancelled());
+
+        let guard = gens.0.lock().unwrap();
+        let entry = guard
+            .get("c1")
+            .expect("entry still present until RAII drop");
+        assert_eq!(entry.steers, vec!["steered!".to_string()]);
     }
 
     #[test]

@@ -397,15 +397,15 @@ describe("RichInput (generation-cancellation, Task 4.2b — stop button)", () =>
     expect(screen.queryByTestId("stop-generation")).not.toBeInTheDocument();
   });
 
-  it("swaps the send button for the stop button while generating, and clicking it calls onStop", async () => {
+  it("shows BOTH the submit and stop buttons while generating (queue & steer), and clicking stop calls onStop", async () => {
     const onStop = vi.fn();
     render(
       <RichInput
         onSubmit={vi.fn()}
         skillsEnabled={false}
-        // The composer is disabled during a turn — the stop button must still
-        // work, so this drives the real production shape (disabled + generating).
-        disabled={true}
+        // Queue & steer production shape: the composer stays editable while a
+        // turn runs (disabled=false) so a message can be composed to queue.
+        disabled={false}
         isGenerating={true}
         onStop={onStop}
         placeholder="p"
@@ -414,26 +414,26 @@ describe("RichInput (generation-cancellation, Task 4.2b — stop button)", () =>
       />,
     );
 
-    // The send control is gone; the stop control has taken its slot.
-    expect(screen.queryByTestId("test-submit")).not.toBeInTheDocument();
+    // The submit button is NO LONGER swapped out — it stays so a message can be
+    // queued mid-turn — and the stop button renders alongside it.
+    expect(screen.getByTestId("test-submit")).toBeInTheDocument();
     const stop = screen.getByTestId("stop-generation");
     expect(stop).toBeInTheDocument();
     expect(stop).toHaveAccessibleName("Stop generating");
-    // The critical invariant: the stop button does NOT inherit the composer's
-    // `disabled` state — it is the one control that stays live during a turn.
+    // The stop button stays clickable regardless of the composer state.
     expect(stop).not.toBeDisabled();
 
     await userEvent.click(stop);
     expect(onStop).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps the attach button out of :disabled while generating, so the group (and the stop button) stays full-opacity", () => {
+  it("keeps the group free of any :disabled descendant while generating, so it (and the stop button) stays full-opacity", () => {
     const { container } = render(
       <RichInput
         onSubmit={vi.fn()}
         skillsEnabled={false}
-        // The real production shape during a turn: disabled + generating.
-        disabled={true}
+        // Queue & steer production shape: editable while generating.
+        disabled={false}
         isGenerating={true}
         onStop={vi.fn()}
         placeholder="p"
@@ -442,21 +442,39 @@ describe("RichInput (generation-cancellation, Task 4.2b — stop button)", () =>
       />,
     );
 
-    // Root cause of the 50%-opacity bug: the always-rendered attach button
-    // carried a real HTML `disabled` during a turn, so the InputGroup matched
-    // `:has(:disabled)` and composited the WHOLE group — including the stop
-    // button — at 50% (`has-disabled:opacity-50`), which a child can't
-    // override. jsdom has no layout/CSS engine, so we can't read opacity
-    // directly; instead assert the root cause is gone: NO `:disabled`
-    // descendant anywhere in the group, so `has-disabled:` can never match.
+    // With the composer editable (disabled=false) during a turn, NOTHING in the
+    // group carries a real HTML `disabled`, so `:has(:disabled)` never matches
+    // and the group composites at full opacity. jsdom has no CSS engine, so we
+    // assert the root cause is absent rather than reading opacity.
     const group = container.querySelector('[data-slot="input-group"]');
     expect(group?.querySelector(":disabled")).toBeNull();
 
-    // The attach button is inert but not natively disabled: visible, marked
-    // `aria-disabled`, dimming only itself (`aria-disabled:opacity-50`).
+    // The attach button is fully enabled while generating (compose freely).
     const attach = screen.getByTestId("rich-input-attach");
     expect(attach).not.toBeDisabled();
-    expect(attach).toHaveAttribute("aria-disabled", "true");
+    expect(attach).toHaveAttribute("aria-disabled", "false");
+  });
+
+  it("stays editable while generating so a message can be composed to queue", async () => {
+    const onSubmit = vi.fn();
+    render(
+      <RichInput
+        onSubmit={onSubmit}
+        skillsEnabled={false}
+        disabled={false}
+        isGenerating={true}
+        onStop={vi.fn()}
+        placeholder="p"
+        inputTestId="test-input"
+        submitTestId="test-submit"
+      />,
+    );
+
+    const editable = screen.getByTestId("test-input");
+    expect(editable).toHaveAttribute("contenteditable", "true");
+    await userEvent.click(editable);
+    await userEvent.keyboard("queued while busy{Enter}");
+    expect(onSubmit).toHaveBeenCalledWith("queued while busy", undefined);
   });
 
   it("keeps the attach button natively disabled when disabled but NOT generating (no stop button — the composer should read disabled)", () => {
@@ -476,12 +494,12 @@ describe("RichInput (generation-cancellation, Task 4.2b — stop button)", () =>
     expect(screen.getByTestId("rich-input-attach")).toBeDisabled();
   });
 
-  it("returns to the send button once generation ends", () => {
+  it("drops the stop button once generation ends (submit stays throughout)", () => {
     const { rerender } = render(
       <RichInput
         onSubmit={vi.fn()}
         skillsEnabled={false}
-        disabled={true}
+        disabled={false}
         isGenerating={true}
         onStop={vi.fn()}
         placeholder="p"
@@ -490,7 +508,9 @@ describe("RichInput (generation-cancellation, Task 4.2b — stop button)", () =>
       />,
     );
 
+    // During generation: both present.
     expect(screen.getByTestId("stop-generation")).toBeInTheDocument();
+    expect(screen.getByTestId("test-submit")).toBeInTheDocument();
 
     rerender(
       <RichInput
@@ -505,8 +525,80 @@ describe("RichInput (generation-cancellation, Task 4.2b — stop button)", () =>
       />,
     );
 
+    // After generation: stop gone, submit still there.
     expect(screen.queryByTestId("stop-generation")).not.toBeInTheDocument();
     expect(screen.getByTestId("test-submit")).toBeInTheDocument();
+  });
+});
+
+/**
+ * Queue & steer: the `recall` prop pops a previously-queued message back into
+ * the editor for editing (the queue-row "Edit" action). Keyed on a changing
+ * `token`, it clears the editor and prefills text or full rich content.
+ */
+describe("RichInput (queue & steer — recall prop)", () => {
+  it("clears and prefills the editor with recalled text and focuses it", async () => {
+    const { rerender } = render(
+      <RichInput
+        onSubmit={vi.fn()}
+        skillsEnabled={false}
+        disabled={false}
+        placeholder="p"
+        inputTestId="test-input"
+        submitTestId="test-submit"
+      />,
+    );
+
+    rerender(
+      <RichInput
+        onSubmit={vi.fn()}
+        skillsEnabled={false}
+        disabled={false}
+        recall={{ token: 1, content: "recall me" }}
+        placeholder="p"
+        inputTestId="test-input"
+        submitTestId="test-submit"
+      />,
+    );
+
+    const editable = screen.getByTestId("test-input");
+    await waitFor(() => expect(editable).toHaveTextContent("recall me"));
+    // Focus lands via editor.commands.focus("end"); assert on activeElement
+    // (the proven pattern for the autoFocusToken tests) rather than toHaveFocus.
+    await waitFor(() => expect(document.activeElement).toBe(editable));
+  });
+
+  it("rebuilds recalled rich content into a pastedText chip", async () => {
+    const { rerender } = render(
+      <RichInput
+        onSubmit={vi.fn()}
+        skillsEnabled={false}
+        disabled={false}
+        placeholder="p"
+        inputTestId="test-input"
+        submitTestId="test-submit"
+      />,
+    );
+
+    rerender(
+      <RichInput
+        onSubmit={vi.fn()}
+        skillsEnabled={false}
+        disabled={false}
+        recall={{
+          token: 1,
+          content: "",
+          richContent: {
+            segments: [{ type: "pastedText", id: "p1", text: "a\nb\nc", lineCount: 3 }],
+          },
+        }}
+        placeholder="p"
+        inputTestId="test-input"
+        submitTestId="test-submit"
+      />,
+    );
+
+    expect(await screen.findByTestId("pasted-text-chip")).toBeInTheDocument();
   });
 });
 

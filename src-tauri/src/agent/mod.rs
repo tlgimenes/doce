@@ -217,6 +217,16 @@ pub trait AgentBackend {
     fn requires_tool_call(&self) -> bool {
         true
     }
+
+    /// Messages a user "steered" into this turn since the last step boundary,
+    /// to be appended as ordinary `user` turns before the next `generate`.
+    /// Defaults to none: only the top-level `RealBackend` overrides this to
+    /// drain its `ActiveGenerations` steer queue. Subagent and scripted
+    /// test backends keep the default, so a parent-conversation steer never
+    /// leaks into a nested `Task` loop or perturbs deterministic unit tests.
+    fn drain_steers(&mut self) -> Vec<ChatMessage> {
+        Vec::new()
+    }
 }
 
 /// Runs the tool-use loop to completion: repeatedly generates a response,
@@ -249,6 +259,13 @@ pub async fn run_loop<B: AgentBackend>(
     let mut futile_streak: u32 = 0;
 
     for _turn in 0..context.max_turns {
+        // Step boundary: fold in any messages the user steered into this turn
+        // since the last iteration, as ordinary `user` turns, BEFORE measuring
+        // and generating — so a steer is counted toward the budget and reaches
+        // the very next `generate`. No-op for every backend but `RealBackend`.
+        for steered in backend.drain_steers() {
+            messages.push(steered);
+        }
         if backend.measure(&messages) > backend.threshold() {
             messages = backend.compact(&messages);
         }
@@ -896,5 +913,140 @@ mod tests {
             .unwrap();
 
         assert_eq!(result, "Done, subagent found the answer.");
+    }
+
+    /// Test-only backend exercising the steer drain: `steer_batches` is one
+    /// scripted `drain_steers` return per loop boundary (empty once exhausted),
+    /// so a batch at index N models a steer that arrived during turn N.
+    /// `user_texts_per_generate` records the user-role message texts each
+    /// `generate` observed, in order, so a test can assert a steered message
+    /// reached `generate` and in what position. Ends on a plain-text answer
+    /// (Allow semantics), so `requires_tool_call` is false.
+    struct SteerBackend {
+        steer_batches: std::collections::VecDeque<Vec<ChatMessage>>,
+        outcomes: Vec<TurnOutcome>,
+        call_index: usize,
+        user_texts_per_generate: Vec<Vec<String>>,
+    }
+
+    impl AgentBackend for SteerBackend {
+        fn measure(&mut self, _messages: &[ChatMessage]) -> u32 {
+            0
+        }
+        fn threshold(&self) -> u32 {
+            u32::MAX
+        }
+        fn compact(&mut self, _messages: &[ChatMessage]) -> Vec<ChatMessage> {
+            panic!("compact should never run in this test")
+        }
+        fn requires_tool_call(&self) -> bool {
+            false
+        }
+        fn drain_steers(&mut self) -> Vec<ChatMessage> {
+            self.steer_batches.pop_front().unwrap_or_default()
+        }
+        async fn generate(&mut self, messages: Vec<ChatMessage>) -> TurnOutcome {
+            self.user_texts_per_generate.push(
+                messages
+                    .iter()
+                    .filter(|m| m.role == "user")
+                    .filter_map(|m| match &m.content {
+                        crate::inference::MessageContent::Text(t) => Some(t.clone()),
+                        _ => None,
+                    })
+                    .collect(),
+            );
+            let outcome = self.outcomes[self.call_index.min(self.outcomes.len() - 1)].clone();
+            self.call_index += 1;
+            outcome
+        }
+        async fn execute_tool(&mut self, _tool_call_id: String, _call: ToolCall) -> ToolExecution {
+            ToolExecution::Result("ok".to_string())
+        }
+    }
+
+    #[tokio::test]
+    async fn run_loop_drains_pending_steers_at_the_boundary_and_they_reach_generate() {
+        let context = AgentContext::top_level();
+        // Boundary 1: no steer yet, generate forces another turn (tool call).
+        // Boundary 2: a steer has arrived — it must be folded in before the
+        // second generate, which then finishes.
+        let mut backend = SteerBackend {
+            steer_batches: std::collections::VecDeque::from(vec![
+                vec![],
+                vec![ChatMessage::user("steered!")],
+            ]),
+            outcomes: vec![
+                tool_outcome("Read", serde_json::json!({"file_path": "/f.txt"})),
+                text_outcome("done"),
+            ],
+            call_index: 0,
+            user_texts_per_generate: Vec::new(),
+        };
+
+        let result = run_loop(&context, vec![ChatMessage::user("start")], &mut backend)
+            .await
+            .unwrap();
+
+        assert_eq!(result, "done");
+        // First generate saw only the seed; second saw the steered turn appended.
+        assert_eq!(
+            backend.user_texts_per_generate[0],
+            vec!["start".to_string()]
+        );
+        assert_eq!(
+            backend.user_texts_per_generate[1],
+            vec!["start".to_string(), "steered!".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn run_loop_preserves_fifo_order_of_multiple_drained_steers() {
+        let context = AgentContext::top_level();
+        let mut backend = SteerBackend {
+            steer_batches: std::collections::VecDeque::from(vec![
+                vec![],
+                vec![ChatMessage::user("A"), ChatMessage::user("B")],
+            ]),
+            outcomes: vec![
+                tool_outcome("Read", serde_json::json!({"file_path": "/f.txt"})),
+                text_outcome("done"),
+            ],
+            call_index: 0,
+            user_texts_per_generate: Vec::new(),
+        };
+
+        run_loop(&context, vec![ChatMessage::user("start")], &mut backend)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            backend.user_texts_per_generate[1],
+            vec!["start".to_string(), "A".to_string(), "B".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn run_loop_default_drain_is_a_noop() {
+        // A backend that never overrides `drain_steers` (FakeBackend) runs the
+        // loop identically to the no-steer baseline: the drain call at the top
+        // of each iteration must be a pure no-op that appends nothing.
+        let context = AgentContext::top_level();
+        let mut backend = FakeBackend::new(
+            vec![
+                tool_outcome("Read", serde_json::json!({"file_path": "/f.txt"})),
+                text_outcome("The file says hello."),
+            ],
+            |_tool_call_id, call| {
+                assert_eq!(call.name, "Read");
+                ToolExecution::Result("hello".to_string())
+            },
+        );
+
+        let result = run_loop(&context, vec![ChatMessage::user("start")], &mut backend)
+            .await
+            .unwrap();
+
+        assert_eq!(result, "The file says hello.");
     }
 }

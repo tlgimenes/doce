@@ -43,6 +43,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             workspaces::list_workspaces,
             workspaces::search_folders,
             agent::send_agent_message,
+            agent::steer_generation,
             agent::answer_user_question,
             agent::get_active_plan,
             attachments::read_attached_file,

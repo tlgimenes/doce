@@ -13,7 +13,7 @@ pub mod storage;
 
 use agent::tools::ask_user::PendingQuestions;
 use commands::agent::ActivePlans;
-use commands::conversations::ActiveGenerations;
+use commands::conversations::{ActiveGenerations, CompactingConversations};
 use commands::models::ModelSelectionState;
 use context::CompactionState;
 use inference::server::ServerState;
@@ -67,6 +67,7 @@ pub fn run() {
         .manage(ServerState::default())
         .manage(ModelSelectionState::default())
         .manage(ActiveGenerations::default())
+        .manage(CompactingConversations::default())
         .manage(ActivePlans::default())
         .manage(PendingQuestions::default())
         .manage(CompactionState::default())
