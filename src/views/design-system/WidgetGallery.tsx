@@ -1,6 +1,24 @@
-import type { ReactNode } from "react";
-import { Command, Folder, Settings2, X } from "lucide-react";
+import { createElement, type ReactNode } from "react";
+import {
+  Calendar,
+  Command,
+  FileText,
+  Folder,
+  Hash,
+  Mail,
+  Settings2,
+  Terminal,
+  X,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
+import ActivityCard from "@/views/activity/ActivityCard";
+import ActivityFeed from "@/views/activity/ActivityFeed";
+import ConnectServiceCard from "@/views/activity/ConnectServiceCard";
+import ConnectedAccountCard from "@/views/activity/ConnectedAccountCard";
+import FeedComposer from "@/views/activity/FeedComposer";
+import WorkingCard from "@/views/activity/WorkingCard";
+import { GoogleGIcon } from "@/views/activity/icons";
+import { GOOGLE_SERVICES } from "@/views/activity/services";
 import ReadWidget from "@/views/chat/tool-widgets/ReadWidget";
 import WriteWidget from "@/views/chat/tool-widgets/WriteWidget";
 import EditDiffWidget from "@/views/chat/tool-widgets/EditDiffWidget";
@@ -652,6 +670,229 @@ export default function WidgetGallery({ onClose }: WidgetGalleryProps) {
                 arguments: { url: "https://example.com" },
                 outcome: { ok: false, text: "unknown tool 'WebFetch'" },
               }}
+            />
+          </Example>
+        </Section>
+
+        <Section
+          title="Feed composer"
+          description="The top-pinned command bar: rounded input placeholder, a + affordance, live connection chips, and a send button. Presentational — the placeholder is static, not a live editor."
+        >
+          <Example label="First run — no connections">
+            <FeedComposer />
+          </Example>
+          <Example label="Connected — live chips">
+            <FeedComposer
+              placeholder="Ask doce, or describe a task…"
+              connections={[
+                { label: "Google", icon: <GoogleGIcon size={12} />, live: true },
+                { label: "Mac", icon: <Terminal className="size-3" />, live: true },
+              ]}
+            />
+          </Example>
+        </Section>
+
+        <Section
+          title="Connect service cards"
+          description="The feed's empty state IS the login: each connection unlocks agent tools. Google's connect button carries the brand G; everything else stays monochrome. Driven by a config array, so adding a service is a one-line entry."
+        >
+          <Example label="Google services (many, not just two)">
+            <div className="flex flex-col gap-3">
+              {GOOGLE_SERVICES.map((service) => (
+                <ConnectServiceCard
+                  key={service.id}
+                  icon={createElement(service.icon, { size: 16 })}
+                  name={service.name}
+                  description={service.description}
+                  brand="google"
+                />
+              ))}
+            </div>
+          </Example>
+          <Example label="Other connectors + not-yet-available">
+            <div className="flex flex-col gap-3">
+              <ConnectServiceCard
+                icon={<Terminal size={16} />}
+                name="Mac maintenance"
+                description="Keep Homebrew packages current and flag what needs attention."
+                actionLabel="Enable"
+              />
+              <ConnectServiceCard
+                icon={<Hash size={16} />}
+                name="Slack"
+                description="Summarize channels and draft messages."
+                disabled
+              />
+            </div>
+          </Example>
+        </Section>
+
+        <Section
+          title="Connected account"
+          description="A connected Google account and the services it grants — listed as STATIC rows (icon · name · scope · tool count). No per-service toggles: once connected, a service is always available to the agent. The only control is a single Disconnect."
+        >
+          <Example label="Google account with granted services">
+            <ConnectedAccountCard
+              email="sam.rivera@gmail.com"
+              name="Sam Rivera"
+              services={GOOGLE_SERVICES}
+            />
+          </Example>
+        </Section>
+
+        <Section
+          title="Activity cards"
+          description="Typed tool-call results, each with its own preview + actions. The primary action is always the human commit (Send / Confirm). Unread cards carry an accent border + dot."
+        >
+          <Example label="Draft (email) — unread">
+            <ActivityCard
+              kind="draft"
+              logo={<Mail className="size-4" />}
+              title="Draft reply — Re: Q3 roadmap"
+              meta="to Sarah Chen"
+              provenance="Triage inbox"
+              timestamp="4m"
+              unread
+              bodyPreview="Thanks Sarah — Thursday works. I'll bring the revised milestones and the staffing ask so we can close the roadmap in one pass…"
+            />
+          </Example>
+          <Example label="Event (calendar) — unread">
+            <ActivityCard
+              kind="event"
+              logo={<Calendar className="size-4" />}
+              title="Hold a slot for the design review?"
+              meta="45 min · 3 people free"
+              provenance="Find time"
+              timestamp="6m"
+              unread
+              slots={[
+                { label: "Thu 2:00", selected: true },
+                { label: "Thu 4:30" },
+                { label: "Fri 11:00" },
+              ]}
+            />
+          </Example>
+          <Example label="Shell (FYI) — with View log">
+            <ActivityCard
+              kind="shell"
+              logo={<Terminal className="size-4" />}
+              title="Upgraded 4 packages on your Mac"
+              meta="node · ripgrep · gh · sqlite"
+              provenance="Update my Mac"
+              timestamp="1h"
+              onViewLog={() => {}}
+            />
+          </Example>
+          <Example label="File (FYI) — with Open">
+            <ActivityCard
+              kind="file"
+              logo={<FileText className="size-4" />}
+              title="Saved Q3-roadmap-notes.md"
+              meta="~/Documents · 4 KB"
+              provenance="Triage inbox"
+              timestamp="1h"
+              onOpen={() => {}}
+            />
+          </Example>
+        </Section>
+
+        <Section
+          title="Activity feed"
+          description="Cards grouped by 'Needs you' (counted) then 'Earlier', with a live WorkingCard on top. When both groups are empty, the feed renders its empty state — the connect surface."
+        >
+          <Example label="Populated — working + Needs you + Earlier">
+            <ActivityFeed
+              working={
+                <WorkingCard
+                  title="Triaging inbox — 11 of 14 read"
+                  detail="reading with the local model · nothing left your Mac"
+                  onStop={() => {}}
+                />
+              }
+              needsYou={[
+                <ActivityCard
+                  key="d1"
+                  kind="draft"
+                  logo={<Mail className="size-4" />}
+                  title="Draft reply — Re: Q3 roadmap"
+                  meta="to Sarah Chen"
+                  provenance="Triage inbox"
+                  timestamp="4m"
+                  unread
+                  bodyPreview="Thanks Sarah — Thursday works. I'll bring the revised milestones…"
+                />,
+                <ActivityCard
+                  key="e1"
+                  kind="event"
+                  logo={<Calendar className="size-4" />}
+                  title="Hold a slot for the design review?"
+                  meta="45 min · 3 people free"
+                  provenance="Find time"
+                  timestamp="6m"
+                  unread
+                  slots={[
+                    { label: "Thu 2:00", selected: true },
+                    { label: "Thu 4:30" },
+                    { label: "Fri 11:00" },
+                  ]}
+                />,
+                <ActivityCard
+                  key="d2"
+                  kind="draft"
+                  logo={<Mail className="size-4" />}
+                  title="Draft reply — Re: invoice #2231"
+                  meta="to billing@northwind"
+                  provenance="Triage inbox"
+                  timestamp="6m"
+                />,
+              ]}
+              earlier={[
+                <ActivityCard
+                  key="s1"
+                  kind="shell"
+                  logo={<Terminal className="size-4" />}
+                  title="Upgraded 4 packages on your Mac"
+                  meta="node · ripgrep · gh · sqlite"
+                  provenance="Update my Mac"
+                  timestamp="1h"
+                  onViewLog={() => {}}
+                />,
+                <ActivityCard
+                  key="f1"
+                  kind="file"
+                  logo={<Mail className="size-4" />}
+                  title="Triaged 14 unread — 11 archived, 3 need a reply"
+                  meta="the 3 replies are drafted above"
+                  provenance="Triage inbox"
+                  timestamp="1h"
+                />,
+              ]}
+            />
+          </Example>
+          <Example label="Empty — the login surface">
+            <ActivityFeed
+              emptyState={
+                <div className="flex flex-col gap-3">
+                  <div className="pb-1 text-center">
+                    <h3 className="text-base font-semibold">
+                      doce is ready. Connect what it should work with.
+                    </h3>
+                    <p className="mx-auto mt-1 max-w-sm text-xs text-muted-foreground">
+                      Each connection unlocks tools the agent can use — and a feed of things it does
+                      for you to review.
+                    </p>
+                  </div>
+                  {GOOGLE_SERVICES.slice(0, 2).map((service) => (
+                    <ConnectServiceCard
+                      key={service.id}
+                      icon={createElement(service.icon, { size: 16 })}
+                      name={service.name}
+                      description={service.description}
+                      brand="google"
+                    />
+                  ))}
+                </div>
+              }
             />
           </Example>
         </Section>
