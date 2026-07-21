@@ -1065,35 +1065,56 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
     }
 }
 
-/// Shared evidence-log classification for `PlanState::record_mutation`,
-/// used by BOTH the production backend (`RealBackend::execute_tool` above)
-/// and the benchmark backend (`bench::PlanExecBackend::execute_tool`) so
-/// the two can't quietly drift on what counts as a mutation or a success.
-/// Only `Update` (the single-mode harness's create/overwrite/edit tool)
-/// and `Bash` mutate anything an observer would need to verify --
-/// `Read`/`Grep`/`Glob`/`Task`/`AskUserQuestion` return `None` and are
-/// never logged. `target` is the `file_path` argument (`Update` only;
-/// `Bash` has no file target). `ok` mirrors this file's existing
-/// success/error convention (`persist_plan_tool`, line ~498): a
-/// `"Error"`-prefixed result string is a failure, everything else is a
-/// success.
+/// Shared evidence-log classification for `PlanState::record_mutation`, used by
+/// BOTH the production backend (`RealBackend::execute_tool` above) and the
+/// benchmark backend (`bench::PlanExecBackend::execute_tool`) so the two can't
+/// quietly drift on what counts as evidence.
+///
+/// The log is the observer's only ground truth for verifying a completion
+/// claim, so it records every REAL action the agent takes — not just file
+/// edits: `Bash` commands and any external tool (e.g. an MCP call to send an
+/// email or upgrade packages) are real work an ops/comms task completes by
+/// *doing*, with no file to mutate. Only the read-only / meta tools
+/// (`Read`/`Grep`/`Glob`/`Task`/`AskUserQuestion`) leave nothing to verify and
+/// return `None`. `target` carries the SUBJECT of the action so the observer can
+/// judge relevance to the claim: the `file_path` for `Update`/`Write`, the
+/// command for `Bash`; any other action's own tool name is the evidence, so
+/// `target` is `None`. `ok` mirrors this file's success/error convention: an
+/// `"Error"`-prefixed result string is a failure, everything else a success.
 pub(crate) fn mutation_log_entry(
     tool_name: &str,
     arguments: &serde_json::Value,
     result: &str,
 ) -> Option<(Option<String>, bool)> {
-    if tool_name != "Update" && tool_name != "Bash" {
+    const NON_ACTIONS: [&str; 5] = ["Read", "Grep", "Glob", "Task", "AskUserQuestion"];
+    if NON_ACTIONS.contains(&tool_name) {
         return None;
     }
-    let target = if tool_name == "Bash" {
-        None
-    } else {
-        arguments
+    let target = match tool_name {
+        "Update" | "Write" => arguments
             .get("file_path")
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
+            .map(str::to_string),
+        "Bash" => arguments
+            .get("command")
+            .and_then(|v| v.as_str())
+            .map(truncate_evidence),
+        _ => None,
     };
     Some((target, !result.starts_with("Error")))
+}
+
+/// Bounds a command/summary for the evidence log — the observer only needs
+/// enough to judge relevance to the claim, not to re-run it.
+fn truncate_evidence(s: &str) -> String {
+    const MAX_CHARS: usize = 160;
+    let s = s.trim();
+    if s.chars().count() <= MAX_CHARS {
+        s.to_string()
+    } else {
+        let head: String = s.chars().take(MAX_CHARS).collect();
+        format!("{head}…")
+    }
 }
 
 /// `AgentBackend` for the `Task`-tool's delegated subagent loop
@@ -4610,6 +4631,68 @@ mod tests {
         // re-dispatch, no panic.
         let active = ActiveGenerations::default();
         assert!(take_pending_steers(&active, "gone").is_empty());
+    }
+
+    // --- Observer evidence: every REAL action is logged (not just file edits),
+    // so an ops/comms task that completes by DOING leaves something to verify. ---
+
+    #[test]
+    fn mutation_log_entry_records_a_file_edit_target() {
+        assert_eq!(
+            mutation_log_entry(
+                "Update",
+                &serde_json::json!({"file_path": "/x/main.rs"}),
+                "wrote"
+            ),
+            Some((Some("/x/main.rs".to_string()), true))
+        );
+    }
+
+    #[test]
+    fn mutation_log_entry_logs_a_bash_command_as_the_subject() {
+        // Ops work (`brew upgrade`) is a Bash action — the command IS the
+        // evidence the observer judges relevance against (not a bare "ran").
+        assert_eq!(
+            mutation_log_entry(
+                "Bash",
+                &serde_json::json!({"command": "brew upgrade"}),
+                "ok"
+            ),
+            Some((Some("brew upgrade".to_string()), true))
+        );
+    }
+
+    #[test]
+    fn mutation_log_entry_logs_an_external_action_tool_with_no_subject() {
+        // An MCP/external action (send an email) has no file/command subject —
+        // its tool name is the evidence — but it is STILL logged (was silently
+        // dropped before, so comms work could never be verified).
+        assert_eq!(
+            mutation_log_entry("send_email", &serde_json::json!({"to": "a@b.com"}), "sent"),
+            Some((None, true))
+        );
+    }
+
+    #[test]
+    fn mutation_log_entry_ignores_read_only_and_meta_tools() {
+        for tool in ["Read", "Grep", "Glob", "Task", "AskUserQuestion"] {
+            assert!(
+                mutation_log_entry(tool, &serde_json::json!({}), "ok").is_none(),
+                "{tool} leaves no evidence to verify"
+            );
+        }
+    }
+
+    #[test]
+    fn mutation_log_entry_marks_an_error_result_as_failed() {
+        assert_eq!(
+            mutation_log_entry(
+                "Bash",
+                &serde_json::json!({"command": "brew upgrade"}),
+                "Error: x"
+            ),
+            Some((Some("brew upgrade".to_string()), false))
+        );
     }
 
     /// The finish-boundary race, reproduced end-to-end at the run_loop level: a

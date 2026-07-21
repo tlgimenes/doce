@@ -85,9 +85,12 @@ pub enum PlanToolReply {
 /// Append-only: nothing in this task ever clears or rewrites an entry.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MutationRecord {
-    pub tool: String,           // "Update", "Write", "Bash"
-    pub target: Option<String>, // file path for Update/Write; None for Bash
-    pub ok: bool,               // did the call succeed
+    pub tool: String, // "Update", "Write", "Bash", or an external/MCP tool name
+    /// The SUBJECT the action acted on, for the observer to judge relevance:
+    /// the file path for `Update`/`Write`, the command for `Bash`; `None` for
+    /// any other action whose own tool name is the evidence (e.g. an MCP call).
+    pub target: Option<String>,
+    pub ok: bool, // did the call succeed
 }
 
 /// How many times a single `CompletionKind` may be rejected before the
@@ -108,11 +111,13 @@ pub struct PlanState {
     /// bounced once this task (`handle_todo_tool`) — the second attempt
     /// is honored.
     finish_bounced: bool,
-    /// Append-only evidence log of every file-mutating real tool call
-    /// (`Update`/`Write`/`Bash`) this task's backend has executed —
-    /// `Read`/`Grep`/`Glob` never touch it. A later task's observer reads
-    /// this to verify a `FinishTask` completion claim against what
-    /// actually happened, instead of trusting the claim on its own.
+    /// Append-only evidence log of every real ACTION this task's backend has
+    /// executed — file edits (`Update`/`Write`), `Bash` commands, and external
+    /// tool calls (e.g. MCP) — so an ops/comms task that completes by *doing*
+    /// still leaves evidence. Only the read-only / meta tools
+    /// (`Read`/`Grep`/`Glob`/`Task`/`AskUserQuestion`) never touch it. The
+    /// observer reads this to verify a `FinishTask` completion claim against
+    /// what actually happened, instead of trusting the claim on its own.
     pub mutation_log: Vec<MutationRecord>,
     /// How many times each `CompletionKind` has been rejected so far this
     /// task, keyed independently per kind (a rejected `TodoItem(3)` does
