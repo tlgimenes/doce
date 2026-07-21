@@ -330,6 +330,20 @@ impl Drop for ActiveGenerationGuard<'_> {
     }
 }
 
+/// Drains and returns any steered messages left on a conversation's
+/// `ActiveGenerations` entry. `run_loop` folds steers in at each iteration's top
+/// boundary; a steer that lands AFTER that boundary but before the turn finishes
+/// is persisted+visible yet never reaches the model. `send_agent_message` calls
+/// this AFTER the loop returns so such a stranded steer is re-dispatched as a
+/// fresh turn instead of being discarded when the RAII guard drops the entry.
+/// Empty when the entry is gone (turn fully unwound).
+fn take_pending_steers(active: &ActiveGenerations, conversation_id: &str) -> Vec<String> {
+    match active.0.lock().unwrap().get_mut(conversation_id) {
+        Some(entry) => std::mem::take(&mut entry.steers),
+        None => Vec::new(),
+    }
+}
+
 /// 004-tool-call-widgets: persists a tool invocation's `tool_call` row
 /// (role `assistant`, matching this project's existing convention for the
 /// model's own action — see `commands/conversations.rs`'s `compute_status`
@@ -788,19 +802,16 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
     }
 
     fn drain_steers(&mut self) -> Vec<ChatMessage> {
-        // Brief lock, no `.await` held: `mem::take` the FIFO of steers that
+        // Brief lock, no `.await` held: take the FIFO of steers that
         // `steer_generation` persisted+enqueued since the last boundary and hand
-        // them back as ordinary user turns. Missing entry (turn already unwound)
-        // yields none. Only `RealBackend` overrides this — subagents keep the
-        // no-op default, so a parent-conversation steer never leaks into a `Task`.
-        let mut guard = self.active_generations.0.lock().unwrap();
-        match guard.get_mut(self.conversation_id) {
-            Some(entry) => std::mem::take(&mut entry.steers)
-                .into_iter()
-                .map(ChatMessage::user)
-                .collect(),
-            None => Vec::new(),
-        }
+        // them back as ordinary user turns. Only `RealBackend` overrides this —
+        // subagents keep the no-op default, so a parent-conversation steer never
+        // leaks into a `Task`. Shares `take_pending_steers` with the post-loop
+        // re-dispatch in `send_agent_message`.
+        take_pending_steers(self.active_generations, self.conversation_id)
+            .into_iter()
+            .map(ChatMessage::user)
+            .collect()
     }
 
     fn compact(&mut self, messages: &[ChatMessage]) -> Vec<ChatMessage> {
@@ -2634,26 +2645,22 @@ pub async fn send_agent_message(
     // per-turn `maybe_compact` calls inside the loop for why this alone
     // isn't sufficient on its own (tool results can push a *later* turn
     // over budget even when the first turn was fine).
-    let mut plan_state = crate::agent::plan::PlanState::default();
     // Load this conversation's persisted goal (0011_conversation_goal /
-    // `storage::conversations::set_conversation_goal`) into the SAME
-    // `Plan.goal` field the model's Todo/FinishTask machinery already
-    // reads and renders (`PlanState::state_tail`) -- reusing it rather than
-    // adding a parallel field is what lets the FinishTask observer, already
-    // wired to check `plan.goal` (`execute_tool`'s `ProposeComplete` arm
-    // above), pick this up with no further change. A top-level task only:
-    // a subagent (`plan_state` at the subagent seed above) keeps its
-    // default empty goal, since a delegated subagent has its own isolated
-    // scope, not the parent conversation's.
+    // `storage::conversations::set_conversation_goal`) ONCE. Each turn below
+    // seeds a fresh `PlanState` with it into the SAME `Plan.goal` field the
+    // model's Todo/FinishTask machinery reads (`PlanState::state_tail`) and the
+    // FinishTask observer checks (`execute_tool`'s `ProposeComplete` arm) --
+    // reused rather than a parallel field. Top-level only: a subagent keeps its
+    // default empty goal. Stable across a steer re-dispatch, so it's loaded here
+    // rather than re-read each turn.
     let goal_conversation_id = conversation_id.clone();
-    if let Ok(Some(goal)) = conn
+    let conversation_goal: Option<String> = conn
         .call(move |conn: &mut Connection| {
             crate::storage::conversations::get_conversation_goal(conn, &goal_conversation_id)
         })
         .await
-    {
-        plan_state.plan.goal = goal;
-    }
+        .ok()
+        .flatten();
     // The top-level agent seed names ITS OWN conversation's transcript
     // (contrast the subagent seed above, which names `subagent_id`'s).
     let memories = memories_section(&conn, &conversation_id).await;
@@ -2696,143 +2703,154 @@ pub async fn send_agent_message(
     // reply from a blank slate. 009-rich-chat-input: `load_history` needs
     // `skills_dir` (resolved once, above) to expand any `rich_text` rows in
     // that history.
-    let history = conn
-        .call({
-            let conversation_id = conversation_id.clone();
-            let skills_dir = skills_dir.clone();
-            move |conn: &mut Connection| load_history(conn, &conversation_id, &skills_dir)
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-    let mut initial_messages = vec![ChatMessage::system(system_prompt.clone())];
-    initial_messages.extend(history);
-
-    // 009-rich-chat-input/US2: `history`'s final element is always the row
-    // just persisted above (its `sequence` is the highest in the
-    // conversation). When it was a rich-text turn, override it with
-    // `persist_user_turn`'s already-computed `expand_segments` output so
-    // the model sees the fully-expanded text (pasted content inline,
-    // skills resolved and injected) rather than the raw JSON `load_history`
-    // would otherwise pass through verbatim for this turn. `rich_content`
-    // being `None` leaves this whole step un-entered -- byte-for-byte
-    // today's behavior.
-    if rich_content.is_some() {
-        if let Some(last) = initial_messages.last_mut() {
-            *last = ChatMessage::user(model_text_for_turn);
-        }
-    }
-
-    // The loop's own per-turn decision (`run_loop`'s `measure`/`threshold`/
-    // `compact`): every turn checks whether the in-flight messages already
-    // fit this same budget before ever calling `fit_turn_to_budget` --
-    // skips the fit entirely on turns that don't need it, rather than
-    // unconditionally re-measuring every message every turn. Reserves room
-    // for the output tokens AND the per-turn state tail
-    // `RealBackend::generate` pushes after this check has already passed
-    // (see `limits::STATE_TAIL_RESERVE_TOKENS`): `measure` renders the
-    // canonical messages only, so without the tail reserve a history
-    // parked just under the threshold plus a big tail overflowed `n_ctx`.
+    // Per-turn budget (constant across turns): reserves room for the output
+    // tokens AND the per-turn state tail `RealBackend::generate` pushes, so a
+    // history parked just under the threshold plus a big tail can't overflow
+    // `n_ctx`. `run_loop`'s own `measure`/`compact` re-checks this each turn.
     let threshold = crate::inference::CONTEXT_WINDOW_TOKENS.saturating_sub(
         crate::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS
             + crate::context::limits::STATE_TAIL_RESERVE_TOKENS,
     );
 
-    let mut backend = RealBackend {
-        base_url,
-        cancel: cancel.clone(),
-        conn: &conn,
-        conversation_id: &conversation_id,
-        app: &app,
-        settings: &settings,
-        threshold,
-        cwd: cwd.as_deref(),
-        pending: &pending_questions,
-        plan_state,
-        active_plans: &active_plans,
-        transcript_dir: transcript_dir.clone(),
-        observed_usage: &compaction_state.observed_usage,
-        active_generations: &active_generations,
-    };
-    let result = run_loop(&context, initial_messages, &mut backend).await;
-    // Generation runs against the server now, so there is no per-turn
-    // `LlamaContext` to tear down here; the backend holds only borrows of
-    // this function's own locals.
-    drop(backend);
+    // Steer re-dispatch loop (finish-boundary race): normally exactly one turn.
+    // But a steer that landed AFTER a turn's last `drain_steers` boundary yet
+    // before it finished was persisted (and shows in the transcript) but never
+    // reached the model, and would be discarded when the guard drops. After each
+    // turn, if the conversation's steer queue is non-empty, run ANOTHER turn with
+    // those messages re-appended as the trailing user input — they're already in
+    // history at their original position, but the just-persisted answer sits
+    // after them, so re-appending makes the model treat them as the current
+    // request. Bounded so a user who keeps steering can't spin this forever.
+    const MAX_STEER_REDISPATCHES: u32 = 20;
+    let mut redispatch_count: u32 = 0;
+    let mut pending_steers: Vec<ChatMessage> = Vec::new();
+    let final_text = loop {
+        // A fresh plan state per turn, seeded with the conversation's goal.
+        let mut plan_state = crate::agent::plan::PlanState::default();
+        if let Some(goal) = &conversation_goal {
+            plan_state.plan.goal = goal.clone();
+        }
 
-    let final_text = match result {
-        Ok(text) => text,
-        // Graceful cancellation (Task 4.2a/4.2b): a stopped turn is an
-        // INTENTIONAL halt, not a failure. Fall through to the SAME persist +
-        // `agent-message-persisted` emit as the normal path below, but with a
-        // minimal, unobtrusive stopped marker as this turn's assistant reply
-        // (rendered as italic "(stopped)" in the transcript) rather than an
-        // "Error:" line. This buys two things:
-        //   1. `compute_status` sees an assistant *text* row — not an `error`
-        //      content_type, and not a user message with no reply — so a
-        //      stopped conversation reads as `done` (neutral), never `failed`
-        //      (which would render as the red "Blocked"/"Failed" sidebar dot,
-        //      wrong for a user-initiated stop).
-        //   2. the existing persist emits `agent-message-persisted`, so the
-        //      frontend clears its live ticker and refreshes the transcript +
-        //      status automatically — no new event needed.
-        // Returning `Ok` (not `Err`) keeps the frontend's own `catch` from
-        // painting an error banner for a user's own stop, and the RAII guards
-        // (`_active_guard`, `_plan_guard`) still clear this conversation's
-        // `ActiveGenerations`/`ActivePlans` entries on the return below.
-        Err(AgentError::Cancelled) => STOPPED_TURN_MARKER.to_string(),
-        Err(e) => format!("Error: {e}"),
-    };
-
-    let final_persisted_at = now_ms();
-    let final_seq = persist_assistant_text_reply(
-        &conn,
-        transcript_dir,
-        &conversation_id,
-        &final_text,
-        now,
-        final_persisted_at,
-        None,
-    )
-    .await?;
-
-    // Streaming (UI refactor): the final answer is the last item Loop 1
-    // ever appends -- signal it the same way every tool_call/tool_result
-    // did throughout the turn, so the frontend's live view converges on
-    // the real persisted text rather than relying solely on this
-    // function's own return value.
-    let _ = app.emit(
-        "agent-message-persisted",
-        AgentMessagePersisted {
-            conversation_id: conversation_id.clone(),
-        },
-    );
-
-    // 010-context-window-management/US1: emit a fresh usage snapshot so the
-    // indicator reflects usage including the assistant's own final answer,
-    // not just the state as of the last tool call. Also fills in this final
-    // answer's own output token_count (UI refactor), same follow-up-update
-    // pattern used elsewhere in this file.
-    {
-        let token_count = crate::inference::token_estimate(&final_text);
-        let conversation_id_for_update = conversation_id.clone();
-        let _ = conn
-            .call(move |conn: &mut Connection| -> rusqlite::Result<()> {
-                conn.execute(
-                    "UPDATE messages SET token_count = ?1 WHERE conversation_id = ?2 AND sequence = ?3",
-                    rusqlite::params![token_count as i64, conversation_id_for_update, final_seq],
-                )?;
-                Ok(())
+        // Full history so the model sees prior turns (009-rich-chat-input:
+        // `load_history` expands any `rich_text` rows). Grows each iteration: a
+        // re-dispatch turn's history already includes the previously-stranded
+        // steers and the prior turn's answer.
+        let history = conn
+            .call({
+                let conversation_id = conversation_id.clone();
+                let skills_dir = skills_dir.clone();
+                move |conn: &mut Connection| load_history(conn, &conversation_id, &skills_dir)
             })
-            .await;
-        emit_context_usage_update(
-            &app,
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut initial_messages = vec![ChatMessage::system(system_prompt.clone())];
+        initial_messages.extend(history);
+
+        // 009-rich-chat-input/US2: on the FIRST turn only, override the last
+        // history row (the just-persisted user turn) with `persist_user_turn`'s
+        // already-expanded text so the model sees pasted content inline / skills
+        // resolved, not the raw JSON. Re-dispatch turns carry no rich content.
+        if redispatch_count == 0 && rich_content.is_some() {
+            if let Some(last) = initial_messages.last_mut() {
+                *last = ChatMessage::user(model_text_for_turn.clone());
+            }
+        }
+        // Re-dispatch: re-append the previously-stranded steers as the trailing
+        // user input so this turn actually answers them (empties `pending_steers`).
+        initial_messages.append(&mut pending_steers);
+
+        let mut backend = RealBackend {
+            base_url: base_url.clone(),
+            cancel: cancel.clone(),
+            conn: &conn,
+            conversation_id: &conversation_id,
+            app: &app,
+            settings: &settings,
+            threshold,
+            cwd: cwd.as_deref(),
+            pending: &pending_questions,
+            plan_state,
+            active_plans: &active_plans,
+            transcript_dir: transcript_dir.clone(),
+            observed_usage: &compaction_state.observed_usage,
+            active_generations: &active_generations,
+        };
+        let result = run_loop(&context, initial_messages, &mut backend).await;
+        // The backend holds only borrows of this function's locals — nothing to
+        // tear down beyond the drop.
+        drop(backend);
+
+        let turn_text = match result {
+            Ok(text) => text,
+            // Graceful cancellation (Task 4.2a/4.2b): a stopped turn is an
+            // INTENTIONAL halt, not a failure — persist a quiet stopped marker
+            // (not an "Error:" line) so the conversation reads as `done`, not
+            // `failed`, and the frontend's `catch` never paints an error banner.
+            // The RAII guards still clear this conversation's `ActiveGenerations`
+            // / `ActivePlans` entries on the final return below.
+            Err(AgentError::Cancelled) => STOPPED_TURN_MARKER.to_string(),
+            Err(e) => format!("Error: {e}"),
+        };
+
+        let final_persisted_at = now_ms();
+        let final_seq = persist_assistant_text_reply(
             &conn,
+            transcript_dir.clone(),
             &conversation_id,
-            cwd.as_deref(),
-            &compaction_state.observed_usage,
+            &turn_text,
+            now,
+            final_persisted_at,
+            None,
         )
-        .await;
-    }
+        .await?;
+
+        // Signal the persisted answer (same as every tool_call/tool_result) so
+        // the frontend's live view converges on the real persisted text.
+        let _ = app.emit(
+            "agent-message-persisted",
+            AgentMessagePersisted {
+                conversation_id: conversation_id.clone(),
+            },
+        );
+
+        // Fill this answer's own output token_count and emit a fresh usage
+        // snapshot including it.
+        {
+            let token_count = crate::inference::token_estimate(&turn_text);
+            let conversation_id_for_update = conversation_id.clone();
+            let _ = conn
+                .call(move |conn: &mut Connection| -> rusqlite::Result<()> {
+                    conn.execute(
+                        "UPDATE messages SET token_count = ?1 WHERE conversation_id = ?2 AND sequence = ?3",
+                        rusqlite::params![token_count as i64, conversation_id_for_update, final_seq],
+                    )?;
+                    Ok(())
+                })
+                .await;
+            emit_context_usage_update(
+                &app,
+                &conn,
+                &conversation_id,
+                cwd.as_deref(),
+                &compaction_state.observed_usage,
+            )
+            .await;
+        }
+
+        // A user-initiated stop ends the conversation here — never re-dispatch
+        // after a cancel.
+        if cancel.is_cancelled() {
+            break turn_text;
+        }
+        // Finish-boundary race: pick up any steer that landed during this turn's
+        // final generate and re-run so it's actually answered.
+        let leftover = take_pending_steers(&active_generations, &conversation_id);
+        redispatch_count += 1;
+        if leftover.is_empty() || redispatch_count > MAX_STEER_REDISPATCHES {
+            break turn_text;
+        }
+        pending_steers = leftover.into_iter().map(ChatMessage::user).collect();
+    };
 
     Ok(final_text)
 }
@@ -4552,6 +4570,152 @@ mod tests {
             .unwrap()
             .insert(id.to_string(), ActiveGeneration::default());
         gens
+    }
+
+    #[test]
+    fn take_pending_steers_drains_the_entry_and_leaves_it_empty() {
+        // The post-loop re-dispatch's primitive: after a turn, a steer that
+        // landed at the finish boundary is still on the entry; taking it hands
+        // it back and empties the queue so it isn't re-processed twice.
+        let active = active_with_turn("c1");
+        active.0.lock().unwrap().get_mut("c1").unwrap().steers = vec![
+            "meu nome é gimenes".to_string(),
+            "qual é o meu nome?".to_string(),
+        ];
+
+        let taken = take_pending_steers(&active, "c1");
+        assert_eq!(
+            taken,
+            vec![
+                "meu nome é gimenes".to_string(),
+                "qual é o meu nome?".to_string()
+            ]
+        );
+        // The entry survives (the RAII guard clears it), but its steers are gone.
+        assert!(active
+            .0
+            .lock()
+            .unwrap()
+            .get("c1")
+            .unwrap()
+            .steers
+            .is_empty());
+        // A second take yields nothing — no duplicate re-dispatch.
+        assert!(take_pending_steers(&active, "c1").is_empty());
+    }
+
+    #[test]
+    fn take_pending_steers_on_a_missing_entry_is_empty() {
+        // Turn already fully unwound (guard dropped the entry) → nothing to
+        // re-dispatch, no panic.
+        let active = ActiveGenerations::default();
+        assert!(take_pending_steers(&active, "gone").is_empty());
+    }
+
+    /// The finish-boundary race, reproduced end-to-end at the run_loop level: a
+    /// steer that lands DURING a turn's final generate (after that iteration's
+    /// top-of-loop `drain_steers` already ran) is stranded by `run_loop` — it
+    /// never reaches the model and the loop returns — but it is still sitting on
+    /// the `ActiveGenerations` entry, so `take_pending_steers` recovers it and
+    /// `send_agent_message`'s post-loop re-dispatch runs it as a fresh turn
+    /// instead of silently dropping it (the "ola / meu nome é gimenes" bug).
+    #[tokio::test]
+    async fn a_steer_landing_during_the_final_generate_is_stranded_by_run_loop_but_recovered_for_redispatch(
+    ) {
+        // A backend that drains steers off the entry exactly like RealBackend,
+        // and — on its one generate — simulates `steer_generation` firing mid
+        // generate by pushing a steer onto the entry AFTER the drain, then ends
+        // the turn (Allow mode: a no-tool-call turn is the final answer).
+        struct RaceBackend<'a> {
+            active: &'a ActiveGenerations,
+            conversation_id: &'a str,
+            late_steer: Option<String>,
+            user_texts_seen: Vec<Vec<String>>,
+        }
+        impl crate::agent::AgentBackend for RaceBackend<'_> {
+            fn measure(&mut self, _m: &[ChatMessage]) -> u32 {
+                0
+            }
+            fn threshold(&self) -> u32 {
+                u32::MAX
+            }
+            fn compact(&mut self, _m: &[ChatMessage]) -> Vec<ChatMessage> {
+                panic!("compact should never run in this test")
+            }
+            fn requires_tool_call(&self) -> bool {
+                false
+            }
+            fn drain_steers(&mut self) -> Vec<ChatMessage> {
+                take_pending_steers(self.active, self.conversation_id)
+                    .into_iter()
+                    .map(ChatMessage::user)
+                    .collect()
+            }
+            async fn generate(&mut self, messages: Vec<ChatMessage>) -> crate::agent::TurnOutcome {
+                self.user_texts_seen.push(
+                    messages
+                        .iter()
+                        .filter(|m| m.role == "user")
+                        .filter_map(|m| match &m.content {
+                            crate::inference::MessageContent::Text(t) => Some(t.clone()),
+                            _ => None,
+                        })
+                        .collect(),
+                );
+                // Steer lands NOW — after this iteration's drain already ran.
+                if let Some(s) = self.late_steer.take() {
+                    self.active
+                        .0
+                        .lock()
+                        .unwrap()
+                        .get_mut(self.conversation_id)
+                        .unwrap()
+                        .steers
+                        .push(s);
+                }
+                // ...and the turn finishes (no tool call, Allow mode).
+                crate::agent::TurnOutcome {
+                    tool_call: None,
+                    text: "Olá! Como posso ajudar você hoje?".to_string(),
+                    reasoning: String::new(),
+                    finish_reason: "stop".to_string(),
+                    usage: None,
+                    error: None,
+                    cancelled: false,
+                }
+            }
+            async fn execute_tool(
+                &mut self,
+                _tool_call_id: String,
+                _call: ToolCall,
+            ) -> ToolExecution {
+                unreachable!("no tool calls in this test")
+            }
+        }
+
+        let active = active_with_turn("c1");
+        let mut backend = RaceBackend {
+            active: &active,
+            conversation_id: "c1",
+            late_steer: Some("qual é o meu nome?".to_string()),
+            user_texts_seen: Vec::new(),
+        };
+        let context = crate::agent::AgentContext::top_level();
+
+        let answer = run_loop(&context, vec![ChatMessage::user("ola")], &mut backend)
+            .await
+            .unwrap();
+        assert_eq!(answer, "Olá! Como posso ajudar você hoje?");
+
+        // The steer never reached the model: the only generate saw just "ola".
+        assert_eq!(backend.user_texts_seen, vec![vec!["ola".to_string()]]);
+
+        // But it is NOT lost — it's still on the entry, so the post-loop
+        // re-dispatch picks it up and answers it as a fresh turn.
+        assert_eq!(
+            take_pending_steers(&active, "c1"),
+            vec!["qual é o meu nome?".to_string()]
+        );
     }
 
     async fn message_count(conn: &tokio_rusqlite::Connection, id: &str) -> i64 {
