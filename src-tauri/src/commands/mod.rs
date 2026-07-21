@@ -48,6 +48,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             agent::get_active_plan,
             attachments::read_attached_file,
             mcp::add_mcp_server,
+            mcp::add_mcp_http_server,
             mcp::list_mcp_servers,
             mcp::list_mcp_server_tools,
             skills::list_skills,

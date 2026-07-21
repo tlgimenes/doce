@@ -667,6 +667,12 @@ export const commands = {
     invoke<void>("answer_user_question", { questionId, answer }),
   addMcpServer: (name: string, command: string, args: string[]) =>
     invoke<McpServerConnection>("add_mcp_server", { name, command, args }),
+  addMcpHttpServer: (name: string, url: string, authToken?: string) =>
+    invoke<McpServerConnection>("add_mcp_http_server", {
+      name,
+      url,
+      authToken: authToken ?? null,
+    }),
   listMcpServers: () => invoke<McpServerConnection[]>("list_mcp_servers"),
   listMcpServerTools: (serverId: string) =>
     invoke<McpToolInfo[]>("list_mcp_server_tools", { serverId }),
