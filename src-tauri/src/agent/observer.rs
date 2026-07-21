@@ -1,6 +1,8 @@
 //! Observer-verified completion: pure pieces that adjudicate a completion claim
-//! against the agent's own file-mutation evidence. The network call lives in Task 4's
-//! `request_verdict`; everything here is pure and unit-tested.
+//! against the agent's own action log — file edits AND commands / external tool
+//! calls (an ops or comms task completes by *doing*, not by mutating a file).
+//! The network call lives in `request_verdict`; everything here is pure and
+//! unit-tested.
 
 use crate::agent::plan::{CompletionKind, MutationRecord, Plan};
 use crate::inference::ChatMessage;
@@ -11,20 +13,22 @@ pub struct Verdict {
     pub missing: String,
 }
 
-pub const OBSERVER_PROMPT: &str = "You are a strict verifier. A coding agent claims it has completed a unit of work. You are given the claim and a log of the agent's file mutations (each: tool, target file, and whether the tool call succeeded). Decide whether the evidence actually supports the claim. Approve ONLY if a relevant, successful mutation shows the work was done; if the claimed file was never successfully edited, REJECT. Do not trust the agent's assertion -- judge the evidence. A successful Update to the relevant file is real evidence; a Bash command's success only means it ran, not that a test passed, so never treat Bash success alone as proof a fix is correct. To decide: identify the exact file the claim is about, then scan every line of the mutation log for that exact file as the target. If you find no such line, or its outcome is failed, you must REJECT -- do not approve based on a different file's success or on a line you are not sure matches. Respond by calling the Verdict tool: complete=true only if the evidence supports the claim, else complete=false with a short missing naming exactly what evidence is absent.";
+pub const OBSERVER_PROMPT: &str = "You are a strict verifier. An agent claims it has completed a unit of work. You are given the claim and a log of the ACTIONS the agent took (each: the tool, the subject it acted on — a file for edits, the command for Bash, otherwise just the tool name — and whether the call succeeded). Judge the evidence, never the agent's assertion. First decide what kind of claim it is:\n- A FILE claim (create/edit/fix/write a file's contents): approve ONLY if the log shows a successful Update/Write to that exact file. A command's success is NOT proof a file was fixed or a test passed — so never approve a file claim on Bash success alone.\n- An ACTION claim (run a command, upgrade packages, send/reply to a message, or any external operation the work completes by DOING rather than by changing a file): approve if the log shows a relevant, successful tool call for that action — e.g. a successful Bash `brew upgrade` for 'upgrade my packages', or a successful email/send tool call for 'reply to the email'.\nREJECT if no logged action is clearly relevant to the claim, or the one that is relevant failed. Do not approve on a line you cannot match to the claim, and do not approve on a different action's success. Respond by calling the Verdict tool: complete=true only if the evidence supports the claim, else complete=false with a short missing naming exactly what evidence is absent.";
 
-/// Render the mutation log as compact evidence lines the observer can judge.
+/// Render the action log as compact evidence lines the observer can judge: the
+/// tool, the subject it acted on (file for edits, command for Bash), and whether
+/// it succeeded.
 fn render_evidence(log: &[MutationRecord]) -> String {
     if log.is_empty() {
-        return "(no file mutations recorded)".to_string();
+        return "(no actions recorded)".to_string();
     }
     log.iter()
-        .map(|r| match r.tool.as_str() {
-            "Bash" => "- Bash (no file) -> ran".to_string(),
-            _ => {
-                let target = r.target.as_deref().unwrap_or("(no target)");
-                let outcome = if r.ok { "ok" } else { "failed" };
-                format!("- {} {target} -> {outcome}", r.tool)
+        .map(|r| {
+            let outcome = if r.ok { "ok" } else { "failed" };
+            match (r.tool.as_str(), r.target.as_deref()) {
+                ("Bash", Some(cmd)) => format!("- Bash: `{cmd}` -> {outcome}"),
+                (tool, Some(t)) => format!("- {tool} {t} -> {outcome}"),
+                (tool, None) => format!("- {tool} -> {outcome}"),
             }
         })
         .collect::<Vec<_>>()
@@ -46,11 +50,11 @@ pub fn build_observer_messages(
             let evidence = render_evidence(mutation_log);
             match plan.steps.get(*i) {
                 Some(step) => format!(
-                    "The agent claims this todo item is DONE:\n  \"{}\"\n\nAgent's file-mutation log:\n{evidence}\n\nIs this item actually done, based ONLY on the evidence? Call Verdict.",
+                    "The agent claims this todo item is DONE:\n  \"{}\"\n\nAgent's action log:\n{evidence}\n\nIs this item actually done, based ONLY on the evidence? Call Verdict.",
                     step.description
                 ),
                 None => format!(
-                    "The agent claims todo item {i} is DONE, but that index is invalid (out of range for the current plan).\n\nAgent's file-mutation log:\n{evidence}\n\nIs this item actually done, based ONLY on the evidence? Call Verdict."
+                    "The agent claims todo item {i} is DONE, but that index is invalid (out of range for the current plan).\n\nAgent's action log:\n{evidence}\n\nIs this item actually done, based ONLY on the evidence? Call Verdict."
                 ),
             }
         }
@@ -75,7 +79,7 @@ pub fn build_observer_messages(
                     .join("\n")
             };
             format!(
-                "{goal_line}\n{answer_line}\n\nTodo list:\n{todos}\n\nAgent's file-mutation log:\n{evidence}\n\nIs the goal met and the task actually complete, based on the evidence? Call Verdict."
+                "{goal_line}\n{answer_line}\n\nTodo list:\n{todos}\n\nAgent's action log:\n{evidence}\n\nIs the goal met and the task actually complete, based on the evidence? Call Verdict."
             )
         }
     };
@@ -196,5 +200,63 @@ mod tests {
         );
         let joined = msgs.iter().map(|m| m.text()).collect::<Vec<_>>().join("\n");
         assert!(joined.contains("ship the fix") && joined.contains("all fixed"));
+    }
+
+    #[test]
+    fn action_log_shows_the_bash_command_and_its_outcome() {
+        // The observer must see WHICH command ran to judge relevance to an ops
+        // claim like "upgrade my packages" — not a bare "ran".
+        let plan = Plan {
+            goal: "upgrade my packages".to_string(),
+            steps: vec![],
+        };
+        let log = vec![MutationRecord {
+            tool: "Bash".to_string(),
+            target: Some("brew upgrade".to_string()),
+            ok: true,
+        }];
+        let msgs = build_observer_messages(
+            &CompletionKind::FinishTask,
+            &plan,
+            &log,
+            Some("upgraded 3 formulae"),
+            Some("upgrade my packages"),
+        );
+        let joined = msgs.iter().map(|m| m.text()).collect::<Vec<_>>().join("\n");
+        assert!(joined.contains("brew upgrade") && joined.contains("-> ok"));
+    }
+
+    #[test]
+    fn action_log_shows_an_external_tool_action() {
+        // A comms action (send an email) shows up as evidence even with no file
+        // or command subject — its tool name carries the claim's relevance.
+        let plan = Plan {
+            goal: "reply to the email".to_string(),
+            steps: vec![],
+        };
+        let log = vec![MutationRecord {
+            tool: "send_email".to_string(),
+            target: None,
+            ok: true,
+        }];
+        let msgs = build_observer_messages(
+            &CompletionKind::FinishTask,
+            &plan,
+            &log,
+            Some("replied"),
+            Some("reply to the email"),
+        );
+        let joined = msgs.iter().map(|m| m.text()).collect::<Vec<_>>().join("\n");
+        assert!(joined.contains("send_email") && joined.contains("-> ok"));
+    }
+
+    #[test]
+    fn observer_prompt_admits_action_claims_but_keeps_file_claims_strict() {
+        // Guards the reframe: an external action / command can satisfy an ACTION
+        // claim...
+        assert!(OBSERVER_PROMPT.contains("ACTION claim"));
+        assert!(OBSERVER_PROMPT.contains("FILE claim"));
+        // ...while a FILE claim still can't be waved through on Bash success.
+        assert!(OBSERVER_PROMPT.contains("never approve a file claim on Bash success alone"));
     }
 }
