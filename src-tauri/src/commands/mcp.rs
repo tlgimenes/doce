@@ -52,6 +52,44 @@ pub async fn add_mcp_server(
     .map_err(|e| e.to_string())
 }
 
+/// Registers a user-configured remote (streamable-HTTP) MCP server,
+/// reachable by `url`. `config` is the JSON-encoded `{"url", "auth_token"?}`
+/// shape parsed by `mcp::parse_config` for the `http` transport.
+///
+/// `auth_token`, if provided, is a bearer token attached verbatim as an
+/// `Authorization: Bearer <token>` header on every request — a deliberate
+/// minimal stub. There is NO OAuth acquisition/refresh flow; obtaining and
+/// rotating tokens (e.g. Google OAuth) is a planned follow-up. Callers that
+/// need auth must supply an already-valid token here.
+#[tauri::command]
+#[specta::specta]
+pub async fn add_mcp_http_server(
+    app: AppHandle,
+    db_cell: State<'_, DbCell>,
+    name: String,
+    url: String,
+    auth_token: Option<String>,
+) -> Result<McpServerConnection, String> {
+    let conn = db_cell.get(&app).await?;
+    let now = now_ms();
+    let config = match &auth_token {
+        Some(token) => serde_json::json!({ "url": url, "auth_token": token }),
+        None => serde_json::json!({ "url": url }),
+    }
+    .to_string();
+
+    conn.call(move |conn: &mut Connection| -> rusqlite::Result<McpServerConnection> {
+        let id = Uuid::now_v7().to_string();
+        conn.execute(
+            "INSERT INTO mcp_server_connections (id, name, transport, config, enabled, created_at) VALUES (?1, ?2, 'http', ?3, 1, ?4)",
+            rusqlite::params![id, name, config, now],
+        )?;
+        Ok(McpServerConnection { id, name, transport: "http".to_string(), config, enabled: true, created_at: now })
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn list_mcp_servers(
@@ -80,11 +118,12 @@ pub async fn list_mcp_servers(
     .map_err(|e| e.to_string())
 }
 
-/// FR-019: connects to a registered stdio MCP server and lists the tools
-/// it exposes — a point-in-time capability query (e.g. for a settings
-/// panel's "test connection" action), not a persistent session wired into
-/// the agent loop's tool dispatch (see `mcp::list_tools_stdio`'s doc
-/// comment for why that further step isn't built in this pass).
+/// FR-019: connects to a registered MCP server (stdio or http) and lists
+/// the tools it exposes — a point-in-time capability query (e.g. for a
+/// settings panel's "test connection" action), not a persistent session
+/// wired into the agent loop's tool dispatch. Transport-agnostic: reads
+/// the stored `transport`/`config`, parses it via `mcp::parse_config`, and
+/// connects over whichever transport it selects.
 #[tauri::command]
 #[specta::specta]
 pub async fn list_mcp_server_tools(
@@ -93,36 +132,21 @@ pub async fn list_mcp_server_tools(
     server_id: String,
 ) -> Result<Vec<McpToolInfo>, String> {
     let conn = db_cell.get(&app).await?;
-    let config_json: String = conn
-        .call(move |conn: &mut Connection| -> rusqlite::Result<String> {
-            conn.query_row(
-                "SELECT config FROM mcp_server_connections WHERE id = ?1",
-                [&server_id],
-                |row| row.get(0),
-            )
-        })
+    let (transport, config_json): (String, String) = conn
+        .call(
+            move |conn: &mut Connection| -> rusqlite::Result<(String, String)> {
+                conn.query_row(
+                    "SELECT transport, config FROM mcp_server_connections WHERE id = ?1",
+                    [&server_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+            },
+        )
         .await
         .map_err(|e| e.to_string())?;
 
-    let config: serde_json::Value =
-        serde_json::from_str(&config_json).map_err(|e| e.to_string())?;
-    let command = config
-        .get("command")
-        .and_then(|v| v.as_str())
-        .ok_or("missing command in config")?;
-    let args: Vec<String> = config
-        .get("args")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let tools = mcp::list_tools_stdio(command, &args)
-        .await
-        .map_err(|e| e.to_string())?;
+    let config = mcp::parse_config(&transport, &config_json).map_err(|e| e.to_string())?;
+    let tools = mcp::list_tools(&config).await.map_err(|e| e.to_string())?;
     Ok(tools
         .into_iter()
         .map(|t| McpToolInfo {
