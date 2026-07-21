@@ -205,8 +205,26 @@ export function AgentActivityView({
         className={cn(
           "flex items-center gap-2 border border-border bg-card px-3 py-1.5 text-xs",
           open ? "rounded-t-lg border-b-transparent" : "rounded-lg",
+          // The whole strip is the expand/collapse target when there's
+          // something to reveal — click anywhere on it, with a pointer cursor.
+          canExpand && "cursor-pointer",
         )}
         data-testid={hasPlan ? "plan-tracker" : undefined}
+        role={canExpand ? "button" : undefined}
+        tabIndex={canExpand ? 0 : undefined}
+        aria-expanded={canExpand ? open : undefined}
+        aria-label={canExpand ? (open ? "Collapse activity" : "Expand activity") : undefined}
+        onClick={canExpand ? () => setExpanded((prev) => !prev) : undefined}
+        onKeyDown={
+          canExpand
+            ? (e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setExpanded((prev) => !prev);
+                }
+              }
+            : undefined
+        }
       >
         {/* Primary slot — grows to fill the line. Goal, else current todo,
               else empty. */}
@@ -333,18 +351,17 @@ export function AgentActivityView({
           </>
         )}
 
-        {/* Expander — only when there's a plan or editable goal to reveal. */}
+        {/* Chevron — a decorative indicator only (the whole strip above is the
+            button); clicks on it bubble up to the strip's toggle. Shown only
+            when there's a plan or editable goal to reveal. */}
         {canExpand && (
-          <button
-            type="button"
-            onClick={() => setExpanded((prev) => !prev)}
-            className="-mr-1 shrink-0 rounded p-0.5 text-muted-foreground hover:text-foreground"
-            aria-expanded={open}
-            aria-label={open ? "Collapse activity" : "Expand activity"}
+          <span
+            className="-mr-1 shrink-0 p-0.5 text-muted-foreground"
+            aria-hidden="true"
             data-testid="agent-activity-expander"
           >
             <ChevronDown size={14} className={cn("transition-transform", open && "rotate-180")} />
-          </button>
+          </span>
         )}
       </div>
 

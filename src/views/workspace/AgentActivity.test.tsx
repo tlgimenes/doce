@@ -208,6 +208,18 @@ describe("AgentActivityView", () => {
     expect(screen.queryByTestId("agent-activity-expander")).not.toBeInTheDocument();
   });
 
+  it("expands when clicking anywhere on the strip (not just the chevron), and marks it as an expandable button", async () => {
+    render(<AgentActivityView plan={plan()} goal={noopGoal()} working={idleWorking} />);
+    const strip = screen.getByTestId("plan-tracker");
+    expect(strip).toHaveAttribute("role", "button");
+    expect(strip).toHaveClass("cursor-pointer");
+    expect(screen.queryAllByTestId("plan-step")).toHaveLength(0);
+
+    // Click the strip body (the current-todo text), not the chevron.
+    await userEvent.click(screen.getByTestId("agent-activity-current-todo"));
+    expect(screen.getAllByTestId("plan-step")).toHaveLength(3);
+  });
+
   it("expands to reveal the full plan checklist in source order", async () => {
     render(<AgentActivityView plan={plan()} goal={noopGoal()} working={idleWorking} />);
     expect(screen.queryAllByTestId("plan-step")).toHaveLength(0);
