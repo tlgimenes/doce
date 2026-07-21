@@ -1,7 +1,28 @@
 use crate::commands::agent::{conversation_cwd, conversation_system_message, memories_section};
+use crate::commands::conversations::CompactingConversations;
 use crate::context::{self, ContextUsage};
 use crate::storage::DbCell;
 use tauri::{AppHandle, Manager, State};
+
+/// Marks `conversation_id` as running a standalone `/compact` for its lifetime,
+/// clearing it on every exit path (RAII, like `ActiveGenerationGuard`). While it
+/// is set, `steer_generation` returns `Rejected` rather than `NoActiveTurn`, so
+/// the frontend keeps the message queued instead of dispatching it as a doomed
+/// new turn against the busy server.
+struct CompactingGuard<'a> {
+    compacting: &'a CompactingConversations,
+    conversation_id: String,
+}
+
+impl Drop for CompactingGuard<'_> {
+    fn drop(&mut self) {
+        self.compacting
+            .0
+            .lock()
+            .unwrap()
+            .remove(&self.conversation_id);
+    }
+}
 
 /// 010-context-window-management/US1 (FR-014): computes and returns the
 /// conversation's current context usage on demand — called by the frontend
@@ -78,8 +99,22 @@ pub async fn compact_conversation(
     // FR-2: same shared bundle as `get_context_usage`/`send_agent_message` --
     // see `context::CompactionState`'s own doc comment.
     compaction_state: State<'_, context::CompactionState>,
+    compacting: State<'_, CompactingConversations>,
     conversation_id: String,
 ) -> Result<ContextUsage, String> {
+    // Mark this conversation as compacting for the duration of the call so a
+    // concurrent `steer_generation` returns `Rejected` (keep queued), not
+    // `NoActiveTurn` (dispatch a doomed turn). RAII-cleared on every exit.
+    compacting
+        .0
+        .lock()
+        .unwrap()
+        .insert(conversation_id.clone());
+    let _compacting_guard = CompactingGuard {
+        compacting: &compacting,
+        conversation_id: conversation_id.clone(),
+    };
+
     let conn = db_cell.get(&app).await?.clone();
     crate::commands::models::ensure_usable_model_path(&app, &conn, &server_state).await?;
 

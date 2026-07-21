@@ -3,7 +3,7 @@ use crate::agent::tools::ask_user::{PendingQuestions, QuestionOption};
 use crate::agent::{
     dispatch, run_loop, subagent, AgentContext, AgentError, ToolCall, ToolExecution,
 };
-use crate::commands::conversations::ActiveGenerations;
+use crate::commands::conversations::{ActiveGeneration, ActiveGenerations, CompactingConversations};
 use crate::commands::models::now_ms;
 use crate::inference::ChatMessage;
 use crate::storage::conversations::load_history;
@@ -738,6 +738,12 @@ struct RealBackend<'a> {
     /// `generate` (from the SSE trailer's `usage`), CONSULTED at the start of
     /// `measure` — never touched by `run_loop` itself.
     observed_usage: &'a crate::context::LastObservedUsage,
+    /// This turn's entry in `ActiveGenerations` (same map `cancel` lives in),
+    /// borrowed so `drain_steers` can `mem::take` any steered messages that
+    /// arrived via `steer_generation` since the last loop boundary. Read only
+    /// at the top of each `run_loop` iteration; the entry is created/removed by
+    /// `send_agent_message`'s insert + RAII guard, never by this backend.
+    active_generations: &'a ActiveGenerations,
 }
 
 impl crate::agent::AgentBackend for RealBackend<'_> {
@@ -777,6 +783,22 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
 
     fn threshold(&self) -> u32 {
         self.threshold
+    }
+
+    fn drain_steers(&mut self) -> Vec<ChatMessage> {
+        // Brief lock, no `.await` held: `mem::take` the FIFO of steers that
+        // `steer_generation` persisted+enqueued since the last boundary and hand
+        // them back as ordinary user turns. Missing entry (turn already unwound)
+        // yields none. Only `RealBackend` overrides this — subagents keep the
+        // no-op default, so a parent-conversation steer never leaks into a `Task`.
+        let mut guard = self.active_generations.0.lock().unwrap();
+        match guard.get_mut(self.conversation_id) {
+            Some(entry) => std::mem::take(&mut entry.steers)
+                .into_iter()
+                .map(ChatMessage::user)
+                .collect(),
+            None => Vec::new(),
+        }
     }
 
     fn compact(&mut self, messages: &[ChatMessage]) -> Vec<ChatMessage> {
@@ -2224,6 +2246,132 @@ pub struct AgentMessageInput {
     pub set_goal: bool,
 }
 
+/// Outcome of a `steer_generation` call, reported to the frontend so it knows
+/// whether the queued message was injected into the running turn (`Injected`),
+/// needs to be dispatched as a fresh turn because nothing is running
+/// (`NoActiveTurn`), or must stay queued because the conversation is busy with
+/// work that can't accept a mid-turn steer — a standalone `/compact`
+/// (`Rejected`). Externally-tagged unit variants serialize to the bare camelCase
+/// strings `"injected" | "noActiveTurn" | "rejected"`.
+#[derive(Debug, Clone, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum SteerResult {
+    Injected,
+    NoActiveTurn,
+    Rejected,
+}
+
+/// The message half of `steer_generation`'s IPC contract — mirrors
+/// `AgentMessageInput`'s `content`/`rich_content` shape but has no `set_goal`
+/// (goal-mode rows drain as their own turn; the frontend hides "Send now" on
+/// them, so a steer never carries goal intent).
+#[derive(Debug, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SteerMessageInput {
+    pub content: String,
+    pub rich_content: Option<String>,
+}
+
+/// Testable core of `steer_generation` (no `AppHandle`): the transcript emit is
+/// injected as a closure, exactly as `handle_ask_user_question` takes
+/// `emit_question`, so unit tests drive it with a plain counter.
+///
+/// The accept decision is made under a brief lock BEFORE the `persist_user_turn`
+/// await, and the enqueue under a second brief lock AFTER it — the lock is never
+/// held across the await. If the turn happens to end during the persist, we have
+/// already committed + emitted the message, so we still return `Injected` (never
+/// a late `NoActiveTurn` that would make the frontend double-send it); it simply
+/// shows as a trailing user turn instead of being folded into the just-ended
+/// loop. Persist-then-enqueue also means the drain in `run_loop` is a trivial
+/// synchronous pop of already-expanded model text — no DB, no re-expansion.
+async fn steer_core(
+    active: &ActiveGenerations,
+    compacting: &CompactingConversations,
+    conn: &tokio_rusqlite::Connection,
+    transcript_dir: Option<std::path::PathBuf>,
+    skills_dir: &Path,
+    conversation_id: &str,
+    content: &str,
+    rich_content: Option<&str>,
+    emit_persisted: impl FnOnce(),
+) -> Result<SteerResult, String> {
+    if !active.0.lock().unwrap().contains_key(conversation_id) {
+        return Ok(
+            if compacting.0.lock().unwrap().contains(conversation_id) {
+                SteerResult::Rejected
+            } else {
+                SteerResult::NoActiveTurn
+            },
+        );
+    }
+
+    let (_seq, model_text) = persist_user_turn(
+        conn,
+        transcript_dir,
+        skills_dir,
+        conversation_id,
+        now_ms(),
+        content,
+        rich_content,
+    )
+    .await?;
+    emit_persisted();
+
+    if let Some(entry) = active.0.lock().unwrap().get_mut(conversation_id) {
+        entry.steers.push(model_text);
+    }
+    Ok(SteerResult::Injected)
+}
+
+/// Steers a message into a running turn: persists it as a user turn (same
+/// `agent-message-persisted` event the transcript already follows) and enqueues
+/// it on the conversation's `ActiveGenerations` steer queue, which `run_loop`
+/// drains at its next step boundary. Performs NO inference, so it never contends
+/// the single supervised llama-server — the running turn keeps generating and
+/// picks the steer up between steps. Returns `NoActiveTurn` (nothing running,
+/// frontend should send it as a fresh turn) or `Rejected` (a standalone
+/// `/compact` holds the conversation) without persisting anything.
+#[tauri::command]
+#[specta::specta]
+pub async fn steer_generation(
+    app: AppHandle,
+    db_cell: State<'_, DbCell>,
+    active_generations: State<'_, ActiveGenerations>,
+    compacting: State<'_, CompactingConversations>,
+    conversation_id: String,
+    message: SteerMessageInput,
+) -> Result<SteerResult, String> {
+    let conn = db_cell.get(&app).await?.clone();
+    let skills_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("skills");
+    let transcript_dir = app.path().app_data_dir().ok().map(|d| d.join("transcripts"));
+
+    let emit_conversation_id = conversation_id.clone();
+    let emit_app = app.clone();
+    steer_core(
+        &active_generations,
+        &compacting,
+        &conn,
+        transcript_dir,
+        &skills_dir,
+        &conversation_id,
+        &message.content,
+        message.rich_content.as_deref(),
+        || {
+            let _ = emit_app.emit(
+                "agent-message-persisted",
+                AgentMessagePersisted {
+                    conversation_id: emit_conversation_id,
+                },
+            );
+        },
+    )
+    .await
+}
+
 /// FR-008/FR-009: runs the agent tool-use loop to completion for one user
 /// message in a workspace-scoped conversation, using the real built-in
 /// tools (`agent::dispatch`) and the loaded model. One known, deliberate
@@ -2266,7 +2414,13 @@ pub async fn send_agent_message(
         if active.contains_key(&conversation_id) {
             return Err("A response is already in progress for this conversation.".to_string());
         }
-        active.insert(conversation_id.clone(), cancel.clone());
+        active.insert(
+            conversation_id.clone(),
+            ActiveGeneration {
+                cancel: cancel.clone(),
+                steers: Vec::new(),
+            },
+        );
     }
     let _active_guard = ActiveGenerationGuard {
         active_generations: &active_generations,
@@ -2592,6 +2746,7 @@ pub async fn send_agent_message(
         active_plans: &active_plans,
         transcript_dir: transcript_dir.clone(),
         observed_usage: &compaction_state.observed_usage,
+        active_generations: &active_generations,
     };
     let result = run_loop(&context, initial_messages, &mut backend).await;
     // Generation runs against the server now, so there is no per-turn
@@ -4378,5 +4533,227 @@ mod tests {
 
         assert_eq!(model_text, outcome.model_text);
         assert_eq!(detail, outcome.detail);
+    }
+
+    // --- steer_generation core (steer_core): active/no-active/compaction
+    // gating, persistence, and FIFO enqueue. Exercised via the AppHandle-free
+    // core (the command wrapper only resolves dirs + supplies the emit closure),
+    // the same way persist_user_turn's tests do. ---
+
+    fn active_with_turn(id: &str) -> ActiveGenerations {
+        let gens = ActiveGenerations::default();
+        gens.0
+            .lock()
+            .unwrap()
+            .insert(id.to_string(), ActiveGeneration::default());
+        gens
+    }
+
+    async fn message_count(conn: &tokio_rusqlite::Connection, id: &str) -> i64 {
+        let id = id.to_string();
+        conn.call(move |conn: &mut Connection| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
+                [&id],
+                |row| row.get(0),
+            )
+        })
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn steer_core_with_an_active_turn_persists_enqueues_and_returns_injected() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_conversation(&conn, "c1").await;
+        let skills_dir = tempfile::tempdir().unwrap();
+        let active = active_with_turn("c1");
+        let compacting = CompactingConversations::default();
+        let emits = std::sync::atomic::AtomicUsize::new(0);
+
+        let result = steer_core(
+            &active,
+            &compacting,
+            &conn,
+            None,
+            skills_dir.path(),
+            "c1",
+            "steer me",
+            None,
+            || {
+                emits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(result, SteerResult::Injected));
+        assert_eq!(emits.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            active.0.lock().unwrap().get("c1").unwrap().steers,
+            vec!["steer me".to_string()]
+        );
+        let (role, content_type, _, content) = latest_message(&conn, "c1").await;
+        assert_eq!(role, "user");
+        assert_eq!(content_type, "text");
+        assert_eq!(content, "steer me");
+    }
+
+    #[tokio::test]
+    async fn steer_core_preserves_fifo_across_multiple_injects() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_conversation(&conn, "c1").await;
+        let skills_dir = tempfile::tempdir().unwrap();
+        let active = active_with_turn("c1");
+        let compacting = CompactingConversations::default();
+
+        for text in ["first", "second"] {
+            steer_core(
+                &active,
+                &compacting,
+                &conn,
+                None,
+                skills_dir.path(),
+                "c1",
+                text,
+                None,
+                || {},
+            )
+            .await
+            .unwrap();
+        }
+
+        assert_eq!(
+            active.0.lock().unwrap().get("c1").unwrap().steers,
+            vec!["first".to_string(), "second".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn steer_core_with_no_active_turn_returns_no_active_turn_and_persists_nothing() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_conversation(&conn, "c1").await;
+        let skills_dir = tempfile::tempdir().unwrap();
+        let active = ActiveGenerations::default();
+        let compacting = CompactingConversations::default();
+        let emits = std::sync::atomic::AtomicUsize::new(0);
+
+        let result = steer_core(
+            &active,
+            &compacting,
+            &conn,
+            None,
+            skills_dir.path(),
+            "c1",
+            "steer me",
+            None,
+            || {
+                emits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(result, SteerResult::NoActiveTurn));
+        assert_eq!(emits.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(message_count(&conn, "c1").await, 0);
+    }
+
+    #[tokio::test]
+    async fn steer_core_during_compaction_returns_rejected_and_persists_nothing() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_conversation(&conn, "c1").await;
+        let skills_dir = tempfile::tempdir().unwrap();
+        let active = ActiveGenerations::default();
+        let compacting = CompactingConversations::default();
+        compacting.0.lock().unwrap().insert("c1".to_string());
+
+        let result = steer_core(
+            &active,
+            &compacting,
+            &conn,
+            None,
+            skills_dir.path(),
+            "c1",
+            "steer me",
+            None,
+            || {},
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(result, SteerResult::Rejected));
+        assert_eq!(message_count(&conn, "c1").await, 0);
+    }
+
+    #[tokio::test]
+    async fn steer_core_expands_rich_content_into_the_enqueued_turn() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_conversation(&conn, "c1").await;
+        let skills_dir = tempfile::tempdir().unwrap();
+        let active = active_with_turn("c1");
+        let compacting = CompactingConversations::default();
+        let rich_json = serde_json::json!({
+            "segments": [
+                {"type": "text", "text": "before "},
+                {"type": "pastedText", "id": "p1", "text": "pasted body", "lineCount": 1},
+                {"type": "text", "text": " after"},
+            ]
+        })
+        .to_string();
+
+        steer_core(
+            &active,
+            &compacting,
+            &conn,
+            None,
+            skills_dir.path(),
+            "c1",
+            "ignored flat text",
+            Some(&rich_json),
+            || {},
+        )
+        .await
+        .unwrap();
+
+        // The enqueued steer is the model-text expansion, not the raw JSON.
+        assert_eq!(
+            active.0.lock().unwrap().get("c1").unwrap().steers,
+            vec!["before pasted body after".to_string()]
+        );
+        // The persisted row keeps the raw rich_text JSON.
+        let (_, content_type, _, content) = latest_message(&conn, "c1").await;
+        assert_eq!(content_type, "rich_text");
+        assert_eq!(content, rich_json);
+    }
+
+    #[tokio::test]
+    async fn steer_core_returns_err_on_malformed_rich_content_persisting_nothing() {
+        let conn = crate::storage::test_async_connection().await;
+        seed_conversation(&conn, "c1").await;
+        let skills_dir = tempfile::tempdir().unwrap();
+        let active = active_with_turn("c1");
+        let compacting = CompactingConversations::default();
+        let emits = std::sync::atomic::AtomicUsize::new(0);
+
+        let result = steer_core(
+            &active,
+            &compacting,
+            &conn,
+            None,
+            skills_dir.path(),
+            "c1",
+            "steer me",
+            Some("not valid json"),
+            || {
+                emits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            },
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(emits.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(message_count(&conn, "c1").await, 0);
+        assert!(active.0.lock().unwrap().get("c1").unwrap().steers.is_empty());
     }
 }
