@@ -731,40 +731,42 @@ export default function RichInput({
             </Tooltip>
           )}
           {contextGauge}
-          {/* Queue & steer: the submit button ALWAYS renders now (it never
-              swaps out for stop) so a message can be composed and QUEUED while
-              a turn is generating — submitting mid-turn enqueues (the caller
-              routes on its own busy state), so its intent reads "Queue message"
-              then. The stop button is rendered ALONGSIDE it during generation
-              (it used to replace it), the one control that stays clickable
-              regardless of `disabled`. */}
-          <InputGroupButton
-            variant="default"
-            size="icon-sm"
-            className="ml-auto aria-disabled:opacity-50"
-            onClick={submitCurrentContent}
-            disabled={disabled}
-            aria-disabled={disabled || isEmpty}
-            // Goal mode changes the send button's intent — submitting sets the
-            // conversation goal instead of sending; while generating, an
-            // ordinary submit queues rather than sends.
-            aria-label={
-              isGenerating ? "Queue message" : goal && goalMode ? "Send as goal" : "Send message"
-            }
-            title={isGenerating ? "Queue message" : goal && goalMode ? "Send as goal" : undefined}
-            data-testid={submitTestId}
-          >
-            <ArrowUp size={16} />
-          </InputGroupButton>
-          {isGenerating && (
+          {/* One state-aware button (merged send + stop):
+              • has text            → Send (enabled): submit — sends when idle,
+                queues while a turn is running (the caller routes on its state).
+              • empty + generating  → Stop: cancel the running turn.
+              • empty + idle        → Send (disabled): nothing to send. A
+                lingering queue does NOT re-enable it — the queue drains on its
+                own turn (or via each row's "Send now").
+              Text intent always wins, so to Stop mid-turn, clear the input. */}
+          {isEmpty && isGenerating ? (
             <InputGroupButton
               variant="destructive"
               size="icon-sm"
+              className="ml-auto"
               onClick={onStop}
               aria-label="Stop generating"
               data-testid="stop-generation"
             >
               <Square size={16} className="fill-current" />
+            </InputGroupButton>
+          ) : (
+            <InputGroupButton
+              variant="default"
+              size="icon-sm"
+              className="ml-auto aria-disabled:opacity-50"
+              onClick={submitCurrentContent}
+              disabled={disabled}
+              aria-disabled={disabled || isEmpty}
+              // Goal mode re-points submit at the goal; while generating an
+              // ordinary submit queues rather than sends.
+              aria-label={
+                isGenerating ? "Queue message" : goal && goalMode ? "Send as goal" : "Send message"
+              }
+              title={isGenerating ? "Queue message" : goal && goalMode ? "Send as goal" : undefined}
+              data-testid={submitTestId}
+            >
+              <ArrowUp size={16} />
             </InputGroupButton>
           )}
         </InputGroupAddon>

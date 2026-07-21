@@ -397,14 +397,13 @@ describe("RichInput (generation-cancellation, Task 4.2b — stop button)", () =>
     expect(screen.queryByTestId("stop-generation")).not.toBeInTheDocument();
   });
 
-  it("shows BOTH the submit and stop buttons while generating (queue & steer), and clicking stop calls onStop", async () => {
+  it("shows the single button as STOP while generating with an empty input, and clicking it calls onStop", async () => {
     const onStop = vi.fn();
     render(
       <RichInput
         onSubmit={vi.fn()}
         skillsEnabled={false}
-        // Queue & steer production shape: the composer stays editable while a
-        // turn runs (disabled=false) so a message can be composed to queue.
+        // Editable while a turn runs so a message can be composed to queue.
         disabled={false}
         isGenerating={true}
         onStop={onStop}
@@ -414,17 +413,45 @@ describe("RichInput (generation-cancellation, Task 4.2b — stop button)", () =>
       />,
     );
 
-    // The submit button is NO LONGER swapped out — it stays so a message can be
-    // queued mid-turn — and the stop button renders alongside it.
-    expect(screen.getByTestId("test-submit")).toBeInTheDocument();
+    // Empty input + generating → the single button is Stop (no separate send).
     const stop = screen.getByTestId("stop-generation");
     expect(stop).toBeInTheDocument();
     expect(stop).toHaveAccessibleName("Stop generating");
-    // The stop button stays clickable regardless of the composer state.
     expect(stop).not.toBeDisabled();
+    expect(screen.queryByTestId("test-submit")).not.toBeInTheDocument();
 
     await userEvent.click(stop);
     expect(onStop).toHaveBeenCalledTimes(1);
+  });
+
+  it("flips the single button from Stop to Send once the user types while generating (text intent wins)", async () => {
+    const onSubmit = vi.fn();
+    render(
+      <RichInput
+        onSubmit={onSubmit}
+        skillsEnabled={false}
+        disabled={false}
+        isGenerating={true}
+        onStop={vi.fn()}
+        placeholder="p"
+        inputTestId="test-input"
+        submitTestId="test-submit"
+      />,
+    );
+
+    // Empty → Stop.
+    expect(screen.getByTestId("stop-generation")).toBeInTheDocument();
+    expect(screen.queryByTestId("test-submit")).not.toBeInTheDocument();
+
+    // Type → the button becomes Send (queue); Stop is gone.
+    await userEvent.click(screen.getByTestId("test-input"));
+    await userEvent.keyboard("queued while busy");
+    expect(screen.getByTestId("test-submit")).toBeInTheDocument();
+    expect(screen.queryByTestId("stop-generation")).not.toBeInTheDocument();
+
+    // Enter queues it.
+    await userEvent.keyboard("{Enter}");
+    expect(onSubmit).toHaveBeenCalledWith("queued while busy", undefined);
   });
 
   it("keeps the group free of any :disabled descendant while generating, so it (and the stop button) stays full-opacity", () => {
@@ -494,7 +521,7 @@ describe("RichInput (generation-cancellation, Task 4.2b — stop button)", () =>
     expect(screen.getByTestId("rich-input-attach")).toBeDisabled();
   });
 
-  it("drops the stop button once generation ends (submit stays throughout)", () => {
+  it("morphs the single button between Stop (empty + generating) and a disabled Send (idle)", () => {
     const { rerender } = render(
       <RichInput
         onSubmit={vi.fn()}
@@ -508,9 +535,9 @@ describe("RichInput (generation-cancellation, Task 4.2b — stop button)", () =>
       />,
     );
 
-    // During generation: both present.
+    // Empty + generating → Stop only.
     expect(screen.getByTestId("stop-generation")).toBeInTheDocument();
-    expect(screen.getByTestId("test-submit")).toBeInTheDocument();
+    expect(screen.queryByTestId("test-submit")).not.toBeInTheDocument();
 
     rerender(
       <RichInput
@@ -525,9 +552,11 @@ describe("RichInput (generation-cancellation, Task 4.2b — stop button)", () =>
       />,
     );
 
-    // After generation: stop gone, submit still there.
+    // Empty + idle → Send only (disabled), Stop gone.
     expect(screen.queryByTestId("stop-generation")).not.toBeInTheDocument();
-    expect(screen.getByTestId("test-submit")).toBeInTheDocument();
+    const submit = screen.getByTestId("test-submit");
+    expect(submit).toBeInTheDocument();
+    expect(submit).toHaveAttribute("aria-disabled", "true");
   });
 });
 
