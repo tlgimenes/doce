@@ -886,35 +886,40 @@ export default function Workspace({
           </MessageScrollerViewport>
           <MessageScrollerButton data-testid="scroll-to-bottom" />
         </MessageScroller>
-        <AgentActivity
-          conversationId={conversationId}
-          goal={{
-            current: goal,
-            achieved: goalAchieved,
-            onEdit: () => setEditGoalToken((token) => token + 1),
-            onDelete: () => handleSetGoal(null),
-          }}
-          streaming={{
-            active: showGenericStreamingStatus,
-            startedAt: activeTurnStartedAt,
-            tokens: activeTurnTokens,
-            stream: liveGenText,
-          }}
-        />
         <div className="p-4" data-testid="workspace-composer-shell">
           {/* The view-transition name lives on the max-w-xl column, matching
-              EmptyState's named element exactly — same width on both sides
-              of the transition, so the morph never grows on the x axis. */}
-          <div className="mx-auto w-full max-w-xl [view-transition-name:chat-composer]">
-            {/* Queue & steer: preview rows for messages queued while busy,
-                above the composer (and above the ask widget, so they stay
-                manageable even when a question is pending). */}
+              EmptyState's named element exactly — same width on both sides of
+              the transition, so the morph never grows on the x axis. Queue &
+              steer + agent-activity stack as one surface (gap-1) in the order
+              queued messages → status line → input. */}
+          <div className="mx-auto flex w-full max-w-xl flex-col gap-1 [view-transition-name:chat-composer]">
+            {/* Queued messages sit at the top of the stack — above the status
+                line and the ask widget, so they stay manageable even when a
+                question is pending. */}
             <QueuedMessages
               items={queue}
               onSteer={handleSteer}
               onEdit={handleEditQueued}
               onDelete={(id) => removeQueuedMessage(conversationId, id)}
               steerError={steerError}
+            />
+            {/* The single agent-activity status line, docked directly on the
+                composer: goal › current todo › thinking, plus progress and the
+                working indicator. */}
+            <AgentActivity
+              conversationId={conversationId}
+              goal={{
+                current: goal,
+                achieved: goalAchieved,
+                onEdit: () => setEditGoalToken((token) => token + 1),
+                onDelete: () => handleSetGoal(null),
+              }}
+              streaming={{
+                active: showGenericStreamingStatus,
+                startedAt: activeTurnStartedAt,
+                tokens: activeTurnTokens,
+                stream: liveGenText,
+              }}
             />
             {pendingQuestion ? (
               <UserAskWidget detail={pendingQuestion} />

@@ -124,7 +124,7 @@ describe("AgentActivityView", () => {
     expect(tokens).not.toHaveTextContent("↓");
   });
 
-  it("streams the reasoning line above the pill, and hides it when not reasoning", () => {
+  it("fills the primary slot with the reasoning line when there is no goal or todo, and hides it when not reasoning", () => {
     const { rerender } = render(
       <AgentActivityView
         plan={null}
@@ -148,6 +148,52 @@ describe("AgentActivityView", () => {
         working={{ active: true, elapsedLabel: "1.0s", tokens: null, thinkingLine: null }}
       />,
     );
+    expect(screen.queryByTestId("agent-thinking-stream")).not.toBeInTheDocument();
+  });
+
+  it("shows a static 'Thinking…' in the primary slot while working with no goal, todo, or reasoning line", () => {
+    render(
+      <AgentActivityView
+        plan={null}
+        goal={noopGoal()}
+        working={{ active: true, elapsedLabel: "0.4s", tokens: null, thinkingLine: null }}
+      />,
+    );
+    expect(screen.getByTestId("agent-thinking-fallback")).toHaveTextContent("Thinking");
+    expect(screen.queryByTestId("agent-thinking-stream")).not.toBeInTheDocument();
+  });
+
+  it("suppresses the reasoning line when a goal holds the primary slot (goal wins)", () => {
+    render(
+      <AgentActivityView
+        plan={null}
+        goal={noopGoal({ current: "Ship the login flow" })}
+        working={{
+          active: true,
+          elapsedLabel: "1.0s",
+          tokens: null,
+          thinkingLine: "checking the session shape",
+        }}
+      />,
+    );
+    expect(screen.getByTestId("agent-activity-goal")).toHaveTextContent("Ship the login flow");
+    expect(screen.queryByTestId("agent-thinking-stream")).not.toBeInTheDocument();
+  });
+
+  it("suppresses the reasoning line when a todo holds the primary slot (todo wins)", () => {
+    render(
+      <AgentActivityView
+        plan={plan()}
+        goal={noopGoal()}
+        working={{
+          active: true,
+          elapsedLabel: "1.0s",
+          tokens: null,
+          thinkingLine: "checking the session shape",
+        }}
+      />,
+    );
+    expect(screen.getByTestId("agent-activity-current-todo")).toBeInTheDocument();
     expect(screen.queryByTestId("agent-thinking-stream")).not.toBeInTheDocument();
   });
 

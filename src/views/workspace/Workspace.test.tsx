@@ -68,12 +68,6 @@ function messageFixture(id: string, content: string, createdAt = 1) {
   };
 }
 
-function expectElementBefore(first: HTMLElement, second: HTMLElement) {
-  expect(Boolean(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(
-    true,
-  );
-}
-
 describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -473,7 +467,9 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     expect(thinkingTokens).not.toHaveTextContent("↓");
     expect(status.closest('[data-testid="chat-message"]')).toBeNull();
     expect(status.closest('[data-testid="transcript-turn"]')).toBeNull();
-    expectElementBefore(status, composerShell);
+    // The working status is docked inside the composer (the status line now
+    // stacks with the queue + input), not floating in the transcript.
+    expect(composerShell.contains(status)).toBe(true);
     expect(composerShell).not.toHaveClass("border-t");
 
     resolveAgent("Found 3 files: a.rs, b.rs, c.rs");
@@ -2050,7 +2046,7 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
 
   // --- Plan tracker integration ---
 
-  it("docks the plan tracker between the transcript and the composer", async () => {
+  it("docks the plan tracker inside the composer, above the input (not in the transcript)", async () => {
     vi.mocked(commands.getActivePlan).mockResolvedValue({
       goal: "Ship it",
       currentStepIndex: 0,
@@ -2062,18 +2058,15 @@ describe("Workspace (006-chat-empty-state: conversationId-driven agent view)", (
     const tracker = await screen.findByTestId("plan-tracker");
     const scroller = screen.getByTestId("workspace-scroll-container");
     const composer = screen.getByTestId("workspace-composer-shell");
-    // Not inside the scroller any more…
+    const input = screen.getByTestId("agent-input");
+    // Not inside the transcript scroller…
     expect(scroller.contains(tracker)).toBe(false);
     // Load-bearing guard: the old location was inside the MessageScroller
     // ROOT (a sibling of the viewport), which the viewport check can't see.
     expect(document.querySelector('[data-slot="message-scroller"]')?.contains(tracker)).toBe(false);
-    // …and between it and the composer in document order.
-    expect(
-      scroller.compareDocumentPosition(tracker) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-    expect(
-      tracker.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
+    // …the status line now stacks inside the composer, above the input.
+    expect(composer.contains(tracker)).toBe(true);
+    expect(tracker.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("keeps the prompt's ↑ estimate when the persisted user row lands without its token count yet", async () => {

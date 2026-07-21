@@ -31,7 +31,7 @@ export default function QueuedMessages({
   if (items.length === 0) return null;
 
   return (
-    <div className="mb-1 flex flex-col gap-1" data-testid="queued-messages">
+    <div className="flex flex-col gap-1" data-testid="queued-messages">
       {items.map((item) => {
         const preview = previewText(item);
         return (
