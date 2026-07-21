@@ -105,11 +105,7 @@ pub async fn compact_conversation(
     // Mark this conversation as compacting for the duration of the call so a
     // concurrent `steer_generation` returns `Rejected` (keep queued), not
     // `NoActiveTurn` (dispatch a doomed turn). RAII-cleared on every exit.
-    compacting
-        .0
-        .lock()
-        .unwrap()
-        .insert(conversation_id.clone());
+    compacting.0.lock().unwrap().insert(conversation_id.clone());
     let _compacting_guard = CompactingGuard {
         compacting: &compacting,
         conversation_id: conversation_id.clone(),

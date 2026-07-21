@@ -506,7 +506,9 @@ mod tests {
         assert!(token.is_cancelled());
 
         let guard = gens.0.lock().unwrap();
-        let entry = guard.get("c1").expect("entry still present until RAII drop");
+        let entry = guard
+            .get("c1")
+            .expect("entry still present until RAII drop");
         assert_eq!(entry.steers, vec!["steered!".to_string()]);
     }
 

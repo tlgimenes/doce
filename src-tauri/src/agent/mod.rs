@@ -990,7 +990,10 @@ mod tests {
 
         assert_eq!(result, "done");
         // First generate saw only the seed; second saw the steered turn appended.
-        assert_eq!(backend.user_texts_per_generate[0], vec!["start".to_string()]);
+        assert_eq!(
+            backend.user_texts_per_generate[0],
+            vec!["start".to_string()]
+        );
         assert_eq!(
             backend.user_texts_per_generate[1],
             vec!["start".to_string(), "steered!".to_string()]

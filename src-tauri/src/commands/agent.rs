@@ -3,7 +3,9 @@ use crate::agent::tools::ask_user::{PendingQuestions, QuestionOption};
 use crate::agent::{
     dispatch, run_loop, subagent, AgentContext, AgentError, ToolCall, ToolExecution,
 };
-use crate::commands::conversations::{ActiveGeneration, ActiveGenerations, CompactingConversations};
+use crate::commands::conversations::{
+    ActiveGeneration, ActiveGenerations, CompactingConversations,
+};
 use crate::commands::models::now_ms;
 use crate::inference::ChatMessage;
 use crate::storage::conversations::load_history;
@@ -2284,6 +2286,7 @@ pub struct SteerMessageInput {
 /// shows as a trailing user turn instead of being folded into the just-ended
 /// loop. Persist-then-enqueue also means the drain in `run_loop` is a trivial
 /// synchronous pop of already-expanded model text — no DB, no re-expansion.
+#[allow(clippy::too_many_arguments)]
 async fn steer_core(
     active: &ActiveGenerations,
     compacting: &CompactingConversations,
@@ -2296,13 +2299,11 @@ async fn steer_core(
     emit_persisted: impl FnOnce(),
 ) -> Result<SteerResult, String> {
     if !active.0.lock().unwrap().contains_key(conversation_id) {
-        return Ok(
-            if compacting.0.lock().unwrap().contains(conversation_id) {
-                SteerResult::Rejected
-            } else {
-                SteerResult::NoActiveTurn
-            },
-        );
+        return Ok(if compacting.0.lock().unwrap().contains(conversation_id) {
+            SteerResult::Rejected
+        } else {
+            SteerResult::NoActiveTurn
+        });
     }
 
     let (_seq, model_text) = persist_user_turn(
@@ -2347,7 +2348,11 @@ pub async fn steer_generation(
         .app_data_dir()
         .map_err(|e| e.to_string())?
         .join("skills");
-    let transcript_dir = app.path().app_data_dir().ok().map(|d| d.join("transcripts"));
+    let transcript_dir = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|d| d.join("transcripts"));
 
     let emit_conversation_id = conversation_id.clone();
     let emit_app = app.clone();
@@ -4754,6 +4759,13 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(emits.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert_eq!(message_count(&conn, "c1").await, 0);
-        assert!(active.0.lock().unwrap().get("c1").unwrap().steers.is_empty());
+        assert!(active
+            .0
+            .lock()
+            .unwrap()
+            .get("c1")
+            .unwrap()
+            .steers
+            .is_empty());
     }
 }
