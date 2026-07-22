@@ -23,9 +23,12 @@ vi.mock("@/lib/ipc", () => ({
     connectOauthAccount: vi.fn(),
     removeOauthAccount: vi.fn(),
     addGoogleWorkspaceServers: vi.fn(),
+    listFeedCards: vi.fn(),
+    dismissFeedCard: vi.fn(),
   },
   events: {
     onModelInstallProgress: vi.fn(),
+    onFeedCardCreated: vi.fn(),
   },
 }));
 
@@ -76,7 +79,10 @@ describe("Settings", () => {
     vi.mocked(commands.selectCuratedModel).mockResolvedValue(DEFAULT_MODEL_STATE);
     vi.mocked(commands.selectLocalModel).mockResolvedValue(DEFAULT_MODEL_STATE);
     vi.mocked(commands.dismissModelNotice).mockResolvedValue(undefined);
+    vi.mocked(commands.listFeedCards).mockResolvedValue([]);
+    vi.mocked(commands.dismissFeedCard).mockResolvedValue(undefined);
     vi.mocked(events.onModelInstallProgress).mockResolvedValue(vi.fn());
+    vi.mocked(events.onFeedCardCreated).mockResolvedValue(vi.fn());
   });
 
   afterEach(() => {

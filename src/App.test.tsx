@@ -54,6 +54,8 @@ vi.mock("@/lib/ipc", () => ({
     startModelInstall: vi.fn(),
     getConversationGoal: vi.fn(),
     setConversationGoal: vi.fn(),
+    listFeedCards: vi.fn(),
+    dismissFeedCard: vi.fn(),
   },
   events: {
     onContextUsageUpdate: vi.fn(),
@@ -62,6 +64,7 @@ vi.mock("@/lib/ipc", () => ({
     onPlanUpdate: vi.fn(),
     onModelInstallProgress: vi.fn(),
     onConversationsChanged: vi.fn(),
+    onFeedCardCreated: vi.fn(),
   },
 }));
 
@@ -180,6 +183,9 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     vi.mocked(commands.getActivePlan).mockResolvedValue(null);
     vi.mocked(events.onPlanUpdate).mockResolvedValue(() => {});
     vi.mocked(commands.getConversationGoal).mockResolvedValue({ goal: null, achieved: false });
+    vi.mocked(commands.listFeedCards).mockResolvedValue([]);
+    vi.mocked(commands.dismissFeedCard).mockResolvedValue(undefined);
+    vi.mocked(events.onFeedCardCreated).mockResolvedValue(() => {});
     vi.mocked(homeDir).mockResolvedValue("/Users/tester");
     startDragging.mockResolvedValue(undefined);
   });

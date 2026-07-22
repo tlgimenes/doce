@@ -22,6 +22,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { commands, type McpServerConnection, type SkillSummary } from "@/lib/ipc";
+import ActivityView from "@/views/activity/ActivityView";
 import Connections from "./Connections";
 import ModelSelector from "./ModelSelector";
 
@@ -161,6 +162,23 @@ export default function Settings({ onClose }: SettingsProps) {
         </section>
 
         <ModelSelector />
+
+        <section
+          className="mb-8"
+          aria-labelledby="activity-settings-heading"
+          data-testid="settings-activity-section"
+        >
+          <h3
+            id="activity-settings-heading"
+            className="mb-2 text-xs font-medium tracking-wide text-muted-foreground uppercase"
+          >
+            Activity
+          </h3>
+          <p className="mb-3 text-sm text-muted-foreground">
+            What the agent did through your connected services. Review and dismiss.
+          </p>
+          <ActivityView />
+        </section>
 
         <section
           aria-labelledby="extensions-settings-heading"

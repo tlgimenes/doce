@@ -896,6 +896,23 @@ impl RealBackend<'_> {
             .record_mutation(&tool.advertised_name, None, ok);
         self.persist_mcp_interaction(&tool_call_id, &tool.advertised_name, call, &model_text)
             .await;
+        // Activity feed (side-effect, NOT a new agent tool): a successful
+        // MUTATING/creative MCP call surfaces a persisted card the user can
+        // review + dismiss. Gated on `ok` so a server-reported failure never
+        // pretends work happened, and on `record_mcp_card`'s own mutating-name
+        // heuristic so reads/queries produce nothing. Fully best-effort — it
+        // can never fail the tool call or the turn (see `record_mcp_card`).
+        if ok {
+            crate::commands::feed::record_mcp_card(
+                self.app,
+                self.conn,
+                self.conversation_id,
+                &tool.server_name,
+                &tool.raw_name,
+                &model_text,
+            )
+            .await;
+        }
         ToolExecution::Result(model_text)
     }
 
