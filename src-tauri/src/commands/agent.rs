@@ -814,10 +814,14 @@ impl RealBackend<'_> {
                     )
                 }
             }
-            Some(snapshot) => match crate::mcp::list_tools_detailed(&snapshot.config).await {
+            // Phase 2: `describe_service` captures the server's own
+            // `instructions` alongside its tool schemas in a SINGLE connect —
+            // the fallback usage guidance when doce has no curated skill.
+            Some(snapshot) => match crate::mcp::describe_service(&snapshot.config).await {
                 Err(e) => format!("Error: failed to load service {:?}: {e}", snapshot.name),
-                Ok(schemas) => {
-                    let new_tools: Vec<crate::agent::mcp_disclosure::ActivatedTool> = schemas
+                Ok(description) => {
+                    let new_tools: Vec<crate::agent::mcp_disclosure::ActivatedTool> = description
+                        .tools
                         .iter()
                         .map(|s| {
                             crate::agent::mcp_disclosure::make_activated_tool(
@@ -842,15 +846,15 @@ impl RealBackend<'_> {
                             }
                         }
                     }
-                    if names.is_empty() {
-                        format!("Activated {:?}, but it exposes no tools.", snapshot.name)
-                    } else {
-                        format!(
-                            "Activated {:?}. You can now call: {}.",
-                            snapshot.name,
-                            names.join(", ")
-                        )
-                    }
+                    // Level-2 disclosure: the acknowledgement PLUS the usage
+                    // skill (curated doc if known, else the server's own
+                    // instructions), so the model reads how to use the service
+                    // right after activating it.
+                    crate::agent::mcp_disclosure::build_activation_result(
+                        &snapshot.name,
+                        &names,
+                        description.instructions.as_deref(),
+                    )
                 }
             },
         };

@@ -146,8 +146,14 @@ pub fn build_tools_array(
 }
 
 /// Renders the connected-services catalog tail: an instruction line, then one
-/// `- <name>` line per connected service (marked `(activated)` when its tools
-/// are loaded), then a `Currently activated: ...` line when any are.
+/// line per connected service (marked `(activated)` when its tools are
+/// loaded), then a `Currently activated: ...` line when any are.
+///
+/// Phase 2: each KNOWN service (one doce has a curated entry for — see
+/// [`crate::agent::service_registry`]) shows a one-line description after its
+/// name, so the small model can pick the right service to activate WITHOUT a
+/// per-turn network round-trip (this runs every turn, so it must NOT connect).
+/// Unknown servers keep showing just their name.
 ///
 /// BYTE-INVARIANCE: EMPTY string when there are no servers — hosts must skip
 /// pushing an empty tail (same discipline as `PlanState::state_tail`).
@@ -162,10 +168,20 @@ pub fn render_catalog(snapshots: &[McpServerSnapshot], activated: &[ActivatedToo
         "Connected services — call activate_service to load one before using its tools:",
     );
     for s in snapshots {
-        if activated_servers.contains(s.name.as_str()) {
-            out.push_str(&format!("\n- {} (activated)", s.name));
+        let marker = if activated_servers.contains(s.name.as_str()) {
+            " (activated)"
         } else {
-            out.push_str(&format!("\n- {}", s.name));
+            ""
+        };
+        // Curated one-liner if doce knows this service; bare name otherwise.
+        match crate::agent::service_registry::lookup(&s.name) {
+            Some(curated) => {
+                out.push_str(&format!(
+                    "\n- {}{}: {}",
+                    s.name, marker, curated.catalog_description
+                ));
+            }
+            None => out.push_str(&format!("\n- {}{}", s.name, marker)),
         }
     }
     let active_names: Vec<&str> = snapshots
@@ -179,6 +195,49 @@ pub fn render_catalog(snapshots: &[McpServerSnapshot], activated: &[ActivatedToo
             active_names.join(", ")
         ));
     }
+    out
+}
+
+/// The usage-guidance section appended to a service's activation result
+/// (Phase 2, Level-2 "load skill on activation" disclosure), chosen in
+/// priority: (a) doce's curated `skill` if the service is KNOWN
+/// ([`crate::agent::service_registry::lookup`]); else (b) the server's own
+/// handshake `instructions` if it advertised any; else (c) nothing.
+///
+/// Returns "" when there's nothing to add, so the caller can append
+/// unconditionally. When non-empty it's a clearly-delimited section the model
+/// reads right after activating: `\n\nHow to use <name>:\n<guidance>`.
+pub fn activation_guidance(server_name: &str, instructions: Option<&str>) -> String {
+    let curated = crate::agent::service_registry::lookup(server_name).map(|c| c.skill);
+    let guidance = curated
+        .or(instructions)
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    match guidance {
+        Some(text) => format!("\n\nHow to use {server_name}:\n{text}"),
+        None => String::new(),
+    }
+}
+
+/// Builds the full activation result string the `activate_service` handler
+/// returns: the "Activated … you can now call …" acknowledgement, plus the
+/// [`activation_guidance`] section. Pure (no live server), so the exact
+/// model-facing string is unit-testable; the handler feeds it the loaded
+/// tools' advertised names and the server's `instructions`.
+pub fn build_activation_result(
+    server_name: &str,
+    advertised_names: &[String],
+    instructions: Option<&str>,
+) -> String {
+    let mut out = if advertised_names.is_empty() {
+        format!("Activated {server_name:?}, but it exposes no tools.")
+    } else {
+        format!(
+            "Activated {server_name:?}. You can now call: {}.",
+            advertised_names.join(", ")
+        )
+    };
+    out.push_str(&activation_guidance(server_name, instructions));
     out
 }
 
@@ -252,23 +311,69 @@ mod tests {
     // --- Catalog rendering -------------------------------------------
 
     #[test]
-    fn catalog_lists_servers_one_per_line() {
-        let snaps = [snapshot("github"), snapshot("gmail")];
+    fn catalog_shows_curated_description_for_known_and_bare_name_for_unknown() {
+        // "github" is unknown (bare name); "Gmail" is curated (name + blurb).
+        let snaps = [snapshot("github"), snapshot("Gmail")];
         let out = render_catalog(&snaps, &[]);
         assert_eq!(
             out,
-            "Connected services — call activate_service to load one before using its tools:\n- github\n- gmail"
+            "Connected services — call activate_service to load one before using its tools:\n- github\n- Gmail: search, read & draft email"
         );
     }
 
     #[test]
     fn catalog_marks_activated_service_and_lists_it() {
-        let snaps = [snapshot("github"), snapshot("gmail")];
-        let activated = [tool("gmail", "send_email")];
+        let snaps = [snapshot("github"), snapshot("Gmail")];
+        let activated = [tool("Gmail", "send_email")];
         let out = render_catalog(&snaps, &activated);
         assert!(out.contains("- github\n"));
-        assert!(out.contains("- gmail (activated)"));
-        assert!(out.ends_with("Currently activated: gmail"));
+        // Known service keeps its curated blurb even when activated.
+        assert!(out.contains("- Gmail (activated): search, read & draft email"));
+        assert!(out.ends_with("Currently activated: Gmail"));
+    }
+
+    // --- Phase 2: activation guidance --------------------------------
+
+    #[test]
+    fn activation_result_appends_curated_skill_for_known_service() {
+        let names = vec!["gmail__search".to_string(), "gmail__draft".to_string()];
+        // A server's own instructions must NOT override a curated skill.
+        let out = build_activation_result("Gmail", &names, Some("ignored server instructions"));
+        assert!(
+            out.starts_with("Activated \"Gmail\". You can now call: gmail__search, gmail__draft.")
+        );
+        assert!(out.contains("How to use Gmail:"));
+        // The curated gmail skill's hard guardrail rides along.
+        assert!(out.contains("without the user's explicit confirmation"));
+        assert!(!out.contains("ignored server instructions"));
+    }
+
+    #[test]
+    fn activation_result_falls_back_to_server_instructions_when_unknown() {
+        let names = vec!["github__create_issue".to_string()];
+        let out =
+            build_activation_result("github", &names, Some("Call create_issue to file bugs."));
+        assert!(out.contains("How to use github:\nCall create_issue to file bugs."));
+    }
+
+    #[test]
+    fn activation_result_adds_nothing_extra_for_unknown_without_instructions() {
+        let names = vec!["github__create_issue".to_string()];
+        let out = build_activation_result("github", &names, None);
+        assert_eq!(
+            out,
+            "Activated \"github\". You can now call: github__create_issue."
+        );
+        // Blank/whitespace-only instructions are treated as absent too.
+        let blank = build_activation_result("github", &names, Some("   \n  "));
+        assert_eq!(blank, out);
+    }
+
+    #[test]
+    fn activation_result_reports_no_tools_but_still_adds_skill() {
+        let out = build_activation_result("Gmail", &[], None);
+        assert!(out.starts_with("Activated \"Gmail\", but it exposes no tools."));
+        assert!(out.contains("How to use Gmail:"));
     }
 
     // --- Naming / round-trip -----------------------------------------
