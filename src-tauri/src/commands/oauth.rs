@@ -48,6 +48,16 @@ pub async fn connect_oauth_account(
     client_secret: Option<String>,
     scopes: Vec<String>,
 ) -> Result<OAuthAccount, String> {
+    // A blank `client_id` means "use the built-in client" — fall back to the
+    // credentials baked in at build time (if any). A non-empty `client_id`
+    // keeps the bring-your-own path unchanged.
+    let (client_id, client_secret) = oauth::resolve_client_credentials(
+        &client_id,
+        client_secret,
+        oauth::google::builtin_client(),
+    )
+    .map_err(|e| e.to_string())?;
+
     let config = oauth::provider_config(&provider, client_id, client_secret, scopes)
         .map_err(|e| e.to_string())?;
 
@@ -89,6 +99,18 @@ pub async fn connect_oauth_account(
     .map_err(|e| e.to_string())?;
 
     Ok(account)
+}
+
+/// Whether this build ships a built-in Google OAuth client (both
+/// `DOCE_GOOGLE_CLIENT_ID` and `DOCE_GOOGLE_CLIENT_SECRET` were injected at
+/// build time). The Connect UI calls this on mount: when `true` it offers a
+/// one-click "Continue with Google" (no credential fields) and keeps the
+/// bring-your-own client as an advanced fallback; when `false` the BYO fields
+/// are required.
+#[tauri::command]
+#[specta::specta]
+pub fn google_oauth_builtin_available() -> bool {
+    oauth::google::builtin_client().is_some()
 }
 
 #[tauri::command]

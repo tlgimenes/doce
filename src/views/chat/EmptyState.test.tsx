@@ -12,6 +12,7 @@ vi.mock("@/lib/ipc", () => ({
     listWorkspaces: vi.fn(),
     // The home now hosts Connections + ActivityView, which read these on mount.
     listOauthAccounts: vi.fn(),
+    googleOauthBuiltinAvailable: vi.fn(),
     listGoogleWorkspaceServices: vi.fn(),
     listMcpServers: vi.fn(),
     listFeedCards: vi.fn(),
@@ -33,6 +34,7 @@ describe("EmptyState (006-chat-empty-state)", () => {
     // Keep the home's Connections + Activity mounts inert in these composer tests.
     vi.mocked(commands.listOauthAccounts).mockResolvedValue([]);
     vi.mocked(commands.listGoogleWorkspaceServices).mockResolvedValue([]);
+    vi.mocked(commands.googleOauthBuiltinAvailable).mockResolvedValue(false);
     vi.mocked(commands.listMcpServers).mockResolvedValue([]);
     vi.mocked(commands.listFeedCards).mockResolvedValue([]);
     vi.mocked(events.onFeedCardCreated).mockResolvedValue(() => {});

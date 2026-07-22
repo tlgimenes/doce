@@ -64,6 +64,10 @@ pub enum OAuthError {
     Serde(#[from] serde_json::Error),
     #[error("unsupported provider: {0}")]
     UnsupportedProvider(String),
+    #[error(
+        "No Google client configured — enter one, or build doce with DOCE_GOOGLE_CLIENT_ID/SECRET"
+    )]
+    NoClientConfigured,
 }
 
 impl From<reqwest::Error> for OAuthError {
@@ -166,6 +170,26 @@ pub mod google {
         .collect()
     }
 
+    /// The built-in Google OAuth client baked into the binary at build time,
+    /// if any. Returns `Some((client_id, client_secret))` ONLY when BOTH
+    /// `DOCE_GOOGLE_CLIENT_ID` and `DOCE_GOOGLE_CLIENT_SECRET` were injected
+    /// (via `build.rs`) and are non-empty; otherwise `None`. For a desktop app
+    /// the `client_secret` is a non-confidential public identifier (PKCE is
+    /// what protects the flow), so shipping it in the binary is expected — see
+    /// `.env.example`. `option_env!` resolves at compile time, so a build
+    /// without the vars simply has no built-in client.
+    pub fn builtin_client() -> Option<(String, String)> {
+        match (
+            option_env!("DOCE_GOOGLE_CLIENT_ID"),
+            option_env!("DOCE_GOOGLE_CLIENT_SECRET"),
+        ) {
+            (Some(id), Some(secret)) if !id.trim().is_empty() && !secret.trim().is_empty() => {
+                Some((id.to_string(), secret.to_string()))
+            }
+            _ => None,
+        }
+    }
+
     /// Builds a Google [`OAuthProviderConfig`] from user-supplied credentials.
     /// `scopes` empty -> [`default_scopes`].
     pub fn config(
@@ -200,6 +224,28 @@ pub fn provider_config(
     match provider {
         google::PROVIDER => Ok(google::config(client_id, client_secret, scopes)),
         other => Err(OAuthError::UnsupportedProvider(other.to_string())),
+    }
+}
+
+/// Decides which client credentials a connect should use, given what the caller
+/// passed and the (optionally present) built-in client. Pure so the fallback
+/// policy is unit-testable without `option_env!`:
+///   * a non-blank `passed_id` wins — BYO behavior, passing its own secret
+///     through untouched;
+///   * a blank/empty `passed_id` with a `builtin` present resolves to the
+///     built-in id + secret;
+///   * a blank/empty `passed_id` and NO built-in is an error.
+pub fn resolve_client_credentials(
+    passed_id: &str,
+    passed_secret: Option<String>,
+    builtin: Option<(String, String)>,
+) -> Result<(String, Option<String>), OAuthError> {
+    if !passed_id.trim().is_empty() {
+        return Ok((passed_id.to_string(), passed_secret));
+    }
+    match builtin {
+        Some((id, secret)) => Ok((id, Some(secret))),
+        None => Err(OAuthError::NoClientConfigured),
     }
 }
 
@@ -664,6 +710,47 @@ mod tests {
     fn unknown_provider_is_rejected() {
         let err = provider_config("myspace", "cid".to_string(), None, vec![]).unwrap_err();
         assert!(matches!(err, OAuthError::UnsupportedProvider(_)));
+    }
+
+    // --- built-in client credential resolution ------------------------
+
+    #[test]
+    fn resolve_credentials_passed_id_wins_over_builtin() {
+        let (id, secret) = resolve_client_credentials(
+            "user-cid",
+            Some("user-secret".to_string()),
+            Some(("builtin-cid".to_string(), "builtin-secret".to_string())),
+        )
+        .unwrap();
+        assert_eq!(id, "user-cid");
+        assert_eq!(secret.as_deref(), Some("user-secret"));
+    }
+
+    #[test]
+    fn resolve_credentials_passed_id_without_secret_is_preserved() {
+        let (id, secret) = resolve_client_credentials("user-cid", None, None).unwrap();
+        assert_eq!(id, "user-cid");
+        assert!(secret.is_none());
+    }
+
+    #[test]
+    fn resolve_credentials_blank_id_falls_back_to_builtin() {
+        // A passed secret is ignored when falling back — the built-in's own
+        // secret is used.
+        let (id, secret) = resolve_client_credentials(
+            "   ",
+            Some("ignored".to_string()),
+            Some(("builtin-cid".to_string(), "builtin-secret".to_string())),
+        )
+        .unwrap();
+        assert_eq!(id, "builtin-cid");
+        assert_eq!(secret.as_deref(), Some("builtin-secret"));
+    }
+
+    #[test]
+    fn resolve_credentials_blank_id_and_no_builtin_errors() {
+        let err = resolve_client_credentials("", None, None).unwrap_err();
+        assert!(matches!(err, OAuthError::NoClientConfigured));
     }
 
     // --- resolve_http_config ------------------------------------------

@@ -7,6 +7,7 @@ vi.mock("@/lib/ipc", () => ({
   commands: {
     // Connections (home surface) reads these on mount.
     listOauthAccounts: vi.fn(),
+    googleOauthBuiltinAvailable: vi.fn(),
     listMcpServers: vi.fn(),
     listGoogleWorkspaceServices: vi.fn(),
     // ActivityView reads these on mount.
@@ -32,6 +33,7 @@ beforeEach(() => {
   vi.mocked(commands.listOauthAccounts).mockResolvedValue([]);
   vi.mocked(commands.listMcpServers).mockResolvedValue([]);
   vi.mocked(commands.listGoogleWorkspaceServices).mockResolvedValue([]);
+  vi.mocked(commands.googleOauthBuiltinAvailable).mockResolvedValue(false);
   vi.mocked(commands.listFeedCards).mockResolvedValue([]);
   vi.mocked(events.onFeedCardCreated).mockResolvedValue(() => {});
 });
