@@ -17,6 +17,8 @@ vi.mock("@/lib/ipc", () => ({
     getModelState: vi.fn(),
     selectCuratedModel: vi.fn(),
     selectLocalModel: vi.fn(),
+    selectEndpointModel: vi.fn(),
+    testModelEndpoint: vi.fn(),
     dismissModelNotice: vi.fn(),
     listOauthAccounts: vi.fn(),
     listGoogleWorkspaceServices: vi.fn(),

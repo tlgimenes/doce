@@ -17,6 +17,8 @@ vi.mock("@/lib/ipc", () => ({
     getModelState: vi.fn(),
     selectCuratedModel: vi.fn(),
     selectLocalModel: vi.fn(),
+    selectEndpointModel: vi.fn(),
+    testModelEndpoint: vi.fn(),
     pauseModelDownload: vi.fn(),
     resumeModelDownload: vi.fn(),
     stopModelDownload: vi.fn(),
@@ -916,6 +918,61 @@ describe("ModelSelector", () => {
     expect(screen.getByTestId("active-model-summary")).toHaveTextContent(
       "Checking the active model…",
     );
+  });
+
+  const endpointOption = (overrides: Partial<Option> = {}) =>
+    modelOption({
+      id: "endpoint:openrouter",
+      displayName: "qwen-max",
+      description: "",
+      technicalName: "",
+      recommended: false,
+      installed: true,
+      active: false,
+      selected: false,
+      sourceKind: "endpoint",
+      endpointUrl: "https://openrouter.ai/api/v1",
+      endpointModel: "qwen-max",
+      state: "ready",
+      ...overrides,
+    });
+
+  it("renders existing endpoints as their own group with model and host", async () => {
+    vi.mocked(commands.getModelState).mockResolvedValue(
+      modelState({ options: [modelOption(), endpointOption()] }),
+    );
+
+    render(<ModelSelector />);
+    await userEvent.click(await screen.findByTestId("model-selector-trigger"));
+
+    const row = await screen.findByTestId("model-option-endpoint:openrouter");
+    expect(row).toHaveTextContent("qwen-max");
+    expect(row).toHaveTextContent("openrouter.ai");
+    expect(screen.getByText("Endpoints")).toBeVisible();
+  });
+
+  it("re-opens an existing endpoint pre-filled instead of re-selecting it", async () => {
+    vi.mocked(commands.getModelState).mockResolvedValue(
+      modelState({ options: [modelOption(), endpointOption()] }),
+    );
+
+    render(<ModelSelector />);
+    await userEvent.click(await screen.findByTestId("model-selector-trigger"));
+    await userEvent.click(await screen.findByTestId("model-option-endpoint:openrouter"));
+
+    const form = await screen.findByTestId("add-endpoint-form");
+    expect(within(form).getByTestId("endpoint-url-input")).toHaveValue(
+      "https://openrouter.ai/api/v1",
+    );
+    expect(commands.selectCuratedModel).not.toHaveBeenCalled();
+  });
+
+  it("opens an empty endpoint form from the Add button", async () => {
+    render(<ModelSelector />);
+
+    await userEvent.click(await screen.findByTestId("add-endpoint-button"));
+    const form = await screen.findByTestId("add-endpoint-form");
+    expect(within(form).getByTestId("endpoint-url-input")).toHaveValue("");
   });
 
   it("unsubscribes from model progress events when unmounted", async () => {
