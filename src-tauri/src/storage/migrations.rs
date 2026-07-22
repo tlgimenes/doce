@@ -36,6 +36,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     ),
     (13, include_str!("migrations/0013_model_sources.sql")),
     (14, include_str!("migrations/0014_model_downloads.sql")),
+    (15, include_str!("migrations/0015_mcp_oauth_accounts.sql")),
 ];
 
 pub fn apply_pending(conn: &mut Connection) -> rusqlite::Result<()> {
@@ -440,6 +441,44 @@ mod tests {
         assert!(conn
             .execute(
                 "UPDATE model_downloads SET state = 'preparing' WHERE model_id = 'balanced'",
+                [],
+            )
+            .is_err());
+    }
+
+    /// 0015_mcp_oauth_accounts: the metadata table exists and round-trips.
+    /// Tokens are NOT stored here (they go to the Keychain) — this holds only
+    /// the non-secret provider/client_id/scopes/expiry metadata.
+    #[test]
+    fn mcp_oauth_accounts_table_round_trips_metadata() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_pending(&mut conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO mcp_oauth_accounts (id, provider, client_id, scopes, expires_at, created_at)\
+             VALUES ('acct-1', 'google', 'cid.apps', '[\"scope.a\"]', 111, 222)",
+            [],
+        )
+        .unwrap();
+
+        let row: (String, String, String, i64, i64) = conn
+            .query_row(
+                "SELECT provider, client_id, scopes, expires_at, created_at FROM mcp_oauth_accounts WHERE id = 'acct-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(row.0, "google");
+        assert_eq!(row.1, "cid.apps");
+        assert_eq!(row.2, "[\"scope.a\"]");
+        assert_eq!(row.3, 111);
+        assert_eq!(row.4, 222);
+
+        // Primary-key uniqueness on id.
+        assert!(conn
+            .execute(
+                "INSERT INTO mcp_oauth_accounts (id, provider, client_id, scopes, expires_at, created_at)\
+                 VALUES ('acct-1', 'google', 'other', '[]', 0, 0)",
                 [],
             )
             .is_err());

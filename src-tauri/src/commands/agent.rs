@@ -816,8 +816,11 @@ impl RealBackend<'_> {
             }
             // Phase 2: `describe_service` captures the server's own
             // `instructions` alongside its tool schemas in a SINGLE connect —
-            // the fallback usage guidance when doce has no curated skill.
-            Some(snapshot) => match crate::mcp::describe_service(&snapshot.config).await {
+            // the fallback usage guidance when doce has no curated skill. An
+            // OAuth-linked server's bearer is resolved (and refreshed) just
+            // before connecting via `resolve_with_retry`; a static/stdio config
+            // passes through unchanged.
+            Some(snapshot) => match self.describe_mcp_service(&snapshot.config).await {
                 Err(e) => format!("Error: failed to load service {:?}: {e}", snapshot.name),
                 Ok(description) => {
                     let new_tools: Vec<crate::agent::mcp_disclosure::ActivatedTool> = description
@@ -863,17 +866,51 @@ impl RealBackend<'_> {
         ToolExecution::Result(result_text)
     }
 
+    /// Resolves an OAuth-linked config's bearer (refresh-per-connect, with a
+    /// best-effort 401 retry) then runs `describe_service`. Reads the managed
+    /// [`crate::oauth::OAuthTokenStore`] via `try_state` so this stays inert
+    /// (config passed through unchanged) when the store isn't managed, e.g. in
+    /// unit tests.
+    async fn describe_mcp_service(
+        &self,
+        config: &crate::mcp::McpTransportConfig,
+    ) -> Result<crate::mcp::ServiceDescription, crate::mcp::McpError> {
+        match self.app.try_state::<crate::oauth::OAuthTokenStore>() {
+            Some(store) => {
+                crate::oauth::resolve_with_retry(config, &store, |cfg| async move {
+                    crate::mcp::describe_service(&cfg).await
+                })
+                .await
+            }
+            None => crate::mcp::describe_service(config).await,
+        }
+    }
+
     /// Dispatches one activated MCP tool call through `mcp::call_tool`,
     /// formats the result to a model-facing string, records it in the
     /// evidence log (so the observer counts it), and persists the pair.
+    /// OAuth-linked servers get a fresh bearer resolved before the call.
     async fn dispatch_mcp_tool(
         &mut self,
         tool_call_id: String,
         call: &ToolCall,
         tool: crate::agent::mcp_disclosure::ActivatedTool,
     ) -> ToolExecution {
-        let outcome =
-            crate::mcp::call_tool(&tool.config, &tool.raw_name, call.arguments.clone()).await;
+        let outcome = match self.app.try_state::<crate::oauth::OAuthTokenStore>() {
+            Some(store) => {
+                let raw_name = tool.raw_name.clone();
+                let args = call.arguments.clone();
+                crate::oauth::resolve_with_retry(&tool.config, &store, move |cfg| {
+                    let raw_name = raw_name.clone();
+                    let args = args.clone();
+                    async move { crate::mcp::call_tool(&cfg, &raw_name, args).await }
+                })
+                .await
+            }
+            None => {
+                crate::mcp::call_tool(&tool.config, &tool.raw_name, call.arguments.clone()).await
+            }
+        };
         let (model_text, ok) = match outcome {
             Ok(value) => {
                 // A server-reported `isError` result is real work that

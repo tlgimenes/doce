@@ -8,6 +8,7 @@ pub mod hardware;
 pub mod inference;
 pub mod mcp;
 pub mod model_registry;
+pub mod oauth;
 pub mod skills;
 pub mod storage;
 
@@ -72,6 +73,14 @@ pub fn run() {
         .manage(ActivePlans::default())
         .manage(PendingQuestions::default())
         .manage(CompactionState::default())
+        // OAuth token store — tokens live in the macOS Keychain (the
+        // `KeyringStore`), keyed by account id under the `doce-oauth` service.
+        // Construction is inert (no Keychain access until a get/set), so it is
+        // safe to build eagerly here. Unit tests NEVER build this — they use
+        // the in-memory store — so headless CI never probes the login Keychain.
+        .manage(oauth::OAuthTokenStore::new(std::sync::Arc::new(
+            oauth::KeyringStore::new("doce-oauth"),
+        )))
         .manage(DbCell::new())
         .setup(move |app| {
             builder.mount_events(app);

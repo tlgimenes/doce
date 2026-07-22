@@ -4,6 +4,7 @@ pub mod context;
 pub mod conversations;
 pub mod mcp;
 pub mod models;
+pub mod oauth;
 pub mod search;
 pub mod settings;
 pub mod skills;
@@ -51,6 +52,10 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             mcp::add_mcp_http_server,
             mcp::list_mcp_servers,
             mcp::list_mcp_server_tools,
+            oauth::connect_oauth_account,
+            oauth::list_oauth_accounts,
+            oauth::remove_oauth_account,
+            oauth::add_mcp_oauth_server,
             skills::list_skills,
         ])
         .events(collect_events![
