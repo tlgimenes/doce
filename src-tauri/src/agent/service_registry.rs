@@ -28,6 +28,11 @@ pub struct CuratedService {
     /// The NORMALIZED name this service matches on (see [`normalize`]) —
     /// lowercase, alphanumerics only.
     pub key: &'static str,
+    /// Additional NORMALIZED names this service matches on, so a server named
+    /// with its natural product name resolves too — e.g. "Google Calendar"
+    /// normalizes to `googlecalendar`, which aliases to the `gcal` entry. Each
+    /// alias MUST already be normalized (see the `aliases_are_normalized` test).
+    pub aliases: &'static [&'static str],
     /// One-line, per-turn catalog description (no trailing period needed).
     pub catalog_description: &'static str,
     /// The usage doc appended to the activation result — recipes + guardrail.
@@ -39,21 +44,25 @@ pub struct CuratedService {
 static SERVICES: &[CuratedService] = &[
     CuratedService {
         key: "gmail",
+        aliases: &["googlemail"],
         catalog_description: "search, read & draft email",
         skill: include_str!("skills/gmail.md"),
     },
     CuratedService {
         key: "gcal",
+        aliases: &["googlecalendar", "calendar"],
         catalog_description: "check availability & propose calendar events",
         skill: include_str!("skills/gcal.md"),
     },
     CuratedService {
         key: "gkeep",
+        aliases: &["googlekeep", "keep"],
         catalog_description: "read & draft notes and lists",
         skill: include_str!("skills/gkeep.md"),
     },
     CuratedService {
         key: "gdrive",
+        aliases: &["googledrive", "drive"],
         catalog_description: "search, read & organize files",
         skill: include_str!("skills/gdrive.md"),
     },
@@ -64,7 +73,7 @@ static SERVICES: &[CuratedService] = &[
 /// spirit of [`crate::agent::mcp_disclosure::sanitize`] (lowercase + collapse
 /// noise) but tuned for exact-key matching, so "Gmail", "gmail", "G Mail",
 /// and "  GMAIL  " all normalize to `gmail`.
-fn normalize(server_name: &str) -> String {
+pub fn normalize(server_name: &str) -> String {
     server_name
         .chars()
         .filter(|c| c.is_ascii_alphanumeric())
@@ -79,7 +88,9 @@ pub fn lookup(server_name: &str) -> Option<&'static CuratedService> {
     if normalized.is_empty() {
         return None;
     }
-    SERVICES.iter().find(|s| s.key == normalized)
+    SERVICES
+        .iter()
+        .find(|s| s.key == normalized || s.aliases.contains(&normalized.as_str()))
 }
 
 #[cfg(test)]
@@ -99,6 +110,34 @@ mod tests {
         assert_eq!(lookup("gcal").map(|c| c.key), Some("gcal"));
         assert_eq!(lookup("GKeep").map(|c| c.key), Some("gkeep"));
         assert_eq!(lookup("gDrive").map(|c| c.key), Some("gdrive"));
+    }
+
+    #[test]
+    fn lookup_resolves_natural_google_names_via_aliases() {
+        assert_eq!(lookup("Google Calendar").map(|c| c.key), Some("gcal"));
+        assert_eq!(lookup("Google Drive").map(|c| c.key), Some("gdrive"));
+        assert_eq!(lookup("Google Keep").map(|c| c.key), Some("gkeep"));
+        // The key itself still resolves for the natural "Gmail" name.
+        assert_eq!(lookup("Gmail").map(|c| c.key), Some("gmail"));
+        assert_eq!(lookup("Google Mail").map(|c| c.key), Some("gmail"));
+        // Bare product-word aliases resolve too.
+        assert_eq!(lookup("Calendar").map(|c| c.key), Some("gcal"));
+        assert_eq!(lookup("Drive").map(|c| c.key), Some("gdrive"));
+        assert_eq!(lookup("Keep").map(|c| c.key), Some("gkeep"));
+    }
+
+    #[test]
+    fn aliases_are_themselves_normalized() {
+        for svc in SERVICES {
+            for alias in svc.aliases {
+                assert_eq!(
+                    &normalize(alias),
+                    alias,
+                    "{}'s alias {alias:?} must already be normalized (no spaces/caps)",
+                    svc.key
+                );
+            }
+        }
     }
 
     #[test]
