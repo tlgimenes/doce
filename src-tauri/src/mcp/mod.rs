@@ -37,7 +37,7 @@ pub struct McpToolInfo {
 /// A schema-carrying view of one MCP tool — like [`McpToolInfo`] but also
 /// carrying the tool's JSON-Schema `input_schema`, so a caller can build an
 /// OpenAI-shaped tool definition to advertise the tool into the agent loop.
-/// Produced by [`list_tools_detailed`]; the settings-panel "test connection"
+/// Produced by [`describe_service`]; the settings-panel "test connection"
 /// path keeps using the lighter [`McpToolInfo`]/[`list_tools`].
 #[derive(Debug, Clone)]
 pub struct McpToolSchema {
@@ -46,6 +46,19 @@ pub struct McpToolSchema {
     /// The tool's JSON Schema for its arguments — an object schema suitable
     /// for dropping straight into an OpenAI tool def's `parameters`.
     pub input_schema: serde_json::Value,
+}
+
+/// Everything the agent loop needs to teach the model to USE a connected
+/// service, gathered in a SINGLE connect (Phase 2): the server's own
+/// human-readable `instructions` from the initialize handshake (a generic
+/// usage fallback when doce has no curated skill for the server), plus each
+/// tool's schema. Produced by [`describe_service`].
+#[derive(Debug, Clone)]
+pub struct ServiceDescription {
+    /// The server's `InitializeResult.instructions`, if it advertised any.
+    pub instructions: Option<String>,
+    /// The service's tools, with their argument schemas.
+    pub tools: Vec<McpToolSchema>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -214,15 +227,22 @@ pub async fn call_tool(
     serde_json::to_value(result).map_err(|e| McpError::Client(e.to_string()))
 }
 
-/// Connects, lists all tools WITH their `input_schema`, and closes the
-/// connection. This is the progressive-disclosure counterpart to
-/// [`list_tools`]: when the agent activates a service, the loop needs each
-/// tool's argument schema (not just its name/description) to advertise it to
-/// the model as a callable tool. Works for any transport.
-pub async fn list_tools_detailed(
-    config: &McpTransportConfig,
-) -> Result<Vec<McpToolSchema>, McpError> {
+/// Connects, captures BOTH the server's handshake `instructions` and its full
+/// tool list WITH each `input_schema`, then closes the connection — the
+/// progressive-disclosure counterpart to [`list_tools`]. When the agent
+/// activates a service, the loop needs each tool's argument schema (not just
+/// its name/description) to advertise it as a callable tool, AND the server's
+/// own instructions as a generic "how to use me" fallback. Both are gathered
+/// in the SAME connect (the instructions ride the initialize handshake
+/// `connect` already performed — [`RunningService::peer_info`] — so this adds
+/// NO second round-trip). Works for any transport.
+pub async fn describe_service(config: &McpTransportConfig) -> Result<ServiceDescription, McpError> {
     let client = connect(config).await?;
+    // `peer_info()` is the server's `InitializeResult` captured during the
+    // handshake `connect` completed — no extra request.
+    let instructions = client
+        .peer_info()
+        .and_then(|info| info.instructions.clone());
     let tools = client
         .list_all_tools()
         .await
@@ -230,16 +250,19 @@ pub async fn list_tools_detailed(
     let _ = client.cancel().await;
     let tools = tools?;
 
-    Ok(tools
-        .into_iter()
-        .map(|t| McpToolSchema {
-            name: t.name.to_string(),
-            description: t.description.map(|d| d.to_string()),
-            // rmcp stores the schema as `Arc<serde_json::Map>`; clone the
-            // map out and wrap it as a JSON object `Value`.
-            input_schema: serde_json::Value::Object((*t.input_schema).clone()),
-        })
-        .collect())
+    Ok(ServiceDescription {
+        instructions,
+        tools: tools
+            .into_iter()
+            .map(|t| McpToolSchema {
+                name: t.name.to_string(),
+                description: t.description.map(|d| d.to_string()),
+                // rmcp stores the schema as `Arc<serde_json::Map>`; clone the
+                // map out and wrap it as a JSON object `Value`.
+                input_schema: serde_json::Value::Object((*t.input_schema).clone()),
+            })
+            .collect(),
+    })
 }
 
 /// Renders an MCP `CallToolResult` — already serialized to a JSON `Value` by
@@ -423,10 +446,19 @@ mod tests {
         }
     }
 
+    /// The instructions this in-process test server advertises in its
+    /// initialize handshake — what [`describe_service`] should surface via
+    /// `peer_info().instructions`.
+    const TEST_SERVER_INSTRUCTIONS: &str = "Use echo to repeat a message.";
+
     #[tool_handler]
     impl ServerHandler for TestServer {
         fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            // `InitializeResult` is `#[non_exhaustive]`, so build the base and
+            // set `instructions` by field assignment rather than a literal.
+            let mut info = ServerInfo::new(ServerCapabilities::builder().enable_tools().build());
+            info.instructions = Some(TEST_SERVER_INSTRUCTIONS.to_string());
+            info
         }
     }
 
@@ -472,15 +504,17 @@ mod tests {
         server_handle.abort();
     }
 
-    /// Same in-process server, but exercises the schema-carrying mapping
-    /// that [`list_tools_detailed`] performs (`Tool.input_schema` ->
-    /// `Value::Object`): the `echo` tool takes a `message` string, so its
-    /// advertised `input_schema` must be a non-empty JSON object. Driven over
-    /// the duplex client directly (the in-memory stream isn't one of the two
-    /// real transports `list_tools_detailed`'s `connect` builds), asserting
-    /// the exact conversion that function applies to each tool.
+    /// Same in-process server, but exercises the schema-carrying mapping AND
+    /// the handshake-`instructions` capture that [`describe_service`] performs
+    /// (`Tool.input_schema` -> `Value::Object`; `peer_info().instructions` ->
+    /// `ServiceDescription.instructions`): the `echo` tool takes a `message`
+    /// string, so its advertised `input_schema` must be a non-empty JSON
+    /// object, and the server's advertised instructions must round-trip.
+    /// Driven over the duplex client directly (the in-memory stream isn't one
+    /// of the two real transports `describe_service`'s `connect` builds),
+    /// asserting the exact conversion that function applies.
     #[tokio::test]
-    async fn detailed_listing_carries_a_non_empty_input_schema() {
+    async fn describe_service_carries_schema_and_instructions() {
         let (server_transport, client_transport) = tokio::io::duplex(4096);
 
         let server = TestServer::new();
@@ -490,8 +524,19 @@ mod tests {
         });
 
         let client = ().serve(client_transport).await.unwrap();
-        let tools = client.list_all_tools().await.unwrap();
 
+        // `instructions` is captured from the handshake `InitializeResult`,
+        // exactly as `describe_service` reads it via `peer_info()`.
+        let instructions = client
+            .peer_info()
+            .and_then(|info| info.instructions.clone());
+        assert_eq!(
+            instructions.as_deref(),
+            Some(TEST_SERVER_INSTRUCTIONS),
+            "server instructions must round-trip through peer_info()"
+        );
+
+        let tools = client.list_all_tools().await.unwrap();
         let schemas: Vec<McpToolSchema> = tools
             .into_iter()
             .map(|t| McpToolSchema {

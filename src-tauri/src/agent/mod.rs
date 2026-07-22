@@ -19,6 +19,7 @@ pub mod mcp_disclosure;
 pub mod observer;
 pub mod plan;
 pub mod rich_content;
+pub mod service_registry;
 pub mod subagent;
 pub mod tools;
 
