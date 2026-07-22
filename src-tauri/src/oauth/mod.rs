@@ -22,6 +22,7 @@
 //! through doce's existing reqwest client (see `Cargo.toml`), so there is no
 //! second reqwest major in the tree.
 
+pub mod google_workspace;
 pub mod store;
 
 pub use store::{InMemoryStore, KeyringStore, OAuthTokenStore, SecretStore, StoredCredential};

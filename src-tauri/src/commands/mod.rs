@@ -56,6 +56,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             oauth::list_oauth_accounts,
             oauth::remove_oauth_account,
             oauth::add_mcp_oauth_server,
+            oauth::list_google_workspace_services,
+            oauth::add_google_workspace_servers,
             skills::list_skills,
         ])
         .events(collect_events![

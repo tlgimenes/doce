@@ -146,6 +146,35 @@ pub async fn remove_oauth_account(
     .map_err(|e| e.to_string())
 }
 
+/// The shared insert for an oauth-linked HTTP MCP server row: stores the
+/// `{"url","oauth_account_id"}` config shape (transport `http`, enabled) — NO
+/// token is stored in the config; it is fetched (and refreshed) from the
+/// Keychain on each connect. Used by both [`add_mcp_oauth_server`] and
+/// [`add_google_workspace_servers`] so they share one insert path.
+fn insert_mcp_oauth_server(
+    conn: &mut Connection,
+    name: &str,
+    url: &str,
+    oauth_account_id: &str,
+    now: i64,
+) -> rusqlite::Result<McpServerConnection> {
+    let id = Uuid::now_v7().to_string();
+    let config =
+        serde_json::json!({ "url": url, "oauth_account_id": oauth_account_id }).to_string();
+    conn.execute(
+        "INSERT INTO mcp_server_connections (id, name, transport, config, enabled, created_at) VALUES (?1, ?2, 'http', ?3, 1, ?4)",
+        rusqlite::params![id, name, config, now],
+    )?;
+    Ok(McpServerConnection {
+        id,
+        name: name.to_string(),
+        transport: "http".to_string(),
+        config,
+        enabled: true,
+        created_at: now,
+    })
+}
+
 /// Registers a remote (streamable-HTTP) MCP server whose bearer token is
 /// resolved from an OAuth account at connect time. Stores the
 /// `{"url","oauth_account_id"}` config shape — NO token is stored in the
@@ -161,17 +190,94 @@ pub async fn add_mcp_oauth_server(
 ) -> Result<McpServerConnection, String> {
     let conn = db_cell.get(&app).await?;
     let now = now_ms();
-    let config =
-        serde_json::json!({ "url": url, "oauth_account_id": oauth_account_id }).to_string();
+    conn.call(
+        move |conn: &mut Connection| -> rusqlite::Result<McpServerConnection> {
+            insert_mcp_oauth_server(conn, &name, &url, &oauth_account_id, now)
+        },
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
 
-    conn.call(move |conn: &mut Connection| -> rusqlite::Result<McpServerConnection> {
-        let id = Uuid::now_v7().to_string();
-        conn.execute(
-            "INSERT INTO mcp_server_connections (id, name, transport, config, enabled, created_at) VALUES (?1, ?2, 'http', ?3, 1, ?4)",
-            rusqlite::params![id, name, config, now],
-        )?;
-        Ok(McpServerConnection { id, name, transport: "http".to_string(), config, enabled: true, created_at: now })
-    })
+/// A Google Workspace preset choice, for a UI to render the available hosted
+/// servers. Read-only view over [`oauth::google_workspace::SERVICES`].
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct GoogleWorkspaceServiceInfo {
+    /// Stable key to pass back to [`add_google_workspace_servers`].
+    pub key: String,
+    /// Human-readable name (also what gets written as the server name).
+    pub display_name: String,
+    /// Google's documented hosted MCP endpoint (loopback acceptance UNVERIFIED).
+    pub url: String,
+    /// Least-privilege scopes this server needs.
+    pub scopes: Vec<String>,
+}
+
+/// Lists the Google Workspace MCP server presets doce ships (Gmail, Calendar,
+/// Drive — Keep has no hosted endpoint). Pure read over the static table; the
+/// Connections UI calls this to render the choices.
+#[tauri::command]
+#[specta::specta]
+pub fn list_google_workspace_services() -> Vec<GoogleWorkspaceServiceInfo> {
+    oauth::google_workspace::SERVICES
+        .iter()
+        .map(|s| GoogleWorkspaceServiceInfo {
+            key: s.key.to_string(),
+            display_name: s.display_name.to_string(),
+            url: s.url.to_string(),
+            scopes: s.scopes.iter().map(|s| s.to_string()).collect(),
+        })
+        .collect()
+}
+
+/// Registers one or more Google Workspace hosted MCP servers for an existing
+/// OAuth account, from the static preset. Each requested `service_keys` entry
+/// is looked up in [`oauth::google_workspace`] and inserted via the SAME path
+/// as [`add_mcp_oauth_server`] (`{"url","oauth_account_id"}`, transport `http`,
+/// enabled). The preset `display_name` is used as the server name so the
+/// matching curated skill lights up. All keys are validated up front — an
+/// unknown key errors (naming the valid keys) BEFORE any row is written.
+#[tauri::command]
+#[specta::specta]
+pub async fn add_google_workspace_servers(
+    app: AppHandle,
+    db_cell: State<'_, DbCell>,
+    oauth_account_id: String,
+    service_keys: Vec<String>,
+) -> Result<Vec<McpServerConnection>, String> {
+    // Resolve every key first so an unknown one fails before any insert.
+    let mut resolved: Vec<(&'static str, &'static str)> = Vec::with_capacity(service_keys.len());
+    for key in &service_keys {
+        match oauth::google_workspace::lookup(key) {
+            Some(svc) => resolved.push((svc.display_name, svc.url)),
+            None => {
+                return Err(format!(
+                    "unknown Google Workspace service key {:?}; valid keys: {}",
+                    key,
+                    oauth::google_workspace::valid_keys().join(", ")
+                ));
+            }
+        }
+    }
+
+    let conn = db_cell.get(&app).await?;
+    let now = now_ms();
+    conn.call(
+        move |conn: &mut Connection| -> rusqlite::Result<Vec<McpServerConnection>> {
+            let mut created = Vec::with_capacity(resolved.len());
+            for (name, url) in resolved {
+                created.push(insert_mcp_oauth_server(
+                    conn,
+                    name,
+                    url,
+                    &oauth_account_id,
+                    now,
+                )?);
+            }
+            Ok(created)
+        },
+    )
     .await
     .map_err(|e| e.to_string())
 }
