@@ -1,5 +1,5 @@
 import { createElement, useCallback, useEffect, useMemo, useState } from "react";
-import { ShieldCheck } from "lucide-react";
+import { Check, ShieldCheck } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -44,7 +44,26 @@ function oauthAccountIdOf(server: McpServerConnection): string | null {
  * "connecting" awaits the blocking browser-consent command. */
 type Phase = "list" | "form" | "connecting";
 
-export default function Connections() {
+export interface ConnectionsProps {
+  /**
+   * "settings" (default) renders the full titled section — heading, privacy
+   * note, and per-service account cards. "home" renders just the connect
+   * card (or a slim connected chip) to sit inline in the empty-state Stream,
+   * with no section chrome; account management stays in Settings.
+   */
+  surface?: "settings" | "home";
+  /**
+   * Fired on mount and whenever the connected-account count crosses zero, so
+   * the home Stream can brighten its preview cards once a service connects.
+   */
+  onConnectionChange?: (connected: boolean) => void;
+}
+
+export default function Connections({
+  surface = "settings",
+  onConnectionChange,
+}: ConnectionsProps = {}) {
+  const isHome = surface === "home";
   const [accounts, setAccounts] = useState<OAuthAccount[]>([]);
   const [servers, setServers] = useState<McpServerConnection[]>([]);
   const [workspaceServices, setWorkspaceServices] = useState<GoogleWorkspaceServiceInfo[]>([]);
@@ -86,6 +105,13 @@ export default function Connections() {
         // card still opens the form, which surfaces the empty picker honestly.
       });
   }, [refresh]);
+
+  // Report connected/not to the home Stream so it can brighten its preview
+  // cards. Fires on mount (accounts start empty) and on every crossing.
+  const connected = accounts.length > 0;
+  useEffect(() => {
+    onConnectionChange?.(connected);
+  }, [connected, onConnectionChange]);
 
   // Map a preset's stable key (and its written display name) to the presentational
   // GoogleService, so both the picker and the connected card share one glyph +
@@ -162,22 +188,8 @@ export default function Connections() {
       .map((server) => serviceByDisplayName.get(server.name))
       .filter((service): service is GoogleService => service !== undefined);
 
-  return (
-    <section
-      aria-labelledby="connections-heading"
-      data-testid="connections-section"
-      className="space-y-4"
-    >
-      <div>
-        <h4 id="connections-heading" className="text-sm font-medium">
-          Connections
-        </h4>
-        <p className="mt-0.5 text-sm text-muted-foreground">
-          Give the agent tools to work on your behalf. It reads and drafts through the local model
-          on this Mac.
-        </p>
-      </div>
-
+  const content = (
+    <>
       {phase === "connecting" ? (
         <Card size="sm" data-testid="connect-waiting">
           <CardContent className="flex items-center gap-3">
@@ -306,6 +318,7 @@ export default function Connections() {
             name="Google Workspace"
             description="Gmail, Calendar, and Drive — the agent triages and drafts, you approve."
             brand="google"
+            emphasis={isHome}
             onConnect={openForm}
           />
           {error ? (
@@ -313,7 +326,35 @@ export default function Connections() {
               {error}
             </p>
           ) : null}
-          <PrivacyNote />
+          {!isHome && <PrivacyNote />}
+        </div>
+      ) : isHome ? (
+        // Home Stream: a slim connected chip, nothing to manage inline —
+        // disconnect, per-service detail, and adding accounts all live in
+        // Settings so the feed stays quiet once you're connected.
+        <div className="flex flex-col gap-3">
+          {accounts.map((account) => {
+            const granted = servicesForAccount(account).length;
+            return (
+              <div
+                key={account.id}
+                data-testid="home-connected-chip"
+                className="flex items-center gap-3 rounded-xl border border-emerald-500/30 bg-card p-3 shadow-sm"
+              >
+                <span className="grid size-8 shrink-0 place-items-center rounded-lg border border-border bg-muted text-foreground">
+                  <GoogleGIcon size={15} />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-semibold">Google Workspace</div>
+                  <div className="text-xs text-muted-foreground">
+                    Connected
+                    {granted > 0 && ` · ${granted} ${granted === 1 ? "service" : "services"}`}
+                  </div>
+                </div>
+                <Check className="size-4 shrink-0 text-emerald-600 dark:text-emerald-500" />
+              </div>
+            );
+          })}
         </div>
       ) : (
         <div className="space-y-4">
@@ -344,6 +385,32 @@ export default function Connections() {
           <PrivacyNote />
         </div>
       )}
+    </>
+  );
+
+  // Home Stream: no section chrome — the connect card / chip flows inline in
+  // the feed. Disconnect lives in Settings, so no confirmation dialog here.
+  if (isHome) {
+    return content;
+  }
+
+  return (
+    <section
+      aria-labelledby="connections-heading"
+      data-testid="connections-section"
+      className="space-y-4"
+    >
+      <div>
+        <h4 id="connections-heading" className="text-sm font-medium">
+          Connections
+        </h4>
+        <p className="mt-0.5 text-sm text-muted-foreground">
+          Give the agent tools to work on your behalf. It reads and drafts through the local model
+          on this Mac.
+        </p>
+      </div>
+
+      {content}
 
       <AlertDialog
         open={pendingDisconnect !== null}

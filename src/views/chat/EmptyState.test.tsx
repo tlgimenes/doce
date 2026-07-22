@@ -38,14 +38,19 @@ describe("EmptyState (006-chat-empty-state)", () => {
     vi.mocked(events.onFeedCardCreated).mockResolvedValue(() => {});
   });
 
-  it("renders Connections and the Activity feed on the home, around the composer", async () => {
+  it("renders the Stream — connect card + activity feed — beneath the composer, with no section labels", async () => {
     render(<EmptyState onConversationCreated={vi.fn()} />);
-    // The composer stays; Connections + Activity now sit beneath it on the home.
+    // The composer stays; the Stream (one fluid feed) sits beneath it.
     expect(screen.getByTestId("empty-state-composer")).toBeInTheDocument();
-    expect(await screen.findByTestId("home-connections")).toBeInTheDocument();
-    expect(screen.getByTestId("connections-section")).toBeInTheDocument();
-    expect(screen.getByTestId("home-activity-section")).toBeInTheDocument();
+    expect(await screen.findByTestId("home-feed")).toBeInTheDocument();
+    // Not connected: the connect card leads the feed, then the preview cards.
+    expect(screen.getByTestId("connect-service-card")).toHaveTextContent("Google Workspace");
     expect(screen.getByTestId("activity-view")).toBeInTheDocument();
+    expect(screen.getByTestId("home-preview")).toBeInTheDocument();
+    // The old labeled sections are gone — this is the Stream, not a dashboard.
+    expect(screen.queryByTestId("home-connections")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("home-activity-section")).not.toBeInTheDocument();
+    expect(screen.queryByText("Activity")).not.toBeInTheDocument();
   });
 
   it("shows the composer, not static text, with Home as the default folder target", async () => {
