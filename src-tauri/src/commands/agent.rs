@@ -760,6 +760,156 @@ struct RealBackend<'a> {
     /// at the top of each `run_loop` iteration; the entry is created/removed by
     /// `send_agent_message`'s insert + RAII guard, never by this backend.
     active_generations: &'a ActiveGenerations,
+    /// Snapshot of the user's ENABLED MCP servers, loaded ONCE by
+    /// `send_agent_message` for this whole turn/redispatch cycle (MCP is
+    /// top-level only — `SubagentBackend` never gets one). EMPTY when the
+    /// user has no servers, which makes the entire progressive-disclosure
+    /// path inert: `generate` advertises the same tools array and pushes no
+    /// catalog tail, so the loop is byte-for-byte the no-MCP loop.
+    mcp_servers: Vec<crate::agent::mcp_disclosure::McpServerSnapshot>,
+    /// Per-conversation activated-tools state (managed Tauri state, borrowed
+    /// like `active_plans`), keyed by `conversation_id`. Read in `generate`
+    /// (to advertise activated tools + mark the catalog) and mutated by the
+    /// `activate_service` handler in `execute_tool`.
+    activated_services: &'a crate::agent::mcp_disclosure::ActivatedServices,
+}
+
+impl RealBackend<'_> {
+    /// Handles the `activate_service` meta-tool: loads one connected
+    /// service's tools into this conversation's activated set (idempotent),
+    /// or returns a helpful error naming the available services. Only
+    /// reachable when `mcp_servers` is non-empty (else `generate` never
+    /// advertises the tool). Persists the interaction for transcript
+    /// fidelity but does NOT record it as evidence — it's setup, not work.
+    async fn handle_activate_service(
+        &mut self,
+        tool_call_id: String,
+        call: &ToolCall,
+    ) -> ToolExecution {
+        let requested = call
+            .arguments
+            .get("service")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let snapshot = self
+            .mcp_servers
+            .iter()
+            .find(|s| s.name == requested)
+            .cloned();
+        let result_text = match snapshot {
+            None => {
+                let available = self
+                    .mcp_servers
+                    .iter()
+                    .map(|s| s.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if requested.is_empty() {
+                    format!(
+                        "Error: activate_service requires a 'service' name. Connected services: {available}."
+                    )
+                } else {
+                    format!(
+                        "Error: no connected service named {requested:?}. Connected services: {available}."
+                    )
+                }
+            }
+            Some(snapshot) => match crate::mcp::list_tools_detailed(&snapshot.config).await {
+                Err(e) => format!("Error: failed to load service {:?}: {e}", snapshot.name),
+                Ok(schemas) => {
+                    let new_tools: Vec<crate::agent::mcp_disclosure::ActivatedTool> = schemas
+                        .iter()
+                        .map(|s| {
+                            crate::agent::mcp_disclosure::make_activated_tool(
+                                &snapshot.name,
+                                &snapshot.config,
+                                s,
+                            )
+                        })
+                        .collect();
+                    let names: Vec<String> = new_tools
+                        .iter()
+                        .map(|t| t.advertised_name.clone())
+                        .collect();
+                    // Idempotent: don't duplicate an already-activated
+                    // service's tools if the model activates it twice.
+                    {
+                        let mut map = self.activated_services.0.lock().unwrap();
+                        let entry = map.entry(self.conversation_id.to_string()).or_default();
+                        for t in new_tools {
+                            if !entry.iter().any(|e| e.advertised_name == t.advertised_name) {
+                                entry.push(t);
+                            }
+                        }
+                    }
+                    if names.is_empty() {
+                        format!("Activated {:?}, but it exposes no tools.", snapshot.name)
+                    } else {
+                        format!(
+                            "Activated {:?}. You can now call: {}.",
+                            snapshot.name,
+                            names.join(", ")
+                        )
+                    }
+                }
+            },
+        };
+        self.persist_mcp_interaction(&tool_call_id, "activate_service", call, &result_text)
+            .await;
+        ToolExecution::Result(result_text)
+    }
+
+    /// Dispatches one activated MCP tool call through `mcp::call_tool`,
+    /// formats the result to a model-facing string, records it in the
+    /// evidence log (so the observer counts it), and persists the pair.
+    async fn dispatch_mcp_tool(
+        &mut self,
+        tool_call_id: String,
+        call: &ToolCall,
+        tool: crate::agent::mcp_disclosure::ActivatedTool,
+    ) -> ToolExecution {
+        let outcome =
+            crate::mcp::call_tool(&tool.config, &tool.raw_name, call.arguments.clone()).await;
+        let (model_text, ok) = match outcome {
+            Ok(value) => {
+                // A server-reported `isError` result is real work that
+                // failed, not a transport failure — reflect it in `ok`.
+                let ok = value.get("isError").and_then(|v| v.as_bool()) != Some(true);
+                (crate::mcp::format_call_result(&value), ok)
+            }
+            Err(e) => (format!("Error: {e}"), false),
+        };
+        self.plan_state
+            .record_mutation(&tool.advertised_name, None, ok);
+        self.persist_mcp_interaction(&tool_call_id, &tool.advertised_name, call, &model_text)
+            .await;
+        ToolExecution::Result(model_text)
+    }
+
+    /// Persists an MCP-path tool call/result pair (role `assistant` +
+    /// `tool`, `plan: false`) so it shows in the transcript on reload, the
+    /// same way the built-in tool path does.
+    async fn persist_mcp_interaction(
+        &self,
+        tool_call_id: &str,
+        tool_name: &str,
+        call: &ToolCall,
+        model_text: &str,
+    ) {
+        persist_tool_call_and_result(
+            Some(self.app),
+            self.conn,
+            self.transcript_dir.clone(),
+            self.conversation_id,
+            tool_call_id,
+            tool_name,
+            call.arguments.clone(),
+            model_text,
+            serde_json::json!({ "toolName": tool_name }),
+            false,
+        )
+        .await;
+    }
 }
 
 impl crate::agent::AgentBackend for RealBackend<'_> {
@@ -846,6 +996,32 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
         if !tail.is_empty() {
             messages.push(ChatMessage::user(tail));
         }
+        // MCP progressive disclosure (Phase 1), gated on the user having at
+        // least one enabled MCP server. `activated_now` is this
+        // conversation's currently-activated tools; both the catalog tail and
+        // the advertised MCP tool defs derive from it. With NO servers,
+        // `build_tools_array` returns exactly `tools_array(base)` and
+        // `render_catalog` returns "" — so this whole block is a no-op and the
+        // request is byte-for-byte the no-MCP request. The catalog rides its
+        // OWN ephemeral tail (like `state_tail`, never written back to
+        // run_loop's canonical list), pushed AFTER `at_len` so it isn't
+        // counted into the authoritative-token baseline.
+        let has_mcp = !self.mcp_servers.is_empty();
+        let activated_now = self
+            .activated_services
+            .0
+            .lock()
+            .unwrap()
+            .get(self.conversation_id)
+            .cloned()
+            .unwrap_or_default();
+        if has_mcp {
+            let catalog =
+                crate::agent::mcp_disclosure::render_catalog(&self.mcp_servers, &activated_now);
+            if !catalog.is_empty() {
+                messages.push(ChatMessage::user(catalog));
+            }
+        }
         // The plan loop REQUIRES a tool call in BOTH states: a plain-text
         // reply anywhere would end the entire task, and the model was
         // observed degrading into exactly that (`StepDone(...)` as prose
@@ -857,8 +1033,10 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
         let mut req = crate::inference::http::ChatRequest::build(
             LLAMA_SERVER_MODEL_ID,
             crate::inference::http::to_openai_messages(&messages),
-            Some(crate::inference::http::tools_array(
+            Some(crate::agent::mcp_disclosure::build_tools_array(
                 self.plan_state.single_mode_tool_names(true),
+                has_mcp,
+                &activated_now,
             )),
             crate::inference::http::tool_choice_for(crate::inference::ToolCallMode::Require)
                 .map(|s| s.to_string()),
@@ -1036,6 +1214,33 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
                 &self.plan_state,
             );
             return execution;
+        }
+        // MCP progressive disclosure (Phase 1), RealBackend-only and gated on
+        // the user having ≥1 enabled MCP server. With none, `generate` never
+        // advertises `activate_service` or any MCP tool name, so this block is
+        // unreachable and the routing below is exactly the no-MCP routing. The
+        // `activate_service` meta-tool and activated MCP tools are NOT plan
+        // tools (handled above) and NOT built-ins (handled below) — they route
+        // here in between.
+        if !self.mcp_servers.is_empty() {
+            if call.name == "activate_service" {
+                return self.handle_activate_service(tool_call_id, &call).await;
+            }
+            let activated = self
+                .activated_services
+                .0
+                .lock()
+                .unwrap()
+                .get(self.conversation_id)
+                .and_then(|tools| {
+                    tools
+                        .iter()
+                        .find(|t| t.advertised_name == call.name)
+                        .cloned()
+                });
+            if let Some(tool) = activated {
+                return self.dispatch_mcp_tool(tool_call_id, &call, tool).await;
+            }
         }
         // Evidence log (observer-verified completion): `call` is about to
         // move into `execute_top_level_tool`, so the name/arguments a
@@ -2733,6 +2938,48 @@ pub async fn send_agent_message(
             + crate::context::limits::STATE_TAIL_RESERVE_TOKENS,
     );
 
+    // MCP progressive disclosure (Phase 1): snapshot the user's ENABLED MCP
+    // servers ONCE for this whole turn/redispatch cycle, parsing each stored
+    // `(transport, config)` into an `McpServerSnapshot`. Unparseable rows are
+    // skipped (logged), not fatal. EMPTY when the user has no enabled servers
+    // — in which case `RealBackend`'s entire MCP path stays inert and the loop
+    // is byte-for-byte the no-MCP loop (the benchmark's invariant). The
+    // per-conversation activated-tools state is fetched from managed state via
+    // `app.state()` (rather than a command parameter) to keep this command's
+    // arg count under specta's `SpectaFn` ceiling.
+    let activated_services = app.state::<crate::agent::mcp_disclosure::ActivatedServices>();
+    let mcp_servers: Vec<crate::agent::mcp_disclosure::McpServerSnapshot> = conn
+        .call(
+            |conn: &mut Connection| -> rusqlite::Result<Vec<(String, String, String, String)>> {
+                let mut stmt = conn.prepare(
+                    "SELECT id, name, transport, config FROM mcp_server_connections WHERE enabled = 1",
+                )?;
+                let rows = stmt
+                    .query_map([], |row| {
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(rows)
+            },
+        )
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(id, name, transport, config)| {
+            match crate::mcp::parse_config(&transport, &config) {
+                Ok(cfg) => Some(crate::agent::mcp_disclosure::McpServerSnapshot {
+                    id,
+                    name,
+                    config: cfg,
+                }),
+                Err(e) => {
+                    eprintln!("skipping unparseable MCP server {name:?}: {e}");
+                    None
+                }
+            }
+        })
+        .collect();
+
     // Steer re-dispatch loop (finish-boundary race): normally exactly one turn.
     // But a steer that landed AFTER a turn's last `drain_steers` boundary yet
     // before it finished was persisted (and shows in the transcript) but never
@@ -2795,6 +3042,8 @@ pub async fn send_agent_message(
             transcript_dir: transcript_dir.clone(),
             observed_usage: &compaction_state.observed_usage,
             active_generations: &active_generations,
+            mcp_servers: mcp_servers.clone(),
+            activated_services: &activated_services,
         };
         let result = run_loop(&context, initial_messages, &mut backend).await;
         // The backend holds only borrows of this function's locals — nothing to
