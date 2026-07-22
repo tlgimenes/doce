@@ -8,6 +8,7 @@ import {
   Pause,
   Play,
   RotateCcw,
+  Server,
   Square,
   X,
 } from "lucide-react";
@@ -28,6 +29,11 @@ import { Progress, ProgressLabel } from "@/components/ui/progress";
 import { Spinner } from "@/components/ui/spinner";
 import { commands, events, type ModelDownload, type ModelOption, type ModelState } from "@/lib/ipc";
 import { pathBasename } from "@/lib/pathBasename";
+import AddModelEndpoint, {
+  type EndpointPrefill,
+  hostFromUrl,
+  inferEndpointKind,
+} from "@/views/settings/AddModelEndpoint";
 
 const VISIBLE_DOWNLOAD_STATES = new Set(["queued", "downloading", "verifying", "paused", "failed"]);
 // A backend revision identifies one writer attempt or control transition;
@@ -145,6 +151,12 @@ export default function ModelSelector() {
   const [requesting, setRequesting] = useState(false);
   const [choosingLocal, setChoosingLocal] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  // When set, the "approach E" endpoint form is open. `prefill` is non-null when
+  // re-opening an existing endpoint so the user re-confirms its (never-echoed)
+  // key rather than having it silently cleared.
+  const [endpointForm, setEndpointForm] = useState<{ prefill: EndpointPrefill | null } | null>(
+    null,
+  );
   const [requestedId, setRequestedId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [downloadActions, setDownloadActions] = useState<
@@ -384,6 +396,7 @@ export default function ModelSelector() {
   const pendingSelectionOption = requesting && requestedId ? selectedOption : undefined;
   const curatedOptions = options.filter((option) => option.sourceKind === "curated");
   const localOptions = options.filter((option) => option.sourceKind === "local");
+  const endpointOptions = options.filter((option) => option.sourceKind === "endpoint");
   const downloads = modelState?.downloads ?? [];
   const selectedDownload = downloads.find((download) => download.modelId === selectedOption?.id);
   const pendingError =
@@ -415,6 +428,27 @@ export default function ModelSelector() {
       setActionError(errorMessage(error, "Doce couldn’t select this model."));
     } finally {
       if (requestSequence === requestSequenceRef.current) setRequesting(false);
+    }
+  };
+
+  // Re-selecting an existing endpoint can't just re-`select` it: the backend's
+  // `select_endpoint_model` clears the stored API key when called without one
+  // (see commands/models.rs), so we re-open the form pre-filled instead of
+  // silently wiping the key. There is no "activate by id" path yet.
+  const openEndpointForm = (option?: ModelOption) => {
+    setActionError(null);
+    setMenuOpen(false);
+    if (option) {
+      const url = option.endpointUrl ?? "";
+      setEndpointForm({
+        prefill: {
+          kind: inferEndpointKind(url),
+          url,
+          model: option.endpointModel ?? "",
+        },
+      });
+    } else {
+      setEndpointForm({ prefill: null });
     }
   };
 
@@ -563,10 +597,15 @@ export default function ModelSelector() {
                   value={selectedId}
                   onValueChange={(value) => {
                     const option = options.find((candidate) => candidate.id === value);
-                    if (option) {
-                      setMenuOpen(false);
-                      void chooseOption(option);
+                    if (!option) return;
+                    if (option.sourceKind === "endpoint") {
+                      // Don't dispatch a bare re-select (it would clear the key);
+                      // re-open the form pre-filled so the user re-confirms it.
+                      openEndpointForm(option);
+                      return;
                     }
+                    setMenuOpen(false);
+                    void chooseOption(option);
                   }}
                 >
                   <DropdownMenuLabel>Curated by Doce</DropdownMenuLabel>
@@ -625,6 +664,36 @@ export default function ModelSelector() {
                           </span>
                         </DropdownMenuRadioItem>
                       ))}
+                    </>
+                  ) : null}
+
+                  {endpointOptions.length > 0 ? (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuLabel>Endpoints</DropdownMenuLabel>
+                      {endpointOptions.map((option) => {
+                        const endpointHost = hostFromUrl(option.endpointUrl ?? "");
+                        return (
+                          <DropdownMenuRadioItem
+                            key={option.id}
+                            value={option.id}
+                            className="items-start py-2"
+                            data-testid={`model-option-${option.id}`}
+                            title={option.endpointUrl ?? undefined}
+                          >
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate font-medium">
+                                {option.endpointModel || modelName(option)}
+                              </span>
+                              {endpointHost ? (
+                                <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                                  {endpointHost}
+                                </span>
+                              ) : null}
+                            </span>
+                          </DropdownMenuRadioItem>
+                        );
+                      })}
                     </>
                   ) : null}
                 </DropdownMenuRadioGroup>
@@ -811,8 +880,42 @@ export default function ModelSelector() {
               {choosingLocal ? "Checking…" : "Choose…"}
             </Button>
           </div>
+
+          <div className="flex flex-col gap-3 border-t pt-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <p className="font-medium">Add a model endpoint</p>
+              <p className="text-sm text-muted-foreground">
+                Connect an OpenAI-compatible server — a local runtime, a hosted API, or one on your
+                network.
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="shrink-0"
+              onClick={() => openEndpointForm()}
+              disabled={endpointForm !== null}
+              data-testid="add-endpoint-button"
+            >
+              <Server />
+              Add…
+            </Button>
+          </div>
         </CardContent>
       </Card>
+
+      {endpointForm ? (
+        <div className="mt-3">
+          <AddModelEndpoint
+            prefill={endpointForm.prefill}
+            onCancel={() => setEndpointForm(null)}
+            onSaved={(next) => {
+              setEndpointForm(null);
+              applySnapshot(next);
+            }}
+          />
+        </div>
+      ) : null}
 
       {pendingError ? (
         <Alert className="mt-2" variant="destructive" data-testid="model-error">
