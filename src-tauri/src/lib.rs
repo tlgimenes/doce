@@ -81,6 +81,14 @@ pub fn run() {
         .manage(oauth::OAuthTokenStore::new(std::sync::Arc::new(
             oauth::KeyringStore::new("doce-oauth"),
         )))
+        // Endpoint API keys — raw key strings in the macOS Keychain (a SEPARATE
+        // `KeyringStore` under the `doce-endpoints` service), keyed by model id.
+        // Reuses the `SecretStore` trait, NOT `OAuthTokenStore`. Inert until a
+        // get/set, and unit tests use the in-memory store, so CI never probes
+        // the login Keychain.
+        .manage(commands::models::EndpointKeyStore::new(
+            std::sync::Arc::new(oauth::KeyringStore::new("doce-endpoints")),
+        ))
         .manage(DbCell::new())
         .setup(move |app| {
             builder.mount_events(app);

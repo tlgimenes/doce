@@ -38,6 +38,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (14, include_str!("migrations/0014_model_downloads.sql")),
     (15, include_str!("migrations/0015_mcp_oauth_accounts.sql")),
     (16, include_str!("migrations/0016_feed_cards.sql")),
+    (17, include_str!("migrations/0017_model_endpoints.sql")),
 ];
 
 pub fn apply_pending(conn: &mut Connection) -> rusqlite::Result<()> {
@@ -445,6 +446,74 @@ mod tests {
                 [],
             )
             .is_err());
+    }
+
+    /// 0017_model_endpoints: 'endpoint' must satisfy source_kind's widened
+    /// CHECK, and the new per-endpoint columns must round-trip. Red until the
+    /// table rebuild admits the third source kind.
+    #[test]
+    fn endpoint_source_kind_and_columns_round_trip_after_migration() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_pending(&mut conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO models (id, hardware_tier, source_url, quantization, sha256, capability_tags, installed_at, is_active, source_kind, display_name, endpoint_url, endpoint_model, context_window, use_cache_prompt)\
+             VALUES ('endpoint-1', 'endpoint', '', 'API', '', '[\"endpoint\"]', 5, 0, 'endpoint', 'My API', 'https://api.example.test', 'gpt-4o-mini', 32768, 1)",
+            [],
+        )
+        .unwrap();
+
+        let row: (String, Option<String>, Option<String>, Option<i64>, i64) = conn
+            .query_row(
+                "SELECT source_kind, endpoint_url, endpoint_model, context_window, use_cache_prompt FROM models WHERE id = 'endpoint-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(row.0, "endpoint");
+        assert_eq!(row.1.as_deref(), Some("https://api.example.test"));
+        assert_eq!(row.2.as_deref(), Some("gpt-4o-mini"));
+        assert_eq!(row.3, Some(32768));
+        assert_eq!(row.4, 1);
+    }
+
+    /// The rebuild parks `model_downloads` in a TEMP table (its FK to models
+    /// would otherwise cascade its rows away when the old table is dropped) and
+    /// restores it. A pre-migration download row must survive intact.
+    #[test]
+    fn model_downloads_survive_the_endpoint_rebuild() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_up_to(&mut conn, 16);
+        conn.execute(
+            "INSERT INTO models (id, hardware_tier, source_url, quantization, sha256, capability_tags, source_kind)\
+             VALUES ('balanced', '32gb', 'https://example.test/model', 'Q4_K_M', 'sha', '[]', 'curated')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO model_downloads (model_id, state, bytes_downloaded, bytes_total, revision, updated_at)\
+             VALUES ('balanced', 'paused', 42, 100, 3, 7)",
+            [],
+        )
+        .unwrap();
+
+        apply_pending(&mut conn).unwrap();
+
+        let row: (String, i64, i64, i64) = conn
+            .query_row(
+                "SELECT state, bytes_downloaded, bytes_total, revision FROM model_downloads WHERE model_id = 'balanced'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(row, ("paused".to_string(), 42, 100, 3));
+        // The ON DELETE CASCADE FK still resolves to the rebuilt models table.
+        conn.execute("DELETE FROM models WHERE id = 'balanced'", [])
+            .unwrap();
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM model_downloads", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(remaining, 0, "cascade delete must still fire post-rebuild");
     }
 
     /// 0015_mcp_oauth_accounts: the metadata table exists and round-trips.

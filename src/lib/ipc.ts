@@ -37,11 +37,22 @@ export interface ModelOption {
   installed: boolean;
   active: boolean;
   selected: boolean;
-  sourceKind: "curated" | "local";
+  sourceKind: "curated" | "local" | "endpoint";
   localPath: string | null;
+  // Set only for `sourceKind === "endpoint"` — the base URL and remote model
+  // id the Settings form renders. `null` for curated/local models.
+  endpointUrl: string | null;
+  endpointModel: string | null;
   state: string;
   bytesDownloaded: number;
   bytesTotal: number;
+}
+
+// Result of `testModelEndpoint` — a best-effort `GET {url}/models` probe.
+export interface EndpointTestResult {
+  ok: boolean;
+  models: string[];
+  error: string | null;
 }
 
 export type ModelDownloadState =
@@ -658,6 +669,20 @@ export const commands = {
   getModelState: () => invoke<ModelState>("get_model_state"),
   selectCuratedModel: (modelId: string) => invoke<ModelState>("select_curated_model", { modelId }),
   selectLocalModel: (path: string) => invoke<ModelState>("select_local_model", { path }),
+  // Custom OpenAI-compatible endpoint. `kind` is informational (local/hosted/
+  // lan); the behavioral bit is `useCachePrompt`. `apiKey` is stored in the OS
+  // secret store, never echoed back. `contextWindow` of 0 falls back to the
+  // built-in window.
+  selectEndpointModel: (input: {
+    kind: string;
+    url: string;
+    model: string;
+    apiKey?: string | null;
+    contextWindow: number;
+    useCachePrompt: boolean;
+  }) => invoke<ModelState>("select_endpoint_model", input),
+  testModelEndpoint: (url: string, apiKey?: string | null) =>
+    invoke<EndpointTestResult>("test_model_endpoint", { url, apiKey }),
   pauseModelDownload: (modelId: string) =>
     invoke<ModelDownload>("pause_model_download", { modelId }),
   resumeModelDownload: (modelId: string) =>

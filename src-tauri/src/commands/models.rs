@@ -18,6 +18,7 @@ const SELECTED_MODEL_SETTING: &str = "model.selectedId";
 const FALLBACK_NOTICE_SETTING: &str = "model.fallbackNotice";
 const LOCAL_SOURCE_KIND: &str = "local";
 const CURATED_SOURCE_KIND: &str = "curated";
+const ENDPOINT_SOURCE_KIND: &str = "endpoint";
 
 #[tauri::command]
 #[specta::specta]
@@ -140,6 +141,55 @@ impl ModelSelectionState {
     }
 }
 
+/// Managed store for endpoint API keys, keyed by model id. Backed by the OS
+/// secret store — a [`crate::oauth::KeyringStore`] under the `doce-endpoints`
+/// service at runtime, the in-memory impl in tests — via the reusable
+/// [`crate::oauth::SecretStore`] trait. Deliberately NOT `OAuthTokenStore`
+/// (which is OAuth-credential-specific): the value here is just the raw API key
+/// string, never persisted to SQLite, the same discipline OAuth tokens follow.
+pub struct EndpointKeyStore {
+    secrets: Arc<dyn crate::oauth::SecretStore>,
+}
+
+impl EndpointKeyStore {
+    pub fn new(secrets: Arc<dyn crate::oauth::SecretStore>) -> Self {
+        Self { secrets }
+    }
+
+    fn set(&self, model_id: &str, key: &str) -> Result<(), String> {
+        self.secrets.set(model_id, key).map_err(|e| e.to_string())
+    }
+
+    fn get(&self, model_id: &str) -> Result<Option<String>, String> {
+        self.secrets.get(model_id).map_err(|e| e.to_string())
+    }
+
+    fn delete(&self, model_id: &str) -> Result<(), String> {
+        self.secrets.delete(model_id).map_err(|e| e.to_string())
+    }
+}
+
+/// The resolved target of the single active model, as consumed by the turn
+/// path (`commands::agent::send_agent_message`). `Local` keeps the exact
+/// pre-endpoint behavior (a supervised sidecar spawned for the GGUF at `path`);
+/// `Endpoint` is the NEW branch, taken only when the active model's
+/// `source_kind == "endpoint"` — no sidecar, generation goes straight to `url`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ActiveModelTarget {
+    Local {
+        path: String,
+    },
+    Endpoint {
+        url: String,
+        model: String,
+        api_key: Option<String>,
+        context_window: u32,
+        /// `!use_cache_prompt` — strip the llama.cpp-only request extras for a
+        /// generic OpenAI-compatible endpoint (see `http::ChatRequest::clean`).
+        clean_body: bool,
+    },
+}
+
 #[derive(Debug, Clone)]
 struct StoredModel {
     id: String,
@@ -148,15 +198,55 @@ struct StoredModel {
     is_active: bool,
     source_kind: String,
     display_name: Option<String>,
+    endpoint_url: Option<String>,
+    endpoint_model: Option<String>,
+    context_window: Option<i64>,
+    use_cache_prompt: bool,
 }
 
 impl StoredModel {
     fn is_usable(&self) -> bool {
+        // An endpoint is usable as soon as it has a URL — there is no local
+        // file to check (contrast curated/local, which require a present GGUF).
+        if self.source_kind == ENDPOINT_SOURCE_KIND {
+            return self.installed_at.is_some() && self.endpoint_url.is_some();
+        }
         self.installed_at.is_some()
             && self
                 .local_path
                 .as_deref()
                 .is_some_and(|path| Path::new(path).is_file())
+    }
+
+    /// Resolves this (already-usable) row into the turn-path [`ActiveModelTarget`].
+    /// `api_key` is looked up separately by the caller from the endpoint key
+    /// store; a local row ignores it. Falls back to the sidecar context window
+    /// when a stored endpoint window is missing or non-positive.
+    fn to_active_target(&self, api_key: Option<String>) -> Result<ActiveModelTarget, String> {
+        if self.source_kind == ENDPOINT_SOURCE_KIND {
+            let url = self
+                .endpoint_url
+                .clone()
+                .ok_or_else(|| "the active endpoint has no URL".to_string())?;
+            let context_window = self
+                .context_window
+                .filter(|window| *window > 0)
+                .map(|window| window as u32)
+                .unwrap_or(crate::inference::CONTEXT_WINDOW_TOKENS);
+            Ok(ActiveModelTarget::Endpoint {
+                url,
+                model: self.endpoint_model.clone().unwrap_or_default(),
+                api_key,
+                context_window,
+                clean_body: !self.use_cache_prompt,
+            })
+        } else {
+            let path = self
+                .local_path
+                .clone()
+                .ok_or_else(|| "the active model has no local file".to_string())?;
+            Ok(ActiveModelTarget::Local { path })
+        }
     }
 }
 
@@ -176,9 +266,24 @@ pub struct ModelOption {
     pub selected: bool,
     pub source_kind: String,
     pub local_path: Option<String>,
+    /// Set only for `source_kind == "endpoint"` rows — the base URL and remote
+    /// model id the Settings form renders (and edits). `None` for curated/local.
+    pub endpoint_url: Option<String>,
+    pub endpoint_model: Option<String>,
     pub state: String,
     pub bytes_downloaded: u64,
     pub bytes_total: u64,
+}
+
+/// Result of `test_model_endpoint` — a best-effort `GET {url}/models` probe the
+/// Settings form uses to confirm reachability and reveal the endpoint's model
+/// ids. `ok == false` with a populated `error` on any network/HTTP failure.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct EndpointTestResult {
+    pub ok: bool,
+    pub models: Vec<String>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
@@ -217,8 +322,9 @@ async fn stored_models(conn: &tokio_rusqlite::Connection) -> Result<Vec<StoredMo
     conn.call(
         |conn: &mut Connection| -> rusqlite::Result<Vec<StoredModel>> {
             let mut stmt = conn.prepare(
-            "SELECT id, local_path, installed_at, is_active, source_kind, display_name FROM models",
-        )?;
+                "SELECT id, local_path, installed_at, is_active, source_kind, display_name, \
+             endpoint_url, endpoint_model, context_window, use_cache_prompt FROM models",
+            )?;
             let rows = stmt.query_map([], |row| {
                 Ok(StoredModel {
                     id: row.get(0)?,
@@ -227,6 +333,10 @@ async fn stored_models(conn: &tokio_rusqlite::Connection) -> Result<Vec<StoredMo
                     is_active: row.get::<_, i64>(3)? == 1,
                     source_kind: row.get(4)?,
                     display_name: row.get(5)?,
+                    endpoint_url: row.get(6)?,
+                    endpoint_model: row.get(7)?,
+                    context_window: row.get(8)?,
+                    use_cache_prompt: row.get::<_, i64>(9)? == 1,
                 })
             })?;
             rows.collect::<Result<Vec<_>, _>>()
@@ -1462,6 +1572,8 @@ async fn build_model_state(
             selected,
             source_kind: CURATED_SOURCE_KIND.to_string(),
             local_path: record.and_then(|model| model.local_path.clone()),
+            endpoint_url: None,
+            endpoint_model: None,
             state,
             bytes_downloaded,
             bytes_total,
@@ -1505,6 +1617,8 @@ async fn build_model_state(
             selected,
             source_kind: CURATED_SOURCE_KIND.to_string(),
             local_path: model.local_path.clone(),
+            endpoint_url: None,
+            endpoint_model: None,
             state,
             bytes_downloaded,
             bytes_total,
@@ -1549,6 +1663,46 @@ async fn build_model_state(
             selected,
             source_kind: LOCAL_SOURCE_KIND.to_string(),
             local_path: path,
+            endpoint_url: None,
+            endpoint_model: None,
+            state,
+            bytes_downloaded,
+            bytes_total,
+        });
+    }
+
+    // Endpoint models: surfaced like the local loop above (active or the
+    // durable selection). No file, no download — just the URL/model the form
+    // stored. `is_usable`/`active_id` already treat a URL-bearing endpoint as
+    // ready, so `progress_state` renders it "ready"/"active".
+    for model in stored.iter().filter(|model| {
+        model.source_kind == ENDPOINT_SOURCE_KIND
+            && (model.is_active || selected_id.as_deref() == Some(model.id.as_str()))
+    }) {
+        let installed = model.is_usable();
+        let active = active_id.as_deref() == Some(model.id.as_str());
+        let selected = selected_id.as_deref() == Some(model.id.as_str());
+        let (state, bytes_downloaded, bytes_total) =
+            progress_state(&downloads, &model.id, installed, active);
+        options.push(ModelOption {
+            id: model.id.clone(),
+            display_name: model
+                .display_name
+                .clone()
+                .unwrap_or_else(|| "Custom endpoint".to_string()),
+            description: "An OpenAI-compatible model endpoint.".to_string(),
+            technical_name: model.endpoint_model.clone().unwrap_or_default(),
+            parameter_count: "Endpoint".to_string(),
+            quantization: "API".to_string(),
+            size_bytes: 0,
+            recommended: false,
+            installed,
+            active,
+            selected,
+            source_kind: ENDPOINT_SOURCE_KIND.to_string(),
+            local_path: None,
+            endpoint_url: model.endpoint_url.clone(),
+            endpoint_model: model.endpoint_model.clone(),
             state,
             bytes_downloaded,
             bytes_total,
@@ -1852,6 +2006,57 @@ pub async fn active_model_path(conn: &tokio_rusqlite::Connection) -> Result<Stri
         .ok_or_else(|| "No model is ready to use yet.".to_string())
 }
 
+/// Endpoint-aware sibling of `ensure_usable_model_path`'s PREFLIGHT half, run
+/// before a turn takes the generation lease (a fallback activation needs the
+/// exclusive side of the same gate, so reconciliation must happen here, not
+/// while the lease is held). Heals a stale active pointer, then confirms a
+/// usable active model exists — a present GGUF for curated/local, or a
+/// URL-bearing endpoint. Does NOT return a path (an endpoint has none); the
+/// turn re-resolves the concrete target after the lease via
+/// [`active_model_target`].
+pub async fn ensure_active_model_ready(
+    app: &AppHandle,
+    conn: &tokio_rusqlite::Connection,
+    server_state: &crate::inference::server::ServerState,
+) -> Result<(), String> {
+    let selection_state = app
+        .try_state::<ModelSelectionState>()
+        .ok_or_else(|| "model selection state is unavailable".to_string())?;
+    reconcile_active_model(app, conn, &selection_state, server_state).await?;
+    if stored_models(conn)
+        .await?
+        .iter()
+        .any(|model| model.is_active && model.is_usable())
+    {
+        Ok(())
+    } else {
+        Err("The selected model is still being prepared. Try again in a moment.".to_string())
+    }
+}
+
+/// Read the active model's turn-path target again after a generation lease has
+/// been acquired (a switch may have completed between preflight reconciliation
+/// and lease acquisition, so callers must not reuse the preflight result). Pure
+/// read — no reconcile, no server work — so it never tries to take the switch
+/// lease while a generation lease is held. `Endpoint` for an endpoint active
+/// model (with its API key pulled from `endpoint_keys`), `Local` otherwise.
+pub async fn active_model_target(
+    conn: &tokio_rusqlite::Connection,
+    endpoint_keys: &EndpointKeyStore,
+) -> Result<ActiveModelTarget, String> {
+    let model = stored_models(conn)
+        .await?
+        .into_iter()
+        .find(|model| model.is_active && model.is_usable())
+        .ok_or_else(|| "No model is ready to use yet.".to_string())?;
+    let api_key = if model.source_kind == ENDPOINT_SOURCE_KIND {
+        endpoint_keys.get(&model.id).ok().flatten()
+    } else {
+        None
+    };
+    model.to_active_target(api_key)
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn get_model_state(
@@ -2013,6 +2218,219 @@ pub async fn select_local_model(
         return Err(error.to_string());
     }
     build_model_state(&conn, &selection_state).await
+}
+
+/// Rejects a non-http(s) endpoint URL and returns the trimmed value (trailing
+/// slash removed so the `/v1/chat/completions` and `/models` joins never
+/// double-slash). The Settings form validates too, but this is the trust
+/// boundary — the command never persists an unusable base URL.
+fn validate_endpoint_url(url: &str) -> Result<String, String> {
+    let trimmed = url.trim().trim_end_matches('/');
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        Ok(trimmed.to_string())
+    } else {
+        Err("Endpoint URL must start with http:// or https://".to_string())
+    }
+}
+
+/// A stable, generated id for an endpoint row: same URL + model reuses the same
+/// row (the command upserts). `kind` is deliberately excluded so re-classifying
+/// the same endpoint edits in place rather than orphaning a row.
+fn endpoint_model_id(url: &str, model: &str) -> String {
+    let digest = Sha256::digest(format!("{url}\n{model}").as_bytes());
+    format!("endpoint-{:x}", digest)
+}
+
+/// Parses an OpenAI `GET /models` body (`{"data":[{"id":"..."}]}`) into the
+/// list of model ids. Tolerant: a body that isn't that shape yields an empty
+/// list rather than an error, so `test_model_endpoint` still reports `ok`.
+fn parse_model_ids(body: &str) -> Vec<String> {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .as_ref()
+        .and_then(|value| value.get("data"))
+        .and_then(|data| data.as_array())
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| entry.get("id").and_then(|id| id.as_str()))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+async fn fetch_endpoint_models(url: &str, api_key: Option<&str>) -> EndpointTestResult {
+    let base = url.trim().trim_end_matches('/');
+    let models_url = format!("{base}/models");
+    let mut request = reqwest::Client::new().get(&models_url);
+    if let Some(key) = api_key.filter(|key| !key.is_empty()) {
+        request = request.header("authorization", format!("Bearer {key}"));
+    }
+    match request.send().await {
+        Ok(response) => {
+            let status = response.status();
+            match response.text().await {
+                Ok(body) if status.is_success() => EndpointTestResult {
+                    ok: true,
+                    models: parse_model_ids(&body),
+                    error: None,
+                },
+                Ok(body) => EndpointTestResult {
+                    ok: false,
+                    models: Vec::new(),
+                    error: Some(format!(
+                        "HTTP {status}: {}",
+                        body.chars().take(200).collect::<String>()
+                    )),
+                },
+                Err(error) => EndpointTestResult {
+                    ok: false,
+                    models: Vec::new(),
+                    error: Some(error.to_string()),
+                },
+            }
+        }
+        Err(error) => EndpointTestResult {
+            ok: false,
+            models: Vec::new(),
+            error: Some(error.to_string()),
+        },
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn upsert_endpoint_model(
+    conn: &tokio_rusqlite::Connection,
+    id: &str,
+    display_name: &str,
+    url: &str,
+    model: &str,
+    context_window: Option<i64>,
+    use_cache_prompt: bool,
+    now: i64,
+) -> Result<(), String> {
+    let id = id.to_string();
+    let display_name = display_name.to_string();
+    let url = url.to_string();
+    let model = model.to_string();
+    conn.call(move |conn: &mut Connection| -> rusqlite::Result<()> {
+        conn.execute(
+            "INSERT INTO models (id, hardware_tier, source_url, quantization, sha256, capability_tags, installed_at, is_active, source_kind, display_name, endpoint_url, endpoint_model, context_window, use_cache_prompt)\
+             VALUES (?1, 'endpoint', '', 'API', '', '[\"endpoint\"]', ?2, 0, 'endpoint', ?3, ?4, ?5, ?6, ?7)\
+             ON CONFLICT(id) DO UPDATE SET installed_at = excluded.installed_at, source_kind = 'endpoint',\
+             display_name = excluded.display_name, endpoint_url = excluded.endpoint_url,\
+             endpoint_model = excluded.endpoint_model, context_window = excluded.context_window,\
+             use_cache_prompt = excluded.use_cache_prompt",
+            rusqlite::params![
+                id,
+                now,
+                display_name,
+                url,
+                model,
+                context_window,
+                use_cache_prompt as i64,
+            ],
+        )?;
+        Ok(())
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
+/// Selects a custom OpenAI-compatible endpoint as the active model. Upserts an
+/// `endpoint` row (installed at once, so it reads as usable), stores the API
+/// key in the endpoint key store keyed by the row id (never in SQLite), records
+/// the durable selection, and marks the row the single active model WITHOUT
+/// spawning a sidecar (and shuts any running one down). `kind` is informational
+/// (local/hosted/lan); the behavioral bit is `use_cache_prompt`.
+#[tauri::command]
+#[specta::specta]
+#[allow(clippy::too_many_arguments)]
+pub async fn select_endpoint_model(
+    app: AppHandle,
+    db_cell: State<'_, DbCell>,
+    server_state: State<'_, crate::inference::server::ServerState>,
+    kind: String,
+    url: String,
+    model: String,
+    api_key: Option<String>,
+    context_window: u32,
+    use_cache_prompt: bool,
+) -> Result<ModelState, String> {
+    // `kind` is stored implicitly via the row's `source_kind = 'endpoint'`;
+    // its local/hosted/lan value is informational and not persisted separately.
+    let _ = &kind;
+    let url = validate_endpoint_url(&url)?;
+    let model = model.trim().to_string();
+    let id = endpoint_model_id(&url, &model);
+    let display_name = if model.is_empty() {
+        url.clone()
+    } else {
+        model.clone()
+    };
+    let stored_window = (context_window > 0).then_some(context_window as i64);
+    let now = now_ms();
+
+    let conn = db_cell.get(&app).await?.clone();
+    let selection_state = app
+        .try_state::<ModelSelectionState>()
+        .ok_or_else(|| "model selection state is unavailable".to_string())?;
+    let endpoint_keys = app
+        .try_state::<EndpointKeyStore>()
+        .ok_or_else(|| "endpoint key store is unavailable".to_string())?;
+
+    {
+        let _intent_lease = selection_state.intent_lease().await;
+        upsert_endpoint_model(
+            &conn,
+            &id,
+            &display_name,
+            &url,
+            &model,
+            stored_window,
+            use_cache_prompt,
+            now,
+        )
+        .await?;
+        // The API key lives in the OS secret store only. A None/empty key
+        // clears any prior key for this row (re-selecting without a key).
+        match api_key.as_deref().filter(|key| !key.is_empty()) {
+            Some(key) => endpoint_keys.set(&id, key)?,
+            None => endpoint_keys.delete(&id)?,
+        }
+        write_setting_string(&conn, SELECTED_MODEL_SETTING, &id).await?;
+        clear_setting(&conn, FALLBACK_NOTICE_SETTING).await?;
+    }
+
+    // Endpoints never spawn a sidecar. Take the switch lease (so an in-flight
+    // generation drains first), tear down any running local sidecar, and flip
+    // the single active row — the whole point being to skip `ensure_running`.
+    {
+        let _switch_lease = server_state.switch_lease().await;
+        server_state.shutdown(&app).await;
+        set_active_model_row(&conn, &id).await?;
+    }
+    if let Some(selection) = app.try_state::<ModelSelectionState>() {
+        selection.clear_activation_failure(&id);
+    }
+    emit_activation_state(&app, &id, "active", None);
+
+    build_model_state(&conn, &selection_state).await
+}
+
+/// Best-effort `GET {url}/models` probe for the Settings form's "Test" button:
+/// reports reachability and the endpoint's model ids (Bearer auth when a key is
+/// given). Network/HTTP failures come back as `ok: false` + `error`, never a
+/// command error, so the form can show the reason inline.
+#[tauri::command]
+#[specta::specta]
+pub async fn test_model_endpoint(
+    url: String,
+    api_key: Option<String>,
+) -> Result<EndpointTestResult, String> {
+    let url = validate_endpoint_url(&url)?;
+    Ok(fetch_endpoint_models(&url, api_key.as_deref()).await)
 }
 
 #[tauri::command]
@@ -2246,6 +2664,189 @@ mod tests {
         assert!(!restore.allows(Some(&paused)));
         assert!(!DownloadStartPolicy::RestoreRunning { revision: 6 }.allows(Some(&running)));
         assert!(!restore.allows(None));
+    }
+
+    fn endpoint_row(id: &str) -> StoredModel {
+        StoredModel {
+            id: id.to_string(),
+            local_path: None,
+            installed_at: Some(1),
+            is_active: true,
+            source_kind: ENDPOINT_SOURCE_KIND.to_string(),
+            display_name: Some("My API".to_string()),
+            endpoint_url: Some("https://api.example.test".to_string()),
+            endpoint_model: Some("gpt-4o-mini".to_string()),
+            context_window: Some(32768),
+            use_cache_prompt: false,
+        }
+    }
+
+    #[test]
+    fn endpoint_is_usable_with_a_url_and_no_local_file() {
+        let endpoint = endpoint_row("endpoint-x");
+        assert!(endpoint.is_usable(), "a URL-bearing endpoint is usable");
+
+        let no_url = StoredModel {
+            endpoint_url: None,
+            ..endpoint.clone()
+        };
+        assert!(!no_url.is_usable(), "an endpoint with no URL is not usable");
+
+        // A local row with a missing file stays unusable — endpoints don't
+        // change the local file check.
+        let local = StoredModel {
+            id: "local-x".to_string(),
+            local_path: Some("/nope/missing.gguf".to_string()),
+            installed_at: Some(1),
+            is_active: false,
+            source_kind: LOCAL_SOURCE_KIND.to_string(),
+            display_name: None,
+            endpoint_url: None,
+            endpoint_model: None,
+            context_window: None,
+            use_cache_prompt: false,
+        };
+        assert!(!local.is_usable());
+    }
+
+    #[test]
+    fn endpoint_target_derives_clean_body_and_window_from_the_row() {
+        // use_cache_prompt=false -> clean_body=true; stored window is honored.
+        let target = endpoint_row("e1")
+            .to_active_target(Some("sk-key".to_string()))
+            .unwrap();
+        assert_eq!(
+            target,
+            ActiveModelTarget::Endpoint {
+                url: "https://api.example.test".to_string(),
+                model: "gpt-4o-mini".to_string(),
+                api_key: Some("sk-key".to_string()),
+                context_window: 32768,
+                clean_body: true,
+            }
+        );
+
+        // use_cache_prompt=true -> clean_body=false; missing/zero window falls
+        // back to the sidecar default; no key -> None.
+        let row = StoredModel {
+            use_cache_prompt: true,
+            context_window: None,
+            ..endpoint_row("e2")
+        };
+        match row.to_active_target(None).unwrap() {
+            ActiveModelTarget::Endpoint {
+                clean_body,
+                context_window,
+                api_key,
+                ..
+            } => {
+                assert!(!clean_body);
+                assert_eq!(context_window, crate::inference::CONTEXT_WINDOW_TOKENS);
+                assert!(api_key.is_none());
+            }
+            other => panic!("expected Endpoint, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_endpoint_url_requires_an_http_scheme_and_trims() {
+        assert_eq!(
+            validate_endpoint_url("  https://x.test/  ").unwrap(),
+            "https://x.test"
+        );
+        assert_eq!(
+            validate_endpoint_url("http://127.0.0.1:1234").unwrap(),
+            "http://127.0.0.1:1234"
+        );
+        assert!(validate_endpoint_url("ftp://x.test").is_err());
+        assert!(validate_endpoint_url("x.test").is_err());
+    }
+
+    #[test]
+    fn parse_model_ids_reads_the_openai_models_shape() {
+        let body = r#"{"object":"list","data":[{"id":"gpt-4o-mini","object":"model"},{"id":"llama-3.1","object":"model"}]}"#;
+        assert_eq!(
+            parse_model_ids(body),
+            vec!["gpt-4o-mini".to_string(), "llama-3.1".to_string()]
+        );
+        assert!(parse_model_ids("not json").is_empty());
+        assert!(parse_model_ids(r#"{"error":"nope"}"#).is_empty());
+    }
+
+    #[tokio::test]
+    async fn endpoint_selection_upserts_activates_and_resolves_without_a_file() {
+        // Exercises the pieces `select_endpoint_model` composes, against the
+        // in-memory secret store (never the real Keychain).
+        let conn = crate::storage::test_async_connection().await;
+        let keys = EndpointKeyStore::new(std::sync::Arc::new(crate::oauth::InMemoryStore::new()));
+
+        let url = validate_endpoint_url("https://api.example.test/").unwrap();
+        let id = endpoint_model_id(&url, "gpt-4o-mini");
+        upsert_endpoint_model(
+            &conn,
+            &id,
+            "gpt-4o-mini",
+            &url,
+            "gpt-4o-mini",
+            Some(32768),
+            false,
+            123,
+        )
+        .await
+        .unwrap();
+        keys.set(&id, "sk-secret").unwrap();
+        write_setting_string(&conn, SELECTED_MODEL_SETTING, &id)
+            .await
+            .unwrap();
+        set_active_model_row(&conn, &id).await.unwrap();
+
+        // No local GGUF exists, yet the endpoint resolves as the active target
+        // with its key pulled from the store.
+        let target = active_model_target(&conn, &keys).await.unwrap();
+        assert_eq!(
+            target,
+            ActiveModelTarget::Endpoint {
+                url: "https://api.example.test".to_string(),
+                model: "gpt-4o-mini".to_string(),
+                api_key: Some("sk-secret".to_string()),
+                context_window: 32768,
+                clean_body: true,
+            }
+        );
+
+        let models = stored_models(&conn).await.unwrap();
+        assert_eq!(
+            models.iter().filter(|model| model.is_active).count(),
+            1,
+            "single active row invariant holds"
+        );
+        assert!(models
+            .iter()
+            .any(|model| model.id == id && model.is_active && model.is_usable()));
+    }
+
+    #[tokio::test]
+    async fn active_model_target_returns_local_for_a_local_active_model() {
+        let conn = crate::storage::test_async_connection().await;
+        let keys = EndpointKeyStore::new(std::sync::Arc::new(crate::oauth::InMemoryStore::new()));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.gguf");
+        std::fs::write(&path, b"GGUF\x03\x00\x00\x00").unwrap();
+        let path = path.to_string_lossy().to_string();
+        let row_path = path.clone();
+        conn.call(move |conn: &mut Connection| -> rusqlite::Result<()> {
+            conn.execute(
+                "INSERT INTO models (id, hardware_tier, source_url, quantization, sha256, local_path, capability_tags, installed_at, is_active, source_kind)\
+                 VALUES ('local-a', 'local', '', 'GGUF', '', ?1, '[]', 1, 1, 'local')",
+                [row_path],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        let target = active_model_target(&conn, &keys).await.unwrap();
+        assert_eq!(target, ActiveModelTarget::Local { path });
     }
 
     #[tokio::test]

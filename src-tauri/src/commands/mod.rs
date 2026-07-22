@@ -26,6 +26,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             models::get_model_state,
             models::select_curated_model,
             models::select_local_model,
+            models::select_endpoint_model,
+            models::test_model_endpoint,
             models::dismiss_model_notice,
             conversations::create_conversation,
             conversations::list_conversations,
