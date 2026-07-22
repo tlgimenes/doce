@@ -4,8 +4,7 @@ import { ChevronDown } from "lucide-react";
 import { commands, type Conversation, type RichMessageContent } from "@/lib/ipc";
 import FolderPicker from "@/views/shared/FolderPicker";
 import RichInput from "@/views/chat/rich-input/RichInput";
-import Connections from "@/views/settings/Connections";
-import ActivityView from "@/views/activity/ActivityView";
+import HomeFeed from "@/views/chat/HomeFeed";
 import type { PendingInitialTurn } from "@/views/workspace/pendingInitialTurn";
 
 export interface FolderTarget {
@@ -133,20 +132,10 @@ export default function EmptyState({ autoFocusToken, onConversationCreated }: Em
       </div>
 
       {/* The agent's reach lives here, on the home itself — not buried in
-          settings. Connect a service, then watch what the agent does with it
-          surface as reviewable cards, all around the composer above. */}
-      <div className="mt-12 w-full max-w-xl space-y-10 pb-6" data-testid="home-connections">
-        <Connections />
-        <section aria-labelledby="home-activity-heading" data-testid="home-activity-section">
-          <h3
-            id="home-activity-heading"
-            className="mb-2 text-xs font-medium tracking-wide text-muted-foreground uppercase"
-          >
-            Activity
-          </h3>
-          <ActivityView />
-        </section>
-      </div>
+          settings. One fluid Stream: connect a service as the first card,
+          then watch the agent's reviewable action cards fill in below, no
+          section labels between them. */}
+      <HomeFeed />
     </div>
   );
 }

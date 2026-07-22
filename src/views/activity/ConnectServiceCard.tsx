@@ -18,6 +18,12 @@ export interface ConnectServiceCardProps {
   brand?: "google" | "plain";
   /** Not yet available — renders a dimmed, disabled "Soon"-style row. */
   disabled?: boolean;
+  /**
+   * Home-Stream emphasis: a faint accent tint marking this as the one live
+   * call to action in the feed. Off in Settings, where connect is one row
+   * among many.
+   */
+  emphasis?: boolean;
   onConnect?: () => void;
 }
 
@@ -34,13 +40,15 @@ export default function ConnectServiceCard({
   actionLabel = "Connect",
   brand = "plain",
   disabled = false,
+  emphasis = false,
   onConnect,
 }: ConnectServiceCardProps) {
   return (
     <div
       data-testid="connect-service-card"
       className={cn(
-        "flex items-center gap-3 rounded-xl border border-border bg-card p-3.5 shadow-sm",
+        "flex items-center gap-3 rounded-xl border p-3.5 shadow-sm",
+        emphasis ? "border-emerald-500/40 bg-emerald-500/[0.06]" : "border-border bg-card",
         disabled && "opacity-55",
       )}
     >

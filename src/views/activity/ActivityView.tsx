@@ -44,6 +44,12 @@ function toCardProps(card: FeedCard, now: number, onDismiss: () => void): Activi
 export interface ActivityViewProps {
   /** Scope the feed to one conversation; omit for the global feed. */
   conversationId?: string;
+  /**
+   * What to render when the feed has no cards. Defaults to the standalone
+   * "connect a service" line; the home Stream overrides it with its own
+   * preview cards so the empty feed reads as part of one surface.
+   */
+  emptyState?: React.ReactNode;
 }
 
 /**
@@ -55,7 +61,7 @@ export interface ActivityViewProps {
  * removes a card optimistically on Dismiss (calling `dismissFeedCard`).
  * Pending cards float to "Needs you"; dismissed ones fall to "Earlier".
  */
-export default function ActivityView({ conversationId }: ActivityViewProps) {
+export default function ActivityView({ conversationId, emptyState }: ActivityViewProps) {
   const [cards, setCards] = useState<FeedCard[]>([]);
   // A single "now" per render so every relative timestamp is consistent.
   const now = useMemo(() => Date.now(), [cards]);
@@ -110,12 +116,14 @@ export default function ActivityView({ conversationId }: ActivityViewProps) {
           <ActivityCard key={card.id} {...toCardProps(card, now, () => dismiss(card.id))} />
         ))}
         emptyState={
-          <p
-            data-testid="activity-empty"
-            className="rounded-xl border border-dashed border-border bg-card/50 px-4 py-6 text-center text-sm text-muted-foreground"
-          >
-            No activity yet — connect a service and the agent's actions will show up here.
-          </p>
+          emptyState ?? (
+            <p
+              data-testid="activity-empty"
+              className="rounded-xl border border-dashed border-border bg-card/50 px-4 py-6 text-center text-sm text-muted-foreground"
+            >
+              No activity yet — connect a service and the agent's actions will show up here.
+            </p>
+          )
         }
       />
     </div>
