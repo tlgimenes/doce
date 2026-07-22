@@ -56,6 +56,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             mcp::list_mcp_servers,
             mcp::list_mcp_server_tools,
             oauth::connect_oauth_account,
+            oauth::google_oauth_builtin_available,
             oauth::list_oauth_accounts,
             oauth::remove_oauth_account,
             oauth::add_mcp_oauth_server,

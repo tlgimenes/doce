@@ -69,6 +69,12 @@ export default function Connections({
   const [workspaceServices, setWorkspaceServices] = useState<GoogleWorkspaceServiceInfo[]>([]);
 
   const [phase, setPhase] = useState<Phase>("list");
+  // Whether this build ships a built-in Google OAuth client — resolved on
+  // mount. When true, the connect flow drops the credential fields for a
+  // one-click "Continue with Google", keeping bring-your-own as an advanced
+  // fallback (`useOwnClient`).
+  const [builtinAvailable, setBuiltinAvailable] = useState(false);
+  const [useOwnClient, setUseOwnClient] = useState(false);
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
@@ -93,6 +99,14 @@ export default function Connections({
 
   useEffect(() => {
     refresh();
+    void commands
+      .googleOauthBuiltinAvailable()
+      .then(setBuiltinAvailable)
+      .catch(() => {
+        // Degrade to the bring-your-own form (the pre-built-in behavior) if the
+        // probe fails — never leave the user with no way to connect.
+        setBuiltinAvailable(false);
+      });
     void commands
       .listGoogleWorkspaceServices()
       .then((list) => {
@@ -129,8 +143,13 @@ export default function Connections({
     return map;
   }, [workspaceServices, serviceByKey]);
 
+  // When a built-in client is present we hide the credential fields unless the
+  // user opts into bring-your-own. Otherwise the BYO fields are always shown.
+  const showCredentialFields = !builtinAvailable || useOwnClient;
+
   const openForm = () => {
     setError(null);
+    setUseOwnClient(false);
     setPhase("form");
   };
 
@@ -144,14 +163,16 @@ export default function Connections({
   };
 
   const connect = async () => {
-    if (!clientId.trim()) return;
+    // Built-in path: an empty client_id tells the backend to use the baked-in
+    // client. BYO path still requires a client id.
+    if (showCredentialFields && !clientId.trim()) return;
     setError(null);
     setPhase("connecting");
     try {
       const account = await commands.connectOauthAccount(
         "google",
-        clientId.trim(),
-        clientSecret.trim() || undefined,
+        showCredentialFields ? clientId.trim() : "",
+        showCredentialFields ? clientSecret.trim() || undefined : undefined,
         [],
       );
       const keys = workspaceServices
@@ -207,47 +228,63 @@ export default function Connections({
           <CardContent className="space-y-4">
             <div>
               <div className="text-sm font-medium">Connect Google Workspace</div>
-              <p className="mt-0.5 text-xs text-muted-foreground">
-                Create a Desktop OAuth client in the{" "}
-                <a
-                  href={GOOGLE_CONSOLE_URL}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="underline underline-offset-2"
-                >
-                  Google Cloud Console
-                </a>
-                , then paste its Client ID and secret here.
-              </p>
+              {showCredentialFields ? (
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Create a Desktop OAuth client in the{" "}
+                  <a
+                    href={GOOGLE_CONSOLE_URL}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="underline underline-offset-2"
+                  >
+                    Google Cloud Console
+                  </a>
+                  , then paste its Client ID and secret here.
+                </p>
+              ) : (
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Sign in with Google to let the agent work in Gmail, Calendar, and Drive. You
+                  approve every action.
+                </p>
+              )}
             </div>
 
-            <Field className="gap-1">
-              <FieldLabel htmlFor="oauth-client-id" className="text-xs text-muted-foreground">
-                Client ID
-              </FieldLabel>
-              <Input
-                id="oauth-client-id"
-                data-testid="oauth-client-id-input"
-                placeholder="000000000000-xxxx.apps.googleusercontent.com"
-                value={clientId}
-                onChange={(event) => setClientId(event.target.value)}
-              />
-            </Field>
+            {showCredentialFields ? (
+              <>
+                <Field className="gap-1">
+                  <FieldLabel htmlFor="oauth-client-id" className="text-xs text-muted-foreground">
+                    Client ID
+                  </FieldLabel>
+                  <Input
+                    id="oauth-client-id"
+                    data-testid="oauth-client-id-input"
+                    placeholder="000000000000-xxxx.apps.googleusercontent.com"
+                    value={clientId}
+                    onChange={(event) => setClientId(event.target.value)}
+                  />
+                </Field>
 
-            <Field className="gap-1">
-              <FieldLabel htmlFor="oauth-client-secret" className="text-xs text-muted-foreground">
-                Client secret
-              </FieldLabel>
-              <Input
-                id="oauth-client-secret"
-                data-testid="oauth-client-secret-input"
-                type="password"
-                placeholder="GOCSPX-…"
-                value={clientSecret}
-                onChange={(event) => setClientSecret(event.target.value)}
-              />
-              <FieldDescription>Stored in your macOS Keychain, never in the app.</FieldDescription>
-            </Field>
+                <Field className="gap-1">
+                  <FieldLabel
+                    htmlFor="oauth-client-secret"
+                    className="text-xs text-muted-foreground"
+                  >
+                    Client secret
+                  </FieldLabel>
+                  <Input
+                    id="oauth-client-secret"
+                    data-testid="oauth-client-secret-input"
+                    type="password"
+                    placeholder="GOCSPX-…"
+                    value={clientSecret}
+                    onChange={(event) => setClientSecret(event.target.value)}
+                  />
+                  <FieldDescription>
+                    Stored in your macOS Keychain, never in the app.
+                  </FieldDescription>
+                </Field>
+              </>
+            ) : null}
 
             <fieldset className="space-y-2">
               <legend className="text-xs font-medium text-muted-foreground">
@@ -286,7 +323,10 @@ export default function Connections({
 
             {error ? (
               <p className="text-sm text-destructive" data-testid="connect-error">
-                Couldn't connect: {error}. Check the Client ID and secret, then try again.
+                Couldn't connect: {error}.
+                {showCredentialFields
+                  ? " Check the Client ID and secret, then try again."
+                  : " Please try again."}
               </p>
             ) : null}
 
@@ -294,7 +334,7 @@ export default function Connections({
               <Button
                 type="button"
                 onClick={() => void connect()}
-                disabled={!clientId.trim()}
+                disabled={showCredentialFields && !clientId.trim()}
                 data-testid="connect-continue"
               >
                 <GoogleGIcon />
@@ -309,6 +349,17 @@ export default function Connections({
                 Cancel
               </Button>
             </div>
+
+            {builtinAvailable && !useOwnClient ? (
+              <button
+                type="button"
+                onClick={() => setUseOwnClient(true)}
+                data-testid="use-own-client-toggle"
+                className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+              >
+                Use your own OAuth client
+              </button>
+            ) : null}
           </CardContent>
         </Card>
       ) : accounts.length === 0 ? (

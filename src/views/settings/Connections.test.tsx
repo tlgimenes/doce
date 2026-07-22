@@ -9,6 +9,7 @@ vi.mock("@/lib/ipc", () => ({
     listOauthAccounts: vi.fn(),
     listMcpServers: vi.fn(),
     listGoogleWorkspaceServices: vi.fn(),
+    googleOauthBuiltinAvailable: vi.fn(),
     connectOauthAccount: vi.fn(),
     addGoogleWorkspaceServers: vi.fn(),
     removeOauthAccount: vi.fn(),
@@ -52,6 +53,9 @@ describe("Connections", () => {
     vi.mocked(commands.listOauthAccounts).mockResolvedValue([]);
     vi.mocked(commands.listMcpServers).mockResolvedValue([]);
     vi.mocked(commands.listGoogleWorkspaceServices).mockResolvedValue(WORKSPACE_SERVICES);
+    // Default: no built-in client, so the bring-your-own form is required —
+    // the built-in-mode tests override this to `true`.
+    vi.mocked(commands.googleOauthBuiltinAvailable).mockResolvedValue(false);
   });
 
   it("shows the empty state: a Google connect card and the privacy note", async () => {
@@ -74,6 +78,60 @@ describe("Connections", () => {
       const row = screen.getByTestId(`service-picker-${key}`);
       expect(within(row).getByRole("checkbox")).toBeChecked();
     }
+  });
+
+  describe("built-in Google client", () => {
+    beforeEach(() => {
+      vi.mocked(commands.googleOauthBuiltinAvailable).mockResolvedValue(true);
+    });
+
+    it("hides the credential fields and connects with an empty client_id", async () => {
+      vi.mocked(commands.connectOauthAccount).mockResolvedValue(ACCOUNT);
+      vi.mocked(commands.addGoogleWorkspaceServers).mockResolvedValue([]);
+
+      render(<Connections />);
+
+      await userEvent.click(await screen.findByRole("button", { name: /connect/i }));
+
+      // The form opens straight to the service picker — no credential inputs.
+      expect(screen.getByTestId("connections-form")).toBeInTheDocument();
+      expect(screen.queryByTestId("oauth-client-id-input")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("oauth-client-secret-input")).not.toBeInTheDocument();
+      expect(screen.getByTestId("service-picker-gmail")).toBeInTheDocument();
+
+      await userEvent.click(screen.getByTestId("connect-continue"));
+
+      // Empty client_id → the backend resolves the built-in client.
+      expect(commands.connectOauthAccount).toHaveBeenCalledWith("google", "", undefined, []);
+    });
+
+    it("reveals the bring-your-own fields via the advanced toggle", async () => {
+      render(<Connections />);
+
+      await userEvent.click(await screen.findByRole("button", { name: /connect/i }));
+      expect(screen.queryByTestId("oauth-client-id-input")).not.toBeInTheDocument();
+
+      await userEvent.click(screen.getByTestId("use-own-client-toggle"));
+
+      // The BYO fields appear and the toggle collapses.
+      expect(screen.getByTestId("oauth-client-id-input")).toBeInTheDocument();
+      expect(screen.getByTestId("oauth-client-secret-input")).toBeInTheDocument();
+      expect(screen.queryByTestId("use-own-client-toggle")).not.toBeInTheDocument();
+      // Continue is now gated on a client id, as in BYO mode.
+      expect(screen.getByTestId("connect-continue")).toBeDisabled();
+
+      await userEvent.type(screen.getByTestId("oauth-client-id-input"), "my-client-id");
+      vi.mocked(commands.connectOauthAccount).mockResolvedValue(ACCOUNT);
+      vi.mocked(commands.addGoogleWorkspaceServers).mockResolvedValue([]);
+      await userEvent.click(screen.getByTestId("connect-continue"));
+
+      expect(commands.connectOauthAccount).toHaveBeenCalledWith(
+        "google",
+        "my-client-id",
+        undefined,
+        [],
+      );
+    });
   });
 
   it("runs empty → form → waiting → connected, registering the chosen services", async () => {
