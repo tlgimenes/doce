@@ -129,6 +129,7 @@ pub async fn list_mcp_servers(
 pub async fn list_mcp_server_tools(
     app: AppHandle,
     db_cell: State<'_, DbCell>,
+    token_store: State<'_, crate::oauth::OAuthTokenStore>,
     server_id: String,
 ) -> Result<Vec<McpToolInfo>, String> {
     let conn = db_cell.get(&app).await?;
@@ -146,7 +147,14 @@ pub async fn list_mcp_server_tools(
         .map_err(|e| e.to_string())?;
 
     let config = mcp::parse_config(&transport, &config_json).map_err(|e| e.to_string())?;
-    let tools = mcp::list_tools(&config).await.map_err(|e| e.to_string())?;
+    // Resolve an OAuth-linked config into a concrete bearer (refreshing if
+    // needed) JUST before connecting, with a best-effort 401 retry. A static
+    // or stdio config passes straight through.
+    let tools = crate::oauth::resolve_with_retry(&config, &token_store, |cfg| async move {
+        mcp::list_tools(&cfg).await
+    })
+    .await
+    .map_err(|e| e.to_string())?;
     Ok(tools
         .into_iter()
         .map(|t| McpToolInfo {

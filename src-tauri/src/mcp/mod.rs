@@ -79,12 +79,23 @@ pub enum McpError {
 pub enum McpTransportConfig {
     /// Local child-process transport. `config` JSON: `{"command","args"}`.
     Stdio { command: String, args: Vec<String> },
-    /// Remote streamable-HTTP transport. `config` JSON:
-    /// `{"url", "auth_token"?}`. `auth_token` is a bearer token WITHOUT
-    /// the `Bearer ` prefix (rmcp adds it); `None` means no auth header.
+    /// Remote streamable-HTTP transport. `config` JSON is EITHER the static
+    /// `{"url", "auth_token"?}` shape OR the OAuth-linked
+    /// `{"url", "oauth_account_id"}` shape.
+    ///
+    /// * `auth_token` — a bearer token WITHOUT the `Bearer ` prefix (rmcp adds
+    ///   it); `None` means no auth header. This is what `connect` actually
+    ///   sends.
+    /// * `oauth_account_id` — when set, the token is NOT stored here; it is
+    ///   resolved (and refreshed) from the OAuth token store JUST before
+    ///   connecting, via `oauth::resolve_http_config`, which rewrites this into
+    ///   an `auth_token: Some(fresh)` config. `mcp::connect` itself stays
+    ///   unaware of the store and ignores this field — an unresolved
+    ///   oauth-linked config simply connects unauthenticated.
     Http {
         url: String,
         auth_token: Option<String>,
+        oauth_account_id: Option<String>,
     },
 }
 
@@ -97,11 +108,15 @@ struct StdioConfig {
 }
 
 /// The shape stored in `MCPServerConnection.config` for an `http` server.
+/// Accepts both the static (`auth_token`) and OAuth-linked
+/// (`oauth_account_id`) forms; both fields default to absent.
 #[derive(Debug, Deserialize)]
 struct HttpConfig {
     url: String,
     #[serde(default)]
     auth_token: Option<String>,
+    #[serde(default)]
+    oauth_account_id: Option<String>,
 }
 
 /// Parses a stored `(transport, config_json)` pair into a
@@ -116,9 +131,16 @@ pub fn parse_config(transport: &str, config_json: &str) -> Result<McpTransportCo
             Ok(McpTransportConfig::Stdio { command, args })
         }
         "http" => {
-            let HttpConfig { url, auth_token } =
-                serde_json::from_str(config_json).map_err(|e| McpError::Config(e.to_string()))?;
-            Ok(McpTransportConfig::Http { url, auth_token })
+            let HttpConfig {
+                url,
+                auth_token,
+                oauth_account_id,
+            } = serde_json::from_str(config_json).map_err(|e| McpError::Config(e.to_string()))?;
+            Ok(McpTransportConfig::Http {
+                url,
+                auth_token,
+                oauth_account_id,
+            })
         }
         other => Err(McpError::Config(format!("unknown transport {other:?}"))),
     }
@@ -162,7 +184,9 @@ pub async fn connect(
                 .await
                 .map_err(|e| McpError::Client(e.to_string()))
         }
-        McpTransportConfig::Http { url, auth_token } => {
+        McpTransportConfig::Http {
+            url, auth_token, ..
+        } => {
             let transport = build_http_transport(url, auth_token.as_deref());
             ().serve(transport)
                 .await
@@ -346,6 +370,7 @@ mod tests {
             McpTransportConfig::Http {
                 url: "https://example.com/mcp".to_string(),
                 auth_token: None,
+                oauth_account_id: None,
             }
         );
     }
@@ -362,6 +387,24 @@ mod tests {
             McpTransportConfig::Http {
                 url: "https://example.com/mcp".to_string(),
                 auth_token: Some("secret-123".to_string()),
+                oauth_account_id: None,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_http_config_with_oauth_account_id() {
+        let cfg = parse_config(
+            "http",
+            r#"{"url":"https://example.com/mcp","oauth_account_id":"acct-abc"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            cfg,
+            McpTransportConfig::Http {
+                url: "https://example.com/mcp".to_string(),
+                auth_token: None,
+                oauth_account_id: Some("acct-abc".to_string()),
             }
         );
     }
@@ -595,6 +638,7 @@ mod tests {
         let config = McpTransportConfig::Http {
             url: "https://mcp.deepwiki.com/mcp".to_string(),
             auth_token: None,
+            oauth_account_id: None,
         };
         let tools = list_tools(&config).await.expect("list tools over http");
         assert!(!tools.is_empty(), "expected at least one remote tool");
