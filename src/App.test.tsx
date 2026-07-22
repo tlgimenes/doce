@@ -45,6 +45,8 @@ vi.mock("@/lib/ipc", () => ({
     listMessages: vi.fn(),
     listMcpServers: vi.fn(),
     listSkills: vi.fn(),
+    listOauthAccounts: vi.fn(),
+    listGoogleWorkspaceServices: vi.fn(),
     getContextUsage: vi.fn(),
     compactConversation: vi.fn(),
     isGenerationActive: vi.fn(),
@@ -164,6 +166,8 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
     vi.mocked(commands.isGenerationActive).mockResolvedValue(false);
     vi.mocked(commands.listMcpServers).mockResolvedValue([]);
     vi.mocked(commands.listSkills).mockResolvedValue([]);
+    vi.mocked(commands.listOauthAccounts).mockResolvedValue([]);
+    vi.mocked(commands.listGoogleWorkspaceServices).mockResolvedValue([]);
     // No model loaded in these unit tests — ContextUsageIndicator's
     // getContextUsage call is expected to fail and swallow the error,
     // leaving the indicator simply unrendered.

@@ -510,6 +510,33 @@ export interface McpToolInfo {
   description: string | null;
 }
 
+// OAuth / Google Workspace connections. Mirrors src-tauri/src/commands/oauth.rs
+// (camelCase-serialized). No generated bindings.ts exists yet, so these are the
+// hand-written source of truth until tauri-specta regenerates one.
+
+/** The non-secret view of a connected OAuth account (tokens live in the
+ * Keychain, never here). `clientId` is the user-supplied desktop OAuth client;
+ * there is deliberately no email — the backend records only this metadata. */
+export interface OAuthAccount {
+  id: string;
+  provider: string;
+  clientId: string;
+  scopes: string[];
+  /** Unix-epoch ms of the current access token's expiry. */
+  expiresAt: number;
+  createdAt: number;
+}
+
+/** A Google Workspace MCP server preset the connect surface can register. */
+export interface GoogleWorkspaceServiceInfo {
+  /** Stable key to pass back to `addGoogleWorkspaceServers` (e.g. "gmail"). */
+  key: string;
+  /** Human-readable name, also written as the server name. */
+  displayName: string;
+  url: string;
+  scopes: string[];
+}
+
 export interface SkillSummary {
   name: string;
   description: string;
@@ -676,6 +703,30 @@ export const commands = {
   listMcpServers: () => invoke<McpServerConnection[]>("list_mcp_servers"),
   listMcpServerTools: (serverId: string) =>
     invoke<McpToolInfo[]>("list_mcp_server_tools", { serverId }),
+  // OAuth connect flow. `connectOauthAccount` opens the system browser and
+  // BLOCKS until the user approves (or the flow errors) — surface a waiting
+  // state around it. Empty `scopes` falls back to the provider's defaults.
+  connectOauthAccount: (
+    provider: string,
+    clientId: string,
+    clientSecret?: string,
+    scopes: string[] = [],
+  ) =>
+    invoke<OAuthAccount>("connect_oauth_account", {
+      provider,
+      clientId,
+      clientSecret: clientSecret ?? null,
+      scopes,
+    }),
+  listOauthAccounts: () => invoke<OAuthAccount[]>("list_oauth_accounts"),
+  removeOauthAccount: (id: string) => invoke<void>("remove_oauth_account", { id }),
+  listGoogleWorkspaceServices: () =>
+    invoke<GoogleWorkspaceServiceInfo[]>("list_google_workspace_services"),
+  addGoogleWorkspaceServers: (oauthAccountId: string, serviceKeys: string[]) =>
+    invoke<McpServerConnection[]>("add_google_workspace_servers", {
+      oauthAccountId,
+      serviceKeys,
+    }),
   listSkills: () => invoke<SkillSummary[]>("list_skills"),
   readAttachedFile: (path: string) => invoke<AttachedFile>("read_attached_file", { path }),
   getContextUsage: (conversationId: string) =>

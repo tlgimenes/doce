@@ -18,6 +18,11 @@ vi.mock("@/lib/ipc", () => ({
     selectCuratedModel: vi.fn(),
     selectLocalModel: vi.fn(),
     dismissModelNotice: vi.fn(),
+    listOauthAccounts: vi.fn(),
+    listGoogleWorkspaceServices: vi.fn(),
+    connectOauthAccount: vi.fn(),
+    removeOauthAccount: vi.fn(),
+    addGoogleWorkspaceServers: vi.fn(),
   },
   events: {
     onModelInstallProgress: vi.fn(),
@@ -65,6 +70,8 @@ describe("Settings", () => {
     vi.clearAllMocks();
     vi.mocked(commands.listMcpServers).mockResolvedValue([]);
     vi.mocked(commands.listSkills).mockResolvedValue([]);
+    vi.mocked(commands.listOauthAccounts).mockResolvedValue([]);
+    vi.mocked(commands.listGoogleWorkspaceServices).mockResolvedValue([]);
     vi.mocked(commands.getModelState).mockResolvedValue(DEFAULT_MODEL_STATE);
     vi.mocked(commands.selectCuratedModel).mockResolvedValue(DEFAULT_MODEL_STATE);
     vi.mocked(commands.selectLocalModel).mockResolvedValue(DEFAULT_MODEL_STATE);
@@ -149,7 +156,9 @@ describe("Settings", () => {
         "-y",
         "some-package",
       ]);
-      expect(commands.listMcpServers).toHaveBeenCalledTimes(2);
+      // Two mount reads (Settings' MCP panel + the Connections panel, which
+      // cross-references servers to accounts) plus the post-add refresh.
+      expect(commands.listMcpServers).toHaveBeenCalledTimes(3);
     });
   });
 
@@ -258,6 +267,8 @@ describe("Settings appearance", () => {
     vi.clearAllMocks();
     vi.mocked(commands.listMcpServers).mockResolvedValue([]);
     vi.mocked(commands.listSkills).mockResolvedValue([]);
+    vi.mocked(commands.listOauthAccounts).mockResolvedValue([]);
+    vi.mocked(commands.listGoogleWorkspaceServices).mockResolvedValue([]);
     vi.mocked(commands.getModelState).mockResolvedValue(DEFAULT_MODEL_STATE);
     vi.mocked(events.onModelInstallProgress).mockResolvedValue(vi.fn());
   });

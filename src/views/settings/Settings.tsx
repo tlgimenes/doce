@@ -22,6 +22,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { commands, type McpServerConnection, type SkillSummary } from "@/lib/ipc";
+import Connections from "./Connections";
 import ModelSelector from "./ModelSelector";
 
 interface SettingsProps {
@@ -173,6 +174,10 @@ export default function Settings({ onClose }: SettingsProps) {
           </h3>
 
           <div className="space-y-8">
+            <div data-testid="settings-connections-panel">
+              <Connections />
+            </div>
+
             <section aria-labelledby="mcp-settings-heading" data-testid="settings-mcp-panel">
               <div className="mb-3">
                 <h4 id="mcp-settings-heading" className="text-sm font-medium">
