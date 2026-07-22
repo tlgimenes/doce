@@ -22,8 +22,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { commands, type McpServerConnection, type SkillSummary } from "@/lib/ipc";
-import ActivityView from "@/views/activity/ActivityView";
-import Connections from "./Connections";
 import ModelSelector from "./ModelSelector";
 
 interface SettingsProps {
@@ -164,23 +162,6 @@ export default function Settings({ onClose }: SettingsProps) {
         <ModelSelector />
 
         <section
-          className="mb-8"
-          aria-labelledby="activity-settings-heading"
-          data-testid="settings-activity-section"
-        >
-          <h3
-            id="activity-settings-heading"
-            className="mb-2 text-xs font-medium tracking-wide text-muted-foreground uppercase"
-          >
-            Activity
-          </h3>
-          <p className="mb-3 text-sm text-muted-foreground">
-            What the agent did through your connected services. Review and dismiss.
-          </p>
-          <ActivityView />
-        </section>
-
-        <section
           aria-labelledby="extensions-settings-heading"
           data-testid="settings-extensions-section"
         >
@@ -192,10 +173,9 @@ export default function Settings({ onClose }: SettingsProps) {
           </h3>
 
           <div className="space-y-8">
-            <div data-testid="settings-connections-panel">
-              <Connections />
-            </div>
-
+            {/* Google connections + the activity feed now live on the home
+                empty state (around the composer), not here. This section keeps
+                only the low-level MCP server admin. */}
             <section aria-labelledby="mcp-settings-heading" data-testid="settings-mcp-panel">
               <div className="mb-3">
                 <h4 id="mcp-settings-heading" className="text-sm font-medium">

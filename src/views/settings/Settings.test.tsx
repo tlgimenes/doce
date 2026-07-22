@@ -162,9 +162,9 @@ describe("Settings", () => {
         "-y",
         "some-package",
       ]);
-      // Two mount reads (Settings' MCP panel + the Connections panel, which
-      // cross-references servers to accounts) plus the post-add refresh.
-      expect(commands.listMcpServers).toHaveBeenCalledTimes(3);
+      // One mount read (Settings' MCP panel — Connections moved to the home)
+      // plus the post-add refresh.
+      expect(commands.listMcpServers).toHaveBeenCalledTimes(2);
     });
   });
 
