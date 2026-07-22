@@ -78,6 +78,16 @@ pub fn tools_array(names: &[&str]) -> Vec<Value> {
     names.iter().filter_map(|name| tool_def(name)).collect()
 }
 
+/// The OpenAI-shaped tool definition for the `activate_service` meta-tool of
+/// the MCP progressive-disclosure path. Kept out of [`tools_array`]/the base
+/// tool-name lists on purpose: it is advertised ONLY when the user has at
+/// least one connected MCP server (see `commands::agent`'s `generate`), so
+/// with zero servers the tools array is byte-for-byte the no-MCP array.
+pub fn activate_service_def() -> Value {
+    // The arm is defined in `tool_def`, so this cannot be `None`.
+    tool_def("activate_service").expect("activate_service tool_def arm must exist")
+}
+
 fn tool_def(name: &str) -> Option<Value> {
     let (description, parameters): (&str, Value) = match name {
         "Read" => (
@@ -210,6 +220,16 @@ fn tool_def(name: &str) -> Option<Value> {
                     "answer": {"type": "string"}
                 },
                 "required": ["answer"]
+            }),
+        ),
+        "activate_service" => (
+            "Load a connected service's tools so you can use them. Pass the service name exactly as shown in your connected-services list.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "service": {"type": "string"}
+                },
+                "required": ["service"]
             }),
         ),
         "Verdict" => (

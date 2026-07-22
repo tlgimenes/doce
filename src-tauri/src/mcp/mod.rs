@@ -34,6 +34,20 @@ pub struct McpToolInfo {
     pub description: Option<String>,
 }
 
+/// A schema-carrying view of one MCP tool — like [`McpToolInfo`] but also
+/// carrying the tool's JSON-Schema `input_schema`, so a caller can build an
+/// OpenAI-shaped tool definition to advertise the tool into the agent loop.
+/// Produced by [`list_tools_detailed`]; the settings-panel "test connection"
+/// path keeps using the lighter [`McpToolInfo`]/[`list_tools`].
+#[derive(Debug, Clone)]
+pub struct McpToolSchema {
+    pub name: String,
+    pub description: Option<String>,
+    /// The tool's JSON Schema for its arguments — an object schema suitable
+    /// for dropping straight into an OpenAI tool def's `parameters`.
+    pub input_schema: serde_json::Value,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum McpError {
     #[error("failed to spawn MCP server process: {0}")]
@@ -198,6 +212,54 @@ pub async fn call_tool(
     let result = result?;
 
     serde_json::to_value(result).map_err(|e| McpError::Client(e.to_string()))
+}
+
+/// Connects, lists all tools WITH their `input_schema`, and closes the
+/// connection. This is the progressive-disclosure counterpart to
+/// [`list_tools`]: when the agent activates a service, the loop needs each
+/// tool's argument schema (not just its name/description) to advertise it to
+/// the model as a callable tool. Works for any transport.
+pub async fn list_tools_detailed(
+    config: &McpTransportConfig,
+) -> Result<Vec<McpToolSchema>, McpError> {
+    let client = connect(config).await?;
+    let tools = client
+        .list_all_tools()
+        .await
+        .map_err(|e| McpError::Client(e.to_string()));
+    let _ = client.cancel().await;
+    let tools = tools?;
+
+    Ok(tools
+        .into_iter()
+        .map(|t| McpToolSchema {
+            name: t.name.to_string(),
+            description: t.description.map(|d| d.to_string()),
+            // rmcp stores the schema as `Arc<serde_json::Map>`; clone the
+            // map out and wrap it as a JSON object `Value`.
+            input_schema: serde_json::Value::Object((*t.input_schema).clone()),
+        })
+        .collect())
+}
+
+/// Renders an MCP `CallToolResult` — already serialized to a JSON `Value` by
+/// [`call_tool`] — into a plain, model-facing string: the concatenated text
+/// of its `content` blocks (the common case), or, when there is no textual
+/// content to extract, the compact JSON of the whole value as a fallback.
+/// Kept separate from [`call_tool`] (which stays `Value`-returning) so the
+/// dispatch site owns the string formatting.
+pub fn format_call_result(result: &serde_json::Value) -> String {
+    if let Some(content) = result.get("content").and_then(|c| c.as_array()) {
+        let texts: Vec<&str> = content
+            .iter()
+            .filter(|block| block.get("type").and_then(|t| t.as_str()) == Some("text"))
+            .filter_map(|block| block.get("text").and_then(|t| t.as_str()))
+            .collect();
+        if !texts.is_empty() {
+            return texts.join("\n");
+        }
+    }
+    result.to_string()
 }
 
 /// Back-compat thin wrapper for the stdio-only "test connection" path.
@@ -408,6 +470,74 @@ mod tests {
 
         client.cancel().await.unwrap();
         server_handle.abort();
+    }
+
+    /// Same in-process server, but exercises the schema-carrying mapping
+    /// that [`list_tools_detailed`] performs (`Tool.input_schema` ->
+    /// `Value::Object`): the `echo` tool takes a `message` string, so its
+    /// advertised `input_schema` must be a non-empty JSON object. Driven over
+    /// the duplex client directly (the in-memory stream isn't one of the two
+    /// real transports `list_tools_detailed`'s `connect` builds), asserting
+    /// the exact conversion that function applies to each tool.
+    #[tokio::test]
+    async fn detailed_listing_carries_a_non_empty_input_schema() {
+        let (server_transport, client_transport) = tokio::io::duplex(4096);
+
+        let server = TestServer::new();
+        let server_handle = tokio::spawn(async move {
+            let running = server.serve(server_transport).await.unwrap();
+            running.waiting().await.unwrap();
+        });
+
+        let client = ().serve(client_transport).await.unwrap();
+        let tools = client.list_all_tools().await.unwrap();
+
+        let schemas: Vec<McpToolSchema> = tools
+            .into_iter()
+            .map(|t| McpToolSchema {
+                name: t.name.to_string(),
+                description: t.description.map(|d| d.to_string()),
+                input_schema: serde_json::Value::Object((*t.input_schema).clone()),
+            })
+            .collect();
+
+        let echo = schemas.iter().find(|s| s.name == "echo").unwrap();
+        assert!(
+            echo.input_schema.is_object(),
+            "input_schema must be an object"
+        );
+        let obj = echo.input_schema.as_object().unwrap();
+        assert!(!obj.is_empty(), "echo's input_schema must be non-empty");
+        // The `message` string parameter must surface in the schema.
+        assert!(
+            echo.input_schema.to_string().contains("message"),
+            "echo schema should mention its `message` parameter: {}",
+            echo.input_schema
+        );
+
+        client.cancel().await.unwrap();
+        server_handle.abort();
+    }
+
+    #[test]
+    fn format_call_result_extracts_text_content() {
+        let result = serde_json::json!({
+            "content": [
+                { "type": "text", "text": "hello" },
+                { "type": "text", "text": "world" }
+            ],
+            "isError": false
+        });
+        assert_eq!(format_call_result(&result), "hello\nworld");
+    }
+
+    #[test]
+    fn format_call_result_falls_back_to_json_when_no_text() {
+        let result = serde_json::json!({
+            "content": [ { "type": "image", "data": "..." } ]
+        });
+        // No text blocks -> compact JSON of the whole value.
+        assert_eq!(format_call_result(&result), result.to_string());
     }
 
     /// Integration test against a PUBLIC, no-auth remote MCP server.

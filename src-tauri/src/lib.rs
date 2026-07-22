@@ -67,6 +67,7 @@ pub fn run() {
         .manage(ServerState::default())
         .manage(ModelSelectionState::default())
         .manage(ActiveGenerations::default())
+        .manage(agent::mcp_disclosure::ActivatedServices::default())
         .manage(CompactingConversations::default())
         .manage(ActivePlans::default())
         .manage(PendingQuestions::default())
