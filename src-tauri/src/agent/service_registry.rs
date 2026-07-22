@@ -37,6 +37,14 @@ pub struct CuratedService {
     pub catalog_description: &'static str,
     /// The usage doc appended to the activation result — recipes + guardrail.
     pub skill: &'static str,
+    /// Phase 4: lowercase, single-word intent tokens that, when they appear
+    /// in the user's message, signal this service is likely relevant — the
+    /// scoring input to
+    /// [`crate::agent::mcp_disclosure::services_to_autoactivate`]. Matched by
+    /// exact whole-token equality against the tokenized message (NOT
+    /// substrings), so each entry should be a bare noun/verb the user would
+    /// actually type (e.g. `inbox`, `calendar`), not a phrase.
+    pub keywords: &'static [&'static str],
 }
 
 /// The curated table. Seeded with the four Google services; grows as doce
@@ -47,24 +55,43 @@ static SERVICES: &[CuratedService] = &[
         aliases: &["googlemail"],
         catalog_description: "search, read & draft email",
         skill: include_str!("skills/gmail.md"),
+        keywords: &["email", "inbox", "mail", "reply", "gmail", "message"],
     },
     CuratedService {
         key: "gcal",
         aliases: &["googlecalendar", "calendar"],
         catalog_description: "check availability & propose calendar events",
         skill: include_str!("skills/gcal.md"),
+        keywords: &[
+            "calendar",
+            "event",
+            "schedule",
+            "meeting",
+            "availability",
+            "invite",
+        ],
     },
     CuratedService {
         key: "gkeep",
         aliases: &["googlekeep", "keep"],
         catalog_description: "read & draft notes and lists",
         skill: include_str!("skills/gkeep.md"),
+        keywords: &["note", "notes", "keep", "list", "reminder"],
     },
     CuratedService {
         key: "gdrive",
         aliases: &["googledrive", "drive"],
         catalog_description: "search, read & organize files",
         skill: include_str!("skills/gdrive.md"),
+        keywords: &[
+            "drive",
+            "file",
+            "files",
+            "document",
+            "doc",
+            "folder",
+            "spreadsheet",
+        ],
     },
 ];
 
@@ -91,6 +118,26 @@ pub fn lookup(server_name: &str) -> Option<&'static CuratedService> {
     SERVICES
         .iter()
         .find(|s| s.key == normalized || s.aliases.contains(&normalized.as_str()))
+}
+
+/// Resolves a free-form requested service string to a curated `key` by intent
+/// KEYWORD (Phase 4) — the looser sibling of [`lookup`], which matches only on
+/// a service's name/aliases. This lets `resolve_service`'s fuzzy activation
+/// see through a synonym the server's own name lacks: e.g. `activate_service`
+/// with `"email"` resolves to the `gmail` key even though no server is named
+/// "email". Matches the WHOLE normalized request against each service's
+/// keywords (keywords are disjoint across services — see the
+/// `keywords_are_disjoint_across_services` test — so the first hit is
+/// unambiguous). `None` when the request matches no keyword.
+pub fn key_for_keyword(requested: &str) -> Option<&'static str> {
+    let normalized = normalize(requested);
+    if normalized.is_empty() {
+        return None;
+    }
+    SERVICES
+        .iter()
+        .find(|s| s.keywords.contains(&normalized.as_str()))
+        .map(|s| s.key)
 }
 
 #[cfg(test)]
@@ -170,6 +217,59 @@ mod tests {
                 "{}'s skill doc must contain the guardrail {GUARDRAIL:?}",
                 svc.key
             );
+        }
+    }
+
+    #[test]
+    fn keywords_are_disjoint_across_services() {
+        // `key_for_keyword` returns the FIRST service whose keywords contain
+        // the request, so a keyword shared by two services would resolve
+        // ambiguously by table order. Guard that they never overlap.
+        let mut seen: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+        for svc in SERVICES {
+            for kw in svc.keywords {
+                if let Some(other) = seen.insert(kw, svc.key) {
+                    panic!("keyword {kw:?} is shared by {other} and {}", svc.key);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn key_for_keyword_resolves_synonyms_and_ignores_unknown() {
+        assert_eq!(key_for_keyword("email"), Some("gmail"));
+        assert_eq!(key_for_keyword("Inbox"), Some("gmail"));
+        assert_eq!(key_for_keyword("meeting"), Some("gcal"));
+        assert_eq!(key_for_keyword("spreadsheet"), Some("gdrive"));
+        assert_eq!(key_for_keyword("reminder"), Some("gkeep"));
+        assert_eq!(key_for_keyword("wombat"), None);
+        assert_eq!(key_for_keyword(""), None);
+    }
+
+    #[test]
+    fn every_service_has_lowercase_intent_keywords() {
+        // Phase 4: `services_to_autoactivate` matches these by exact
+        // whole-token equality against a lowercase-tokenized message, so a
+        // capitalized or multi-word entry could never match.
+        for svc in SERVICES {
+            assert!(
+                !svc.keywords.is_empty(),
+                "{} needs at least one intent keyword",
+                svc.key
+            );
+            for kw in svc.keywords {
+                assert_eq!(
+                    &kw.to_ascii_lowercase(),
+                    kw,
+                    "{}'s keyword {kw:?} must be lowercase",
+                    svc.key
+                );
+                assert!(
+                    kw.chars().all(|c| c.is_ascii_alphanumeric()),
+                    "{}'s keyword {kw:?} must be a single alphanumeric token",
+                    svc.key
+                );
+            }
         }
     }
 

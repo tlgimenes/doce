@@ -791,13 +791,14 @@ impl RealBackend<'_> {
             .get("service")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        let snapshot = self
-            .mcp_servers
-            .iter()
-            .find(|s| s.name == requested)
-            .cloned();
-        let result_text = match snapshot {
-            None => {
+        // Phase 4: fuzzy resolution (exact -> normalized -> registry
+        // key/keyword -> unique substring) so the small model needn't pass the
+        // server's EXACT name. Genuine ambiguity is surfaced, never guessed.
+        let result_text = match crate::agent::mcp_disclosure::resolve_service(
+            requested,
+            &self.mcp_servers,
+        ) {
+            crate::agent::mcp_disclosure::ServiceMatch::NotFound => {
                 let available = self
                     .mcp_servers
                     .iter()
@@ -814,76 +815,47 @@ impl RealBackend<'_> {
                     )
                 }
             }
-            // Phase 2: `describe_service` captures the server's own
-            // `instructions` alongside its tool schemas in a SINGLE connect —
-            // the fallback usage guidance when doce has no curated skill. An
+            crate::agent::mcp_disclosure::ServiceMatch::Ambiguous(candidates) => {
+                format!(
+                    "Error: {requested:?} matches multiple connected services: {}. Re-run activate_service with one exact name.",
+                    candidates.join(", ")
+                )
+            }
+            // Phase 2/4: `load_service_tools` connects ONCE, capturing the
+            // server's own `instructions` (the fallback usage guidance when
+            // doce has no curated skill) alongside its tool schemas, and
+            // idempotently loads them into this conversation's activated set —
+            // the SAME helper `send_agent_message`'s auto-activation uses. An
             // OAuth-linked server's bearer is resolved (and refreshed) just
-            // before connecting via `resolve_with_retry`; a static/stdio config
-            // passes through unchanged.
-            Some(snapshot) => match self.describe_mcp_service(&snapshot.config).await {
-                Err(e) => format!("Error: failed to load service {:?}: {e}", snapshot.name),
-                Ok(description) => {
-                    let new_tools: Vec<crate::agent::mcp_disclosure::ActivatedTool> = description
-                        .tools
-                        .iter()
-                        .map(|s| {
-                            crate::agent::mcp_disclosure::make_activated_tool(
-                                &snapshot.name,
-                                &snapshot.config,
-                                s,
-                            )
-                        })
-                        .collect();
-                    let names: Vec<String> = new_tools
-                        .iter()
-                        .map(|t| t.advertised_name.clone())
-                        .collect();
-                    // Idempotent: don't duplicate an already-activated
-                    // service's tools if the model activates it twice.
-                    {
-                        let mut map = self.activated_services.0.lock().unwrap();
-                        let entry = map.entry(self.conversation_id.to_string()).or_default();
-                        for t in new_tools {
-                            if !entry.iter().any(|e| e.advertised_name == t.advertised_name) {
-                                entry.push(t);
-                            }
-                        }
-                    }
+            // before connecting; a static/stdio config passes through unchanged.
+            crate::agent::mcp_disclosure::ServiceMatch::Found(snapshot) => {
+                match load_service_tools(
+                    self.app,
+                    self.conversation_id,
+                    self.activated_services,
+                    &snapshot.name,
+                    &snapshot.config,
+                )
+                .await
+                {
+                    Err(e) => format!("Error: failed to load service {:?}: {e}", snapshot.name),
                     // Level-2 disclosure: the acknowledgement PLUS the usage
                     // skill (curated doc if known, else the server's own
                     // instructions), so the model reads how to use the service
                     // right after activating it.
-                    crate::agent::mcp_disclosure::build_activation_result(
-                        &snapshot.name,
-                        &names,
-                        description.instructions.as_deref(),
-                    )
+                    Ok((names, instructions)) => {
+                        crate::agent::mcp_disclosure::build_activation_result(
+                            &snapshot.name,
+                            &names,
+                            instructions.as_deref(),
+                        )
+                    }
                 }
-            },
+            }
         };
         self.persist_mcp_interaction(&tool_call_id, "activate_service", call, &result_text)
             .await;
         ToolExecution::Result(result_text)
-    }
-
-    /// Resolves an OAuth-linked config's bearer (refresh-per-connect, with a
-    /// best-effort 401 retry) then runs `describe_service`. Reads the managed
-    /// [`crate::oauth::OAuthTokenStore`] via `try_state` so this stays inert
-    /// (config passed through unchanged) when the store isn't managed, e.g. in
-    /// unit tests.
-    async fn describe_mcp_service(
-        &self,
-        config: &crate::mcp::McpTransportConfig,
-    ) -> Result<crate::mcp::ServiceDescription, crate::mcp::McpError> {
-        match self.app.try_state::<crate::oauth::OAuthTokenStore>() {
-            Some(store) => {
-                crate::oauth::resolve_with_retry(config, &store, |cfg| async move {
-                    crate::mcp::describe_service(&cfg).await
-                })
-                .await
-            }
-            None => crate::mcp::describe_service(config).await,
-        }
     }
 
     /// Dispatches one activated MCP tool call through `mcp::call_tool`,
@@ -951,6 +923,66 @@ impl RealBackend<'_> {
         )
         .await;
     }
+}
+
+/// Resolves an OAuth-linked config's bearer (refresh-per-connect, with a
+/// best-effort 401 retry) then runs `describe_service`. Reads the managed
+/// [`crate::oauth::OAuthTokenStore`] via `try_state` so this stays inert
+/// (config passed through unchanged) when the store isn't managed, e.g. in
+/// unit tests. A free function (not a `RealBackend` method) so BOTH the
+/// `activate_service` handler and `send_agent_message`'s auto-activation —
+/// which runs before any backend exists — share the exact same connect path.
+async fn describe_mcp_service(
+    app: &AppHandle,
+    config: &crate::mcp::McpTransportConfig,
+) -> Result<crate::mcp::ServiceDescription, crate::mcp::McpError> {
+    match app.try_state::<crate::oauth::OAuthTokenStore>() {
+        Some(store) => {
+            crate::oauth::resolve_with_retry(config, &store, |cfg| async move {
+                crate::mcp::describe_service(&cfg).await
+            })
+            .await
+        }
+        None => crate::mcp::describe_service(config).await,
+    }
+}
+
+/// Loads one connected service's tools into
+/// `activated_services[conversation_id]` (idempotent — an already-loaded tool
+/// is never duplicated), returning the loaded tools' advertised names and the
+/// server's own handshake `instructions`. The SINGLE tool-load path, shared by
+/// the `activate_service` handler and `send_agent_message`'s conservative
+/// auto-activation, so the two can't drift on HOW a service is loaded. Connects
+/// once via [`describe_mcp_service`].
+async fn load_service_tools(
+    app: &AppHandle,
+    conversation_id: &str,
+    activated_services: &crate::agent::mcp_disclosure::ActivatedServices,
+    server_name: &str,
+    config: &crate::mcp::McpTransportConfig,
+) -> Result<(Vec<String>, Option<String>), crate::mcp::McpError> {
+    let description = describe_mcp_service(app, config).await?;
+    let new_tools: Vec<crate::agent::mcp_disclosure::ActivatedTool> = description
+        .tools
+        .iter()
+        .map(|s| crate::agent::mcp_disclosure::make_activated_tool(server_name, config, s))
+        .collect();
+    let names: Vec<String> = new_tools
+        .iter()
+        .map(|t| t.advertised_name.clone())
+        .collect();
+    // Idempotent: don't duplicate an already-activated service's tools if it's
+    // loaded twice (e.g. auto-activated at message start, then re-activated).
+    {
+        let mut map = activated_services.0.lock().unwrap();
+        let entry = map.entry(conversation_id.to_string()).or_default();
+        for t in new_tools {
+            if !entry.iter().any(|e| e.advertised_name == t.advertised_name) {
+                entry.push(t);
+            }
+        }
+    }
+    Ok((names, description.instructions))
 }
 
 impl crate::agent::AgentBackend for RealBackend<'_> {
@@ -3020,6 +3052,49 @@ pub async fn send_agent_message(
             }
         })
         .collect();
+
+    // Phase 4: conservative doce-side auto-activation. Gated on the user having
+    // ≥1 connected MCP server, so the no-server path is byte-for-byte unchanged
+    // (the benchmark invariant). `services_to_autoactivate` returns AT MOST ONE
+    // confident match for this message (ties resolve to nothing), which we
+    // best-effort pre-load via the SAME `load_service_tools` the
+    // `activate_service` handler uses — so the small model often skips the
+    // explicit activation hop. A pre-activation failure (e.g. a connect error)
+    // is SILENT (logged only): the model can still activate manually, and a
+    // pre-activation must NEVER fail the turn. Skips a service already
+    // activated in this conversation to avoid a needless connect.
+    if !mcp_servers.is_empty() {
+        let to_activate = crate::agent::mcp_disclosure::services_to_autoactivate(
+            &model_text_for_turn,
+            &mcp_servers,
+        );
+        for name in to_activate {
+            let already_active = activated_services
+                .0
+                .lock()
+                .unwrap()
+                .get(&conversation_id)
+                .is_some_and(|tools| tools.iter().any(|t| t.server_name == name));
+            if already_active {
+                continue;
+            }
+            if let Some(snapshot) = mcp_servers.iter().find(|s| s.name == name) {
+                if let Err(e) = load_service_tools(
+                    &app,
+                    &conversation_id,
+                    &activated_services,
+                    &snapshot.name,
+                    &snapshot.config,
+                )
+                .await
+                {
+                    eprintln!(
+                        "auto-activation of {name:?} failed (model can still activate manually): {e}"
+                    );
+                }
+            }
+        }
+    }
 
     // Steer re-dispatch loop (finish-boundary race): normally exactly one turn.
     // But a steer that landed AFTER a turn's last `drain_steers` boundary yet
