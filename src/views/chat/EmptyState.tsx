@@ -4,6 +4,8 @@ import { ChevronDown } from "lucide-react";
 import { commands, type Conversation, type RichMessageContent } from "@/lib/ipc";
 import FolderPicker from "@/views/shared/FolderPicker";
 import RichInput from "@/views/chat/rich-input/RichInput";
+import Connections from "@/views/settings/Connections";
+import ActivityView from "@/views/activity/ActivityView";
 import type { PendingInitialTurn } from "@/views/workspace/pendingInitialTurn";
 
 export interface FolderTarget {
@@ -83,7 +85,7 @@ export default function EmptyState({ autoFocusToken, onConversationCreated }: Em
 
   return (
     <div
-      className="flex h-full flex-col items-center justify-center bg-background px-6 text-foreground"
+      className="flex h-full flex-col items-center overflow-y-auto bg-background px-6 py-12 text-foreground"
       data-testid="empty-state"
     >
       <div
@@ -128,6 +130,22 @@ export default function EmptyState({ autoFocusToken, onConversationCreated }: Em
             {error}
           </p>
         )}
+      </div>
+
+      {/* The agent's reach lives here, on the home itself — not buried in
+          settings. Connect a service, then watch what the agent does with it
+          surface as reviewable cards, all around the composer above. */}
+      <div className="mt-12 w-full max-w-xl space-y-10 pb-6" data-testid="home-connections">
+        <Connections />
+        <section aria-labelledby="home-activity-heading" data-testid="home-activity-section">
+          <h3
+            id="home-activity-heading"
+            className="mb-2 text-xs font-medium tracking-wide text-muted-foreground uppercase"
+          >
+            Activity
+          </h3>
+          <ActivityView />
+        </section>
       </div>
     </div>
   );

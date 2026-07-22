@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import EmptyState from "./EmptyState";
-import { commands } from "@/lib/ipc";
+import { commands, events } from "@/lib/ipc";
 
 vi.mock("@/lib/ipc", () => ({
   commands: {
@@ -10,6 +10,15 @@ vi.mock("@/lib/ipc", () => ({
     createConversation: vi.fn(),
     sendAgentMessage: vi.fn(),
     listWorkspaces: vi.fn(),
+    // The home now hosts Connections + ActivityView, which read these on mount.
+    listOauthAccounts: vi.fn(),
+    listGoogleWorkspaceServices: vi.fn(),
+    listMcpServers: vi.fn(),
+    listFeedCards: vi.fn(),
+    dismissFeedCard: vi.fn(),
+  },
+  events: {
+    onFeedCardCreated: vi.fn(),
   },
 }));
 
@@ -21,6 +30,22 @@ describe("EmptyState (006-chat-empty-state)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(commands.listWorkspaces).mockResolvedValue([]);
+    // Keep the home's Connections + Activity mounts inert in these composer tests.
+    vi.mocked(commands.listOauthAccounts).mockResolvedValue([]);
+    vi.mocked(commands.listGoogleWorkspaceServices).mockResolvedValue([]);
+    vi.mocked(commands.listMcpServers).mockResolvedValue([]);
+    vi.mocked(commands.listFeedCards).mockResolvedValue([]);
+    vi.mocked(events.onFeedCardCreated).mockResolvedValue(() => {});
+  });
+
+  it("renders Connections and the Activity feed on the home, around the composer", async () => {
+    render(<EmptyState onConversationCreated={vi.fn()} />);
+    // The composer stays; Connections + Activity now sit beneath it on the home.
+    expect(screen.getByTestId("empty-state-composer")).toBeInTheDocument();
+    expect(await screen.findByTestId("home-connections")).toBeInTheDocument();
+    expect(screen.getByTestId("connections-section")).toBeInTheDocument();
+    expect(screen.getByTestId("home-activity-section")).toBeInTheDocument();
+    expect(screen.getByTestId("activity-view")).toBeInTheDocument();
   });
 
   it("shows the composer, not static text, with Home as the default folder target", async () => {
