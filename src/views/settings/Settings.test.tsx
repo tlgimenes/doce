@@ -49,6 +49,8 @@ const DEFAULT_MODEL_STATE = {
       selected: true,
       sourceKind: "curated",
       localPath: null,
+      endpointUrl: null,
+      endpointModel: null,
       state: "active",
       bytesDownloaded: 2_700_000_000,
       bytesTotal: 2_700_000_000,

@@ -130,6 +130,8 @@ describe("App keyboard shortcuts (005-keyboard-shortcuts, updated for 006-chat-e
           selected: true,
           sourceKind: "curated",
           localPath: "/models/m.gguf",
+          endpointUrl: null,
+          endpointModel: null,
           state: "active",
           bytesDownloaded: 0,
           bytesTotal: 0,

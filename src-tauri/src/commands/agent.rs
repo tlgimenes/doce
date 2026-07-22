@@ -728,6 +728,24 @@ struct RealBackend<'a> {
     /// concern, so the per-turn in-process `PromptSession` this backend used
     /// to hold — to feed the old `session.generate` — is gone.)
     base_url: String,
+    /// The request `model` id. `LLAMA_SERVER_MODEL_ID` ("doce") for the
+    /// supervised sidecar (which ignores it); the endpoint's own model id when
+    /// the active model is an endpoint. Resolved once per turn by
+    /// `send_agent_message` from the [`ActiveModelTarget`].
+    ///
+    /// [`ActiveModelTarget`]: crate::commands::models::ActiveModelTarget
+    model_id: String,
+    /// `Some(bearer key)` for an authenticated endpoint, `None` for the local
+    /// sidecar (which needs no auth) — passed to `LlamaServerClient::new_with_auth`.
+    api_key: Option<String>,
+    /// When true, generate the CLEAN (standard-OpenAI-only) request body for a
+    /// generic endpoint; `false` (the local path) keeps the exact llama.cpp
+    /// body. Derived from the endpoint's `!use_cache_prompt`.
+    clean_body: bool,
+    /// This turn's context window, in tokens — `CONTEXT_WINDOW_TOKENS` for the
+    /// sidecar, the endpoint's configured window otherwise. Drives BOTH the
+    /// per-turn output clamp and (via `threshold`) the compaction trigger.
+    context_window: u32,
     /// This turn's cancellation handle, threaded down from
     /// `send_agent_message` (which registered the same token in
     /// `ActiveGenerations` so `stop_generation` can fire it). Passed to every
@@ -1121,7 +1139,7 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
         // enforces it server-side, and run_loop corrects+retries a turn that
         // slips through with no call rather than ending the task.
         let mut req = crate::inference::http::ChatRequest::build(
-            LLAMA_SERVER_MODEL_ID,
+            self.model_id.as_str(),
             crate::inference::http::to_openai_messages(&messages),
             Some(crate::agent::mcp_disclosure::build_tools_array(
                 self.plan_state.single_mode_tool_names(true),
@@ -1131,6 +1149,10 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
             crate::inference::http::tool_choice_for(crate::inference::ToolCallMode::Require)
                 .map(|s| s.to_string()),
         );
+        // Endpoint path only: strip the llama.cpp-specific extras for a generic
+        // OpenAI-compatible endpoint. `false` for the sidecar, so its body is
+        // byte-for-byte unchanged (the CARDINAL INVARIANT).
+        req.clean = self.clean_body;
         // Always-max-output (FR-1): the ceiling is the window itself, so the
         // clamp yields `window - prompt_est - margin` -- the max output that
         // structurally fits -- instead of a flat 2048 cap. prompt_est uses the
@@ -1142,7 +1164,7 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
         );
         req.max_tokens = Some(crate::context::limits::clamp_output_tokens(
             crate::context::limits::AGENT_TURN_OUTPUT_CEILING,
-            crate::inference::CONTEXT_WINDOW_TOKENS,
+            self.context_window,
             prompt_est,
         ));
         // Live generation ticker: every content/reasoning piece streams to
@@ -1158,21 +1180,24 @@ impl crate::agent::AgentBackend for RealBackend<'_> {
         // This turn's real cancellation handle (Task 4.2a): the SAME token
         // `send_agent_message` registered in `ActiveGenerations`, so a
         // `stop_generation` call fires it and cuts this `chat` short.
-        let result = crate::inference::http::LlamaServerClient::new(self.base_url.clone())
-            .chat(
-                req,
-                |piece| {
-                    let _ = app.emit(
-                        "agent-generation-piece",
-                        AgentGenerationPiece {
-                            conversation_id: conversation_id.to_string(),
-                            piece: piece.to_string(),
-                        },
-                    );
-                },
-                &self.cancel,
-            )
-            .await;
+        let result = crate::inference::http::LlamaServerClient::new_with_auth(
+            self.base_url.clone(),
+            self.api_key.clone(),
+        )
+        .chat(
+            req,
+            |piece| {
+                let _ = app.emit(
+                    "agent-generation-piece",
+                    AgentGenerationPiece {
+                        conversation_id: conversation_id.to_string(),
+                        piece: piece.to_string(),
+                    },
+                );
+            },
+            &self.cancel,
+        )
+        .await;
         let outcome = chat_result_to_turn_outcome(result);
         // FR-2: record the server's authoritative `prompt_tokens` for the
         // NEXT `measure` call to prefer over a full chars/4 re-estimate.
@@ -2765,11 +2790,11 @@ pub async fn send_agent_message(
 
     let conn = db_cell.get(&app).await?.clone();
 
-    // Heal a deleted local/managed path before taking a generation lease: a
-    // fallback activation needs the exclusive side of the same gate. The
-    // active path is deliberately read again after the lease because a
-    // queued switch may complete between these two points.
-    crate::commands::models::ensure_usable_model_path(&app, &conn, &server_state).await?;
+    // Heal a deleted local/managed path (or confirm a usable endpoint) before
+    // taking a generation lease: a fallback activation needs the exclusive side
+    // of the same gate. The active target is deliberately re-resolved after the
+    // lease because a queued switch may complete between these two points.
+    crate::commands::models::ensure_active_model_ready(&app, &conn, &server_state).await?;
     if cancel.is_cancelled() {
         return Ok(STOPPED_TURN_MARKER.to_string());
     }
@@ -2783,7 +2808,12 @@ pub async fn send_agent_message(
         lease = server_state.generation_lease() => lease,
         _ = cancel.cancelled() => return Ok(STOPPED_TURN_MARKER.to_string()),
     };
-    let model_path = crate::commands::models::active_model_path(&conn).await?;
+    // Endpoint-aware read (pure — no reconcile, so it never tries to take the
+    // switch lease while this generation lease is held). `Local{path}` spawns a
+    // sidecar below; `Endpoint{..}` skips it entirely.
+    let endpoint_keys = app.state::<crate::commands::models::EndpointKeyStore>();
+    let active_target =
+        crate::commands::models::active_model_target(&conn, endpoint_keys.inner()).await?;
     if cancel.is_cancelled() {
         return Ok(STOPPED_TURN_MARKER.to_string());
     }
@@ -2902,22 +2932,65 @@ pub async fn send_agent_message(
         conversation_id: conversation_id.clone(),
     };
 
-    // Task 4.1: make sure the supervised `llama-server` is up for the active
-    // model before the turn runs — spawns it if this is the first turn after
-    // a launch/switch, reuses the running one otherwise — and capture its
-    // base_url. Generation now goes THROUGH this server (`RealBackend` /
+    // Task 4.1: for a LOCAL model, make sure the supervised `llama-server` is up
+    // before the turn runs — spawns it if this is the first turn after a
+    // launch/switch, reuses the running one otherwise — and capture its
+    // base_url. Generation goes THROUGH this server (`RealBackend` /
     // `SubagentBackend` -> `LlamaServerClient::chat`), so a live server is a
-    // HARD prerequisite: if it can't come up, the turn cannot generate, so
-    // fail here rather than proceeding to generate against a dead server.
-    let base_url_result = server_state
-        .ensure_running_cancellable(&app, std::path::Path::new(&model_path), &cancel)
-        .await;
-    if cancel.is_cancelled() {
-        return persist_stopped_reply(&app, &conn, transcript_dir.clone(), &conversation_id, now)
-            .await;
-    }
-    let base_url =
-        base_url_result.map_err(|e| format!("llama-server failed to start for this turn: {e}"))?;
+    // HARD prerequisite for the local path: if it can't come up, the turn cannot
+    // generate, so fail here rather than proceeding against a dead server.
+    //
+    // For an ENDPOINT model this is the NEW branch: there is no sidecar to
+    // start — `base_url`/`model_id`/`api_key`/`context_window`/`clean_body` come
+    // straight from the resolved target, and the sidecar-only fields default to
+    // their local values (unchanged for every local turn).
+    let (base_url, turn_model_id, turn_api_key, turn_context_window, turn_clean_body) =
+        match &active_target {
+            crate::commands::models::ActiveModelTarget::Endpoint {
+                url,
+                model,
+                api_key,
+                context_window,
+                clean_body,
+            } => {
+                let model_id = if model.is_empty() {
+                    LLAMA_SERVER_MODEL_ID.to_string()
+                } else {
+                    model.clone()
+                };
+                (
+                    url.clone(),
+                    model_id,
+                    api_key.clone(),
+                    *context_window,
+                    *clean_body,
+                )
+            }
+            crate::commands::models::ActiveModelTarget::Local { path } => {
+                let base_url_result = server_state
+                    .ensure_running_cancellable(&app, std::path::Path::new(path), &cancel)
+                    .await;
+                if cancel.is_cancelled() {
+                    return persist_stopped_reply(
+                        &app,
+                        &conn,
+                        transcript_dir.clone(),
+                        &conversation_id,
+                        now,
+                    )
+                    .await;
+                }
+                let base_url = base_url_result
+                    .map_err(|e| format!("llama-server failed to start for this turn: {e}"))?;
+                (
+                    base_url,
+                    LLAMA_SERVER_MODEL_ID.to_string(),
+                    None,
+                    crate::inference::CONTEXT_WINDOW_TOKENS,
+                    false,
+                )
+            }
+        };
 
     // 007-workspace-cwd-resolution: resolved once per turn, not per tool
     // call — a conversation's workspace can't change mid-turn. `None` for
@@ -3023,7 +3096,12 @@ pub async fn send_agent_message(
     // tokens AND the per-turn state tail `RealBackend::generate` pushes, so a
     // history parked just under the threshold plus a big tail can't overflow
     // `n_ctx`. `run_loop`'s own `measure`/`compact` re-checks this each turn.
-    let threshold = crate::inference::CONTEXT_WINDOW_TOKENS.saturating_sub(
+    // Sized off the ACTIVE model's window: `CONTEXT_WINDOW_TOKENS` for the
+    // sidecar, the endpoint's configured window otherwise. NOTE: the derived
+    // sub-budget constants in `context::limits` stay fixed at the sidecar
+    // window, so an endpoint window under 16k may compact more conservatively
+    // than strictly necessary — acceptable for v1.
+    let threshold = turn_context_window.saturating_sub(
         crate::context::limits::AGENT_TURN_MAX_OUTPUT_TOKENS
             + crate::context::limits::STATE_TAIL_RESERVE_TOKENS,
     );
@@ -3162,6 +3240,10 @@ pub async fn send_agent_message(
 
         let mut backend = RealBackend {
             base_url: base_url.clone(),
+            model_id: turn_model_id.clone(),
+            api_key: turn_api_key.clone(),
+            clean_body: turn_clean_body,
+            context_window: turn_context_window,
             cancel: cancel.clone(),
             conn: &conn,
             conversation_id: &conversation_id,

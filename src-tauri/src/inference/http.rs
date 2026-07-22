@@ -299,6 +299,16 @@ pub struct ChatRequest {
     /// build-then-assign pattern `seed` already uses.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    /// When true, `chat` sends the CLEAN body (`clean_body_value`) — standard
+    /// OpenAI fields only, with the four llama.cpp-specific extras dropped — for
+    /// a generic OpenAI-compatible endpoint that may reject unknown fields. The
+    /// LOCAL sidecar path leaves this `false`, and the flag itself is
+    /// `#[serde(skip)]`, so the supervised-server request body is byte-for-byte
+    /// what it was before endpoint support existed (the CARDINAL INVARIANT). Set
+    /// by `commands::agent::RealBackend::generate` from the resolved endpoint
+    /// target's `clean_body`; never by `build`, which always defaults it off.
+    #[serde(skip)]
+    pub clean: bool,
 }
 
 impl ChatRequest {
@@ -335,7 +345,28 @@ impl ChatRequest {
             seed: seed_from_env(),
             stream_options: stream.then(|| serde_json::json!({"include_usage": true})),
             max_tokens: None,
+            clean: false,
         }
+    }
+
+    /// The request body with the llama.cpp-specific extras removed, for a
+    /// generic OpenAI-compatible endpoint (`clean == true`). Drops EXACTLY the
+    /// four fields the standard `/v1/chat/completions` API doesn't define —
+    /// `cache_prompt`, `chat_template_kwargs`, `top_k`, `min_p` — and preserves
+    /// every standard field (`model`, `messages`, `tools`, `tool_choice`,
+    /// `temperature`, `top_p`, `presence_penalty`, `parallel_tool_calls`,
+    /// `stream`, `stream_options`, `max_tokens`, `seed`). NEVER used for the
+    /// supervised sidecar (`clean == false`), which serializes `self` directly
+    /// and unchanged — the byte-for-byte invariant the benchmark depends on.
+    fn clean_body_value(&self) -> Value {
+        let mut value = serde_json::to_value(self).unwrap_or(Value::Null);
+        if let Some(object) = value.as_object_mut() {
+            object.remove("cache_prompt");
+            object.remove("chat_template_kwargs");
+            object.remove("top_k");
+            object.remove("min_p");
+        }
+        value
     }
 
     /// Turns OFF the model's reasoning block for this request, flipping the
@@ -680,16 +711,31 @@ impl SseLineBuffer {
 /// with no state of its own beyond the base URL and HTTP client.
 pub struct LlamaServerClient {
     base_url: String,
+    /// Optional `Authorization: Bearer <key>` for a hosted/authenticated
+    /// endpoint. `None` for the supervised local sidecar (which needs no auth),
+    /// so the local request carries no Authorization header — exactly as before.
+    api_key: Option<String>,
     http: reqwest::Client,
 }
 
 impl LlamaServerClient {
     /// `base_url` is the sidecar's own root (e.g. `http://127.0.0.1:PORT`),
     /// with no trailing slash assumed either way — `chat` always joins it
-    /// with a leading `/v1/chat/completions`.
+    /// with a leading `/v1/chat/completions`. No auth header (the supervised
+    /// server needs none); the endpoint path uses [`new_with_auth`] instead.
     pub fn new(base_url: impl Into<String>) -> Self {
+        Self::new_with_auth(base_url, None)
+    }
+
+    /// As [`new`], plus an optional bearer key for an authenticated
+    /// OpenAI-compatible endpoint. `Some(key)` sets `Authorization: Bearer
+    /// <key>` on every `chat` request; `None` behaves identically to `new`.
+    ///
+    /// [`new`]: LlamaServerClient::new
+    pub fn new_with_auth(base_url: impl Into<String>, api_key: Option<String>) -> Self {
         Self {
             base_url: base_url.into(),
+            api_key: api_key.filter(|key| !key.is_empty()),
             http: reqwest::Client::new(),
         }
     }
@@ -728,15 +774,26 @@ impl LlamaServerClient {
         }
 
         let url = format!("{}/v1/chat/completions", self.base_url);
+        // Build the request synchronously (headers/body), then race only the
+        // network `send()` against cancellation below. The LOCAL sidecar path
+        // (`req.clean == false`, `api_key == None`) sends `&req` directly with
+        // no Authorization header — byte-for-byte the pre-endpoint request.
+        let mut request = self
+            .http
+            .post(&url)
+            .header("content-type", "application/json");
+        if let Some(key) = self.api_key.as_deref() {
+            request = request.header("authorization", format!("Bearer {key}"));
+        }
+        let request = if req.clean {
+            request.json(&req.clean_body_value())
+        } else {
+            request.json(&req)
+        };
         let mut response = tokio::select! {
             biased;
             _ = cancel.cancelled() => return Err(InferenceError::Cancelled),
-            result = self
-                .http
-                .post(&url)
-                .header("content-type", "application/json")
-                .json(&req)
-                .send() => result.map_err(|e| InferenceError::Backend(e.to_string()))?,
+            result = request.send() => result.map_err(|e| InferenceError::Backend(e.to_string()))?,
         };
 
         let mut buf = SseLineBuffer::default();
@@ -953,6 +1010,134 @@ mod tests {
         // max_tokens is omitted by `build` itself -- callers opt in per
         // request via `clamp_output_tokens`/`SUMMARY_MAX_TOKENS`.
         assert!(v.get("max_tokens").is_none());
+    }
+
+    /// CARDINAL INVARIANT: the supervised-sidecar request body (`clean ==
+    /// false`, the benchmark path) must serialize byte-for-byte as it did
+    /// before endpoint support existed. `clean` is `#[serde(skip)]`, so it never
+    /// reaches the wire, and every other field keeps its declaration order and
+    /// value. A frozen snapshot catches any future field reorder/addition that
+    /// would silently move the local body the benchmark runs against.
+    #[test]
+    fn local_path_body_is_byte_identical_to_the_pre_endpoint_baseline() {
+        let req = ChatRequest::build("doce", vec![], None, None);
+        assert!(
+            !req.clean,
+            "build() must default to the local (non-clean) body"
+        );
+        // Guarded so a seeded benchmark run (which sets DOCE_GEN_SEED, inserting
+        // a `seed` field) doesn't flake this exact-bytes comparison.
+        if std::env::var("DOCE_GEN_SEED").is_err() {
+            let s = serde_json::to_string(&req).unwrap();
+            assert_eq!(
+                s,
+                r#"{"model":"doce","messages":[],"parallel_tool_calls":false,"stream":true,"cache_prompt":true,"chat_template_kwargs":{"enable_thinking":true},"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"presence_penalty":0.0,"stream_options":{"include_usage":true}}"#
+            );
+        }
+    }
+
+    /// The clean (endpoint) body drops EXACTLY the four llama.cpp-specific
+    /// extras and keeps every standard OpenAI field.
+    #[test]
+    fn clean_body_omits_exactly_the_four_llama_extras_and_keeps_the_rest() {
+        let mut req = ChatRequest::build(
+            "gpt-4o-mini",
+            vec![serde_json::json!({"role":"user","content":"hi"})],
+            Some(tools_array(&["Read"])),
+            Some("auto".to_string()),
+        );
+        req.max_tokens = Some(1024);
+        req.seed = Some(7);
+        let v = req.clean_body_value();
+        // The four llama.cpp-only extras are gone.
+        for extra in ["cache_prompt", "chat_template_kwargs", "top_k", "min_p"] {
+            assert!(
+                v.get(extra).is_none(),
+                "clean body kept llama extra {extra}"
+            );
+        }
+        // Every standard field survives (parallel_tool_calls is a valid OpenAI
+        // field, so it stays too — "omit exactly the four extras").
+        for field in [
+            "model",
+            "messages",
+            "tools",
+            "tool_choice",
+            "temperature",
+            "top_p",
+            "presence_penalty",
+            "parallel_tool_calls",
+            "stream",
+            "stream_options",
+            "max_tokens",
+            "seed",
+        ] {
+            assert!(
+                v.get(field).is_some(),
+                "clean body dropped standard field {field}"
+            );
+        }
+        assert_eq!(v["model"], "gpt-4o-mini");
+        assert_eq!(v["max_tokens"], 1024);
+    }
+
+    #[tokio::test]
+    async fn chat_sets_bearer_header_when_an_api_key_is_present() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/v1/chat/completions"))
+            .and(wiremock::matchers::header(
+                "authorization",
+                "Bearer sk-test-key",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_raw("data: [DONE]\n\n", "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+        let client =
+            LlamaServerClient::new_with_auth(server.uri(), Some("sk-test-key".to_string()));
+        // The mock only matches when the bearer header is set, so a successful
+        // call proves the header reached the wire.
+        client
+            .chat(
+                sample_request(),
+                |_p| {},
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn chat_omits_the_authorization_header_when_no_key() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/v1/chat/completions"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_raw("data: [DONE]\n\n", "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+        let client = LlamaServerClient::new(server.uri());
+        client
+            .chat(
+                sample_request(),
+                |_p| {},
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(
+            requests[0].headers.get("authorization").is_none(),
+            "the local path must send no Authorization header"
+        );
     }
 
     #[test]
