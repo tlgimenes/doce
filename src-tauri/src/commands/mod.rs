@@ -2,6 +2,7 @@ pub mod agent;
 pub mod attachments;
 pub mod context;
 pub mod conversations;
+pub mod feed;
 pub mod mcp;
 pub mod models;
 pub mod oauth;
@@ -59,6 +60,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             oauth::list_google_workspace_services,
             oauth::add_google_workspace_servers,
             skills::list_skills,
+            feed::list_feed_cards,
+            feed::dismiss_feed_card,
         ])
         .events(collect_events![
             crate::downloader::ModelInstallProgress,
@@ -70,6 +73,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             agent::GoalComplete,
             agent::ConversationGoalChanged,
             agent::ConversationsChanged,
+            feed::FeedCard,
         ])
         // Every timestamp field in this codebase is `i64` (Unix-epoch-ms,
         // per data-model.md's schema conventions) — specta-typescript

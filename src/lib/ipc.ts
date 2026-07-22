@@ -510,6 +510,26 @@ export interface McpToolInfo {
   description: string | null;
 }
 
+// Activity feed — mirrors src-tauri/src/commands/feed.rs's `FeedCard`
+// (camelCase-serialized). A card is a persisted side-effect of a
+// MUTATING/creative MCP tool call; `kind` maps 1:1 onto an ActivityCard
+// variant. No generated binding is relied on here — this hand-written type
+// is the source of truth for the Activity view, matching how the Connections
+// view types its OAuth shapes.
+export type FeedCardKind = "draft" | "event" | "file" | "shell";
+export type FeedCardStatus = "pending" | "dismissed";
+
+export interface FeedCard {
+  id: string;
+  conversationId: string | null;
+  kind: FeedCardKind;
+  title: string;
+  preview: string;
+  sourceTool: string;
+  status: FeedCardStatus;
+  createdAt: number;
+}
+
 // OAuth / Google Workspace connections. Mirrors src-tauri/src/commands/oauth.rs
 // (camelCase-serialized). No generated bindings.ts exists yet, so these are the
 // hand-written source of truth until tauri-specta regenerates one.
@@ -747,6 +767,12 @@ export const commands = {
     }),
   getActivePlan: (conversationId: string) =>
     invoke<PlanSnapshot | null>("get_active_plan", { conversationId }),
+  // Activity feed. `listFeedCards()` (no arg) returns every conversation's
+  // cards; passing a `conversationId` scopes to one. Both come back pending
+  // first, then newest-first. `dismissFeedCard` flips a card to 'dismissed'.
+  listFeedCards: (conversationId?: string) =>
+    invoke<FeedCard[]>("list_feed_cards", { conversationId: conversationId ?? null }),
+  dismissFeedCard: (id: string) => invoke<void>("dismiss_feed_card", { id }),
 };
 
 export interface ModelInstallProgressPayload {
@@ -830,4 +856,9 @@ export const events = {
   // start/end/persist), replacing the old client-side poll.
   onConversationsChanged: (cb: () => void): Promise<UnlistenFn> =>
     listen("conversations-changed", () => cb()),
+  // Live-append signal: fired when the agent surfaces a new activity card
+  // (a MUTATING/creative MCP call). The Activity view prepends the card
+  // instead of re-fetching the whole list.
+  onFeedCardCreated: (cb: (card: FeedCard) => void): Promise<UnlistenFn> =>
+    listen<FeedCard>("feed-card-created", (e) => cb(e.payload)),
 };

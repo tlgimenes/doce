@@ -37,6 +37,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (13, include_str!("migrations/0013_model_sources.sql")),
     (14, include_str!("migrations/0014_model_downloads.sql")),
     (15, include_str!("migrations/0015_mcp_oauth_accounts.sql")),
+    (16, include_str!("migrations/0016_feed_cards.sql")),
 ];
 
 pub fn apply_pending(conn: &mut Connection) -> rusqlite::Result<()> {
