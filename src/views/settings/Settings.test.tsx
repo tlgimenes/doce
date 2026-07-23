@@ -21,7 +21,6 @@ vi.mock("@/lib/ipc", () => ({
     testModelEndpoint: vi.fn(),
     dismissModelNotice: vi.fn(),
     listOauthAccounts: vi.fn(),
-    googleOauthBuiltinAvailable: vi.fn(),
     listGoogleWorkspaceServices: vi.fn(),
     connectOauthAccount: vi.fn(),
     removeOauthAccount: vi.fn(),
@@ -80,7 +79,6 @@ describe("Settings", () => {
     vi.mocked(commands.listSkills).mockResolvedValue([]);
     vi.mocked(commands.listOauthAccounts).mockResolvedValue([]);
     vi.mocked(commands.listGoogleWorkspaceServices).mockResolvedValue([]);
-    vi.mocked(commands.googleOauthBuiltinAvailable).mockResolvedValue(false);
     vi.mocked(commands.getModelState).mockResolvedValue(DEFAULT_MODEL_STATE);
     vi.mocked(commands.selectCuratedModel).mockResolvedValue(DEFAULT_MODEL_STATE);
     vi.mocked(commands.selectLocalModel).mockResolvedValue(DEFAULT_MODEL_STATE);
@@ -281,7 +279,6 @@ describe("Settings appearance", () => {
     vi.mocked(commands.listSkills).mockResolvedValue([]);
     vi.mocked(commands.listOauthAccounts).mockResolvedValue([]);
     vi.mocked(commands.listGoogleWorkspaceServices).mockResolvedValue([]);
-    vi.mocked(commands.googleOauthBuiltinAvailable).mockResolvedValue(false);
     vi.mocked(commands.getModelState).mockResolvedValue(DEFAULT_MODEL_STATE);
     vi.mocked(events.onModelInstallProgress).mockResolvedValue(vi.fn());
   });

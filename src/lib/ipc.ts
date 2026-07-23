@@ -766,7 +766,6 @@ export const commands = {
   // True when this build ships a built-in Google OAuth client (injected at
   // build time). The Connect surface calls this on mount to decide between the
   // one-click "Continue with Google" flow and the bring-your-own-client form.
-  googleOauthBuiltinAvailable: () => invoke<boolean>("google_oauth_builtin_available"),
   listOauthAccounts: () => invoke<OAuthAccount[]>("list_oauth_accounts"),
   removeOauthAccount: (id: string) => invoke<void>("remove_oauth_account", { id }),
   listGoogleWorkspaceServices: () =>
