@@ -101,18 +101,6 @@ pub async fn connect_oauth_account(
     Ok(account)
 }
 
-/// Whether this build ships a built-in Google OAuth client (both
-/// `DOCE_GOOGLE_CLIENT_ID` and `DOCE_GOOGLE_CLIENT_SECRET` were injected at
-/// build time). The Connect UI calls this on mount: when `true` it offers a
-/// one-click "Continue with Google" (no credential fields) and keeps the
-/// bring-your-own client as an advanced fallback; when `false` the BYO fields
-/// are required.
-#[tauri::command]
-#[specta::specta]
-pub fn google_oauth_builtin_available() -> bool {
-    oauth::google::builtin_client().is_some()
-}
-
 #[tauri::command]
 #[specta::specta]
 pub async fn list_oauth_accounts(
